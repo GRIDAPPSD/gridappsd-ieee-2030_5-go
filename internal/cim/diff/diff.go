@@ -82,10 +82,16 @@ func (b *Builder) AddDifference(object, attribute string, forward, reverse any) 
 	return nil
 }
 
-// MustAddDifference is the fluent variant of AddDifference. It panics on
-// validation failure. Use only when inputs are statically known to be
-// valid (literals, hard-coded mRIDs); use AddDifference otherwise.
-func (b *Builder) MustAddDifference(object, attribute string, forward, reverse any) *Builder {
+// WithDifference is the fluent variant of AddDifference. It returns the
+// Builder for chaining and panics at runtime if object or attribute is
+// empty; use AddDifference for the validating, non-panicking variant.
+//
+// Note: this method intentionally avoids the stdlib Must* prefix
+// convention. Must* (e.g. regexp.MustCompile) is reserved for
+// constructors with compile-time-known input where a panic at startup
+// is the right failure mode. WithDifference takes runtime strings, so
+// the contract is different and the name reflects that.
+func (b *Builder) WithDifference(object, attribute string, forward, reverse any) *Builder {
 	if err := b.AddDifference(object, attribute, forward, reverse); err != nil {
 		panic(err)
 	}

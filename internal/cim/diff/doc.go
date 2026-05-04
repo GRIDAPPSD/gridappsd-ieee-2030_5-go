@@ -21,4 +21,16 @@
 //
 // Out of scope: STOMP publishing, CIM attribute schema validation, and
 // persistence.
+//
+// # Security model
+//
+// This package builds wire-format JSON only. It does not sign, encrypt,
+// or otherwise authenticate messages. The difference_mrid is a fresh
+// UUIDv4 from crypto/rand; it identifies a message for correlation,
+// not for authentication. The timestamp is caller-supplied and not
+// validated. Replay protection, signing, and broker-side authorization
+// are the responsibility of the layer that publishes these messages
+// (the GridAPPS-D broker plus its STOMP transport). Treat the bytes
+// produced here as a control-plane payload that requires a trusted
+// transport.
 package diff

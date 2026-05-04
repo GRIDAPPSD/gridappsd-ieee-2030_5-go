@@ -176,28 +176,28 @@ func TestEmptySimulationID_OmitsField(t *testing.T) {
 func TestFluent_AddDifferenceChain(t *testing.T) {
 	// Fluent chaining variant returns *Builder. The error path exists
 	// (AddDifference returns error), but a fluent helper that ignores
-	// failure is wanted for ergonomic chaining. MustAddDifference panics.
+	// failure is wanted for ergonomic chaining. WithDifference panics.
 	defer func() {
 		if r := recover(); r != nil {
 			t.Errorf("unexpected panic: %v", r)
 		}
 	}()
 	b := NewBuilder("sim-1").
-		MustAddDifference("obj-1", "attr-1", 1, 0).
-		MustAddDifference("obj-2", "attr-2", 2, 0)
+		WithDifference("obj-1", "attr-1", 1, 0).
+		WithDifference("obj-2", "attr-2", 2, 0)
 	if b.Len() != 2 {
 		t.Errorf("Len = %d, want 2", b.Len())
 	}
 }
 
-func TestMustAddDifference_PanicsOnInvalid(t *testing.T) {
+func TestWithDifference_PanicsOnInvalid(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
 			t.Error("expected panic")
 		}
 	}()
-	_ = NewBuilder("sim-1").MustAddDifference("", "attr", 1, 0)
+	_ = NewBuilder("sim-1").WithDifference("", "attr", 1, 0)
 }
 
 func TestMessage_GeneratesUUIDv4(t *testing.T) {
