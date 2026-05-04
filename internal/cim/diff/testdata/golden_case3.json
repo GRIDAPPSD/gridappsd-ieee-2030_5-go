@@ -1,0 +1,24 @@
+{
+  "command": "update",
+  "input": {
+    "message": {
+      "difference_mrid": "FIXED-MRID-FOR-TESTING",
+      "forward_differences": [
+        {
+          "attribute": "attr-y",
+          "object": "obj-x",
+          "value": 99
+        }
+      ],
+      "reverse_differences": [
+        {
+          "attribute": "attr-y",
+          "object": "obj-x",
+          "value": 100
+        }
+      ],
+      "timestamp": 1700000000
+    },
+    "simulation_id": 42
+  }
+}
