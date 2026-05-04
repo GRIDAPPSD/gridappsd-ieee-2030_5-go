@@ -1,0 +1,11 @@
+{
+  "command": "update",
+  "input": {
+    "message": {
+      "difference_mrid": "FIXED-MRID-FOR-TESTING",
+      "forward_differences": [],
+      "reverse_differences": [],
+      "timestamp": 1700000000
+    }
+  }
+}

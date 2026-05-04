@@ -1,0 +1,40 @@
+{
+  "command": "update",
+  "input": {
+    "message": {
+      "difference_mrid": "FIXED-MRID-FOR-TESTING",
+      "forward_differences": [
+        {
+          "attribute": "DERControl.DERControlBase.opModTargetW",
+          "object": "_4C4846A8-312B-4D03-BFF8-BCB58CAB4366",
+          "value": {
+            "multiplier": 5,
+            "value": 1
+          }
+        },
+        {
+          "attribute": "DERControl.description",
+          "object": "_OTHER",
+          "value": "new value"
+        }
+      ],
+      "reverse_differences": [
+        {
+          "attribute": "DERControl.DERControlBase.opModTargetW",
+          "object": "_4C4846A8-312B-4D03-BFF8-BCB58CAB4366",
+          "value": {
+            "multiplier": 1,
+            "value": 1
+          }
+        },
+        {
+          "attribute": "DERControl.description",
+          "object": "_OTHER",
+          "value": "old value"
+        }
+      ],
+      "timestamp": 1700000000
+    },
+    "simulation_id": "sim-123"
+  }
+}
