@@ -304,6 +304,54 @@ func TestMessageNow_UsesCurrentEpoch(t *testing.T) {
 	}
 }
 
+func TestBytesNow_NonEmpty(t *testing.T) {
+	b := NewBuilder("sim-1")
+	_ = b.AddDifference("obj", "attr", 1, 0)
+	raw, err := b.BytesNow()
+	if err != nil {
+		t.Fatalf("BytesNow: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Error("BytesNow returned empty bytes")
+	}
+	var decoded Message
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Input.Message.Timestamp <= 0 {
+		t.Errorf("BytesNow timestamp = %d, want positive", decoded.Input.Message.Timestamp)
+	}
+}
+
+func TestMessage_GoldenCase3_IntegerSimIDAsString(t *testing.T) {
+	// The Python upstream supports str|int|None for simulation_id.
+	// The Go API takes string only; an integer sim ID is converted by
+	// the caller. Pin the wire shape we expect when a caller passes
+	// "42" as the sim ID. The golden case3 fixture has integer 42, so
+	// this test re-canonicalizes to string-vs-number agnostic by
+	// loading the golden and asserting structural equality with the
+	// Go-produced shape (after numeric coercion). Simpler: assert the
+	// shape independently.
+	b := NewBuilder("42")
+	_ = b.AddDifference("obj-x", "attr-y", 99, 100)
+	msg := b.Message(fixedEpoch)
+	msg.Input.Message.DifferenceMRID = fixedMRID
+	if msg.Input.SimulationID == nil || *msg.Input.SimulationID != "42" {
+		t.Errorf("sim id = %v, want \"42\"", msg.Input.SimulationID)
+	}
+	if len(msg.Input.Message.ForwardDifferences) != 1 {
+		t.Fatalf("forward len = %d, want 1", len(msg.Input.Message.ForwardDifferences))
+	}
+	fwd := msg.Input.Message.ForwardDifferences[0]
+	if fwd.Object != "obj-x" || fwd.Attribute != "attr-y" || fwd.Value != 99 {
+		t.Errorf("fwd = %+v, want {obj-x attr-y 99}", fwd)
+	}
+	rev := msg.Input.Message.ReverseDifferences[0]
+	if rev.Value != 100 {
+		t.Errorf("rev.Value = %v, want 100", rev.Value)
+	}
+}
+
 func TestForwardDifferencesIndependent(t *testing.T) {
 	// Mutating the value of a passed-in map must not silently affect the
 	// builder's stored copy because both sides are typed `any` and Go
