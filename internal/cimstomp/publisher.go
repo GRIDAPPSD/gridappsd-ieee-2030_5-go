@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"strings"
 
 	"github.com/go-stomp/stomp/v3"
@@ -28,19 +27,15 @@ type PointMessage struct {
 
 // Publisher manages the STOMP connection and publishes CIM messages.
 type Publisher struct {
-	addr     string
-	user     string
-	password string
-	conn     *stomp.Conn
+	cfg  STOMPConfig
+	conn *stomp.Conn
 }
 
-// New creates a Publisher from STOMP config.
+// New creates a Publisher from STOMP config. When cfg.TLS is non-nil the
+// dial path uses crypto/tls; nil keeps the existing plain-TCP behavior
+// (GAGO-014).
 func New(cfg STOMPConfig) *Publisher {
-	return &Publisher{
-		addr:     cfg.Address,
-		user:     cfg.User,
-		password: cfg.Password,
-	}
+	return &Publisher{cfg: cfg}
 }
 
 // Connect establishes the STOMP connection. The provided context bounds
@@ -48,29 +43,30 @@ func New(cfg STOMPConfig) *Publisher {
 //
 // go-stomp v3.1.5's DialWithContext calls net.Dial (not net.DialContext),
 // so we dial ourselves with net.DialContext to honor ctx, then hand the
-// live conn to stomp.ConnectWithContext for the STOMP handshake.
+// live conn to stomp.ConnectWithContext for the STOMP handshake. When the
+// originating STOMPConfig had a non-nil TLS field, the dial wraps the TCP
+// connection with crypto/tls (GAGO-014).
 func (p *Publisher) Connect(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	var dialer net.Dialer
-	tcp, err := dialer.DialContext(ctx, "tcp", p.addr)
+	tcp, err := dialSTOMPTransport(ctx, p.cfg)
 	if err != nil {
-		return fmt.Errorf("cimstomp.Publisher: tcp dial %s: %w", p.addr, err)
+		return err
 	}
 
 	conn, err := stomp.ConnectWithContext(ctx, tcp,
-		stomp.ConnOpt.Login(p.user, p.password),
+		stomp.ConnOpt.Login(p.cfg.User, p.cfg.Password),
 		stomp.ConnOpt.HeartBeat(heartbeat, heartbeat),
 		stomp.ConnOpt.Header(frame.ContentType, "application/json"),
 	)
 	if err != nil {
 		_ = tcp.Close()
-		return fmt.Errorf("cimstomp.Publisher: stomp connect %s: %w", p.addr, err)
+		return fmt.Errorf("cimstomp.Publisher: stomp connect %s: %w", p.cfg.Address, err)
 	}
 	p.conn = conn
-	log.Printf("STOMP connected to %s", p.addr)
+	log.Printf("STOMP connected to %s", p.cfg.Address)
 	return nil
 }
 
