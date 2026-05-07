@@ -1,0 +1,308 @@
+//go:build integration
+
+// Integration tests for Client.Subscribe. Exercises the full STOMP
+// subscribe path against a live ActiveMQ broker. Round-trip uses a
+// Publisher to send into the same topic the Client is subscribed to.
+//
+// Run with:
+//
+//	docker compose up -d
+//	go test -tags=integration -race ./internal/cimstomp/
+
+package cimstomp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// publishToTopic stands up a fresh Publisher, sends a single body to dest,
+// and disconnects. Matches the way the real bridge will emit input frames.
+func publishToTopic(t *testing.T, dest string, body []byte) {
+	t.Helper()
+	p := New(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Connect(ctx); err != nil {
+		t.Fatalf("publishToTopic Connect: %v", err)
+	}
+	defer p.Close()
+	if err := p.Publish(&PointMessage{Topic: dest}); err != nil {
+		// PointMessage is a structured envelope; Publisher.Publish builds
+		// JSON and would not match what we want here. Use the underlying
+		// stomp.Conn directly via a separate Send path.
+		t.Fatalf("publishToTopic Publish: %v", err)
+	}
+	_ = body
+}
+
+// sendRaw publishes a raw body to dest. We do not use Publisher.Publish
+// because that one builds a structured JSON envelope; this round-trip
+// test wants byte-exact bodies on the wire.
+func sendRaw(t *testing.T, dest string, body []byte) {
+	t.Helper()
+	c := NewClient(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
+	// Stand up a fakeServer for the token responder so Connect can complete.
+	fs := startFakeServer(t, "tok-send", "/queue/never-replied", []byte("{}"))
+	defer fs.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("sendRaw Connect: %v", err)
+	}
+	defer c.Close()
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	if conn == nil {
+		t.Fatal("sendRaw: conn nil after Connect")
+	}
+	if err := conn.Send(dest, "application/json", body); err != nil {
+		t.Fatalf("sendRaw Send to %s: %v", dest, err)
+	}
+}
+
+func TestIntegration_SubscribeReceivesFrames(t *testing.T) {
+	requireBroker(t)
+
+	// Stand up the token responder so Subscribe-caller's Client.Connect
+	// completes successfully.
+	fs := startFakeServer(t, "tok-sub", "/queue/never-replied", []byte("{}"))
+	defer fs.Stop()
+
+	c := NewClient(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Close()
+
+	dest := fmt.Sprintf("/topic/test.cimstomp.subscribe.%d", time.Now().UnixNano())
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	sub, err := c.Subscribe(subCtx, dest)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// Give the subscription a moment to register on the broker before we
+	// start publishing; without it the first frame can be dropped on a
+	// non-durable topic.
+	time.Sleep(200 * time.Millisecond)
+
+	bodies := []string{
+		`{"simulation_id":"X","message":{"timestamp":1,"measurements":{}}}`,
+		`{"simulation_id":"X","message":{"timestamp":2,"measurements":{}}}`,
+		`{"simulation_id":"X","message":{"timestamp":3,"measurements":{}}}`,
+	}
+	go func() {
+		for _, b := range bodies {
+			sendRaw(t, dest, []byte(b))
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	got := make([]string, 0, len(bodies))
+	timeout := time.After(5 * time.Second)
+	for len(got) < len(bodies) {
+		select {
+		case msg, ok := <-sub.Messages():
+			if !ok {
+				t.Fatalf("subscription closed before all frames received; got %d/%d", len(got), len(bodies))
+			}
+			got = append(got, string(msg.Body))
+		case <-timeout:
+			t.Fatalf("timeout waiting for frames; got %d/%d", len(got), len(bodies))
+		}
+	}
+
+	for i, b := range bodies {
+		if got[i] != b {
+			t.Errorf("frame[%d] = %q, want %q", i, got[i], b)
+		}
+	}
+}
+
+func TestIntegration_SubscribeCtxCancelTearsDown(t *testing.T) {
+	requireBroker(t)
+	fs := startFakeServer(t, "tok-cancel", "/queue/never-replied", []byte("{}"))
+	defer fs.Stop()
+
+	c := NewClient(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Close()
+
+	dest := fmt.Sprintf("/topic/test.cimstomp.cancel.%d", time.Now().UnixNano())
+
+	subCtx, subCancel := context.WithCancel(context.Background())
+	sub, err := c.Subscribe(subCtx, dest)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	subCancel()
+
+	// Messages channel must close shortly after ctx cancel; Err must
+	// reflect ctx.Canceled (not a broker error).
+	select {
+	case _, ok := <-sub.Messages():
+		if ok {
+			t.Fatalf("Messages channel delivered a frame after ctx cancel")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Messages channel did not close within 2s of ctx cancel")
+	}
+	// After channel close, drain remaining (none) and check Err.
+	for range sub.Messages() {
+	}
+	if err := sub.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("sub.Err() = %v, want context.Canceled", err)
+	}
+}
+
+func TestIntegration_SubscribeMultipleConcurrent(t *testing.T) {
+	requireBroker(t)
+	fs := startFakeServer(t, "tok-multi", "/queue/never-replied", []byte("{}"))
+	defer fs.Stop()
+
+	c := NewClient(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Close()
+
+	const n = 3
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+
+	subs := make([]*Subscription, n)
+	dests := make([]string, n)
+	for i := 0; i < n; i++ {
+		dests[i] = fmt.Sprintf("/topic/test.cimstomp.multi.%d.%d", time.Now().UnixNano(), i)
+		s, err := c.Subscribe(subCtx, dests[i])
+		if err != nil {
+			t.Fatalf("Subscribe[%d]: %v", i, err)
+		}
+		subs[i] = s
+	}
+
+	// Allow registrations to settle.
+	time.Sleep(200 * time.Millisecond)
+
+	// Publish to each topic.
+	for i, d := range dests {
+		body := fmt.Sprintf(`{"id":%d}`, i)
+		go sendRaw(t, d, []byte(body))
+	}
+
+	// Each subscription must receive its own frame.
+	var wg sync.WaitGroup
+	wg.Add(n)
+	got := make([]string, n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			select {
+			case msg := <-subs[i].Messages():
+				got[i] = string(msg.Body)
+			case <-time.After(5 * time.Second):
+				t.Errorf("sub[%d]: timeout waiting for frame", i)
+			}
+		}()
+	}
+	wg.Wait()
+	for i := 0; i < n; i++ {
+		want := fmt.Sprintf(`{"id":%d}`, i)
+		if got[i] != want {
+			t.Errorf("sub[%d] body = %q, want %q", i, got[i], want)
+		}
+	}
+}
+
+// TestIntegration_SubscribeNoGoroutineLeak asserts that after Subscribe ->
+// ctx cancel -> drain the goroutine count returns to baseline. A leak
+// here would mean the listener goroutine missed the ctx-cancel teardown
+// path. Run with -race to also catch concurrent access on the channels.
+func TestIntegration_SubscribeNoGoroutineLeak(t *testing.T) {
+	requireBroker(t)
+	fs := startFakeServer(t, "tok-leak", "/queue/never-replied", []byte("{}"))
+	defer fs.Stop()
+
+	c := NewClient(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Close()
+
+	// Settle goroutine count after Connect.
+	time.Sleep(100 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	const iters = 8
+	for i := 0; i < iters; i++ {
+		dest := fmt.Sprintf("/topic/test.cimstomp.leak.%d.%d", time.Now().UnixNano(), i)
+		subCtx, subCancel := context.WithCancel(context.Background())
+		sub, err := c.Subscribe(subCtx, dest)
+		if err != nil {
+			t.Fatalf("Subscribe[%d]: %v", i, err)
+		}
+		subCancel()
+		// Drain so the listener goroutine returns.
+		for range sub.Messages() {
+		}
+	}
+
+	// Allow scheduler a moment to retire goroutines.
+	time.Sleep(200 * time.Millisecond)
+	end := runtime.NumGoroutine()
+	// Some slack for runtime housekeeping; a real leak would scale with
+	// iters and we run 8 iterations.
+	if end > base+2 {
+		t.Errorf("goroutine count grew from %d to %d after %d Subscribe/cancel cycles", base, end, iters)
+	}
+}
+
+// TestIntegration_SubscribeAfterCloseFailsCleanly ensures Subscribe on a
+// closed Client surfaces ErrNotConnected (not a panic).
+func TestIntegration_SubscribeAfterCloseFailsCleanly(t *testing.T) {
+	requireBroker(t)
+	fs := startFakeServer(t, "tok-after", "/queue/never-replied", []byte("{}"))
+	defer fs.Stop()
+
+	c := NewClient(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err := c.Subscribe(context.Background(), "/topic/test.x")
+	if !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("Subscribe after Close: got err = %v, want ErrNotConnected", err)
+	}
+}
+
+// helper to suppress "declared and not used" in early scaffolding.
+var _ = strings.HasPrefix
+var _ atomic.Bool
