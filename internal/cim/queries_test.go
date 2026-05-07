@@ -18,15 +18,34 @@ type queryCase struct {
 }
 
 func queryCases() []queryCase {
+	// Substrings asserted against each rendered template. Two invariants
+	// worth flagging:
+	//
+	//   1. The leading underscore on the input feederID "_FEEDER123" is
+	//      stripped before substitution into the SPARQL VALUES clause,
+	//      so the on-wire form is "FEEDER123". This matches the
+	//      gridappsd-docker:develop dataset shape, which stores
+	//      c:IdentifiedObject.mRID as a bare uppercase UUID without
+	//      the underscore prefix the Python upstream's call sites use.
+	//
+	//   2. The PowerElectronicsUnit relationship is OPTIONAL in three
+	//      of four templates (Solar, Battery, Inverter) so the query
+	//      returns one row per PowerElectronicsConnection regardless of
+	//      whether a child Unit exists. COALESCE binds prefer the
+	//      Unit's name/mRID when present; fall back to the PEC's when
+	//      absent. See the doc block at the top of queries.go.
 	return []queryCase{
 		{
 			name: "QuerySolar",
 			call: (*Client).QuerySolar,
 			wantSubstrings: []string{
 				"# Solar - DistSolar",
-				"?s r:type c:PhotovoltaicUnit",
-				`VALUES ?fdrid {"_FEEDER123"}`,
+				`VALUES ?fdrid {"FEEDER123"}`,
+				"OPTIONAL {",
 				"c:PowerElectronicsConnection.PowerElectronicsUnit",
+				"c:PhotovoltaicUnit",
+				"BIND(COALESCE(?unitName, ?pecName) AS ?name)",
+				"BIND(COALESCE(?unitID, ?pecid) AS ?id)",
 			},
 		},
 		{
@@ -34,21 +53,28 @@ func queryCases() []queryCase {
 			call: (*Client).QueryBattery,
 			wantSubstrings: []string{
 				"# Storage - DistStorage",
-				"?s r:type c:BatteryUnit",
-				`VALUES ?fdrid {"_FEEDER123"}`,
+				`VALUES ?fdrid {"FEEDER123"}`,
+				"OPTIONAL {",
+				"c:BatteryUnit",
 				"c:BatteryUnit.ratedE",
 				"c:BatteryUnit.storedE",
 				"c:BatteryUnit.batteryState",
+				"BIND(COALESCE(?unitName, ?pecName) AS ?name)",
+				"BIND(COALESCE(?unitID, ?pecid) AS ?id)",
 			},
 		},
 		{
 			name: "QueryInverter",
 			call: (*Client).QueryInverter,
 			wantSubstrings: []string{
-				`VALUES ?fdrid {"_FEEDER123"}`,
-				"c:PowerElectronicsConnection.PowerElectronicsUnit",
-				"c:PowerElectronicsConnection.ratedS",
+				`VALUES ?fdrid {"FEEDER123"}`,
+				"?pec a c:PowerElectronicsConnection.",
 				"?pec c:IdentifiedObject.mRID ?pecid",
+				"c:PowerElectronicsConnection.ratedS",
+				"OPTIONAL {",
+				"c:PowerElectronicsConnection.PowerElectronicsUnit",
+				"BIND(COALESCE(?unitName, ?pecName) AS ?name)",
+				"BIND(COALESCE(?unitID, ?pecid) AS ?id)",
 			},
 		},
 		{
@@ -56,7 +82,7 @@ func queryCases() []queryCase {
 			call: (*Client).QueryAllDERGroups,
 			wantSubstrings: []string{
 				"#get all EndDeviceGroup",
-				`VALUES ?fdrid {"_FEEDER123"}`,
+				`VALUES ?fdrid {"FEEDER123"}`,
 				"?q1 a c:EndDeviceGroup",
 				"c:EndDeviceGroup.EndDevice",
 				"c:DERFunction",
@@ -247,5 +273,159 @@ func TestSPARQLQueriesIncompleteResponse(t *testing.T) {
 				t.Errorf("err = %v, want ErrIncompleteResponse", err)
 			}
 		})
+	}
+}
+
+// TestSPARQLQueriesFeederIDUnderscoreStripping pins the on-wire
+// substitution shape for both forms of the feederID input. The
+// gridappsd-docker:develop dataset stores c:IdentifiedObject.mRID as a
+// bare uppercase UUID without an underscore prefix, while the Python
+// upstream call sites and our bridge wiring frequently pass an
+// underscore-prefixed UUID for legacy reasons. The wrapper accepts
+// either form and emits the stripped form into the SPARQL VALUES
+// clause, so the bridge's caller does not have to choose.
+func TestSPARQLQueriesFeederIDUnderscoreStripping(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		input    string
+		wantSubs []string
+	}{
+		{
+			name:     "underscore-prefixed-uuid-is-stripped",
+			input:    "_E407CBB6-8C8D-9BC9-589C-AB83FBF0826D",
+			wantSubs: []string{`VALUES ?fdrid {"E407CBB6-8C8D-9BC9-589C-AB83FBF0826D"}`},
+		},
+		{
+			name:     "bare-uuid-passes-through",
+			input:    "E407CBB6-8C8D-9BC9-589C-AB83FBF0826D",
+			wantSubs: []string{`VALUES ?fdrid {"E407CBB6-8C8D-9BC9-589C-AB83FBF0826D"}`},
+		},
+		{
+			name:     "no-double-strip-on-double-underscore",
+			input:    "__abc",
+			wantSubs: []string{`VALUES ?fdrid {"_abc"}`},
+		},
+	}
+
+	for _, c := range cases {
+		c := c
+		for _, tc := range queryCases() {
+			tc := tc
+			t.Run(tc.name+"/"+c.name, func(t *testing.T) {
+				t.Parallel()
+
+				mr := &mockRequester{resp: []byte(okEnvelope)}
+				cl := NewClient(mr)
+
+				if _, err := tc.call(cl, context.Background(), c.input); err != nil {
+					t.Fatalf("%s: %v", tc.name, err)
+				}
+
+				body := decodeBody(t, mr.gotBody)
+				qs, ok := body["queryString"].(string)
+				if !ok {
+					t.Fatalf(`body["queryString"] missing or not a string: %v`, body["queryString"])
+				}
+				for _, want := range c.wantSubs {
+					if !strings.Contains(qs, want) {
+						t.Errorf("queryString missing %q\nfull queryString:\n%s", want, qs)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestSPARQLQueriesSchemaVariantParse exercises the COALESCE-bind
+// shape against two recorded response shapes:
+//
+//  1. current-schema (gridappsd-docker:develop): each PEC row has
+//     ?id == ?pecid because no PowerElectronicsUnit child exists. The
+//     OPTIONAL block did not bind, so COALESCE fell back to the PEC
+//     fields.
+//
+//  2. older-schema (Python upstream's assumed shape): each PEC row has
+//     a unit-level ?id distinct from ?pecid because the OPTIONAL
+//     block bound a PhotovoltaicUnit/BatteryUnit child. COALESCE
+//     selected the Unit's identity.
+//
+// Both shapes parse to non-zero rows through the same wrapper. The
+// test does not assert business semantics on the bindings; it asserts
+// the wrapper layer does not reject either shape and surfaces the
+// expected row count and key field values.
+func TestSPARQLQueriesSchemaVariantParse(t *testing.T) {
+	t.Parallel()
+
+	const currentSchema = `{
+		"data":{
+			"head":{"vars":["name","bus","ratedS","ratedU","ipu","p","q","fdrid","id","pecid","phases"]},
+			"results":{"bindings":[
+				{"name":{"value":"dg_84"},"bus":{"value":"84"},"ratedS":{"value":"120000.0"},"id":{"value":"PECID-1"},"pecid":{"value":"PECID-1"}},
+				{"name":{"value":"dg_90"},"bus":{"value":"90"},"ratedS":{"value":"120000.0"},"id":{"value":"PECID-2"},"pecid":{"value":"PECID-2"}}
+			]}
+		},
+		"responseComplete":true,
+		"id":"req1"
+	}`
+
+	const olderSchema = `{
+		"data":{
+			"head":{"vars":["name","bus","ratedS","ratedU","ipu","p","q","fdrid","id","pecid","phases"]},
+			"results":{"bindings":[
+				{"name":{"value":"PV1"},"bus":{"value":"84"},"ratedS":{"value":"120000.0"},"id":{"value":"UNIT-1"},"pecid":{"value":"PECID-1"}},
+				{"name":{"value":"PV2"},"bus":{"value":"90"},"ratedS":{"value":"120000.0"},"id":{"value":"UNIT-2"},"pecid":{"value":"PECID-2"}}
+			]}
+		},
+		"responseComplete":true,
+		"id":"req2"
+	}`
+
+	shapes := []struct {
+		name        string
+		payload     string
+		wantIDEqPEC bool
+	}{
+		{"current-schema-PEC-as-leaf", currentSchema, true},
+		{"older-schema-PEC-plus-Unit", olderSchema, false},
+	}
+
+	for _, s := range shapes {
+		s := s
+		for _, tc := range queryCases() {
+			if tc.name == "QueryAllDERGroups" {
+				// AllDERGroups operates on EndDeviceGroup, not PEC; the
+				// schema variants in this test do not apply.
+				continue
+			}
+			tc := tc
+			t.Run(tc.name+"/"+s.name, func(t *testing.T) {
+				t.Parallel()
+
+				mr := &mockRequester{resp: []byte(s.payload)}
+				cl := NewClient(mr)
+
+				res, err := tc.call(cl, context.Background(), "_FEEDER123")
+				if err != nil {
+					t.Fatalf("%s: %v", tc.name, err)
+				}
+				if got := len(res.Results.Bindings); got != 2 {
+					t.Fatalf("len(Bindings) = %d, want 2", got)
+				}
+				row := res.Results.Bindings[0]
+				if row["id"].Value == "" {
+					t.Errorf("first row id is empty; want non-empty")
+				}
+				if row["pecid"].Value == "" {
+					t.Errorf("first row pecid is empty; want non-empty")
+				}
+				idEqPEC := row["id"].Value == row["pecid"].Value
+				if idEqPEC != s.wantIDEqPEC {
+					t.Errorf("id == pecid: got %v, want %v (id=%q pecid=%q)",
+						idEqPEC, s.wantIDEqPEC, row["id"].Value, row["pecid"].Value)
+				}
+			})
+		}
 	}
 }
