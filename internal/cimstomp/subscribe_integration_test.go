@@ -16,58 +16,32 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-stomp/stomp/v3"
 )
 
-// publishToTopic stands up a fresh Publisher, sends a single body to dest,
-// and disconnects. Matches the way the real bridge will emit input frames.
-func publishToTopic(t *testing.T, dest string, body []byte) {
-	t.Helper()
-	p := New(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := p.Connect(ctx); err != nil {
-		t.Fatalf("publishToTopic Connect: %v", err)
+// sendRaw publishes a raw body to dest from a fresh STOMP connection.
+// Callable from goroutines: errors are returned, not delivered through
+// (*testing.T).Fatalf, so go vet is satisfied. The body is sent
+// byte-exact (we do not use Publisher.Publish because that one builds a
+// structured JSON envelope; this round-trip test wants exact wire
+// content).
+func sendRaw(dest string, body []byte) error {
+	conn, err := stomp.Dial("tcp", testBrokerAddr,
+		stomp.ConnOpt.Login(testUser, testPassword),
+		stomp.ConnOpt.HeartBeat(5*time.Second, 5*time.Second),
+	)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
 	}
-	defer p.Close()
-	if err := p.Publish(&PointMessage{Topic: dest}); err != nil {
-		// PointMessage is a structured envelope; Publisher.Publish builds
-		// JSON and would not match what we want here. Use the underlying
-		// stomp.Conn directly via a separate Send path.
-		t.Fatalf("publishToTopic Publish: %v", err)
-	}
-	_ = body
-}
-
-// sendRaw publishes a raw body to dest. We do not use Publisher.Publish
-// because that one builds a structured JSON envelope; this round-trip
-// test wants byte-exact bodies on the wire.
-func sendRaw(t *testing.T, dest string, body []byte) {
-	t.Helper()
-	c := NewClient(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
-	// Stand up a fakeServer for the token responder so Connect can complete.
-	fs := startFakeServer(t, "tok-send", "/queue/never-replied", []byte("{}"))
-	defer fs.Stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("sendRaw Connect: %v", err)
-	}
-	defer c.Close()
-	c.mu.Lock()
-	conn := c.conn
-	c.mu.Unlock()
-	if conn == nil {
-		t.Fatal("sendRaw: conn nil after Connect")
-	}
+	defer conn.Disconnect()
 	if err := conn.Send(dest, "application/json", body); err != nil {
-		t.Fatalf("sendRaw Send to %s: %v", dest, err)
+		return fmt.Errorf("send to %s: %w", dest, err)
 	}
+	return nil
 }
 
 func TestIntegration_SubscribeReceivesFrames(t *testing.T) {
@@ -106,7 +80,10 @@ func TestIntegration_SubscribeReceivesFrames(t *testing.T) {
 	}
 	go func() {
 		for _, b := range bodies {
-			sendRaw(t, dest, []byte(b))
+			if err := sendRaw(dest, []byte(b)); err != nil {
+				t.Logf("sendRaw: %v", err)
+				return
+			}
 			time.Sleep(50 * time.Millisecond)
 		}
 	}()
@@ -206,8 +183,13 @@ func TestIntegration_SubscribeMultipleConcurrent(t *testing.T) {
 
 	// Publish to each topic.
 	for i, d := range dests {
+		i, d := i, d
 		body := fmt.Sprintf(`{"id":%d}`, i)
-		go sendRaw(t, d, []byte(body))
+		go func() {
+			if err := sendRaw(d, []byte(body)); err != nil {
+				t.Logf("sendRaw[%d]: %v", i, err)
+			}
+		}()
 	}
 
 	// Each subscription must receive its own frame.
@@ -302,7 +284,3 @@ func TestIntegration_SubscribeAfterCloseFailsCleanly(t *testing.T) {
 		t.Fatalf("Subscribe after Close: got err = %v, want ErrNotConnected", err)
 	}
 }
-
-// helper to suppress "declared and not used" in early scaffolding.
-var _ = strings.HasPrefix
-var _ atomic.Bool

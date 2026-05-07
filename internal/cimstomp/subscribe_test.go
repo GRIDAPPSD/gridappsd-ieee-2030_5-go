@@ -48,15 +48,65 @@ func TestSubscribe_NilConnReturnsErrNotConnected(t *testing.T) {
 	}
 }
 
+// fakeStompHeader implements the small stompHeader interface for tests
+// of selectHeaders without requiring a real *frame.Header.
+type fakeStompHeader struct {
+	values map[string]string
+}
+
+func (f *fakeStompHeader) Get(key string) string { return f.values[key] }
+
+func TestSelectHeaders_PicksOnlyKnownHeaders(t *testing.T) {
+	h := &fakeStompHeader{values: map[string]string{
+		"destination":          "/topic/x",
+		"content-type":         "application/json",
+		"reply-to":             "/temp-queue/r.1",
+		"correlation-id":       "abc",
+		"message-id":           "ID:0",
+		"subscription":         "1",
+		gossHasSubjectHeader:   "True",
+		gossSubjectHeader:      "tok",
+		"some-unrelated-thing": "drop me",
+	}}
+	got := selectHeaders(h)
+	if got["destination"] != "/topic/x" {
+		t.Errorf("destination = %q", got["destination"])
+	}
+	if got["content-type"] != "application/json" {
+		t.Errorf("content-type = %q", got["content-type"])
+	}
+	if got[gossHasSubjectHeader] != "True" {
+		t.Errorf("GOSS_HAS_SUBJECT = %q", got[gossHasSubjectHeader])
+	}
+	if got[gossSubjectHeader] != "tok" {
+		t.Errorf("GOSS_SUBJECT = %q", got[gossSubjectHeader])
+	}
+	if _, present := got["some-unrelated-thing"]; present {
+		t.Errorf("unrelated header was not filtered out")
+	}
+}
+
+func TestSelectHeaders_NilReturnsNil(t *testing.T) {
+	if got := selectHeaders(nil); got != nil {
+		t.Errorf("selectHeaders(nil) = %v, want nil", got)
+	}
+}
+
+func TestSelectHeaders_EmptyReturnsNil(t *testing.T) {
+	if got := selectHeaders(&fakeStompHeader{values: map[string]string{}}); got != nil {
+		t.Errorf("selectHeaders on empty header returned %v, want nil", got)
+	}
+}
+
 // TestNewSubscriptionForTest_HelperDeliversFramesAndErr exercises the
 // test-only Subscription constructor so other packages (cim/sim) can
 // build fake subscriptions in their own unit tests.
 func TestNewSubscriptionForTest_HelperDeliversFramesAndErr(t *testing.T) {
-	sub, msgsIn, errIn := NewSubscriptionForTest()
+	sub, msgsIn := NewSubscriptionForTest()
 
 	go func() {
 		msgsIn <- Message{Destination: "/topic/x", Body: []byte("one")}
-		errIn <- errors.New("end of stream")
+		sub.SetErrForTest(errors.New("end of stream"))
 		close(msgsIn)
 	}()
 

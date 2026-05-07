@@ -16,10 +16,10 @@ import (
 // onto an in-memory subscription. Errors set on the fake are surfaced via
 // the subscription's Err() once the channel closes.
 type fakeSubscribeClient struct {
-	mu          sync.Mutex
+	mu           sync.Mutex
 	subscribeErr error
-	dest        string
-	frames      [][]byte
+	dest         string
+	frames       [][]byte
 	// closeAfterFrames closes the subscription after sending all frames;
 	// otherwise the subscription stays open until ctx cancel.
 	closeAfterFrames bool
@@ -37,26 +37,28 @@ func (f *fakeSubscribeClient) Subscribe(ctx context.Context, destination string)
 	if subErr != nil {
 		return nil, subErr
 	}
-	sub, msgsIn, errIn := cimstomp.NewSubscriptionForTest()
+	sub, msgsIn := cimstomp.NewSubscriptionForTest()
 	go func() {
 		defer close(msgsIn)
+		// Mirror cimstomp.runSubscription's contract: setErr happens
+		// before the channel closes. SetErrForTest writes synchronously
+		// so the consumer sees the err the moment it observes close.
 		for _, body := range frames {
 			select {
 			case <-ctx.Done():
+				sub.SetErrForTest(ctx.Err())
 				return
 			case msgsIn <- cimstomp.Message{Destination: destination, Body: body}:
 			}
 		}
 		if closeAfter {
 			if endErr != nil {
-				select {
-				case errIn <- endErr:
-				default:
-				}
+				sub.SetErrForTest(endErr)
 			}
 			return
 		}
 		<-ctx.Done()
+		sub.SetErrForTest(ctx.Err())
 	}()
 	return sub, nil
 }
