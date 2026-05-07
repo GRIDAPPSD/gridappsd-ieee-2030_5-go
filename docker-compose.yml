@@ -3,13 +3,13 @@
 # =====================================================================
 # This compose file boots a bare ActiveMQ Classic broker for local
 # integration tests of the cimstomp package. It uses the upstream
-# default credentials (admin/admin) and exposes the STOMP listener
+# default credentials (system/manager) and exposes the STOMP listener
 # plus the web console on the host. That is fine for `make test-
 # integration` on a developer laptop and explicitly NOT fine anywhere
 # else.
 #
 # Both ports are bound to 127.0.0.1 only (Leon M3) so the dev broker
-# is not reachable from the LAN with the default admin/admin
+# is not reachable from the LAN with the default system/manager
 # credentials. A developer who needs cross-machine access for
 # multi-host testing should edit this file directly with awareness of
 # the exposure, not flip an env knob by accident.
@@ -28,7 +28,7 @@ services:
     image: apache/activemq-classic:6.1.6
     ports:
       - "127.0.0.1:${STOMP_PORT:-61613}:61613"     # STOMP (loopback only)
-      - "127.0.0.1:${CONSOLE_PORT:-8161}:8161"     # Web console (admin/admin), loopback only
+      - "127.0.0.1:${CONSOLE_PORT:-8161}:8161"     # Web console (system/manager), loopback only
     environment:
-      ACTIVEMQ_CONNECTION_USER: ${ACTIVEMQ_CONNECTION_USER:-admin}
-      ACTIVEMQ_CONNECTION_PASSWORD: ${ACTIVEMQ_CONNECTION_PASSWORD:-admin}
+      ACTIVEMQ_CONNECTION_USER: ${ACTIVEMQ_CONNECTION_USER:-system}
+      ACTIVEMQ_CONNECTION_PASSWORD: ${ACTIVEMQ_CONNECTION_PASSWORD:-manager}

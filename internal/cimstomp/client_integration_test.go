@@ -30,8 +30,8 @@ import (
 
 const (
 	testBrokerAddr = "127.0.0.1:61613"
-	testUser       = "admin"
-	testPassword   = "admin"
+	testUser       = "system"
+	testPassword   = "manager"
 )
 
 // requireBroker dials the broker as a smoke test; if it is not running, the
