@@ -200,10 +200,24 @@ func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, err
 // case construct a new Client.
 //
 // Reconnect is mutex-serialized with Connect, Close, and Request, so
-// it is safe to call concurrent with in-flight requests; in-flight
-// Request calls observe the connection swap as their go-stomp handles
-// fail (or they wait on c.mu for the swap to complete and then run
-// against the new conn).
+// it is safe to call concurrent with in-flight requests. The behavior
+// for in-flight callers is asymmetric:
+//
+//   - Request callers wait on c.mu for the swap and then run against
+//     the new conn (their go-stomp handle is replaced before their
+//     critical section runs).
+//   - Subscribe consumers do NOT see the swap. The underlying
+//     *stomp.Conn is torn down; the listener goroutine sees its
+//     stomp.Subscription channel close and exits with a wrapped
+//     ErrConnectionLost (Subscription.Err returns it). Callers must
+//     call Subscribe again on the new connection to keep receiving
+//     frames. Pump-level orchestration of resubscribe-on-Reconnect is
+//     the caller's responsibility (deferred to a future ticket).
+//
+// Transport-level failures during the dial or token bootstrap are
+// wrapped so callers can errors.Is(err, ErrConnectionLost) and drive
+// retry policy. ErrClosed remains its own sentinel for the
+// Closed-Client case.
 //
 // SECURITY INVARIANT (per GAGO-012 spec): the cached auth token is
 // discarded before reconnect; the new connection re-fetches via the
@@ -245,7 +259,18 @@ func (c *Client) Reconnect(ctx context.Context) error {
 
 	conn, token, err := c.dialAndBootstrap(ctx)
 	if err != nil {
-		return err
+		// Reconnect failures during dial / TLS handshake / STOMP frame
+		// layer / token bootstrap are by definition transport-level: we
+		// could not establish a session with the broker. Label them as
+		// ErrConnectionLost so retry-loop callers can
+		// errors.Is(err, ErrConnectionLost) and drive reconnect policy
+		// (Dutch H2). Context errors are passed through unlabelled so
+		// callers can distinguish "we cancelled" from "broker
+		// unreachable"; ErrClosed is its own sentinel handled above.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrRequestTimeout) {
+			return err
+		}
+		return fmt.Errorf("cimstomp.Client: reconnect: %w", errors.Join(ErrConnectionLost, err))
 	}
 
 	// Authoritative TOCTOU re-check under the mutex. Close can run
@@ -255,6 +280,31 @@ func (c *Client) Reconnect(ctx context.Context) error {
 		c.mu.Unlock()
 		logDisconnectErr(conn.Disconnect(), "Reconnect.afterClose")
 		return ErrClosed
+	}
+	// Plug the concurrent-Reconnect session leak (Dutch C1 / Leon H1).
+	// Two goroutines that both entered Reconnect each released c.mu with
+	// c.conn == nil before dialing. If a sibling Reconnect installed a
+	// fresh conn while we were dialing, we must Disconnect that conn
+	// before overwriting it; otherwise its broker-side session leaks.
+	// Token assignment does not need this dance because Go strings are
+	// values with no resource to release.
+	//
+	// We loop because Disconnect releases c.mu (Disconnect itself can
+	// block on a RECEIPT round-trip with the broker), and during that
+	// window yet another sibling Reconnect can install a fresh conn.
+	// Each iteration shrinks the in-flight set by one; the loop
+	// terminates when we observe c.conn == nil under the lock.
+	for c.conn != nil {
+		existing := c.conn
+		c.conn = nil
+		c.mu.Unlock()
+		logDisconnectErr(existing.Disconnect(), "Reconnect.superseded")
+		c.mu.Lock()
+		if c.closed.Load() {
+			c.mu.Unlock()
+			logDisconnectErr(conn.Disconnect(), "Reconnect.afterClose")
+			return ErrClosed
+		}
 	}
 	c.conn = conn
 	c.token = token

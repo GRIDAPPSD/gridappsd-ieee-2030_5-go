@@ -136,15 +136,20 @@ func runSubscription(ctx context.Context, stompSub *stomp.Subscription, out *Sub
 
 		case msg, ok := <-stompSub.C:
 			if !ok {
-				out.setErr(fmt.Errorf("cimstomp: subscription channel closed by broker"))
+				// Broker closed the subscription channel. Surface as a
+				// transport-level loss so callers can
+				// errors.Is(err, ErrConnectionLost) on Subscription.Err
+				// and drive a Reconnect/resubscribe (Dutch H1, mirrors
+				// the wrap pattern used by Request).
+				out.setErr(wrapTransportErr("cimstomp: subscription channel closed by broker", stomp.ErrClosedUnexpectedly))
 				return
 			}
 			if msg == nil {
-				out.setErr(fmt.Errorf("cimstomp: nil message from broker"))
+				out.setErr(wrapTransportErr("cimstomp: nil message from broker", stomp.ErrClosedUnexpectedly))
 				return
 			}
 			if msg.Err != nil {
-				out.setErr(fmt.Errorf("cimstomp: subscription error: %w", msg.Err))
+				out.setErr(wrapTransportErr("cimstomp: subscription error", msg.Err))
 				return
 			}
 

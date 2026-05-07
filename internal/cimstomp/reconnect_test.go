@@ -1,10 +1,13 @@
 package cimstomp
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -309,5 +312,324 @@ func TestDrainAndUnsubscribe_EmptyChannel(t *testing.T) {
 	ch := make(chan *stomp.Message, 4)
 	if got := drainStompChan(ch); got != 0 {
 		t.Fatalf("drainStompChan empty channel = %d, want 0", got)
+	}
+}
+
+// countingFakeBroker is an in-process STOMP fake. It speaks just enough
+// of STOMP to support Client.Connect and Client.Reconnect: CONNECT,
+// SUBSCRIBE (token bootstrap reply queue), SEND (token-topic auth), and
+// DISCONNECT. It counts CONNECT frames received and DISCONNECT frames
+// received so a test can assert that every CONNECT issued by the Client
+// is matched by a DISCONNECT before the broker session leaks.
+//
+// The fake does NOT speak Request/Reply on real queues. Tests that need
+// Request/Reply use the live-broker fakeServer in
+// client_integration_test.go. This fake exists for the session-leak
+// regression test (Dutch C1 / Leon H1) which only exercises the
+// connect-bootstrap-disconnect lifecycle.
+type countingFakeBroker struct {
+	ln      net.Listener
+	addr    string
+	stop    chan struct{}
+	wg      sync.WaitGroup
+	closeMu sync.Mutex
+	closed  bool
+
+	connectCount    atomic.Int64
+	disconnectCount atomic.Int64
+
+	tokenSeq atomic.Int64
+}
+
+func startCountingFakeBroker(t *testing.T) *countingFakeBroker {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	b := &countingFakeBroker{
+		ln:   ln,
+		addr: ln.Addr().String(),
+		stop: make(chan struct{}),
+	}
+	b.wg.Add(1)
+	go b.serve()
+	return b
+}
+
+func (b *countingFakeBroker) Addr() string           { return b.addr }
+func (b *countingFakeBroker) ConnectCount() int64    { return b.connectCount.Load() }
+func (b *countingFakeBroker) DisconnectCount() int64 { return b.disconnectCount.Load() }
+
+func (b *countingFakeBroker) Stop() {
+	b.closeMu.Lock()
+	if b.closed {
+		b.closeMu.Unlock()
+		return
+	}
+	b.closed = true
+	close(b.stop)
+	_ = b.ln.Close()
+	b.closeMu.Unlock()
+	b.wg.Wait()
+}
+
+func (b *countingFakeBroker) serve() {
+	defer b.wg.Done()
+	for {
+		conn, err := b.ln.Accept()
+		if err != nil {
+			select {
+			case <-b.stop:
+			default:
+			}
+			return
+		}
+		b.wg.Add(1)
+		go b.handleConn(conn)
+	}
+}
+
+func (b *countingFakeBroker) handleConn(conn net.Conn) {
+	defer b.wg.Done()
+	defer conn.Close()
+
+	br := bufio.NewReader(conn)
+
+	// Read CONNECT (or STOMP) frame.
+	if !b.expectFrame(br, "CONNECT", "STOMP") {
+		return
+	}
+	b.connectCount.Add(1)
+
+	// Send CONNECTED with heartbeat 0,0 to keep the test simple.
+	if _, err := io.WriteString(conn, "CONNECTED\nversion:1.2\nheart-beat:0,0\nserver:counting-fake\n\n\x00"); err != nil {
+		return
+	}
+
+	// Drive the frame loop. We need to handle:
+	//   - SUBSCRIBE on the token reply queue (record id keyed by destination)
+	//   - SEND to /topic/pnnl.goss.token.topic (reply with a fresh token,
+	//     dispatched to whichever subscription id matches the reply-to)
+	//   - DISCONNECT (count it and exit)
+	//   - Anything else: read and ignore so the client does not stall.
+	subIDByDest := map[string]string{}
+	for {
+		cmd, headers, _, ok := b.readFrame(br)
+		if !ok {
+			return
+		}
+		switch cmd {
+		case "SUBSCRIBE":
+			dest := headers["destination"]
+			id := headers["id"]
+			if dest != "" && id != "" {
+				subIDByDest[dest] = id
+			}
+		case "SEND":
+			dest := headers["destination"]
+			replyTo := headers["reply-to"]
+			if dest == "/topic/pnnl.goss.token.topic" && replyTo != "" {
+				token := fmt.Sprintf("counted-tok-%d", b.tokenSeq.Add(1))
+				replyDest := replyTo
+				if !strings.HasPrefix(replyDest, "/queue/") &&
+					!strings.HasPrefix(replyDest, "/topic/") &&
+					!strings.HasPrefix(replyDest, "/temp-queue/") {
+					replyDest = "/queue/" + replyDest
+				}
+				// go-stomp's MESSAGE-frame dispatch keys on the
+				// `subscription:<id>` header (conn.go:391). Without it,
+				// the frame is logged and dropped. Look up the id by
+				// destination; if the client subscribed via the bare
+				// reply-to (Client.Subscribe normalizes to /queue/...)
+				// either form is acceptable.
+				subID := subIDByDest[replyDest]
+				if subID == "" {
+					subID = subIDByDest[replyTo]
+				}
+				if subID == "" {
+					return
+				}
+				msgID := fmt.Sprintf("%d", b.tokenSeq.Load())
+				frame := fmt.Sprintf(
+					"MESSAGE\ndestination:%s\nsubscription:%s\nmessage-id:%s\ncontent-type:text/plain\ncontent-length:%d\n\n%s\x00",
+					replyDest, subID, msgID, len(token), token,
+				)
+				if _, err := io.WriteString(conn, frame); err != nil {
+					return
+				}
+			}
+		case "UNSUBSCRIBE":
+			// go-stomp's Unsubscribe blocks waiting for a RECEIPT
+			// (subscription.go: ~30s default). Reply promptly so the
+			// token bootstrap's defer returns and the next Reconnect
+			// can proceed.
+			if receipt := headers["receipt"]; receipt != "" {
+				resp := fmt.Sprintf("RECEIPT\nreceipt-id:%s\n\n\x00", receipt)
+				_, _ = io.WriteString(conn, resp)
+			}
+		case "DISCONNECT":
+			b.disconnectCount.Add(1)
+			receipt := headers["receipt"]
+			if receipt != "" {
+				resp := fmt.Sprintf("RECEIPT\nreceipt-id:%s\n\n\x00", receipt)
+				_, _ = io.WriteString(conn, resp)
+			}
+			return
+		default:
+			// Unknown command: ignore but keep reading.
+		}
+	}
+}
+
+func (b *countingFakeBroker) expectFrame(br *bufio.Reader, want ...string) bool {
+	cmd, _, _, ok := b.readFrame(br)
+	if !ok {
+		return false
+	}
+	for _, w := range want {
+		if cmd == w {
+			return true
+		}
+	}
+	return false
+}
+
+// readFrame reads one STOMP frame: command line, headers, body up to NUL.
+func (b *countingFakeBroker) readFrame(br *bufio.Reader) (cmd string, headers map[string]string, body []byte, ok bool) {
+	headers = map[string]string{}
+
+	// Skip any leading EOL/heartbeat bytes between frames.
+	for {
+		bb, err := br.Peek(1)
+		if err != nil {
+			return "", nil, nil, false
+		}
+		if bb[0] == '\n' || bb[0] == '\r' {
+			_, _ = br.ReadByte()
+			continue
+		}
+		break
+	}
+
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return "", nil, nil, false
+	}
+	cmd = strings.TrimRight(line, "\r\n")
+
+	for {
+		h, err := br.ReadString('\n')
+		if err != nil {
+			return "", nil, nil, false
+		}
+		if h == "\n" || h == "\r\n" {
+			break
+		}
+		h = strings.TrimRight(h, "\r\n")
+		idx := strings.Index(h, ":")
+		if idx < 0 {
+			continue
+		}
+		headers[h[:idx]] = h[idx+1:]
+	}
+
+	bodyBuf, err := br.ReadBytes('\x00')
+	if err != nil {
+		return "", nil, nil, false
+	}
+	if len(bodyBuf) > 0 {
+		body = bodyBuf[:len(bodyBuf)-1]
+	}
+	return cmd, headers, body, true
+}
+
+// TestReconnect_ConcurrentNoSessionLeak is the regression test for the
+// session-leak race fixed in client.go (Dutch C1 / Leon H1). Two or more
+// concurrent Reconnect calls each dial a fresh broker session. Without
+// the fix, the goroutines race on the c.conn slot: each captures the
+// other's just-installed conn as nil and never sends a DISCONNECT for
+// it. The broker session leaks one per losing race.
+//
+// Assertion: across an entire Connect plus N concurrent Reconnect plus
+// Close cycle, the count of CONNECT frames received by the broker must
+// equal the count of DISCONNECT frames received. The fix makes this
+// invariant hold even under contention; without the fix one or more
+// CONNECTs lose their matching DISCONNECT and the count diverges.
+func TestReconnect_ConcurrentNoSessionLeak(t *testing.T) {
+	const goroutines = 5
+
+	// Run the scenario several times so the scheduler explores
+	// interleavings under -race.
+	const iterations = 8
+
+	for iter := 0; iter < iterations; iter++ {
+		broker := startCountingFakeBroker(t)
+		c := NewClient(STOMPConfig{Address: broker.Addr(), User: "u", Password: "p"})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := c.Connect(ctx); err != nil {
+			cancel()
+			broker.Stop()
+			t.Fatalf("iteration %d: Connect: %v", iter, err)
+		}
+
+		var wg sync.WaitGroup
+		errs := make(chan error, goroutines)
+		for i := 0; i < goroutines; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := c.Reconnect(ctx); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			cancel()
+			_ = c.Close()
+			broker.Stop()
+			t.Fatalf("iteration %d: concurrent Reconnect: %v", iter, err)
+		}
+
+		if err := c.Close(); err != nil {
+			cancel()
+			broker.Stop()
+			t.Fatalf("iteration %d: Close: %v", iter, err)
+		}
+		cancel()
+
+		// Drain any in-flight DISCONNECTs by giving the broker a brief
+		// window to observe them; the listener goroutines run on accept
+		// and process the DISCONNECT frame before the connection
+		// closes, but the per-conn goroutine only increments the
+		// counter after read returns.
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if broker.DisconnectCount() == broker.ConnectCount() {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+
+		gotConnects := broker.ConnectCount()
+		gotDisconnects := broker.DisconnectCount()
+		broker.Stop()
+
+		// Invariant: every CONNECT must be matched by a DISCONNECT. A
+		// session leak shows up as gotConnects > gotDisconnects.
+		if gotConnects != gotDisconnects {
+			t.Fatalf("iteration %d: session leak: CONNECT=%d, DISCONNECT=%d (want equal)", iter, gotConnects, gotDisconnects)
+		}
+		// Sanity: at minimum the initial Connect plus every successful
+		// Reconnect issued one CONNECT, so the total must be at least
+		// 1 + 1 (the final live conn that Close tore down). Some
+		// concurrent Reconnects supersede each other but each still
+		// dialed; expect goroutines+1 in total at most.
+		if gotConnects < 2 {
+			t.Fatalf("iteration %d: expected at least 2 CONNECTs (Connect + at least one Reconnect succeeded), got %d", iter, gotConnects)
+		}
 	}
 }
