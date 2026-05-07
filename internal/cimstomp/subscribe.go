@@ -61,38 +61,6 @@ func (s *Subscription) setErr(err error) {
 	}
 }
 
-// NewSubscriptionForTest is a test-only constructor that returns a live
-// *Subscription and the caller-driven inbox channel. Other packages in
-// this repo (notably internal/cim/sim) use it to build fake
-// subscriptions without dialing a broker.
-//
-// The returned msgs channel is what the Subscription.Messages caller
-// will read. The test goroutine should send frames on msgs, optionally
-// call (*Subscription).SetErrForTest to record an end-cause, then close
-// msgs to end the subscription.
-//
-// Ordering contract: SetErrForTest writes synchronously to the
-// Subscription's Err state. A test that calls SetErrForTest BEFORE
-// closing msgs guarantees the consumer sees the err the moment it
-// observes the channel close. Tests that close msgs without calling
-// SetErrForTest leave Err() returning nil.
-//
-// Despite the name, this is not behind a build tag: it is exported for
-// use by other packages' _test.go files, which means it must be in the
-// regular build. The cost is one extra exported symbol pair; the
-// alternative (duplicating the channel plumbing in every test) was
-// worse.
-func NewSubscriptionForTest() (*Subscription, chan<- Message) {
-	msgs := make(chan Message, 8)
-	s := &Subscription{msgs: msgs}
-	return s, msgs
-}
-
-// SetErrForTest is the test-only side of the NewSubscriptionForTest
-// pair. Tests use it to record the cause that Subscription.Err will
-// return after the messages channel is closed.
-func (s *Subscription) SetErrForTest(err error) { s.setErr(err) }
-
 // Subscribe begins a STOMP subscription on destination and returns a
 // Subscription whose Messages channel receives frames until ctx is
 // canceled, the broker tears down the subscription, or the Client is
@@ -204,6 +172,14 @@ func runSubscription(ctx context.Context, stompSub *stomp.Subscription, out *Sub
 // the public Message type small. If a future ticket needs an additional
 // header, add it here; growing the surface intentionally is preferable
 // to exposing the full *frame.Header.
+//
+// gossSubjectHeader (GOSS_SUBJECT) carries the auth token on outbound
+// Request SENDs and is intentionally NOT in this allowlist. A healthy
+// broker does not echo it on inbound subscription frames, but if any
+// path ever does (broker bug, misconfigured route, test fixture) we
+// must not surface the token to subscription handlers, since handlers
+// frequently log their messages. gossHasSubjectHeader (the boolean
+// signal) stays; it is not a secret.
 var headersOfInterest = []string{
 	"destination",
 	"content-type",
@@ -212,7 +188,6 @@ var headersOfInterest = []string{
 	"message-id",
 	"subscription",
 	gossHasSubjectHeader,
-	gossSubjectHeader,
 }
 
 // stompHeader is the subset of *frame.Header methods used by

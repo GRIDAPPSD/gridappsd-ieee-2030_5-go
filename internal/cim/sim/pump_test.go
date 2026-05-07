@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cimstomp"
+	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cimstomp/cimstomptest"
 )
 
 // fakeSubscribeClient implements SubscribeClient for tests. It records the
@@ -37,28 +38,29 @@ func (f *fakeSubscribeClient) Subscribe(ctx context.Context, destination string)
 	if subErr != nil {
 		return nil, subErr
 	}
-	sub, msgsIn := cimstomp.NewSubscriptionForTest()
+	sub, msgsIn := cimstomptest.NewSubscription()
 	go func() {
 		defer close(msgsIn)
 		// Mirror cimstomp.runSubscription's contract: setErr happens
-		// before the channel closes. SetErrForTest writes synchronously
-		// so the consumer sees the err the moment it observes close.
+		// before the channel closes. cimstomptest.SetErr writes
+		// synchronously so the consumer sees the err the moment it
+		// observes close.
 		for _, body := range frames {
 			select {
 			case <-ctx.Done():
-				sub.SetErrForTest(ctx.Err())
+				cimstomptest.SetErr(sub, ctx.Err())
 				return
 			case msgsIn <- cimstomp.Message{Destination: destination, Body: body}:
 			}
 		}
 		if closeAfter {
 			if endErr != nil {
-				sub.SetErrForTest(endErr)
+				cimstomptest.SetErr(sub, endErr)
 			}
 			return
 		}
 		<-ctx.Done()
-		sub.SetErrForTest(ctx.Err())
+		cimstomptest.SetErr(sub, ctx.Err())
 	}()
 	return sub, nil
 }

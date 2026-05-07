@@ -78,8 +78,11 @@ func TestSelectHeaders_PicksOnlyKnownHeaders(t *testing.T) {
 	if got[gossHasSubjectHeader] != "True" {
 		t.Errorf("GOSS_HAS_SUBJECT = %q", got[gossHasSubjectHeader])
 	}
-	if got[gossSubjectHeader] != "tok" {
-		t.Errorf("GOSS_SUBJECT = %q", got[gossSubjectHeader])
+	// GOSS_SUBJECT carries the auth token on outbound SENDs and must
+	// NEVER be surfaced on inbound frames, even when the broker echoes
+	// it back. This guards against handler code logging the token.
+	if v, present := got[gossSubjectHeader]; present {
+		t.Errorf("GOSS_SUBJECT was not filtered out of inbound headers: got %q", v)
 	}
 	if _, present := got["some-unrelated-thing"]; present {
 		t.Errorf("unrelated header was not filtered out")
@@ -98,15 +101,15 @@ func TestSelectHeaders_EmptyReturnsNil(t *testing.T) {
 	}
 }
 
-// TestNewSubscriptionForTest_HelperDeliversFramesAndErr exercises the
-// test-only Subscription constructor so other packages (cim/sim) can
-// build fake subscriptions in their own unit tests.
-func TestNewSubscriptionForTest_HelperDeliversFramesAndErr(t *testing.T) {
-	sub, msgsIn := NewSubscriptionForTest()
+// TestNewTestSubscription_HelperDeliversFramesAndErr exercises the
+// test-only Subscription seam so other packages (cim/sim) can build
+// fake subscriptions in their own unit tests via cimstomptest.
+func TestNewTestSubscription_HelperDeliversFramesAndErr(t *testing.T) {
+	sub, msgsIn := NewTestSubscription()
 
 	go func() {
 		msgsIn <- Message{Destination: "/topic/x", Body: []byte("one")}
-		sub.SetErrForTest(errors.New("end of stream"))
+		SetTestErr(sub, errors.New("end of stream"))
 		close(msgsIn)
 	}()
 
