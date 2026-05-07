@@ -46,7 +46,7 @@ const heartbeat = 10 * time.Second
 // At Connect, Client dials STOMP and bootstraps a GridAPPS-D auth token by
 // sending a base64-encoded `user:password` to /topic/pnnl.goss.token.topic
 // and reading the broker's single-frame reply. The token is cached for the
-// lifetime of the Client.
+// lifetime of the connection (not the Client); each Reconnect refetches.
 //
 // Request sends a body to the given destination with two mandatory
 // GridAPPS-D headers attached: `GOSS_HAS_SUBJECT: True` and
@@ -57,15 +57,29 @@ const heartbeat = 10 * time.Second
 // `correlation-id` header is set.
 //
 // Concurrency: Client is safe for use from multiple goroutines, but
-// Request serializes via an internal mutex so that v0 issues a single
-// in-flight request at a time. This is sufficient for the bridge's
-// startup CIM queries and periodic refresh; lifting the lock is a
-// future change once a real second-consumer exists.
+// Request, Connect, Reconnect, and Close all serialize via an internal
+// mutex so that v0 issues a single in-flight Request at a time and the
+// connect/disconnect lifecycle is observed atomically by all callers.
 //
-// Lifecycle: NewClient allocates; Connect opens the TCP/STOMP session and
-// fetches the token; Close disconnects. Close is idempotent. There is no
-// auto-reconnect in v0; callers needing reconnect must call Close then
-// NewClient + Connect again. See GAGO-012.
+// Lifecycle invariants:
+//
+//	New -> Connect -> { Request | Subscribe | Reconnect }* -> Close (terminal).
+//
+// After Close, neither Connect nor Reconnect succeed; both return
+// ErrClosed. A Client whose Close has been called is single-shot: to
+// reuse a lifecycle, construct a new Client via NewClient.
+//
+// TOCTOU contract: a Close that races a mid-dial Connect or Reconnect
+// causes the just-dialed conn to be closed cleanly and the racing call
+// to return ErrClosed. The Client never settles into "closed=true with
+// a live conn" or "closed=true with a non-empty token". This is enforced
+// by re-checking c.closed under c.mu after the dial completes.
+//
+// Connection-loss detection: v0 is active. Request and Publish wrap
+// transport-level errors (go-stomp ErrAlreadyClosed,
+// ErrClosedUnexpectedly, io.EOF, net.ErrClosed) as ErrConnectionLost so
+// callers can errors.Is and call Reconnect. Passive heartbeat-driven
+// reconnection is a future enhancement; see GAGO-012 follow-ups.
 type Client struct {
 	cfg STOMPConfig
 
@@ -89,7 +103,14 @@ func NewClient(cfg STOMPConfig) *Client {
 //
 // Connect should be called at most once per Client; calling it twice on
 // a Client that has not been Closed is a programmer error and is not
-// guarded against here. v0 has no auto-reconnect; see GAGO-012.
+// guarded against here. To reconnect after a transport failure, use
+// Reconnect (GAGO-012).
+//
+// TOCTOU: Connect's outer closed.Load() is a fast-path early return.
+// The authoritative check happens under c.mu after the dial completes:
+// if Close ran while we were dialing, the just-dialed conn is closed
+// and ErrClosed is returned. The Client never settles into "closed=true
+// with a live conn" (Leon GAGO-013 review M-1).
 func (c *Client) Connect(ctx context.Context) error {
 	if c.closed.Load() {
 		return ErrClosed
@@ -98,6 +119,39 @@ func (c *Client) Connect(ctx context.Context) error {
 		return err
 	}
 
+	conn, token, err := c.dialAndBootstrap(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Authoritative TOCTOU re-check under the mutex. If Close ran while
+	// we were dialing, abandon the new conn and return ErrClosed. The
+	// closed flag is the terminal state; once set, no future Connect or
+	// Reconnect may install a live conn or token.
+	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		logDisconnectErr(conn.Disconnect(), "Connect.afterClose")
+		return ErrClosed
+	}
+	c.conn = conn
+	c.token = token
+	c.connected.Store(true)
+	c.mu.Unlock()
+
+	return nil
+}
+
+// dialAndBootstrap performs the work that runs without c.mu held:
+// dial the transport, run the STOMP handshake, and fetch the auth
+// token. Caller installs the result under c.mu after a final closed
+// re-check. Errors are wrapped at the helper boundary; callers should
+// return them as-is.
+//
+// On any failure, all partial state (TCP socket, STOMP conn) is torn
+// down before return, so the caller does not need to clean up on the
+// error path.
+func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, error) {
 	// go-stomp v3.1.5's DialWithContext calls net.Dial (not net.DialContext),
 	// so a ctx deadline is ignored at the TCP layer. Dial ourselves with
 	// net.DialContext to honor ctx, then hand the live conn to
@@ -106,7 +160,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	// before handing it to stomp.ConnectWithContext (GAGO-014).
 	tcp, err := dialSTOMPTransport(ctx, c.cfg)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 
 	conn, err := stomp.ConnectWithContext(ctx, tcp,
@@ -121,7 +175,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		if cerr := tcp.Close(); cerr != nil {
 			log.Printf("cimstomp: tcp close after failed STOMP connect: %v", cerr)
 		}
-		return fmt.Errorf("cimstomp.Client: stomp connect %s: %w", c.cfg.Address, err)
+		return nil, "", fmt.Errorf("cimstomp.Client: stomp connect %s: %w", c.cfg.Address, err)
 	}
 
 	token, err := fetchAuthToken(ctx, conn, c.cfg.User, c.cfg.Password)
@@ -129,14 +183,83 @@ func (c *Client) Connect(ctx context.Context) error {
 		// STOMP connection is up but token bootstrap failed; tear it down
 		// and log any Disconnect error rather than swallowing it (Leon H2).
 		logDisconnectErr(conn.Disconnect(), "Connect.fetchAuthToken")
-		return fmt.Errorf("cimstomp.Client: fetch auth token: %w", err)
+		return nil, "", fmt.Errorf("cimstomp.Client: fetch auth token: %w", err)
 	}
 
+	return conn, token, nil
+}
+
+// Reconnect tears down the current STOMP connection (if any) and
+// re-establishes it, including a fresh auth-token bootstrap. Use after
+// a transport-level failure (broker drop, heartbeat timeout) detected
+// by Request, Subscribe, or Publisher.Publish returning a wrapped
+// connection error (errors.Is(err, ErrConnectionLost)).
+//
+// Reconnect blocks until the new connection is established or ctx is
+// canceled. Returns ErrClosed if the Client has been Closed; in that
+// case construct a new Client.
+//
+// Reconnect is mutex-serialized with Connect, Close, and Request, so
+// it is safe to call concurrent with in-flight requests; in-flight
+// Request calls observe the connection swap as their go-stomp handles
+// fail (or they wait on c.mu for the swap to complete and then run
+// against the new conn).
+//
+// SECURITY INVARIANT (per GAGO-012 spec): the cached auth token is
+// discarded before reconnect; the new connection re-fetches via the
+// /topic/pnnl.goss.token.topic dance. Token reuse across reconnects
+// is forbidden.
+//
+// TOCTOU: identical contract to Connect. closed is re-checked under
+// c.mu after the dial; a Close racing with Reconnect causes the new
+// conn to be torn down and ErrClosed returned.
+func (c *Client) Reconnect(ctx context.Context) error {
+	if c.closed.Load() {
+		return ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return mapCtxErr(err)
+	}
+
+	// Tear down the existing connection under the mutex first, so that
+	// concurrent Request callers see ErrNotConnected during the dial
+	// rather than a closed go-stomp handle. Holding c.mu across the
+	// dial would also work, but the lock-free window during the dial
+	// keeps Request fast-fail-able under broker-drop conditions.
 	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		return ErrClosed
+	}
+	old := c.conn
+	c.conn = nil
+	c.token = ""
+	c.connected.Store(false)
+	c.mu.Unlock()
+
+	if old != nil {
+		// Disconnect the prior conn before dialing the new one. Errors
+		// here are surface-only; the connection is being abandoned.
+		logDisconnectErr(old.Disconnect(), "Reconnect.oldConn")
+	}
+
+	conn, token, err := c.dialAndBootstrap(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Authoritative TOCTOU re-check under the mutex. Close can run
+	// during the dial; if it has, abandon the new conn.
+	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		logDisconnectErr(conn.Disconnect(), "Reconnect.afterClose")
+		return ErrClosed
+	}
 	c.conn = conn
 	c.token = token
-	c.mu.Unlock()
 	c.connected.Store(true)
+	c.mu.Unlock()
 
 	return nil
 }
@@ -225,7 +348,7 @@ func (c *Client) Request(ctx context.Context, destination string, body []byte) (
 
 	sub, err := c.conn.Subscribe(replyTo, stomp.AckAuto)
 	if err != nil {
-		return nil, fmt.Errorf("cimstomp.Client: subscribe %s: %w", replyTo, err)
+		return nil, wrapTransportErr(fmt.Sprintf("cimstomp.Client: subscribe %s", replyTo), err)
 	}
 	// Always tear down the subscription before returning. The broker will
 	// drop the corresponding /temp-queue/... destination once unsubscribed.
@@ -249,7 +372,7 @@ func (c *Client) Request(ctx context.Context, destination string, body []byte) (
 		stomp.SendOpt.Header(correlationIDHeader, corrID),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("cimstomp.Client: send to %s: %w", dest, err)
+		return nil, wrapTransportErr(fmt.Sprintf("cimstomp.Client: send to %s", dest), err)
 	}
 
 	// Wait for either the response frame or context cancellation. The
@@ -261,10 +384,13 @@ func (c *Client) Request(ctx context.Context, destination string, body []byte) (
 
 	case msg, ok := <-sub.C:
 		if !ok || msg == nil {
-			return nil, fmt.Errorf("cimstomp.Client: subscription closed before response")
+			// Channel closed without a frame: the broker tore down our
+			// subscription, which we report as a connection loss so the
+			// caller can errors.Is(err, ErrConnectionLost) and Reconnect.
+			return nil, wrapTransportErr("cimstomp.Client: subscription closed before response", stomp.ErrClosedUnexpectedly)
 		}
 		if msg.Err != nil {
-			return nil, fmt.Errorf("cimstomp.Client: response error: %w", msg.Err)
+			return nil, wrapTransportErr("cimstomp.Client: response error", msg.Err)
 		}
 		// Copy the body; the underlying frame may be reused.
 		out := make([]byte, len(msg.Body))
@@ -291,7 +417,17 @@ func fetchAuthToken(ctx context.Context, conn *stomp.Conn, user, password string
 	if err != nil {
 		return "", fmt.Errorf("subscribe %s: %w", replyTo, err)
 	}
+	// On exit, drain any pending frames before Unsubscribe. The token
+	// bootstrap uses a regular /queue/ destination (not /temp-queue/)
+	// to match the Python upstream's bootstrap convention. The
+	// Unsubscribe drops the consumer but ActiveMQ keeps the empty
+	// queue. Long-running reconnect cycles accumulate empty
+	// temp.token_resp.<user>.* queues on the broker; draining is good
+	// hygiene but does not delete the queue. Operational mitigation
+	// (broker-side TTL on temp.token_resp.* pattern) lives in
+	// CLAUDE.md (GAGO-012).
 	defer func() {
+		drainStompChan(sub.C)
 		_ = sub.Unsubscribe()
 	}()
 
@@ -316,9 +452,41 @@ func fetchAuthToken(ctx context.Context, conn *stomp.Conn, user, password string
 		}
 		token := strings.TrimSpace(string(msg.Body))
 		if token == "" {
+			// Document this case: an all-whitespace or zero-length
+			// token from the broker is not a wire-protocol error but
+			// makes the auth header useless on every later Request.
+			// Surface as a Connect/Reconnect failure so the caller
+			// sees it immediately rather than at first Request time.
+			// GAGO-022 L2 / Pike note: reconnect-loop on this is a
+			// caller decision; cimstomp does not retry internally.
 			return "", fmt.Errorf("empty token in broker response")
 		}
 		return token, nil
+	}
+}
+
+// drainStompChan empties any frames currently buffered on a
+// stomp.Subscription channel without blocking. Returns the number of
+// frames consumed. Used before Unsubscribe to reduce broker-side
+// queue accumulation on the token-bootstrap path: the channel is
+// drained, then Unsubscribe drops the consumer.
+//
+// drainStompChan does not close the channel and does not block. It is
+// safe to call on an empty channel (returns 0) and on a channel still
+// owned by an active subscription (returns whatever is buffered at
+// the moment of the call).
+func drainStompChan(ch <-chan *stomp.Message) int {
+	n := 0
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return n
+			}
+			n++
+		default:
+			return n
+		}
 	}
 }
 
@@ -337,7 +505,11 @@ func fetchAuthToken(ctx context.Context, conn *stomp.Conn, user, password string
 //
 // Errors from this helper are already wrapped with the cimstomp prefix
 // and the dial address, so callers should return them as-is rather than
-// re-wrapping.
+// re-wrapping. The helper uses the shorter "cimstomp:" prefix instead of
+// "cimstomp.Client:" or "cimstomp.Publisher:" because both Client.Connect
+// and Publisher.Connect share this code path; tagging it with one
+// caller's name would be misleading when read in a stack trace from the
+// other (GAGO-022 L3).
 func dialSTOMPTransport(ctx context.Context, cfg STOMPConfig) (net.Conn, error) {
 	var dialer net.Dialer
 	if cfg.TLS == nil {

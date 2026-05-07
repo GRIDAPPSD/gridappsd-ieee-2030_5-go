@@ -100,7 +100,7 @@ func (c *Client) Subscribe(ctx context.Context, destination string) (*Subscripti
 
 	stompSub, err := conn.Subscribe(destination, stomp.AckAuto)
 	if err != nil {
-		return nil, fmt.Errorf("cimstomp.Client: subscribe %s: %w", destination, err)
+		return nil, wrapTransportErr(fmt.Sprintf("cimstomp.Client: subscribe %s", destination), err)
 	}
 
 	out := &Subscription{msgs: make(chan Message, 16)}
