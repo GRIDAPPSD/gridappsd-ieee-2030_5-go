@@ -8,6 +8,12 @@
 # integration` on a developer laptop and explicitly NOT fine anywhere
 # else.
 #
+# Both ports are bound to 127.0.0.1 only (Leon M3) so the dev broker
+# is not reachable from the LAN with the default admin/admin
+# credentials. A developer who needs cross-machine access for
+# multi-host testing should edit this file directly with awareness of
+# the exposure, not flip an env knob by accident.
+#
 # For production deployments:
 #   1. Override STOMP_PORT / CONSOLE_PORT and the ACTIVEMQ_CONNECTION_*
 #      values via a separate .env file (see .env.example) or your
@@ -21,8 +27,8 @@ services:
   activemq:
     image: apache/activemq-classic:6.1.6
     ports:
-      - "${STOMP_PORT:-61613}:61613"     # STOMP
-      - "${CONSOLE_PORT:-8161}:8161"     # Web console (admin/admin)
+      - "127.0.0.1:${STOMP_PORT:-61613}:61613"     # STOMP (loopback only)
+      - "127.0.0.1:${CONSOLE_PORT:-8161}:8161"     # Web console (admin/admin), loopback only
     environment:
       ACTIVEMQ_CONNECTION_USER: ${ACTIVEMQ_CONNECTION_USER:-admin}
       ACTIVEMQ_CONNECTION_PASSWORD: ${ACTIVEMQ_CONNECTION_PASSWORD:-admin}

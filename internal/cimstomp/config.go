@@ -51,6 +51,13 @@ type STOMPConfig struct {
 	// (certs, keys, root pools) does not round-trip cleanly through JSON
 	// and should be loaded by the application from disk, env, or a vault
 	// before constructing the STOMPConfig.
+	//
+	// MinVersion is enforced to a floor of tls.VersionTLS12 by the dial
+	// helper if the caller leaves it as zero; explicit caller settings
+	// (TLS 1.3, etc.) are preserved as-is. InsecureSkipVerify is NOT
+	// gated by this package; if a caller sets it to true, server cert
+	// verification is disabled and MITM protection is lost. Avoid in
+	// production. cimstomp will dial whatever the caller hands it.
 	TLS *tls.Config `json:"-"`
 }
 

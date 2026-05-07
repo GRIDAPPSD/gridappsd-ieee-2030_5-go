@@ -2,7 +2,6 @@ package cimstomp
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
 	"strings"
@@ -28,23 +27,15 @@ type PointMessage struct {
 
 // Publisher manages the STOMP connection and publishes CIM messages.
 type Publisher struct {
-	addr     string
-	user     string
-	password string
-	tlsCfg   *tls.Config
-	conn     *stomp.Conn
+	cfg  STOMPConfig
+	conn *stomp.Conn
 }
 
 // New creates a Publisher from STOMP config. When cfg.TLS is non-nil the
 // dial path uses crypto/tls; nil keeps the existing plain-TCP behavior
 // (GAGO-014).
 func New(cfg STOMPConfig) *Publisher {
-	return &Publisher{
-		addr:     cfg.Address,
-		user:     cfg.User,
-		password: cfg.Password,
-		tlsCfg:   cfg.TLS,
-	}
+	return &Publisher{cfg: cfg}
 }
 
 // Connect establishes the STOMP connection. The provided context bounds
@@ -60,22 +51,22 @@ func (p *Publisher) Connect(ctx context.Context) error {
 		return err
 	}
 
-	tcp, err := dialSTOMPTransport(ctx, STOMPConfig{Address: p.addr, TLS: p.tlsCfg})
+	tcp, err := dialSTOMPTransport(ctx, p.cfg)
 	if err != nil {
 		return err
 	}
 
 	conn, err := stomp.ConnectWithContext(ctx, tcp,
-		stomp.ConnOpt.Login(p.user, p.password),
+		stomp.ConnOpt.Login(p.cfg.User, p.cfg.Password),
 		stomp.ConnOpt.HeartBeat(heartbeat, heartbeat),
 		stomp.ConnOpt.Header(frame.ContentType, "application/json"),
 	)
 	if err != nil {
 		_ = tcp.Close()
-		return fmt.Errorf("cimstomp.Publisher: stomp connect %s: %w", p.addr, err)
+		return fmt.Errorf("cimstomp.Publisher: stomp connect %s: %w", p.cfg.Address, err)
 	}
 	p.conn = conn
-	log.Printf("STOMP connected to %s", p.addr)
+	log.Printf("STOMP connected to %s", p.cfg.Address)
 	return nil
 }
 

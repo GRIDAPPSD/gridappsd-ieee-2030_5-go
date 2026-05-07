@@ -329,6 +329,12 @@ func fetchAuthToken(ctx context.Context, conn *stomp.Conn, user, password string
 // RootCAs, and Certificates on the supplied *tls.Config are honored. ctx
 // bounds both the TCP dial and the TLS handshake.
 //
+// The cloned *tls.Config has MinVersion floored to tls.VersionTLS12 if the
+// caller leaves it as zero. Callers who explicitly set MinVersion (for
+// example, to TLS 1.3) keep their setting; the floor only applies when the
+// field has its zero value, which would otherwise allow the deprecated
+// SSL 3.0 / TLS 1.0 / TLS 1.1 negotiation paths.
+//
 // Errors from this helper are already wrapped with the cimstomp prefix
 // and the dial address, so callers should return them as-is rather than
 // re-wrapping.
@@ -343,8 +349,14 @@ func dialSTOMPTransport(ctx context.Context, cfg STOMPConfig) (net.Conn, error) 
 	}
 	// crypto/tls Dialer honors NetDialer's context for both TCP dial and
 	// TLS handshake (Go 1.15+). Clone the caller's *tls.Config so a future
-	// Dial does not race against caller mutations of the same config.
-	tlsDialer := &tls.Dialer{NetDialer: &dialer, Config: cfg.TLS.Clone()}
+	// Dial does not race against caller mutations of the same config, then
+	// enforce a TLS 1.2 floor on the clone if the caller did not set
+	// MinVersion explicitly (Leon M1).
+	tlsCfg := cfg.TLS.Clone()
+	if tlsCfg.MinVersion == 0 {
+		tlsCfg.MinVersion = tls.VersionTLS12
+	}
+	tlsDialer := &tls.Dialer{NetDialer: &dialer, Config: tlsCfg}
 	conn, err := tlsDialer.DialContext(ctx, "tcp", cfg.Address)
 	if err != nil {
 		return nil, fmt.Errorf("cimstomp: tls dial %s: %w", cfg.Address, err)
