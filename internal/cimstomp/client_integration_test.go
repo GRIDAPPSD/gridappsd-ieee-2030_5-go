@@ -51,15 +51,21 @@ func requireBroker(t *testing.T) {
 // fakeServer plays the role of GridAPPS-D for tests. It opens its own STOMP
 // connection, subscribes to the token topic and the given request queue, and
 // dispatches replies to the reply-to header.
+//
+// tokenProvider, if non-nil, is invoked on each token request to compute
+// the token value to send. When nil, fakeServer falls back to the static
+// tokenSent string. The hook is used by reconnect tests to assert that
+// Reconnect refetches a fresh token rather than reusing the cached one.
 type fakeServer struct {
-	t         *testing.T
-	conn      *stomp.Conn
-	tokenSub  *stomp.Subscription
-	reqSub    *stomp.Subscription
-	stop      chan struct{}
-	wg        sync.WaitGroup
-	tokenSent string
-	requests  chan recordedRequest
+	t             *testing.T
+	conn          *stomp.Conn
+	tokenSub      *stomp.Subscription
+	reqSub        *stomp.Subscription
+	stop          chan struct{}
+	wg            sync.WaitGroup
+	tokenSent     string
+	tokenProvider func() string
+	requests      chan recordedRequest
 }
 
 type recordedRequest struct {
@@ -130,7 +136,11 @@ func (fs *fakeServer) serveTokens() {
 				!strings.HasPrefix(dest, "/temp-queue/") {
 				dest = "/queue/" + dest
 			}
-			if err := fs.conn.Send(dest, "text/plain", []byte(fs.tokenSent)); err != nil {
+			tokenValue := fs.tokenSent
+			if fs.tokenProvider != nil {
+				tokenValue = fs.tokenProvider()
+			}
+			if err := fs.conn.Send(dest, "text/plain", []byte(tokenValue)); err != nil {
 				fs.t.Logf("fakeServer token send: %v", err)
 				return
 			}

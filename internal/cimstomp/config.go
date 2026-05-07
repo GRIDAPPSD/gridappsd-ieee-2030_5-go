@@ -58,6 +58,16 @@ type STOMPConfig struct {
 	// gated by this package; if a caller sets it to true, server cert
 	// verification is disabled and MITM protection is lost. Avoid in
 	// production. cimstomp will dial whatever the caller hands it.
+	//
+	// IMMUTABILITY: cimstomp never mutates the supplied *tls.Config
+	// after Connect returns. The dial helper Clones the config and
+	// only modifies the clone (MinVersion floor). Callers may
+	// continue to use the original *tls.Config (for example, hand it
+	// to a separate http.Client) without observing changes from this
+	// package. Note that Clone is a shallow copy: Certificates and
+	// RootCAs are shared by reference; crypto/tls treats these as
+	// read-after-handshake so the sharing is safe in practice
+	// (GAGO-022 L2 / Leon L1).
 	TLS *tls.Config `json:"-"`
 }
 

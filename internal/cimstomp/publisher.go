@@ -76,13 +76,22 @@ func (p *Publisher) Connect(ctx context.Context) error {
 // Format:
 //
 //	{"mRID":"...","values":[{"v":1.02,"ts":1711300000000000,"q":"GOOD"},...]}
+//
+// Errors:
+//   - ErrNotConnected if Connect has not run.
+//   - Wrapped ErrConnectionLost if the broker dropped the connection;
+//     callers can errors.Is and reconstruct the Publisher (Publisher
+//     does not own a Reconnect primitive in v0; see GAGO-012).
 func (p *Publisher) Publish(msg *PointMessage) error {
 	if p.conn == nil {
 		return ErrNotConnected
 	}
 
 	payload := formatPayload(msg)
-	return p.conn.Send(msg.Topic, "application/json", []byte(payload))
+	if err := p.conn.Send(msg.Topic, "application/json", []byte(payload)); err != nil {
+		return wrapTransportErr(fmt.Sprintf("cimstomp.Publisher: send %s", msg.Topic), err)
+	}
+	return nil
 }
 
 // Close disconnects from STOMP. Returns the broker disconnect error, if
