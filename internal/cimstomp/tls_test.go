@@ -22,10 +22,10 @@ func TestSTOMPConfig_TLSFieldNilByDefault(t *testing.T) {
 func TestSTOMPConfig_TLSFieldSettable(t *testing.T) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "broker.example"}
 	cfg := STOMPConfig{
-		Address: "127.0.0.1:61614",
-		User:    "u",
+		Address:  "127.0.0.1:61614",
+		User:     "u",
 		Password: "p",
-		TLS:     tlsCfg,
+		TLS:      tlsCfg,
 	}
 	if cfg.TLS != tlsCfg {
 		t.Fatalf("STOMPConfig.TLS round-trip mismatch: got %p, want %p", cfg.TLS, tlsCfg)

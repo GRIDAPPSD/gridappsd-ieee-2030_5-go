@@ -2,9 +2,9 @@ package cimstomp
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
-	"net"
 	"strings"
 
 	"github.com/go-stomp/stomp/v3"
@@ -31,15 +31,19 @@ type Publisher struct {
 	addr     string
 	user     string
 	password string
+	tlsCfg   *tls.Config
 	conn     *stomp.Conn
 }
 
-// New creates a Publisher from STOMP config.
+// New creates a Publisher from STOMP config. When cfg.TLS is non-nil the
+// dial path uses crypto/tls; nil keeps the existing plain-TCP behavior
+// (GAGO-014).
 func New(cfg STOMPConfig) *Publisher {
 	return &Publisher{
 		addr:     cfg.Address,
 		user:     cfg.User,
 		password: cfg.Password,
+		tlsCfg:   cfg.TLS,
 	}
 }
 
@@ -48,16 +52,17 @@ func New(cfg STOMPConfig) *Publisher {
 //
 // go-stomp v3.1.5's DialWithContext calls net.Dial (not net.DialContext),
 // so we dial ourselves with net.DialContext to honor ctx, then hand the
-// live conn to stomp.ConnectWithContext for the STOMP handshake.
+// live conn to stomp.ConnectWithContext for the STOMP handshake. When the
+// originating STOMPConfig had a non-nil TLS field, the dial wraps the TCP
+// connection with crypto/tls (GAGO-014).
 func (p *Publisher) Connect(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	var dialer net.Dialer
-	tcp, err := dialer.DialContext(ctx, "tcp", p.addr)
+	tcp, err := dialSTOMPTransport(ctx, STOMPConfig{Address: p.addr, TLS: p.tlsCfg})
 	if err != nil {
-		return fmt.Errorf("cimstomp.Publisher: tcp dial %s: %w", p.addr, err)
+		return err
 	}
 
 	conn, err := stomp.ConnectWithContext(ctx, tcp,

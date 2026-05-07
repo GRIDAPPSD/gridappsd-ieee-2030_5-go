@@ -105,8 +105,8 @@ func startTLSTestServer(t *testing.T, requireClientCert bool) *tlsTestServer {
 	return s
 }
 
-func (s *tlsTestServer) Addr() string                  { return s.addr }
-func (s *tlsTestServer) ClientTLSConfig() *tls.Config  { return s.clientTLS.Clone() }
+func (s *tlsTestServer) Addr() string                 { return s.addr }
+func (s *tlsTestServer) ClientTLSConfig() *tls.Config { return s.clientTLS.Clone() }
 func (s *tlsTestServer) ServerCAPool() *x509.CertPool {
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(s.caPEM)
@@ -213,10 +213,45 @@ func (s *tlsTestServer) handleConn(conn net.Conn) {
 	// Dropping the conn here would cause go-stomp to surface a read error
 	// immediately after CONNECTED, which makes Connect look like it failed
 	// even though the handshake succeeded.
+	//
+	// We watch for a STOMP DISCONNECT frame and reply with a RECEIPT so
+	// the client's Close completes promptly instead of waiting for its
+	// own disconnect timeout (default ~15s in go-stomp).
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = io.Copy(io.Discard, br)
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			cmd := strings.TrimRight(line, "\r\n")
+			// Read headers up to blank line.
+			receipt := ""
+			for {
+				h, err := br.ReadString('\n')
+				if err != nil {
+					return
+				}
+				if h == "\n" || h == "\r\n" {
+					break
+				}
+				if strings.HasPrefix(h, "receipt:") {
+					receipt = strings.TrimSpace(strings.TrimPrefix(strings.TrimRight(h, "\r\n"), "receipt:"))
+				}
+			}
+			// Read body up to NUL.
+			if _, err := br.ReadString('\x00'); err != nil {
+				return
+			}
+			if cmd == "DISCONNECT" {
+				if receipt != "" {
+					resp := fmt.Sprintf("RECEIPT\nreceipt-id:%s\n\n\x00", receipt)
+					_, _ = io.WriteString(conn, resp)
+				}
+				return
+			}
+		}
 	}()
 	select {
 	case <-s.stop:
