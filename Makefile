@@ -44,8 +44,22 @@ test-integration:
 # The bare-ActiveMQ `test-integration` target stays for fast cimstomp
 # iteration. This target is for verifying that the bridge's STOMP wire
 # format is accepted by the actual production-equivalent broker.
+#
+# Probe uses `nc -z` (with a 2-second connect timeout) rather than bash's
+# `/dev/tcp` redirection. `/dev/tcp` is a bash builtin that is absent from
+# dash and busybox, so the prior probe broke on systems where /bin/sh is
+# not bash. `nc` is present on essentially every Linux dev box; if it is
+# missing on yours, install netcat (`apt install netcat-openbsd` or
+# equivalent) before running this target.
 test-gridappsd:
-	@if ! timeout 2 bash -c 'cat </dev/null >/dev/tcp/127.0.0.1/61613' 2>/dev/null; then \
+	@if ! command -v nc >/dev/null 2>&1; then \
+	  echo "test-gridappsd requires nc (netcat) for the port probe."; \
+	  echo "Install with one of:"; \
+	  echo "  apt install netcat-openbsd     # Debian/Ubuntu"; \
+	  echo "  dnf install nmap-ncat          # RHEL/Fedora"; \
+	  exit 1; \
+	fi
+	@if ! nc -z -w 2 127.0.0.1 61613 2>/dev/null; then \
 	  echo "GridAPPS-D STOMP port 61613 is not reachable."; \
 	  echo "Bring the platform up first:"; \
 	  echo "  cd ~/repos/sentient_gridappsd_integration && pixi run gridappsd-start"; \

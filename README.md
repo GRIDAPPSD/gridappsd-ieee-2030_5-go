@@ -53,6 +53,12 @@ Three layers, slowest last:
    iteration; reach for `test-gridappsd` when verifying that wire-format
    changes still ride on the production-equivalent broker.
 
+   The gridappsd-docker stack should only be brought up bound to loopback
+   (`127.0.0.1`). Do not run it on a publicly reachable host without
+   tightening broker authentication first; the dev-default `system / manager`
+   and `admin / admin` credentials baked into the compose are not
+   production-safe.
+
 ## License
 
 See LICENSE.

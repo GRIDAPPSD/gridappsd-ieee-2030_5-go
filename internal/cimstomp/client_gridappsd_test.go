@@ -62,21 +62,21 @@ func requireGridAPPSD(t *testing.T) {
 		t.Skipf("GridAPPS-D platform not reachable at %s: %v "+
 			"(bring it up with `pixi run gridappsd-start` from "+
 			"~/repos/sentient_gridappsd_integration/, or run "+
-			"`make test-gridappsd` which probes and starts the stack)",
+			"`make test-gridappsd` which probes the port and exits "+
+			"with a hint if not reachable; the target does not auto-start the stack)",
 			gridappsdAddr, err)
 	}
 	_ = conn.Disconnect()
 }
 
-// TestGridAPPSD_ConnectFetchesToken verifies that Connect dials the real
-// platform broker, sends base64(user:password) to /topic/pnnl.goss.token.topic,
-// and caches the token returned by the platform's token responder. The
-// Python upstream (gridappsd-python goss.py _make_connection) does the
-// same dance; this test is the proof that our Go implementation talks to
-// the same responder and gets a non-empty string back.
-func TestGridAPPSD_ConnectFetchesToken(t *testing.T) {
+// newGridAPPSDClient is the shared setup for every test in this file: it
+// gates on requireGridAPPSD, constructs a Client with the platform's
+// dev-default credentials, dials the broker, and registers a Cleanup so
+// the connection is closed at test end. Each test gets its own Client
+// (no sharing), matching the prior per-test boilerplate exactly.
+func newGridAPPSDClient(t *testing.T) *Client {
+	t.Helper()
 	requireGridAPPSD(t)
-
 	c := NewClient(STOMPConfig{
 		Address:  gridappsdAddr,
 		User:     gridappsdUser,
@@ -87,7 +87,18 @@ func TestGridAPPSD_ConnectFetchesToken(t *testing.T) {
 	if err := c.Connect(ctx); err != nil {
 		t.Fatalf("Connect against GridAPPS-D: %v", err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// TestGridAPPSD_ConnectFetchesToken verifies that Connect dials the real
+// platform broker, sends base64(user:password) to /topic/pnnl.goss.token.topic,
+// and caches the token returned by the platform's token responder. The
+// Python upstream (gridappsd-python goss.py _make_connection) does the
+// same dance; this test is the proof that our Go implementation talks to
+// the same responder and gets a non-empty string back.
+func TestGridAPPSD_ConnectFetchesToken(t *testing.T) {
+	c := newGridAPPSDClient(t)
 
 	tok := c.tokenForTest()
 	if tok == "" {
@@ -106,19 +117,10 @@ func TestGridAPPSD_ConnectFetchesToken(t *testing.T) {
 // accepted by the real broker. With either header missing or wrong, the
 // platform either rejects the SEND or never replies.
 func TestGridAPPSD_RequestRoundTrip(t *testing.T) {
-	requireGridAPPSD(t)
+	c := newGridAPPSDClient(t)
 
-	c := NewClient(STOMPConfig{
-		Address:  gridappsdAddr,
-		User:     gridappsdUser,
-		Password: gridappsdPassword,
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Connect against GridAPPS-D: %v", err)
-	}
-	defer c.Close()
 
 	// `get_platform_status` is the canonical benign read. The platform's
 	// process manager replies with a JSON document describing currently
@@ -144,19 +146,10 @@ func TestGridAPPSD_RequestRoundTrip(t *testing.T) {
 // the header is at minimum tolerated. Closes GAGO-016 by direct
 // observation against the production-equivalent stack.
 func TestGridAPPSD_CorrelationIDAccepted(t *testing.T) {
-	requireGridAPPSD(t)
+	c := newGridAPPSDClient(t)
 
-	c := NewClient(STOMPConfig{
-		Address:  gridappsdAddr,
-		User:     gridappsdUser,
-		Password: gridappsdPassword,
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Connect against GridAPPS-D: %v", err)
-	}
-	defer c.Close()
 
 	// Three round-trips: each Request generates a fresh correlation-id
 	// internally. If the broker rejected the header on any send, the
@@ -185,19 +178,10 @@ func TestGridAPPSD_CorrelationIDAccepted(t *testing.T) {
 // empty token) shows up as a named failure rather than a generic
 // round-trip regression.
 func TestGridAPPSD_GOSSHeadersAccepted(t *testing.T) {
-	requireGridAPPSD(t)
+	c := newGridAPPSDClient(t)
 
-	c := NewClient(STOMPConfig{
-		Address:  gridappsdAddr,
-		User:     gridappsdUser,
-		Password: gridappsdPassword,
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Connect against GridAPPS-D: %v", err)
-	}
-	defer c.Close()
 
 	if tok := c.tokenForTest(); strings.TrimSpace(tok) == "" {
 		t.Fatalf("token blank before Request; GOSS_SUBJECT would be empty on the wire")
