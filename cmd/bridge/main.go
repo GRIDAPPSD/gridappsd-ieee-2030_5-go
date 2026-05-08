@@ -53,7 +53,9 @@ const queryTimeout = 30 * time.Second
 // side-table hit/miss counters. 30 s balances signal (an operator can
 // observe coverage drift over a multi-minute simulation) against log
 // noise. The interval is process-local and not configurable in v0.
-const statsLogInterval = 30 * time.Second
+// It is a var rather than a const so unit tests can shrink it for a
+// fast assertion without touching production behavior.
+var statsLogInterval = 30 * time.Second
 
 func main() {
 	cfg, err := loadConfig(os.Args[1:])
