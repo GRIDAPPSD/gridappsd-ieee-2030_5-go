@@ -166,6 +166,44 @@ const (
     ORDER by ?name
     `
 
+	// sparqlQueryMeasurements enumerates every Measurement attached to a
+	// ConductingEquipment within the feeder, returning the
+	// (?measid, ?eqid) pair the bridge needs to bridge frame-level
+	// measurement-mRIDs to device-level equipment-mRIDs. The shape is
+	// derived from the GridAPPS-D Java upstream
+	// BGPowergridModelDataManagerImpl (Measurement.PowerSystemResource
+	// is the link from a Measurement to its parent equipment); see also
+	// the Python PNNL-CIM-Tools cimassetmanager.py csvFieldNames list.
+	//
+	// Schema-variant handling: the Equipment.EquipmentContainer link is
+	// REQUIRED (the feeder filter binds via ?fdrid). The optional
+	// Measurement.Terminal binding is left out of v0; it would be
+	// useful for downstream phase context but is not needed by the
+	// side-table populator and would force an additional OPTIONAL
+	// branch on datasets where Terminal is absent.
+	//
+	// On the gridappsd-docker:develop IEEE 123pv feeder this returns
+	// hundreds of rows (28 measurements per inverter for the 14-PEC
+	// model). The wrapper does not paginate; callers wrap the call in
+	// a context with a generous timeout.
+	sparqlQueryMeasurements = `# Measurement to ConductingEquipment
+    PREFIX r:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX c:  <http://iec.ch/TC57/CIM100#>
+    SELECT ?measid ?eqid ?eqname ?type ?fdrid WHERE {
+    VALUES ?fdrid {"%s"}
+    ?s c:IdentifiedObject.mRID ?measid.
+    ?s c:Measurement.PowerSystemResource ?eq.
+    ?eq c:IdentifiedObject.mRID ?eqid.
+    ?eq c:IdentifiedObject.name ?eqname.
+    ?eq c:Equipment.EquipmentContainer ?fdr.
+    ?fdr c:IdentifiedObject.mRID ?fdrid.
+    OPTIONAL {
+      ?s c:Measurement.measurementType ?type.
+    }
+    }
+    ORDER by ?eqid ?measid
+    `
+
 	sparqlQueryAllDERGroups = `#get all EndDeviceGroup
     PREFIX  xsd:  <http://www.w3.org/2001/XMLSchema#>
     PREFIX  r:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -289,4 +327,21 @@ func (c *Client) QueryInverter(ctx context.Context, feederID string) (*QueryData
 // this template is unchanged from the Python upstream.
 func (c *Client) QueryAllDERGroups(ctx context.Context, feederID string) (*QueryDataResult, error) {
 	return c.queryFeederTemplate(ctx, sparqlQueryAllDERGroups, feederID)
+}
+
+// QueryMeasurements enumerates every Measurement attached to a
+// ConductingEquipment within feederID, returning one row per
+// measurement carrying ?measid (the measurement's mRID) and ?eqid (the
+// parent equipment's mRID). The bridge populates the
+// internal/measurements side table from these rows so that incoming
+// simulation frames keyed by measurement-mRID can resolve to a device
+// entry in the registry.
+//
+// On the IEEE 123pv feeder this returns hundreds of rows (roughly 28
+// measurements per inverter, 14 PECs); callers should pass a context
+// with a generous timeout. Empty bindings are not an error; the side
+// table simply ends up empty and every frame surfaces as a side-table
+// miss.
+func (c *Client) QueryMeasurements(ctx context.Context, feederID string) (*QueryDataResult, error) {
+	return c.queryFeederTemplate(ctx, sparqlQueryMeasurements, feederID)
 }

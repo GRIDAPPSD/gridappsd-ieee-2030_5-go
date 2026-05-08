@@ -89,3 +89,25 @@ func TestResolveMeasurementNilTable(t *testing.T) {
 		t.Errorf("Status = %v, want ResolveStatusUnknownMeasurement on nil table", got.Status)
 	}
 }
+
+// TestResolveStatusString pins the human-readable rendering used in
+// pump-handler log lines so future refactors of the iota set cannot
+// silently mistranslate a status into "unknown-status".
+func TestResolveStatusString(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		s    ResolveStatus
+		want string
+	}{
+		{ResolveStatusUnknownMeasurement, "unknown-measurement"},
+		{ResolveStatusUnregisteredDevice, "unregistered-device"},
+		{ResolveStatusHit, "hit"},
+		{ResolveStatus(99), "unknown-status"},
+	}
+	for _, tt := range cases {
+		if got := tt.s.String(); got != tt.want {
+			t.Errorf("ResolveStatus(%d).String() = %q, want %q", tt.s, got, tt.want)
+		}
+	}
+}

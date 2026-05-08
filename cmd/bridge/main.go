@@ -34,6 +34,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cim"
 	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cim/sim"
 	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cimstomp"
+	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/measurements"
 	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/registry"
 )
 
@@ -47,6 +48,12 @@ const connectTimeout = 15 * time.Second
 // queryTimeout bounds a single CIM SPARQL request. The 123-bus feeder
 // query returns in ~100 ms locally; 30 s tolerates a busy platform.
 const queryTimeout = 30 * time.Second
+
+// statsLogInterval is how often the pump handler logs cumulative
+// side-table hit/miss counters. 30 s balances signal (an operator can
+// observe coverage drift over a multi-minute simulation) against log
+// noise. The interval is process-local and not configurable in v0.
+const statsLogInterval = 30 * time.Second
 
 func main() {
 	cfg, err := loadConfig(os.Args[1:])
@@ -95,6 +102,11 @@ func run(ctx context.Context, cfg config) error {
 		return err
 	}
 
+	measTable, err := bootstrapMeasurementTable(ctx, cimClient, cfg.FeederMRID)
+	if err != nil {
+		return err
+	}
+
 	if cfg.PublishOnStart {
 		// The publish smoke test wants to send a DifferenceBuilder
 		// envelope to /topic/goss.gridappsd.simulation.input.<sim_id>.
@@ -114,7 +126,7 @@ func run(ctx context.Context, cfg config) error {
 		return ctx.Err()
 	}
 
-	return runPump(ctx, client, reg, cfg.SimulationID)
+	return runPump(ctx, client, reg, measTable, cfg.SimulationID)
 }
 
 // connectClient dials the GridAPPS-D STOMP broker, runs the auth-token
@@ -246,21 +258,74 @@ func queryDevices(
 	return out, nil
 }
 
+// bootstrapMeasurementTable runs the measurement-mRID enumeration query
+// against the feeder and populates a side table mapping each measurement
+// to its parent ConductingEquipment-mRID. The bridge's pump handler
+// consults the side table before reaching the registry, so a frame's
+// measurement-mRID can be attributed to a device entry rather than
+// surfacing as an unrecognized lookup.
+//
+// On the IEEE 123pv feeder this query returns a few hundred rows; the
+// 30 s queryTimeout shared with the DER enumeration queries is plenty.
+// An empty result set is not an error: bridge logs a warning and
+// proceeds with an empty side table; every frame then surfaces as a
+// side-table miss, which the operator can grep for and act on.
+func bootstrapMeasurementTable(ctx context.Context, c *cim.Client, feederMRID string) (*measurements.Table, error) {
+	log.Printf("bridge: querying CIM measurements for feeder %s", feederMRID)
+
+	qctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	res, err := c.QueryMeasurements(qctx, feederMRID)
+	if err != nil {
+		return nil, fmt.Errorf("query measurements: %w", err)
+	}
+
+	tbl := measurements.New()
+	if res == nil || len(res.Results.Bindings) == 0 {
+		log.Printf("bridge: measurement side table populated: 0 mappings (empty query result; every frame will surface as side-table miss)")
+		return tbl, nil
+	}
+
+	maps := make([]measurements.Mapping, 0, len(res.Results.Bindings))
+	for _, row := range res.Results.Bindings {
+		measMRID := row["measid"].Value
+		eqMRID := row["eqid"].Value
+		if measMRID == "" || eqMRID == "" {
+			continue
+		}
+		maps = append(maps, measurements.Mapping{
+			MeasurementMRID: measMRID,
+			DeviceMRID:      eqMRID,
+		})
+	}
+	if err := tbl.AddBatch(maps); err != nil {
+		return nil, fmt.Errorf("measurement table populate: %w", err)
+	}
+	log.Printf("bridge: measurement side table populated: %d mappings", tbl.Len())
+	return tbl, nil
+}
+
 // runPump subscribes to the simulation output topic and runs the Pump
 // until ctx is cancelled or the subscription closes. The handler logs a
-// one-liner per frame and then walks each measurement, performing an
-// mRID-to-LFDI lookup against reg. The first time a given measurement
-// mRID is seen, the handler logs the lookup result; subsequent frames
-// carrying the same mRID are deduplicated to avoid log spam.
+// one-liner per frame, walks each measurement, and resolves the
+// measurement-mRID through the side table to a device-mRID, then
+// through the registry to an LFDI. The first time a given measurement
+// mRID is seen, the handler logs its resolution outcome; subsequent
+// frames carrying the same mRID are deduplicated to avoid log spam.
 //
-// At Stage 1, measurement mRIDs (per-point identifiers in the platform
-// frame) are not the same as the device mRIDs the registry is keyed on,
-// so the lookup typically misses. The point of plumbing reg into the
-// handler is to demonstrate the seam: a future revision can change the
-// lookup key (e.g., to the parent ConductingEquipment mRID) without
-// reworking the pump glue. Richer downstream consumption (IEEE 2030.5
-// MirrorMeterReading mapping) is Stage 2.
-func runPump(ctx context.Context, client *cimstomp.Client, reg *registry.Registry, simID string) error {
+// A periodic stats line logs the side table's cumulative hit and miss
+// counts so an operator can verify coverage at runtime without parsing
+// the per-mRID log. The stats goroutine exits when ctx is cancelled,
+// before pump.Run returns, so the function returns with no live
+// goroutines.
+func runPump(
+	ctx context.Context,
+	client *cimstomp.Client,
+	reg *registry.Registry,
+	tbl *measurements.Table,
+	simID string,
+) error {
 	dest := sim.OutputTopic(simID)
 	log.Printf("bridge: subscribing to %s", dest)
 
@@ -275,6 +340,29 @@ func runPump(ctx context.Context, client *cimstomp.Client, reg *registry.Registr
 		seen   = make(map[string]struct{})
 	)
 
+	// Periodic stats logger. Runs in its own goroutine, exits on ctx
+	// cancel; the goroutine never outlives runPump.
+	var statsWG sync.WaitGroup
+	statsWG.Add(1)
+	go func() {
+		defer statsWG.Done()
+		t := time.NewTicker(statsLogInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if tbl == nil {
+					continue
+				}
+				hits, misses := tbl.Stats()
+				log.Printf("bridge: measurement-resolver stats hits=%d misses=%d table_size=%d",
+					hits, misses, tbl.Len())
+			}
+		}
+	}()
+
 	err := pump.Run(ctx, func(f sim.MeasurementFrame) error {
 		log.Printf("bridge: frame received simulation_id=%s timestamp=%d measurements=%d",
 			f.SimulationID, f.Message.Timestamp, len(f.Message.Measurements))
@@ -288,14 +376,22 @@ func runPump(ctx context.Context, client *cimstomp.Client, reg *registry.Registr
 			if dup {
 				continue
 			}
-			if lfdi, ok := reg.LFDI(mrid); ok {
-				log.Printf("bridge: frame for mrid=%s lfdi=%s (placeholder)", mrid, lfdi)
-			} else {
-				log.Printf("bridge: frame for mrid=%s lfdi=<not registered>", mrid)
+			r := resolveMeasurement(reg, tbl, mrid)
+			switch r.Status {
+			case ResolveStatusHit:
+				log.Printf("bridge: frame for meas=%s device=%s lfdi=%s status=%s",
+					mrid, r.DeviceMRID, r.LFDI, r.Status)
+			case ResolveStatusUnregisteredDevice:
+				log.Printf("bridge: frame for meas=%s device=%s lfdi=<unregistered> status=%s",
+					mrid, r.DeviceMRID, r.Status)
+			default:
+				log.Printf("bridge: frame for meas=%s device=<unknown> lfdi=<unknown> status=%s",
+					mrid, r.Status)
 			}
 		}
 		return nil
 	})
+	statsWG.Wait()
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("pump: %w", err)
 	}
