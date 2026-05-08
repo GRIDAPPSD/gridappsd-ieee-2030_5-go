@@ -10,7 +10,7 @@ import (
 
 // config carries the runtime knobs the Stage 1 bridge needs. Only the
 // GridAPPS-D side is wired here; IEEE 2030.5 server config arrives in
-// Stage 2 (GAGO-026).
+// a Stage 2 follow-up filed separately.
 //
 // All knobs are env-var driven with sensible gridappsd-docker defaults
 // so a developer can run `go run ./cmd/bridge` against a freshly

@@ -6,7 +6,7 @@
 // MeasurementFrame.
 //
 // This binary intentionally does NOT speak IEEE 2030.5. The 2030.5
-// server side is Stage 2 (GAGO-026); it requires the
+// server side is a Stage 2 follow-up filed separately; it requires the
 // `ieee-2030_5-go/internal/server` package to expose a public Server
 // constructor, plus the real LFDI mapping derived from device certs.
 // Stage 1 ships the GridAPPS-D plumbing so the connect plus CIM query

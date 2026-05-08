@@ -1,9 +1,9 @@
 # cmd/bridge
 
 Stage 1 of the GridAPPS-D side of the IEEE 2030.5 to GridAPPS-D bridge.
-The Stage 2 IEEE 2030.5 server embedding is filed as GAGO-026 and
-requires `ieee-2030_5-go/internal/server` to expose a public Server
-constructor.
+The Stage 2 IEEE 2030.5 server embedding is a Stage 2 follow-up filed
+separately and requires `ieee-2030_5-go/internal/server` to expose a
+public Server constructor.
 
 ## What it does
 

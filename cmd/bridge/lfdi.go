@@ -10,11 +10,11 @@ import (
 // the real IEEE 2030.5 long-form device ID, which is the truncated
 // SHA-256 of a device certificate's DER bytes.
 //
-// Stage 2 (GAGO-026) replaces this with the real LFDI mapping derived
-// from each device's enrolled certificate. Until then the bridge
-// populates the registry with a synthetic LFDI so the rest of the
-// pipeline (mRID-to-LFDI lookups, lookup-by-LFDI on inbound 2030.5
-// requests) has a stable index to exercise.
+// Stage 2 (filed separately as a follow-up) replaces this with the real
+// LFDI mapping derived from each device's enrolled certificate. Until
+// then the bridge populates the registry with a synthetic LFDI so the
+// rest of the pipeline (mRID-to-LFDI lookups, lookup-by-LFDI on inbound
+// 2030.5 requests) has a stable index to exercise.
 //
 // The placeholder length matches the real LFDI's 40-hex-character
 // (160-bit) shape so that downstream code wired against the real LFDI
