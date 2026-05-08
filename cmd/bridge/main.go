@@ -342,13 +342,21 @@ func runPump(
 		seen   = make(map[string]struct{})
 	)
 
-	// Periodic stats logger. Runs in its own goroutine and exits on ctx
-	// cancel; the WaitGroup ensures runPump does not return with a live
-	// goroutine. tbl is a precondition: bootstrapMeasurementTable always
-	// returns a non-nil Table even on an empty result set, so no nil
-	// guard is needed here.
+	// Periodic stats logger. Runs in its own goroutine that exits on
+	// stats-ctx cancel; the done channel is the join point that ensures
+	// runPump does not return with a live goroutine. tbl is a
+	// precondition: bootstrapMeasurementTable always returns a non-nil
+	// Table even on an empty result set, so no nil guard is needed here.
+	//
+	// The stats goroutine uses a derived context so that we can cancel it
+	// independently of the parent ctx. pump.Run can return without parent
+	// ctx being cancelled (subscription closed cleanly, or broker-side
+	// error), and in those cases <-statsDone would otherwise block
+	// forever. cancelStats below unblocks the join unconditionally.
+	statsCtx, cancelStats := context.WithCancel(ctx)
+	defer cancelStats()
 	statsDone := make(chan struct{})
-	go logStatsUntilDone(ctx, tbl, statsDone)
+	go logStatsUntilDone(statsCtx, tbl, statsDone)
 
 	err := pump.Run(ctx, func(f sim.MeasurementFrame) error {
 		log.Printf("bridge: frame received simulation_id=%s timestamp=%d measurements=%d",
@@ -367,6 +375,7 @@ func runPump(
 		}
 		return nil
 	})
+	cancelStats()
 	<-statsDone
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("pump: %w", err)
