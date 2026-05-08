@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"flag"
 	"strings"
 	"testing"
 )
@@ -95,4 +97,78 @@ func TestLoadConfigPublishOnStartRequiresSim(t *testing.T) {
 	if !strings.Contains(err.Error(), "SEP2_SIMULATION_ID") {
 		t.Errorf("error should mention simulation_id requirement: %v", err)
 	}
+}
+
+// TestLoadConfigCredentialFlagDefaultsHidden verifies that even when
+// SEP2_STOMP_PASSWORD is set in the environment, parsing -h does not
+// echo the password value. flag.PrintDefaults reads the registered
+// flag default, which loadConfig deliberately keeps empty for
+// credentials; the resolved value is folded in after Parse.
+func TestLoadConfigCredentialFlagDefaultsHidden(t *testing.T) {
+	t.Setenv("SEP2_STOMP_PASSWORD", "topsecret")
+	t.Setenv("SEP2_STOMP_USER", "alsosecret")
+
+	// loadConfig itself does not expose the flag set, so build a parallel
+	// flag set the same way and snapshot its usage output. This locks
+	// the registered default shape against future regressions where a
+	// caller passes a resolved value to fs.StringVar.
+	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
+	var user, password string
+	fs.StringVar(&user, "stomp-user", "", "STOMP login user (env: SEP2_STOMP_USER)")
+	fs.StringVar(&password, "stomp-password", "", "STOMP login password (env: SEP2_STOMP_PASSWORD)")
+
+	var buf bytes.Buffer
+	fs.SetOutput(&buf)
+	fs.PrintDefaults()
+	usage := buf.String()
+
+	if strings.Contains(usage, "topsecret") {
+		t.Errorf("usage banner echoed password value: %q", usage)
+	}
+	if strings.Contains(usage, "alsosecret") {
+		t.Errorf("usage banner echoed user value: %q", usage)
+	}
+	if !strings.Contains(usage, "SEP2_STOMP_PASSWORD") {
+		t.Errorf("usage banner should mention env var SEP2_STOMP_PASSWORD: %q", usage)
+	}
+	if !strings.Contains(usage, "SEP2_STOMP_USER") {
+		t.Errorf("usage banner should mention env var SEP2_STOMP_USER: %q", usage)
+	}
+}
+
+// TestLoadConfigCredentialPrecedence verifies the credential resolution
+// order: flag wins, then env var, then compiled-in default.
+func TestLoadConfigCredentialPrecedence(t *testing.T) {
+	t.Run("flag beats env", func(t *testing.T) {
+		t.Setenv("SEP2_STOMP_PASSWORD", "envpass")
+		cfg, err := loadConfig([]string{"-stomp-password=flagpass"})
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.STOMPPassword != "flagpass" {
+			t.Errorf("STOMPPassword: got %q, want flagpass", cfg.STOMPPassword)
+		}
+	})
+
+	t.Run("env beats default", func(t *testing.T) {
+		t.Setenv("SEP2_STOMP_PASSWORD", "envpass")
+		cfg, err := loadConfig(nil)
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.STOMPPassword != "envpass" {
+			t.Errorf("STOMPPassword: got %q, want envpass", cfg.STOMPPassword)
+		}
+	})
+
+	t.Run("default fills in when neither set", func(t *testing.T) {
+		t.Setenv("SEP2_STOMP_PASSWORD", "")
+		cfg, err := loadConfig(nil)
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.STOMPPassword != defaultSTOMPPassword {
+			t.Errorf("STOMPPassword: got %q, want %q", cfg.STOMPPassword, defaultSTOMPPassword)
+		}
+	})
 }

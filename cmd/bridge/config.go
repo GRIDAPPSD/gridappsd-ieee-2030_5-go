@@ -73,13 +73,17 @@ const (
 // the compiled-in defaults. Returns a usage error wrapped with the
 // missing/invalid field name when the resulting config cannot drive a
 // connect.
+//
+// Credential-bearing flags (-stomp-user, -stomp-password) deliberately
+// register an empty string as their flag default so flag.PrintDefaults
+// (triggered by -h or any parse error) never prints a real credential
+// value. Env-var or compiled-in defaults are folded in after Parse, in
+// the same precedence as the non-credential flags.
 func loadConfig(args []string) (config, error) {
 	cfg := config{
-		STOMPAddr:     getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
-		STOMPUser:     getenvDefault("SEP2_STOMP_USER", defaultSTOMPUser),
-		STOMPPassword: getenvDefault("SEP2_STOMP_PASSWORD", defaultSTOMPPassword),
-		SimulationID:  os.Getenv("SEP2_SIMULATION_ID"),
-		FeederMRID:    getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
+		STOMPAddr:    getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
+		SimulationID: os.Getenv("SEP2_SIMULATION_ID"),
+		FeederMRID:   getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
 	}
 	pubFromEnv, err := getenvBool("SEP2_PUBLISH_ON_START", false)
 	if err != nil {
@@ -89,8 +93,12 @@ func loadConfig(args []string) (config, error) {
 
 	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
 	fs.StringVar(&cfg.STOMPAddr, "stomp-addr", cfg.STOMPAddr, "GridAPPS-D STOMP broker host:port")
-	fs.StringVar(&cfg.STOMPUser, "stomp-user", cfg.STOMPUser, "STOMP login user")
-	fs.StringVar(&cfg.STOMPPassword, "stomp-password", cfg.STOMPPassword, "STOMP login password")
+	// User and password flags register with an empty default so the
+	// usage banner never echoes a real credential. The precedence merge
+	// (flag, then env, then built-in default) happens below after Parse.
+	var stompUserFlag, stompPasswordFlag string
+	fs.StringVar(&stompUserFlag, "stomp-user", "", "STOMP login user (env: SEP2_STOMP_USER)")
+	fs.StringVar(&stompPasswordFlag, "stomp-password", "", "STOMP login password (env: SEP2_STOMP_PASSWORD)")
 	fs.StringVar(&cfg.SimulationID, "simulation-id", cfg.SimulationID, "GridAPPS-D simulation_id (empty disables sim subscribe)")
 	fs.StringVar(&cfg.FeederMRID, "feeder-mrid", cfg.FeederMRID, "CIM feeder mRID to enumerate DERs from")
 	fs.BoolVar(&cfg.PublishOnStart, "publish-on-start", cfg.PublishOnStart, "publish a smoke-test DifferenceBuilder envelope after registry bootstrap")
@@ -99,10 +107,31 @@ func loadConfig(args []string) (config, error) {
 		return config{}, fmt.Errorf("parse flags: %w", err)
 	}
 
+	// Resolve credential precedence: flag wins if non-empty, else env,
+	// else the compiled-in default. The flag value comes through as
+	// empty when the user did not pass -stomp-user / -stomp-password,
+	// in which case the env-or-default is the right answer.
+	cfg.STOMPUser = resolveCred(stompUserFlag, "SEP2_STOMP_USER", defaultSTOMPUser)
+	cfg.STOMPPassword = resolveCred(stompPasswordFlag, "SEP2_STOMP_PASSWORD", defaultSTOMPPassword)
+
 	if err := cfg.validate(); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
+}
+
+// resolveCred returns the first non-empty value among the parsed flag,
+// the named env var, and the compiled-in fallback. Used for credential
+// fields whose flag defaults are intentionally registered as empty so
+// flag.PrintDefaults never echoes a real value.
+func resolveCred(flagVal, envKey, fallback string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if v, ok := os.LookupEnv(envKey); ok && v != "" {
+		return v
+	}
+	return fallback
 }
 
 // validate enforces the minimum field set the run loop assumes. Empty
