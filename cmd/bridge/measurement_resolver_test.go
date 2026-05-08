@@ -76,10 +76,10 @@ func TestResolveMeasurement(t *testing.T) {
 	})
 }
 
-// TestResolveMeasurementNilTableTreatsAllAsUnknown ensures the resolver
-// degrades safely when the side table is nil (population failed at
-// startup but the bridge chose to continue). Every measurement resolves
-// as ResolveStatusUnknownMeasurement.
+// TestResolveMeasurementNilTable ensures the resolver degrades safely
+// when the side table is nil (population failed at startup but the
+// bridge chose to continue). Every measurement resolves as
+// ResolveStatusUnknownMeasurement.
 func TestResolveMeasurementNilTable(t *testing.T) {
 	t.Parallel()
 

@@ -285,7 +285,7 @@ func bootstrapMeasurementTable(ctx context.Context, c *cim.Client, feederMRID st
 
 	tbl := measurements.New()
 	if res == nil || len(res.Results.Bindings) == 0 {
-		log.Printf("bridge: measurement side table populated: 0 mappings (empty query result; every frame will surface as side-table miss)")
+		log.Printf("bridge: WARN: measurement side table populated: 0 mappings (empty query result; every frame will surface as side-table miss)")
 		return tbl, nil
 	}
 
