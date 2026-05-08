@@ -180,11 +180,18 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID string) (*
 				continue
 			}
 			seen[d.MRID] = struct{}{}
+			lfdi := placeholderLFDI(d.MRID)
 			entries = append(entries, registry.Entry{
-				MRID: d.MRID,
-				Name: d.Name,
-				LFDI: placeholderLFDI(d.MRID),
+				MRID:        d.MRID,
+				Name:        d.Name,
+				LFDI:        lfdi,
+				Placeholder: true,
 			})
+			// One line per device at populate time so an operator can
+			// grep "(placeholder)" to confirm Stage 2 LFDI work has not
+			// happened yet. Logged before the summary so the order is
+			// "per-device, then total".
+			log.Printf("bridge: device mrid=%s lfdi=%s (placeholder)", d.MRID, lfdi)
 		}
 	}
 

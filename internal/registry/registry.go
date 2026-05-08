@@ -9,10 +9,18 @@ import (
 // Entry is a single mapping between IEEE 2030.5 identity and CIM identity.
 // It mirrors the Python upstream HouseLookup(mRID, name, lfdi) shape from
 // gridappsd_adapter.py.
+//
+// Placeholder marks an entry whose LFDI was generated as a Stage 1
+// stand-in (e.g., a deterministic hash of the mRID) rather than derived
+// from a real device certificate. Defaults to false. Operators can grep
+// the populate-time logs for "(placeholder)" to confirm whether the
+// real LFDI mapping has landed yet. The flag is informational; lookup
+// behavior is identical for placeholder and real entries.
 type Entry struct {
-	MRID string // CIM master resource ID
-	Name string // human friendly name (optional, may be empty)
-	LFDI string // IEEE 2030.5 long form device ID, hex string
+	MRID        string // CIM master resource ID
+	Name        string // human friendly name (optional, may be empty)
+	LFDI        string // IEEE 2030.5 long form device ID, hex string
+	Placeholder bool   // true when LFDI is a Stage 1 stand-in
 }
 
 // ErrInvalidEntry is returned by Add and AddBatch when an Entry has an
