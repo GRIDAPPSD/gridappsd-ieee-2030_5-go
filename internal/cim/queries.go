@@ -256,10 +256,16 @@ func (c *Client) QuerySolar(ctx context.Context, feederID string) (*QueryDataRes
 }
 
 // QueryBattery runs the battery-unit enumeration SPARQL against the
-// powergrid-model service, scoped to feederID. See QuerySolar for the
-// schema-variant behavior; the BatteryUnit-specific fields (ratedE,
-// storedE, batteryState) are inside the OPTIONAL block and only bind
-// on the older schema where a BatteryUnit child exists.
+// powergrid-model service, scoped to feederID. The query returns
+// PowerElectronicsConnections that have a BatteryUnit child on the
+// older CIM schema. On the current gridappsd-docker:develop schema
+// where no PowerElectronicsUnit children exist, this method returns
+// the same PEC set as QueryInverter and QuerySolar; the BatteryUnit-
+// specific fields (ratedE, storedE, batteryState) are inside the
+// OPTIONAL block and stay empty for those rows. Callers needing
+// battery-vs-other-DER discrimination on the current schema must use
+// external metadata (e.g., name patterns, EndDeviceGroup membership)
+// until the older-shape dataset is loaded.
 func (c *Client) QueryBattery(ctx context.Context, feederID string) (*QueryDataResult, error) {
 	return c.queryFeederTemplate(ctx, sparqlQueryBattery, feederID)
 }

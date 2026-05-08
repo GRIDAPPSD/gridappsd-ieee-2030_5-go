@@ -338,8 +338,15 @@ func TestSPARQLQueriesFeederIDUnderscoreStripping(t *testing.T) {
 	}
 }
 
-// TestSPARQLQueriesSchemaVariantParse exercises the COALESCE-bind
-// shape against two recorded response shapes:
+// TestSPARQLQueriesSchemaVariantParse exercises the Go-side response
+// parser against two recorded JSON envelope shapes (current and older
+// CIM schemas). It does NOT execute SPARQL against a Blazegraph and
+// does NOT prove that the templates render correctly under either
+// schema; that verification belongs to the //go:build gridappsd
+// integration tests against a live broker. Older-schema integration
+// verification is deferred until an older-shape dataset is available.
+//
+// The two recorded shapes are:
 //
 //  1. current-schema (gridappsd-docker:develop): each PEC row has
 //     ?id == ?pecid because no PowerElectronicsUnit child exists. The
