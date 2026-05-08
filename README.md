@@ -31,7 +31,9 @@ Three layers, slowest last:
 2. `make test-integration` brings up a bare ActiveMQ Classic 6.1.6 via
    `docker-compose.yml` at the repo root, runs the `integration`-tagged
    tests in `internal/cimstomp/`, and tears the broker down. Credentials
-   are `admin / admin`. Fast; intended for iterating on cimstomp internals.
+   are `system / manager`, matching the GridAPPS-D platform stack so the
+   bare-broker and platform test layers no longer diverge on creds. Fast;
+   intended for iterating on cimstomp internals.
 3. `make test-gridappsd` runs the `gridappsd`-tagged tests in
    `internal/cimstomp/` against the real GridAPPS-D platform stack
    (broker plugins, auth-token responder, request routing). Credentials
@@ -56,8 +58,7 @@ Three layers, slowest last:
    The gridappsd-docker stack should only be brought up bound to loopback
    (`127.0.0.1`). Do not run it on a publicly reachable host without
    tightening broker authentication first; the dev-default `system / manager`
-   and `admin / admin` credentials baked into the compose are not
-   production-safe.
+   credentials baked into the compose are not production-safe.
 
 ## License
 

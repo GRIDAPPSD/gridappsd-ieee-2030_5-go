@@ -348,8 +348,8 @@ func TestTLS_ClientConnectsOverTLS(t *testing.T) {
 
 	c := NewClient(STOMPConfig{
 		Address:  srv.Addr(),
-		User:     "admin",
-		Password: "admin",
+		User:     "system",
+		Password: "manager",
 		TLS:      srv.ClientTLSConfig(),
 	})
 	defer c.Close()
@@ -392,8 +392,8 @@ func TestTLS_ClientPlainTCPAgainstTLSServerFails(t *testing.T) {
 
 	c := NewClient(STOMPConfig{
 		Address:  srv.Addr(),
-		User:     "admin",
-		Password: "admin",
+		User:     "system",
+		Password: "manager",
 		// TLS intentionally nil: this is the negative test.
 	})
 	defer c.Close()
@@ -424,8 +424,8 @@ func TestTLS_ClientWrongCAFails(t *testing.T) {
 
 	c := NewClient(STOMPConfig{
 		Address:  srv.Addr(),
-		User:     "admin",
-		Password: "admin",
+		User:     "system",
+		Password: "manager",
 		TLS:      tlsCfg,
 	})
 	defer c.Close()
@@ -466,8 +466,8 @@ func TestTLS_ClientMissingClientCertFails(t *testing.T) {
 
 	c := NewClient(STOMPConfig{
 		Address:  srv.Addr(),
-		User:     "admin",
-		Password: "admin",
+		User:     "system",
+		Password: "manager",
 		TLS:      tlsCfg,
 	})
 	defer c.Close()
@@ -488,8 +488,8 @@ func TestTLS_PublisherConnectsOverTLS(t *testing.T) {
 
 	p := New(STOMPConfig{
 		Address:  srv.Addr(),
-		User:     "admin",
-		Password: "admin",
+		User:     "system",
+		Password: "manager",
 		TLS:      srv.ClientTLSConfig(),
 	})
 	defer p.Close()
@@ -512,8 +512,8 @@ func TestTLS_PublisherPlainTCPAgainstTLSServerFails(t *testing.T) {
 
 	p := New(STOMPConfig{
 		Address:  srv.Addr(),
-		User:     "admin",
-		Password: "admin",
+		User:     "system",
+		Password: "manager",
 		// TLS intentionally nil.
 	})
 	defer p.Close()
@@ -540,8 +540,8 @@ func TestTLS_PublisherWrongCAFails(t *testing.T) {
 
 	p := New(STOMPConfig{
 		Address:  srv.Addr(),
-		User:     "admin",
-		Password: "admin",
+		User:     "system",
+		Password: "manager",
 		TLS:      tlsCfg,
 	})
 	defer p.Close()
