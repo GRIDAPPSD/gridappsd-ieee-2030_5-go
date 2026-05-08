@@ -453,6 +453,101 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
+// TestEntryPlaceholderRoundTrip verifies that Entry.Placeholder is
+// preserved through Add, AddBatch, Get, and Snapshot. The flag is
+// informational and does not affect lookup behavior; this test pins
+// the round-trip so a future change cannot quietly drop it.
+func TestEntryPlaceholderRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	real := Entry{MRID: "mrid-real", Name: "Real Device", LFDI: "lfdi-real", Placeholder: false}
+	stub := Entry{MRID: "mrid-stub", Name: "Stage 1 Stub", LFDI: "lfdi-stub", Placeholder: true}
+
+	if err := r.Add(real); err != nil {
+		t.Fatalf("Add(real): %v", err)
+	}
+	if err := r.Add(stub); err != nil {
+		t.Fatalf("Add(stub): %v", err)
+	}
+
+	if got, ok := r.Get("mrid-real"); !ok || got != real {
+		t.Errorf("Get(mrid-real) = (%+v, %t), want (%+v, true)", got, ok, real)
+	}
+	if got, ok := r.Get("mrid-stub"); !ok || got != stub {
+		t.Errorf("Get(mrid-stub) = (%+v, %t), want (%+v, true)", got, ok, stub)
+	}
+
+	// Snapshot must preserve Placeholder on every entry.
+	snap := r.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("Snapshot length = %d, want 2", len(snap))
+	}
+	for _, e := range snap {
+		switch e.MRID {
+		case "mrid-real":
+			if e.Placeholder {
+				t.Errorf("snapshot entry mrid-real Placeholder = true, want false")
+			}
+		case "mrid-stub":
+			if !e.Placeholder {
+				t.Errorf("snapshot entry mrid-stub Placeholder = false, want true")
+			}
+		default:
+			t.Errorf("unexpected snapshot entry: %+v", e)
+		}
+	}
+}
+
+// TestEntryPlaceholderAddBatchRoundTrip verifies the same flag
+// preservation through the AddBatch path.
+func TestEntryPlaceholderAddBatchRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	batch := []Entry{
+		{MRID: "m1", Name: "One", LFDI: "l1", Placeholder: true},
+		{MRID: "m2", Name: "Two", LFDI: "l2", Placeholder: false},
+	}
+	if err := r.AddBatch(batch); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+	for _, want := range batch {
+		got, ok := r.Get(want.MRID)
+		if !ok || got != want {
+			t.Errorf("Get(%q) = (%+v, %t), want (%+v, true)", want.MRID, got, ok, want)
+		}
+	}
+}
+
+// TestEntryPlaceholderReplacementUpdatesFlag verifies that a Stage 2
+// re-add with Placeholder=false overwrites a Stage 1 placeholder entry.
+func TestEntryPlaceholderReplacementUpdatesFlag(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	stage1 := Entry{MRID: "m1", Name: "Device", LFDI: "lfdi-stage1", Placeholder: true}
+	if err := r.Add(stage1); err != nil {
+		t.Fatalf("Add stage1: %v", err)
+	}
+
+	stage2 := Entry{MRID: "m1", Name: "Device", LFDI: "lfdi-stage2", Placeholder: false}
+	if err := r.Add(stage2); err != nil {
+		t.Fatalf("Add stage2: %v", err)
+	}
+
+	got, ok := r.Get("m1")
+	if !ok {
+		t.Fatal("Get(m1) returned ok=false after replacement")
+	}
+	if got.Placeholder {
+		t.Errorf("Placeholder = true after replacement, want false")
+	}
+	if got.LFDI != "lfdi-stage2" {
+		t.Errorf("LFDI = %q, want lfdi-stage2", got.LFDI)
+	}
+}
+
 // TestSnapshotConcurrentSafe verifies that Snapshot, taken while writes
 // are in flight, returns a consistent independent copy. Race detector is
 // the primary signal here; we also do light correctness checks.
