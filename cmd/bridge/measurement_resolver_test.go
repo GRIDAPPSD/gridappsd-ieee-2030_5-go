@@ -90,6 +90,47 @@ func TestResolveMeasurementNilTable(t *testing.T) {
 	}
 }
 
+// TestFormatResolution pins the one-line log shape across the three
+// status branches. The placeholder rendering for empty device and lfdi
+// fields is intentional: log parsers downstream switch on the status
+// key, not on the literal placeholder strings, but the placeholders
+// must be stable so a grep for unattributed frames works.
+func TestFormatResolution(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		r    ResolveResult
+		want string
+	}{
+		{
+			name: "hit",
+			r:    ResolveResult{Status: ResolveStatusHit, DeviceMRID: "dev-1", LFDI: "lfdi-1"},
+			want: "frame for meas=meas-1 device=dev-1 lfdi=lfdi-1 status=hit",
+		},
+		{
+			name: "unregistered-device",
+			r:    ResolveResult{Status: ResolveStatusUnregisteredDevice, DeviceMRID: "dev-orphan"},
+			want: "frame for meas=meas-1 device=dev-orphan lfdi=<unregistered> status=unregistered-device",
+		},
+		{
+			name: "unknown-measurement",
+			r:    ResolveResult{Status: ResolveStatusUnknownMeasurement},
+			want: "frame for meas=meas-1 device=<unknown> lfdi=<unknown> status=unknown-measurement",
+		},
+	}
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatResolution("meas-1", tt.r)
+			if got != tt.want {
+				t.Errorf("formatResolution = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestResolveStatusString pins the human-readable rendering used in
 // pump-handler log lines so future refactors of the iota set cannot
 // silently mistranslate a status into "unknown-status".

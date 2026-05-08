@@ -340,28 +340,13 @@ func runPump(
 		seen   = make(map[string]struct{})
 	)
 
-	// Periodic stats logger. Runs in its own goroutine, exits on ctx
-	// cancel; the goroutine never outlives runPump.
-	var statsWG sync.WaitGroup
-	statsWG.Add(1)
-	go func() {
-		defer statsWG.Done()
-		t := time.NewTicker(statsLogInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if tbl == nil {
-					continue
-				}
-				hits, misses := tbl.Stats()
-				log.Printf("bridge: measurement-resolver stats hits=%d misses=%d table_size=%d",
-					hits, misses, tbl.Len())
-			}
-		}
-	}()
+	// Periodic stats logger. Runs in its own goroutine and exits on ctx
+	// cancel; the WaitGroup ensures runPump does not return with a live
+	// goroutine. tbl is a precondition: bootstrapMeasurementTable always
+	// returns a non-nil Table even on an empty result set, so no nil
+	// guard is needed here.
+	statsDone := make(chan struct{})
+	go logStatsUntilDone(ctx, tbl, statsDone)
 
 	err := pump.Run(ctx, func(f sim.MeasurementFrame) error {
 		log.Printf("bridge: frame received simulation_id=%s timestamp=%d measurements=%d",
@@ -376,24 +361,61 @@ func runPump(
 			if dup {
 				continue
 			}
-			r := resolveMeasurement(reg, tbl, mrid)
-			switch r.Status {
-			case ResolveStatusHit:
-				log.Printf("bridge: frame for meas=%s device=%s lfdi=%s status=%s",
-					mrid, r.DeviceMRID, r.LFDI, r.Status)
-			case ResolveStatusUnregisteredDevice:
-				log.Printf("bridge: frame for meas=%s device=%s lfdi=<unregistered> status=%s",
-					mrid, r.DeviceMRID, r.Status)
-			default:
-				log.Printf("bridge: frame for meas=%s device=<unknown> lfdi=<unknown> status=%s",
-					mrid, r.Status)
-			}
+			logResolution(mrid, resolveMeasurement(reg, tbl, mrid))
 		}
 		return nil
 	})
-	statsWG.Wait()
+	<-statsDone
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("pump: %w", err)
 	}
 	return nil
+}
+
+// logStatsUntilDone emits a periodic stats line for the measurement
+// side table at statsLogInterval. The function returns and signals done
+// when ctx is cancelled. tbl must be non-nil; the caller establishes
+// that invariant via bootstrapMeasurementTable.
+func logStatsUntilDone(ctx context.Context, tbl *measurements.Table, done chan<- struct{}) {
+	defer close(done)
+	t := time.NewTicker(statsLogInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			hits, misses := tbl.Stats()
+			log.Printf("bridge: measurement-resolver stats hits=%d misses=%d table_size=%d",
+				hits, misses, tbl.Len())
+		}
+	}
+}
+
+// logResolution prints a one-line summary of one (measurement-mRID,
+// resolution) pair using formatResolution to render the body.
+func logResolution(measMRID string, r ResolveResult) {
+	log.Printf("bridge: %s", formatResolution(measMRID, r))
+}
+
+// formatResolution renders a one-line summary of one (measurement-mRID,
+// resolution) pair. The format keeps the same key=value shape across
+// the three status branches so log parsers can switch on status alone.
+// device and lfdi are rendered as <unknown>/<unregistered> placeholders
+// when the corresponding field is empty for that status.
+func formatResolution(measMRID string, r ResolveResult) string {
+	device := r.DeviceMRID
+	if device == "" {
+		device = "<unknown>"
+	}
+	lfdi := r.LFDI
+	if lfdi == "" {
+		if r.Status == ResolveStatusUnregisteredDevice {
+			lfdi = "<unregistered>"
+		} else {
+			lfdi = "<unknown>"
+		}
+	}
+	return fmt.Sprintf("frame for meas=%s device=%s lfdi=%s status=%s",
+		measMRID, device, lfdi, r.Status)
 }
