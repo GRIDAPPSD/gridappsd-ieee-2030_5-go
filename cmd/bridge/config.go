@@ -124,11 +124,22 @@ func loadConfig(args []string) (config, error) {
 // the named env var, and the compiled-in fallback. Used for credential
 // fields whose flag defaults are intentionally registered as empty so
 // flag.PrintDefaults never echoes a real value.
+//
+// As a side effect, the env var is unset after the read so it does not
+// remain visible via /proc/<pid>/environ for the rest of process
+// lifetime. The resolved value still lives on the config struct (and
+// thus in heap memory) but is no longer reachable to anything that
+// only reads the process environment.
 func resolveCred(flagVal, envKey, fallback string) string {
 	if flagVal != "" {
+		// Even when the flag wins, scrub the env var so a leftover
+		// export does not surface to /proc/<pid>/environ.
+		os.Unsetenv(envKey)
 		return flagVal
 	}
-	if v, ok := os.LookupEnv(envKey); ok && v != "" {
+	v, ok := os.LookupEnv(envKey)
+	os.Unsetenv(envKey)
+	if ok && v != "" {
 		return v
 	}
 	return fallback

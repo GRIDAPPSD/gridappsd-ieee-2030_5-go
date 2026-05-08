@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"flag"
+	"os"
 	"strings"
 	"testing"
 )
@@ -133,6 +134,32 @@ func TestLoadConfigCredentialFlagDefaultsHidden(t *testing.T) {
 	}
 	if !strings.Contains(usage, "SEP2_STOMP_USER") {
 		t.Errorf("usage banner should mention env var SEP2_STOMP_USER: %q", usage)
+	}
+}
+
+// TestLoadConfigUnsetsCredentialEnvVars verifies that loadConfig
+// scrubs SEP2_STOMP_PASSWORD and SEP2_STOMP_USER from the process
+// environment after reading them, so they do not remain visible via
+// /proc/<pid>/environ for the rest of process lifetime.
+func TestLoadConfigUnsetsCredentialEnvVars(t *testing.T) {
+	t.Setenv("SEP2_STOMP_PASSWORD", "topsecret")
+	t.Setenv("SEP2_STOMP_USER", "alsosecret")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.STOMPPassword != "topsecret" {
+		t.Errorf("STOMPPassword: got %q, want topsecret", cfg.STOMPPassword)
+	}
+	if cfg.STOMPUser != "alsosecret" {
+		t.Errorf("STOMPUser: got %q, want alsosecret", cfg.STOMPUser)
+	}
+	if v, ok := os.LookupEnv("SEP2_STOMP_PASSWORD"); ok {
+		t.Errorf("SEP2_STOMP_PASSWORD still set in env after loadConfig: %q", v)
+	}
+	if v, ok := os.LookupEnv("SEP2_STOMP_USER"); ok {
+		t.Errorf("SEP2_STOMP_USER still set in env after loadConfig: %q", v)
 	}
 }
 
