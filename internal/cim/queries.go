@@ -15,96 +15,120 @@ import (
 // reaching the broker as a corrupted SPARQL string.
 var ErrInvalidFeederID = errors.New("cim: invalid feeder ID")
 
-// SPARQL query templates reproduced from the Python upstream's
-// Queries.py (gridappsd-2030_5) with trailing whitespace before
-// newlines normalized; SPARQL ignores it and the queries execute
-// identically against the broker. Verify against Queries.py before
-// edits. Each template carries a single %s placeholder where the
-// original Python code substitutes feeder_id via %-formatting.
-// Substitution at call time uses fmt.Sprintf.
+// SPARQL query templates derived from the Python upstream's Queries.py
+// (gridappsd-2030_5) but adapted to handle two CIM profile shapes
+// transparently:
 //
-// Source line numbers (Queries.py):
+//  1. CURRENT (gridappsd-docker:develop): each PowerElectronicsConnection
+//     stores its full attribute set (name, mRID, ratedS, ratedU,
+//     maxIFault, p, q, controlMode, Equipment.EquipmentContainer)
+//     directly. NO child PowerElectronicsUnit is attached. Verified
+//     empirically against the IEEE 123pv feeder in 2026-05-07: 14 PECs
+//     present in Blazegraph, 0 child Units.
 //
-//	sparqlQuerySolar          : line 117 (def at 116)
-//	sparqlQueryBattery        : line 158 (def at 157)
-//	sparqlQueryInverter       : line 201 (def at 200)
-//	sparqlQueryAllDERGroups   : line 236 (def at 235)
+//  2. OLDER (Python upstream's assumed shape): each PEC has a child
+//     PowerElectronicsUnit (PhotovoltaicUnit, BatteryUnit, etc.) bound
+//     via c:PowerElectronicsConnection.PowerElectronicsUnit. The Unit
+//     carries name and mRID; the PEC carries the electrical
+//     attributes. The Python upstream's `Queries.py` assumes this shape
+//     and uses an inner join, which filters everything out on the
+//     current schema.
 //
-// QuerySynchronousMachine (Queries.py:85) is intentionally not
-// reproduced; the bridge's v0 measurement path does not consume it. See
-// GAGO-010 ticket for rationale.
+// The fix: every PEC-rooted template makes the PowerElectronicsUnit
+// relationship OPTIONAL, then uses COALESCE binds to prefer the Unit's
+// name and mRID when present and fall back to the PEC's when absent.
+// One row per PEC either way.
+//
+// For Solar and Battery, the Unit type filter (a c:PhotovoltaicUnit / a
+// c:BatteryUnit) lives inside the OPTIONAL block. On the current
+// schema the OPTIONAL never binds and all PECs in the feeder come back
+// for both wrappers; QuerySolar, QueryBattery, and QueryInverter
+// return the same row set. On the older schema the type filter
+// discriminates correctly and only PVs come back from QuerySolar, only
+// batteries from QueryBattery. Callers needing strict PV-vs-battery
+// distinction on the current-schema deployment should switch to the
+// CIM Dictionary layer (GetCIMDictionary) where solarpanels and
+// batteries are pre-classified by the platform.
+//
+// QueryAllDERGroups operates on EndDeviceGroup, not PEC, and so is
+// unaffected by the PEC-Unit shape question; it remains a verbatim
+// port of the Python upstream's template.
+//
+// Each template carries a single %s placeholder where the feederID is
+// substituted via fmt.Sprintf, after the wrapper strips a leading
+// underscore from the input (see queryFeederTemplate). The on-wire
+// VALUES clause matches the gridappsd-docker:develop dataset's bare
+// uppercase UUID storage of c:IdentifiedObject.mRID.
 const (
 	sparqlQuerySolar = `# Solar - DistSolar
     PREFIX r:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX c:  <http://iec.ch/TC57/CIM100#>
-    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?fdrid ?id (group_concat(distinct ?phs;separator="\n") as ?phases) WHERE {
-    ?s r:type c:PhotovoltaicUnit.
-    ?s c:IdentifiedObject.name ?name.
-    ?s c:IdentifiedObject.mRID ?id.
-    ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
-    # feeder selection options - if all commented out, query matches all feeders
-    VALUES ?fdrid {"%s"}  # 123 bus
-    #VALUES ?fdrid {"_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"}  # 13 bus
-    #VALUES ?fdrid {"_5B816B93-7A5F-B64C-8460-47C17D6E4B0F"}  # 13 bus assets
-    #VALUES ?fdrid {"_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3"}  # 8500 node
-    #VALUES ?fdrid {"_67AB291F-DCCD-31B7-B499-338206B9828F"}  # J1
-    #VALUES ?fdrid {"_9CE150A8-8CC5-A0F9-B67E-BBD8C79D3095"}  # R2 12.47 3
-     ?pec c:Equipment.EquipmentContainer ?fdr.
-     ?fdr c:IdentifiedObject.mRID ?fdrid.
-     #?pec c:IdentifiedObject.mRID ?id.
-      #bind(strafter(str(?fdridraw), "_") as ?fdrid).
-     ?pec c:PowerElectronicsConnection.ratedS ?ratedS.
-     ?pec c:PowerElectronicsConnection.ratedU ?ratedU.
-     ?pec c:PowerElectronicsConnection.maxIFault ?ipu.
-     ?pec c:PowerElectronicsConnection.p ?p.
-     ?pec c:PowerElectronicsConnection.q ?q.
-     OPTIONAL {?pecp c:PowerElectronicsConnectionPhase.PowerElectronicsConnection ?pec.
-     ?pecp c:PowerElectronicsConnectionPhase.phase ?phsraw.
-       bind(strafter(str(?phsraw),"SinglePhaseKind.") as ?phs) }
-     #bind(strafter(str(?s),"#_") as ?id).
-     ?t c:Terminal.ConductingEquipment ?pec.
-     ?t c:Terminal.ConnectivityNode ?cn.
-     ?cn c:IdentifiedObject.name ?bus
+    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?fdrid ?id ?pecid (group_concat(distinct ?phs;separator="\n") as ?phases) WHERE {
+    VALUES ?fdrid {"%s"}
+    ?pec a c:PowerElectronicsConnection.
+    ?pec c:IdentifiedObject.name ?pecName.
+    ?pec c:IdentifiedObject.mRID ?pecid.
+    ?pec c:Equipment.EquipmentContainer ?fdr.
+    ?fdr c:IdentifiedObject.mRID ?fdrid.
+    ?pec c:PowerElectronicsConnection.ratedS ?ratedS.
+    ?pec c:PowerElectronicsConnection.ratedU ?ratedU.
+    ?pec c:PowerElectronicsConnection.maxIFault ?ipu.
+    ?pec c:PowerElectronicsConnection.p ?p.
+    ?pec c:PowerElectronicsConnection.q ?q.
+    OPTIONAL {
+      ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
+      ?s a c:PhotovoltaicUnit.
+      ?s c:IdentifiedObject.name ?unitName.
+      ?s c:IdentifiedObject.mRID ?unitID.
     }
-    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?fdrid ?id
+    BIND(COALESCE(?unitName, ?pecName) AS ?name)
+    BIND(COALESCE(?unitID, ?pecid) AS ?id)
+    OPTIONAL {?pecp c:PowerElectronicsConnectionPhase.PowerElectronicsConnection ?pec.
+      ?pecp c:PowerElectronicsConnectionPhase.phase ?phsraw.
+      bind(strafter(str(?phsraw),"SinglePhaseKind.") as ?phs) }
+    ?t c:Terminal.ConductingEquipment ?pec.
+    ?t c:Terminal.ConnectivityNode ?cn.
+    ?cn c:IdentifiedObject.name ?bus
+    }
+    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?fdrid ?id ?pecid
     ORDER by ?name
     `
 
 	sparqlQueryBattery = `# Storage - DistStorage
     PREFIX r:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX c:  <http://iec.ch/TC57/CIM100#>
-    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?ratedE ?storedE ?state ?p ?q ?id ?fdrid (group_concat(distinct ?phs;separator="\n") as ?phases) WHERE {
-     ?s r:type c:BatteryUnit.
-     ?s c:IdentifiedObject.name ?name.
-     ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
-    # feeder selection options - if all commented out, query matches all feeders
-    VALUES ?fdrid {"%s"}  # 123 bus
-    #VALUES ?fdrid {"_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"}  # 13 bus
-    #VALUES ?fdrid {"_5B816B93-7A5F-B64C-8460-47C17D6E4B0F"}  # 13 bus assets
-    #VALUES ?fdrid {"_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3"}  # 8500 node
-    #VALUES ?fdrid {"_67AB291F-DCCD-31B7-B499-338206B9828F"}  # J1
-    #VALUES ?fdrid {"_9CE150A8-8CC5-A0F9-B67E-BBD8C79D3095"}  # R2 12.47 3
-     ?pec c:Equipment.EquipmentContainer ?fdr.
-     ?fdr c:IdentifiedObject.mRID ?fdrid.
-      #bind(strafter(str(?fdridraw), "_") as ?fdrid).
-     ?pec c:PowerElectronicsConnection.ratedS ?ratedS.
-     ?pec c:PowerElectronicsConnection.ratedU ?ratedU.
-     ?pec c:PowerElectronicsConnection.maxIFault ?ipu.
-     ?s c:BatteryUnit.ratedE ?ratedE.
-     ?s c:BatteryUnit.storedE ?storedE.
-     ?s c:BatteryUnit.batteryState ?stateraw.
-       bind(strafter(str(?stateraw),"BatteryState.") as ?state)
-     ?pec c:PowerElectronicsConnection.p ?p.
-     ?pec c:PowerElectronicsConnection.q ?q.
-     OPTIONAL {?pecp c:PowerElectronicsConnectionPhase.PowerElectronicsConnection ?pec.
-     ?pecp c:PowerElectronicsConnectionPhase.phase ?phsraw.
-       bind(strafter(str(?phsraw),"SinglePhaseKind.") as ?phs) }
-     bind(strafter(str(?s),"#_") as ?id).
-     ?t c:Terminal.ConductingEquipment ?pec.
-     ?t c:Terminal.ConnectivityNode ?cn.
-     ?cn c:IdentifiedObject.name ?bus
+    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?ratedE ?storedE ?state ?p ?q ?id ?pecid ?fdrid (group_concat(distinct ?phs;separator="\n") as ?phases) WHERE {
+    VALUES ?fdrid {"%s"}
+    ?pec a c:PowerElectronicsConnection.
+    ?pec c:IdentifiedObject.name ?pecName.
+    ?pec c:IdentifiedObject.mRID ?pecid.
+    ?pec c:Equipment.EquipmentContainer ?fdr.
+    ?fdr c:IdentifiedObject.mRID ?fdrid.
+    ?pec c:PowerElectronicsConnection.ratedS ?ratedS.
+    ?pec c:PowerElectronicsConnection.ratedU ?ratedU.
+    ?pec c:PowerElectronicsConnection.maxIFault ?ipu.
+    ?pec c:PowerElectronicsConnection.p ?p.
+    ?pec c:PowerElectronicsConnection.q ?q.
+    OPTIONAL {
+      ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
+      ?s a c:BatteryUnit.
+      ?s c:IdentifiedObject.name ?unitName.
+      ?s c:IdentifiedObject.mRID ?unitID.
+      ?s c:BatteryUnit.ratedE ?ratedE.
+      ?s c:BatteryUnit.storedE ?storedE.
+      ?s c:BatteryUnit.batteryState ?stateraw.
+      bind(strafter(str(?stateraw),"BatteryState.") as ?state)
     }
-    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?ratedE ?storedE ?state ?p ?q ?id ?fdrid
+    BIND(COALESCE(?unitName, ?pecName) AS ?name)
+    BIND(COALESCE(?unitID, ?pecid) AS ?id)
+    OPTIONAL {?pecp c:PowerElectronicsConnectionPhase.PowerElectronicsConnection ?pec.
+      ?pecp c:PowerElectronicsConnectionPhase.phase ?phsraw.
+      bind(strafter(str(?phsraw),"SinglePhaseKind.") as ?phs) }
+    ?t c:Terminal.ConductingEquipment ?pec.
+    ?t c:Terminal.ConnectivityNode ?cn.
+    ?cn c:IdentifiedObject.name ?bus
+    }
+    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?ratedE ?storedE ?state ?p ?q ?id ?pecid ?fdrid
     ORDER by ?name
     `
 
@@ -114,11 +138,8 @@ const (
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
     SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?fdrid ?id ?pecid (group_concat(distinct ?phs;separator="\n") as ?phases)  WHERE {
     VALUES ?fdrid {"%s"}
-    #?s r:type c:PhotovoltaicUnit.
-    #?s r:type c:BatteryUnit.
-    ?s c:IdentifiedObject.name ?name.
-    ?s c:IdentifiedObject.mRID ?id.
-    ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
+    ?pec a c:PowerElectronicsConnection.
+    ?pec c:IdentifiedObject.name ?pecName.
     ?pec c:IdentifiedObject.mRID ?pecid.
     ?pec c:Equipment.EquipmentContainer ?fdr.
     ?fdr c:IdentifiedObject.mRID ?fdrid.
@@ -127,9 +148,16 @@ const (
     ?pec c:PowerElectronicsConnection.maxIFault ?ipu.
     ?pec c:PowerElectronicsConnection.p ?p.
     ?pec c:PowerElectronicsConnection.q ?q.
+    OPTIONAL {
+      ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
+      ?s c:IdentifiedObject.name ?unitName.
+      ?s c:IdentifiedObject.mRID ?unitID.
+    }
+    BIND(COALESCE(?unitName, ?pecName) AS ?name)
+    BIND(COALESCE(?unitID, ?pecid) AS ?id)
     OPTIONAL {?pecp c:PowerElectronicsConnectionPhase.PowerElectronicsConnection ?pec.
-    ?pecp c:PowerElectronicsConnectionPhase.phase ?phsraw.
-    bind(strafter(str(?phsraw),"SinglePhaseKind.") as ?phs) }
+      ?pecp c:PowerElectronicsConnectionPhase.phase ?phsraw.
+      bind(strafter(str(?phsraw),"SinglePhaseKind.") as ?phs) }
     ?t c:Terminal.ConductingEquipment ?pec.
     ?t c:Terminal.ConnectivityNode ?cn.
     ?cn c:IdentifiedObject.name ?bus
@@ -174,6 +202,11 @@ const (
 // well-shaped (UUID-ish, optionally underscore-prefixed) at production
 // call sites, so this check is conservative; it exists to prevent a
 // misuse from silently producing a malformed query.
+//
+// Both forms of the feederID input are accepted: bare UUID
+// ("E407CBB6-...") and underscore-prefixed UUID ("_E407CBB6-..."). The
+// wrapper layer strips at most one leading underscore before
+// substitution into the SPARQL VALUES clause; see queryFeederTemplate.
 func validateFeederID(feederID string) error {
 	if feederID == "" {
 		return fmt.Errorf("%w: empty", ErrInvalidFeederID)
@@ -184,46 +217,76 @@ func validateFeederID(feederID string) error {
 	return nil
 }
 
-// queryFeederTemplate validates the feederID, substitutes it into the
-// SPARQL template, and dispatches through Client.QueryData. The four
-// public Query* wrappers differ only in the template they pass.
+// normalizeFeederID strips at most one leading underscore from the
+// feederID. The gridappsd-docker:develop dataset stores
+// c:IdentifiedObject.mRID as a bare uppercase UUID without the
+// underscore prefix the Python upstream's call sites use; stripping
+// here lets the bridge accept either form without the caller having to
+// know which the deployed dataset uses. A double-underscore input
+// ("__abc") strips to a single ("_abc"), preserving caller intent for
+// the unusual case where the underscore is data rather than prefix.
+func normalizeFeederID(feederID string) string {
+	return strings.TrimPrefix(feederID, "_")
+}
+
+// queryFeederTemplate validates the feederID, strips a leading
+// underscore, substitutes it into the SPARQL template, and dispatches
+// through Client.QueryData. The four public Query* wrappers differ
+// only in the template they pass.
 func (c *Client) queryFeederTemplate(ctx context.Context, template, feederID string) (*QueryDataResult, error) {
 	if err := validateFeederID(feederID); err != nil {
 		return nil, err
 	}
-	sparql := fmt.Sprintf(template, feederID)
+	sparql := fmt.Sprintf(template, normalizeFeederID(feederID))
 	return c.QueryData(ctx, sparql)
 }
 
-// QuerySolar runs the photovoltaic-unit enumeration SPARQL from
-// gridappsd-2030_5 Queries.py:117 against the powergrid-model service,
-// scoped to feederID. The returned QueryDataResult exposes the raw
-// SPARQL bindings; callers are responsible for projecting them into
-// domain types and may use Binding.AsJSONLD on JSON-LD-shaped values.
+// QuerySolar runs the photovoltaic-unit enumeration SPARQL against the
+// powergrid-model service, scoped to feederID. The query returns one
+// row per PowerElectronicsConnection in the feeder. On the older CIM
+// profile shape (PEC plus PhotovoltaicUnit child) the PhotovoltaicUnit
+// type filter inside the OPTIONAL block discriminates correctly; on
+// the gridappsd-docker:develop shape (PEC-as-leaf, no Unit) the
+// OPTIONAL never binds and all feeder PECs come back. The returned
+// QueryDataResult exposes the raw SPARQL bindings; callers are
+// responsible for projecting them into domain types and may use
+// Binding.AsJSONLD on JSON-LD-shaped values.
 func (c *Client) QuerySolar(ctx context.Context, feederID string) (*QueryDataResult, error) {
 	return c.queryFeederTemplate(ctx, sparqlQuerySolar, feederID)
 }
 
-// QueryBattery runs the battery-unit enumeration SPARQL from
-// gridappsd-2030_5 Queries.py:158 against the powergrid-model service,
-// scoped to feederID. See QuerySolar for the binding-shape contract.
+// QueryBattery runs the battery-unit enumeration SPARQL against the
+// powergrid-model service, scoped to feederID. The query returns
+// PowerElectronicsConnections that have a BatteryUnit child on the
+// older CIM schema. On the current gridappsd-docker:develop schema
+// where no PowerElectronicsUnit children exist, this method returns
+// the same PEC set as QueryInverter and QuerySolar; the BatteryUnit-
+// specific fields (ratedE, storedE, batteryState) are inside the
+// OPTIONAL block and stay empty for those rows. Callers needing
+// battery-vs-other-DER discrimination on the current schema must use
+// external metadata (e.g., name patterns, EndDeviceGroup membership)
+// until the older-shape dataset is loaded.
 func (c *Client) QueryBattery(ctx context.Context, feederID string) (*QueryDataResult, error) {
 	return c.queryFeederTemplate(ctx, sparqlQueryBattery, feederID)
 }
 
 // QueryInverter runs the generic PowerElectronicsConnection enumeration
-// SPARQL from gridappsd-2030_5 Queries.py:201 against the powergrid-
-// model service, scoped to feederID. The Python upstream comments out
-// the unit-type filter so the query covers any inverter; this Go
-// reproduction keeps that behavior.
+// SPARQL against the powergrid-model service, scoped to feederID. The
+// OPTIONAL Unit block has no type filter, so on the older schema any
+// PowerElectronicsUnit (PhotovoltaicUnit, BatteryUnit, or other) binds
+// the unit-level identity; on the current schema it falls through to
+// PEC identity. This wrapper is the workhorse for DER enumeration on
+// the current schema since QuerySolar and QueryBattery return the
+// same PEC set with no discriminator.
 func (c *Client) QueryInverter(ctx context.Context, feederID string) (*QueryDataResult, error) {
 	return c.queryFeederTemplate(ctx, sparqlQueryInverter, feederID)
 }
 
-// QueryAllDERGroups runs the EndDeviceGroup enumeration SPARQL from
-// gridappsd-2030_5 Queries.py:236 against the powergrid-model service,
-// scoped to feederID. The result includes group-concatenated name,
-// device, and DERFunction lists per group.
+// QueryAllDERGroups runs the EndDeviceGroup enumeration SPARQL against
+// the powergrid-model service, scoped to feederID. The result includes
+// group-concatenated name, device, and DERFunction lists per group.
+// EndDeviceGroup is independent of the PEC-Unit profile question and
+// this template is unchanged from the Python upstream.
 func (c *Client) QueryAllDERGroups(ctx context.Context, feederID string) (*QueryDataResult, error) {
 	return c.queryFeederTemplate(ctx, sparqlQueryAllDERGroups, feederID)
 }
