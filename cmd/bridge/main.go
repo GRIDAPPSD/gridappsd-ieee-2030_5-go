@@ -27,6 +27,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -106,7 +107,6 @@ func run(ctx context.Context, cfg config) error {
 		// lands; for now we log and proceed.
 		log.Printf("bridge: -publish-on-start requested; cimstomp Publish/SendRaw primitive for diff envelopes is filed as Stage 2 follow-up; skipping")
 	}
-	_ = reg // surfaced once SendRaw lands; the registry drives the publish target.
 
 	if cfg.SimulationID == "" {
 		log.Printf("bridge: no SEP2_SIMULATION_ID set; skipping simulation subscribe; idling until shutdown")
@@ -114,7 +114,7 @@ func run(ctx context.Context, cfg config) error {
 		return ctx.Err()
 	}
 
-	return runPump(ctx, client, cfg.SimulationID)
+	return runPump(ctx, client, reg, cfg.SimulationID)
 }
 
 // connectClient dials the GridAPPS-D STOMP broker, runs the auth-token
@@ -241,17 +241,52 @@ func queryDevices(
 
 // runPump subscribes to the simulation output topic and runs the Pump
 // until ctx is cancelled or the subscription closes. The handler logs a
-// one-liner per frame; richer downstream consumption (registry
-// hydration, IEEE 2030.5 MirrorMeterReading mapping) is Stage 2.
-func runPump(ctx context.Context, client *cimstomp.Client, simID string) error {
+// one-liner per frame and then walks each measurement, performing an
+// mRID-to-LFDI lookup against reg. The first time a given measurement
+// mRID is seen, the handler logs the lookup result; subsequent frames
+// carrying the same mRID are deduplicated to avoid log spam.
+//
+// At Stage 1, measurement mRIDs (per-point identifiers in the platform
+// frame) are not the same as the device mRIDs the registry is keyed on,
+// so the lookup typically misses. The point of plumbing reg into the
+// handler is to demonstrate the seam: a future revision can change the
+// lookup key (e.g., to the parent ConductingEquipment mRID) without
+// reworking the pump glue. Richer downstream consumption (IEEE 2030.5
+// MirrorMeterReading mapping) is Stage 2.
+func runPump(ctx context.Context, client *cimstomp.Client, reg *registry.Registry, simID string) error {
 	dest := sim.OutputTopic(simID)
 	log.Printf("bridge: subscribing to %s", dest)
 
 	pump := sim.NewPump(client, simID)
 
+	// seen dedupes the per-mRID lookup log so a 1Hz simulation does not
+	// reprint the same line every timestep. Plain map plus mutex; the
+	// pump handler is invoked serially so the mutex is cheap insurance
+	// against a future parallel-handler change rather than current need.
+	var (
+		seenMu sync.Mutex
+		seen   = make(map[string]struct{})
+	)
+
 	err := pump.Run(ctx, func(f sim.MeasurementFrame) error {
 		log.Printf("bridge: frame received simulation_id=%s timestamp=%d measurements=%d",
 			f.SimulationID, f.Message.Timestamp, len(f.Message.Measurements))
+		for mrid := range f.Message.Measurements {
+			seenMu.Lock()
+			_, dup := seen[mrid]
+			if !dup {
+				seen[mrid] = struct{}{}
+			}
+			seenMu.Unlock()
+			if dup {
+				continue
+			}
+			if lfdi, ok := reg.LFDI(mrid); ok {
+				log.Printf("bridge: frame for mrid=%s lfdi=%s (placeholder)", mrid, lfdi)
+			} else {
+				log.Printf("bridge: frame for mrid=%s lfdi=<not registered>", mrid)
+			}
+		}
 		return nil
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
