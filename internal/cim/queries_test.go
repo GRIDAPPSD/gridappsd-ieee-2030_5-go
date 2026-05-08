@@ -88,6 +88,17 @@ func queryCases() []queryCase {
 				"c:DERFunction",
 			},
 		},
+		{
+			name: "QueryMeasurements",
+			call: (*Client).QueryMeasurements,
+			wantSubstrings: []string{
+				`VALUES ?fdrid {"FEEDER123"}`,
+				"c:Measurement.PowerSystemResource",
+				"?measid",
+				"?eqid",
+				"c:Equipment.EquipmentContainer",
+			},
+		},
 	}
 }
 
@@ -401,8 +412,9 @@ func TestSPARQLQueriesSchemaVariantParse(t *testing.T) {
 	for _, s := range shapes {
 		s := s
 		for _, tc := range queryCases() {
-			if tc.name == "QueryAllDERGroups" {
-				// AllDERGroups operates on EndDeviceGroup, not PEC; the
+			if tc.name == "QueryAllDERGroups" || tc.name == "QueryMeasurements" {
+				// AllDERGroups operates on EndDeviceGroup, not PEC, and
+				// QueryMeasurements operates on Measurement, not PEC; the
 				// schema variants in this test do not apply.
 				continue
 			}

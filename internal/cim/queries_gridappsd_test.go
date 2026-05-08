@@ -176,3 +176,31 @@ func TestGridAPPSD_QueryBattery_IEEE123pv(t *testing.T) {
 		t.Fatalf("len(Bindings) = 0, want non-zero on gridappsd-docker:develop (PEC-as-leaf shape)")
 	}
 }
+
+// TestGridAPPSD_QueryMeasurements_IEEE123pv asserts the GAGO-029
+// measurement-mRID enumeration template returns rows binding each
+// Measurement to its parent ConductingEquipment (PowerSystemResource).
+// IEEE 123pv has 14 PECs and dozens of measurements per PEC, so the
+// row count is bounded below by the PEC count and is expected in the
+// hundreds. The first row must carry both ?measid and ?eqid as
+// non-empty strings, which the side-table populator depends on.
+func TestGridAPPSD_QueryMeasurements_IEEE123pv(t *testing.T) {
+	c := newGridAPPSDClient(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := c.QueryMeasurements(ctx, ieee123pvFeederMRID)
+	if err != nil {
+		t.Fatalf("QueryMeasurements: %v", err)
+	}
+	if got := len(res.Results.Bindings); got < 14 {
+		t.Fatalf("len(Bindings) = %d, want at least 14 (one Measurement per PEC at minimum)", got)
+	}
+	row := res.Results.Bindings[0]
+	for _, key := range []string{"measid", "eqid"} {
+		if row[key].Value == "" {
+			t.Errorf("first row missing %q; full row: %+v", key, row)
+		}
+	}
+}
