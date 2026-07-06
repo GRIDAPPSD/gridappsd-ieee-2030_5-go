@@ -31,10 +31,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cim"
-	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cim/sim"
-	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cimstomp"
-	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
 const version = "0.1.0-stage1"

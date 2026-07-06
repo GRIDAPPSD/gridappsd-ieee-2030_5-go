@@ -24,7 +24,7 @@ import (
 
 	"github.com/go-stomp/stomp/v3"
 
-	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cimstomp"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
 )
 
 const (

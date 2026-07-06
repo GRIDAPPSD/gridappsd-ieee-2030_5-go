@@ -1,4 +1,4 @@
-module github.com/GRIDAPPSD/gridappsd-2030_5-go
+module github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go
 
 go 1.25.0
 

@@ -10,7 +10,7 @@
 package cimstomptest
 
 import (
-	"github.com/GRIDAPPSD/gridappsd-2030_5-go/internal/cimstomp"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
 )
 
 // NewSubscription returns a live *cimstomp.Subscription and the
