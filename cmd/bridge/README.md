@@ -43,7 +43,7 @@ Bring up a broker. Either:
 
 ```bash
 # Bare ActiveMQ from this repo (good for testing connect / token bootstrap).
-cd ~/repos/gridappsd-2030_5-go
+cd ~/repos/gridappsd-ieee-2030_5-go
 docker compose up -d
 ```
 
@@ -59,7 +59,7 @@ docker compose up -d
 Then run the bridge:
 
 ```bash
-cd ~/repos/gridappsd-2030_5-go
+cd ~/repos/gridappsd-ieee-2030_5-go
 make bridge-e2e
 ```
 
