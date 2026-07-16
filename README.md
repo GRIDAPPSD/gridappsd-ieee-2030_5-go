@@ -1,14 +1,33 @@
-# gridappsd-2030_5-go
+# gridappsd-ieee-2030_5-go
 
-Go bridge that wires the IEEE 2030.5 protocol surface
-(github.com/GRIDAPPSD/ieee-2030_5-go) to the GridAPPS-D platform via
-STOMP/ActiveMQ messaging.
+Go bridge that wires the IEEE 2030.5 protocol surface to the GridAPPS-D
+platform via STOMP/ActiveMQ messaging.
 
 ## Status
 
 v0.0.0 scaffold. The bridge is not yet wired. internal/cimstomp/ carries
 a STOMP publisher ported from gotocim. internal/cim/ and internal/registry/
 are placeholders.
+
+## Repository access and build requirements
+
+This repository is private under the GRIDAPPSD GitHub org. A reader needs
+`GRIDAPPSD` org access (or an explicit collaborator grant) to clone it at
+all.
+
+Today's dependency graph is entirely public: the only third-party
+requirement is `github.com/go-stomp/stomp/v3`, so `go build ./...` succeeds
+for any reader who can already clone the repo, with no further access
+grants needed.
+
+That will change with the planned IEEE 2030.5 server embedding (see
+`cmd/bridge/README.md`, "Out of scope"). Once that work lands, the bridge
+will `require` the private `github.com/GRIDAPPSD/ieee-2030_5-core-go`
+module, and a builder will additionally need read access to that module
+(a fine-grained GitHub PAT scoped to it, per the family migration plan).
+A reader with access to the private core module will be able to build;
+a reader without it will not. This section will be updated with the exact
+access steps when that dependency lands.
 
 ## Layout
 
