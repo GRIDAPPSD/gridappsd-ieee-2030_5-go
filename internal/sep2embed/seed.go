@@ -20,7 +20,9 @@ import (
 //
 //	store id (both EndDevice and the DER's parent key) = Entry.LFDI
 //	EndDevice.LFDI                                      = Entry.LFDI
-//	EndDevice.SFDI                                       = derivePlaceholderSFDI(Entry.LFDI)
+//	EndDevice.SFDI                                       = Entry.SFDI, or
+//	                                                       derivePlaceholderSFDI(Entry.LFDI)
+//	                                                       when Entry.SFDI is empty
 //	EndDevice.Enabled                                    = true
 //	EndDevice.Href                                       = "/edev/" + id
 //	EndDevice.DERListLink                                = "/edev/" + id + "/der" (All: 1)
@@ -61,11 +63,16 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry) error {
 	id := e.LFDI
 
+	sfdi := e.SFDI
+	if sfdi == "" {
+		sfdi = derivePlaceholderSFDI(e.LFDI)
+	}
+
 	enabled := true
 	dev := sep2.EndDevice{
 		Enabled: &enabled,
 		LFDI:    e.LFDI,
-		SFDI:    derivePlaceholderSFDI(e.LFDI),
+		SFDI:    sfdi,
 	}
 	dev.Href = "/edev/" + id
 	dev.DERListLink = &sep2.ListLink{Href: "/edev/" + id + "/der", All: 1}
@@ -88,18 +95,19 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry) err
 // sepTLS.ValidateSFDI-passing) placeholder SFDI, deterministically
 // derived from lfdi.
 //
-// Registry entries at this stage carry only an LFDI, itself a Stage 1
-// placeholder per cmd/bridge/lfdi.go (a deterministic SHA-256 hash of
-// the device's mRID, not yet derived from a real device certificate).
-// GAGO-033 replaces both the LFDI and this SFDI with certificate-derived
-// values per spec section 6.3.4. Until then, EndDevice.SFDI is a
-// required (non-omitempty) wire field and the EndDeviceStore's
-// GetBySFDI index needs a stable, unique key, so this function mirrors
+// GAGO-033 gives every device a certificate-derived registry.Entry.SFDI
+// (spec section 6.3.3, computed directly from the device's own
+// certificate by internal/sep2embed.EnsureDeviceIdentities), so seedOne
+// reaches this fallback only for an Entry that predates that change or
+// was constructed directly by a caller that never set SFDI (e.g. an
+// older fixture or a registry-only test). EndDevice.SFDI is a required
+// (non-omitempty) wire field and the EndDeviceStore's GetBySFDI index
+// needs a stable, unique key regardless, so this function mirrors
 // sepTLS.SFDI's derivation shape (36-bit truncation of a SHA-256 digest,
 // formatted as 11 decimal digits plus a digit-sum check digit) but
-// starting from the placeholder LFDI string instead of a certificate's
-// DER bytes. Downstream code that validates SFDI shape (sepTLS.ValidateSFDI)
-// is not special-cased for the placeholder.
+// starting from the LFDI string instead of a certificate's DER bytes.
+// Downstream code that validates SFDI shape (sepTLS.ValidateSFDI) is not
+// special-cased for the placeholder.
 func derivePlaceholderSFDI(lfdi string) string {
 	sum := sha256.Sum256([]byte(lfdi))
 
