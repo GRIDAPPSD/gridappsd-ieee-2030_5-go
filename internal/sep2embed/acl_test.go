@@ -2,12 +2,18 @@ package sep2embed
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
+	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store/memory"
+
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
 // spyResolver records every OwnsEndDevice call it receives and answers
@@ -288,5 +294,93 @@ func TestStoreOwnerResolverOwnsEndDevice(t *testing.T) {
 				t.Errorf("OwnsEndDevice(%q, %q) = %v, want %v", tt.callerLFDI, tt.edevID, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestOwnsEndDeviceAgreesWithSepTLSLFDIDerivation locks the invariant
+// storeOwnerResolver.OwnsEndDevice's doc comment states: the caller
+// LFDI and the stored EndDevice.LFDI both derive from sepTLS.LFDI and
+// are therefore always the same canonical uppercase-hex form, which is
+// why an exact, non-case-folded string compare is correct.
+//
+// It does not merely call sepTLS.LFDI(cert) twice (that would be
+// tautological). It drives each side through the real code path its
+// real caller uses:
+//
+//   - the "caller" side runs the request through the actual
+//     identityMiddleware, exactly as a live mTLS handshake would, and
+//     reads the LFDI back out via identityFromContext;
+//   - the "stored" side runs the actual production seedOne function
+//     (seed.go), exactly as Embed.New seeds real devices, from a
+//     registry.Entry carrying the same certificate-derived LFDI.
+//
+// If either identityMiddleware's derivation or seedOne's field
+// assignment ever drifts (a different casing function, a swapped
+// field, a normalization step added on only one side), this test
+// fails: it is the regression guard for the comment, not just a
+// restatement of it.
+func TestOwnsEndDeviceAgreesWithSepTLSLFDIDerivation(t *testing.T) {
+	t.Parallel()
+
+	caCertPEM, caKeyPEM, err := sep2cert.GenerateCA(sep2cert.CAOptions{
+		Organization: "sep2embed acl test CA",
+		CommonName:   "sep2embed acl test CA",
+	})
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	caCert, caKey, err := parseCAPair(caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("parseCAPair: %v", err)
+	}
+
+	devCertPEM, _, err := sep2cert.GenerateDeviceCert(caCert, caKey, sep2cert.DeviceCertOptions{
+		DeviceType:  sep2cert.DeviceTypeGeneric,
+		HWSerialNum: "test-serial-lfdi-invariant",
+		IsTestCert:  true,
+	})
+	if err != nil {
+		t.Fatalf("GenerateDeviceCert: %v", err)
+	}
+	leaf, err := sep2cert.ParseCertificatePEM(devCertPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificatePEM: %v", err)
+	}
+
+	// Stored side: the real production seeding path (seed.go's
+	// seedOne), from a registry.Entry whose LFDI is certificate-derived
+	// exactly as GAGO-033's EnsureDeviceIdentities produces it.
+	stores := newStores()
+	entry := registry.Entry{
+		MRID: "mrid-lfdi-invariant-test",
+		Name: "LFDI Invariant Test Device",
+		LFDI: sepTLS.LFDI(leaf),
+	}
+	if err := seedOne(context.Background(), stores, entry); err != nil {
+		t.Fatalf("seedOne: %v", err)
+	}
+
+	// Caller side: the real identityMiddleware, fed a request whose
+	// TLS.PeerCertificates[0] is the same leaf certificate, exactly as
+	// a live mTLS handshake would populate it.
+	var gotCallerLFDI string
+	spy := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		lfdi, _, ok := identityFromContext(r.Context())
+		if !ok {
+			t.Fatal("identityFromContext: ok = false after identityMiddleware ran")
+		}
+		gotCallerLFDI = lfdi
+	})
+	req := httptest.NewRequest(http.MethodGet, "/edev/"+entry.LFDI, nil)
+	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}}
+	identityMiddleware(spy).ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotCallerLFDI != entry.LFDI {
+		t.Fatalf("identityMiddleware-derived caller LFDI %q != seedOne-stored EndDevice.LFDI %q; the two derivation paths disagree", gotCallerLFDI, entry.LFDI)
+	}
+
+	resolver := newStoreOwnerResolver(stores.EndDevices)
+	if !resolver.OwnsEndDevice(gotCallerLFDI, entry.LFDI) {
+		t.Errorf("OwnsEndDevice(%q, %q) = false, want true: both sides derive from sepTLS.LFDI on the same certificate", gotCallerLFDI, entry.LFDI)
 	}
 }

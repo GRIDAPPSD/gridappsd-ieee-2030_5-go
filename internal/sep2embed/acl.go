@@ -48,6 +48,23 @@ func newStoreOwnerResolver(endDevices store.EndDeviceStore) *storeOwnerResolver 
 // EndDeviceStore.GetBySFDI/GetByLFDI (pkg/store/memory/enddevice.go),
 // which ignore their ctx parameter and call context.Background()
 // internally for the exact same reason.
+//
+// The comparison below is an exact, uppercase-sensitive string compare
+// with no case-folding, and that is correct, not an oversight: both
+// operands derive from the same function, sepTLS.LFDI, which always
+// returns the canonical uppercase-hex form (spec section 6.3.4).
+// callerLFDI reaches here via identityMiddleware's
+// sepTLS.LFDI(r.TLS.PeerCertificates[0]) call; the stored
+// EndDevice.LFDI reaches here via seed.go's seedOne, which sets it
+// from registry.Entry.LFDI, itself sourced (GAGO-033) from
+// sepTLS.LFDI on that same device's certificate. Two callers of one
+// canonicalizing function agree by construction, so exact-string
+// compare is the correct check. Do NOT add runtime case-folding here:
+// that would mask a real drift bug (one side no longer deriving from
+// sepTLS.LFDI) instead of surfacing it. TestOwnsEndDeviceAgreesWithSepTLSLFDIDerivation
+// locks this invariant: it derives both sides from the same
+// certificate the way each real caller does, and fails if either
+// derivation path's casing or shape ever drifts.
 func (r *storeOwnerResolver) OwnsEndDevice(callerLFDI, edevID string) bool {
 	if callerLFDI == "" || edevID == "" {
 		return false
@@ -72,6 +89,25 @@ func (r *storeOwnerResolver) OwnsEndDevice(callerLFDI, edevID string) bool {
 // family (sep2acl.MethodAllowed's matched=false) is the sole pass-through
 // case, and only when the path is not itself an /edev/{id}-scoped
 // resource with a denied owner: see the ordering comment below.
+//
+// Load-bearing mounting assumption: aclMiddleware parses r.URL.Path
+// directly (sep2acl.EndDeviceID, sep2acl.MethodAllowed) rather than
+// using stdlib http.ServeMux's own {id} pattern matching, because it
+// runs BEFORE the protocol mux's own leaf pattern match (see
+// buildHandler's Wrap composition in auth.go). This is only safe
+// because a request reaches this middleware chain by first passing
+// through assembly.BuildProtocolRouter's outer "top" http.ServeMux,
+// which canonicalizes the path before dispatching: a path containing
+// ".." segments, "//" (empty segments), or a percent-encoded slash is
+// 301-redirected to its cleaned form by that outer mux, so this
+// middleware never actually observes those forms. That
+// canonicalization, owned entirely by the outer mux and NOT by this
+// package, is what makes this package's segment-based parsing safe
+// against dot-dot or slash-encoding traversal. If aclMiddleware is
+// ever remounted ahead of a non-canonicalizing router (i.e., no longer
+// behind that outer http.ServeMux), that bypass surface reopens and
+// this middleware must not be trusted as-is: re-canonicalize the path
+// here first.
 func aclMiddleware(resolver OwnerResolver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
