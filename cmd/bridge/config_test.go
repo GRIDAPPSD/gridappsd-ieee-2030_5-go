@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"flag"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -16,6 +17,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("SEP2_FEEDER_MRID", "")
 	t.Setenv("SEP2_PUBLISH_ON_START", "")
 	t.Setenv("SEP2_STOMP_ALLOW_PLAINTEXT", "")
+	t.Setenv("SEP2_SERVER_ADDR", "")
+	t.Setenv("SEP2_SERVER_CERT_DIR", "")
 
 	cfg, err := loadConfig(nil)
 	if err != nil {
@@ -41,6 +44,104 @@ func TestLoadConfigDefaults(t *testing.T) {
 	// doc comment.
 	if cfg.AllowPlaintext {
 		t.Errorf("AllowPlaintext: got true, want false (fail-closed default)")
+	}
+	if cfg.SEP2ServerAddr != defaultSEP2ServerAddr {
+		t.Errorf("SEP2ServerAddr: got %q want %q", cfg.SEP2ServerAddr, defaultSEP2ServerAddr)
+	}
+	if cfg.SEP2ServerCertDir != defaultSEP2ServerCertDir {
+		t.Errorf("SEP2ServerCertDir: got %q want %q", cfg.SEP2ServerCertDir, defaultSEP2ServerCertDir)
+	}
+}
+
+// TestLoadConfigSEP2ServerAddrDefaultsToLoopback verifies the embedded
+// IEEE 2030.5 listener's default bind host is a loopback address. The
+// embed has no per-device ACL yet (GAGO-043 follow-up), so a default
+// that is reachable off-box would silently widen the exposure of that
+// unfinished access-control story; only an explicit override should do
+// that. See config.SEP2ServerAddr's doc comment.
+func TestLoadConfigSEP2ServerAddrDefaultsToLoopback(t *testing.T) {
+	t.Setenv("SEP2_SERVER_ADDR", "")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	host, _, err := net.SplitHostPort(cfg.SEP2ServerAddr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", cfg.SEP2ServerAddr, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		t.Errorf("SEP2ServerAddr host = %q, want a loopback address", host)
+	}
+}
+
+// TestLoadConfigSEP2ServerAddrEnvOverride verifies a non-loopback bind
+// is honored when the operator sets it explicitly: the address itself
+// carries the "explicit choice" signal (unlike AllowPlaintext, there is
+// no separate boolean gate), so an override must pass through
+// unmodified.
+func TestLoadConfigSEP2ServerAddrEnvOverride(t *testing.T) {
+	t.Setenv("SEP2_SERVER_ADDR", "0.0.0.0:8443")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2ServerAddr != "0.0.0.0:8443" {
+		t.Errorf("SEP2ServerAddr: got %q, want the explicit override unchanged", cfg.SEP2ServerAddr)
+	}
+}
+
+// TestLoadConfigSEP2ServerAddrFlagShadowsEnv matches the precedence
+// shape already covered for -stomp-addr / SEP2_STOMP_ADDR.
+func TestLoadConfigSEP2ServerAddrFlagShadowsEnv(t *testing.T) {
+	t.Setenv("SEP2_SERVER_ADDR", "env.example:8443")
+
+	cfg, err := loadConfig([]string{"-sep2-server-addr=flag.example:8443"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2ServerAddr != "flag.example:8443" {
+		t.Errorf("SEP2ServerAddr: got %q want flag value", cfg.SEP2ServerAddr)
+	}
+}
+
+// TestLoadConfigSEP2ServerAddrRequired verifies an explicitly-emptied
+// value is a loadConfig error naming the field.
+func TestLoadConfigSEP2ServerAddrRequired(t *testing.T) {
+	_, err := loadConfig([]string{"-sep2-server-addr="})
+	if err == nil {
+		t.Fatal("expected validate error, got nil")
+	}
+	if !strings.Contains(err.Error(), "SEP2_SERVER_ADDR") {
+		t.Errorf("error should name the field: %v", err)
+	}
+}
+
+// TestLoadConfigSEP2ServerCertDirEnvOverride verifies the cert dir env
+// override passes through unmodified, matching the other string knobs.
+func TestLoadConfigSEP2ServerCertDirEnvOverride(t *testing.T) {
+	t.Setenv("SEP2_SERVER_CERT_DIR", "/etc/bridge/sep2-certs")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2ServerCertDir != "/etc/bridge/sep2-certs" {
+		t.Errorf("SEP2ServerCertDir: got %q, want the explicit override unchanged", cfg.SEP2ServerCertDir)
+	}
+}
+
+// TestLoadConfigSEP2ServerCertDirRequired verifies an explicitly-emptied
+// value is a loadConfig error naming the field.
+func TestLoadConfigSEP2ServerCertDirRequired(t *testing.T) {
+	_, err := loadConfig([]string{"-sep2-server-cert-dir="})
+	if err == nil {
+		t.Fatal("expected validate error, got nil")
+	}
+	if !strings.Contains(err.Error(), "SEP2_SERVER_CERT_DIR") {
+		t.Errorf("error should name the field: %v", err)
 	}
 }
 

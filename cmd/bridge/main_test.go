@@ -75,3 +75,26 @@ func TestBusConfigDefaultIsFailClosed(t *testing.T) {
 		t.Errorf("TLSConfig: got %v, want nil", got.TLSConfig)
 	}
 }
+
+// TestSEP2EmbedConfigMapsFields verifies sep2EmbedConfig's field-by-field
+// mapping from the bridge's own config onto sep2embed.Config, mirroring
+// TestBusConfigMapsFields for the STOMP side. This is the pure-mapping
+// unit test that stands in for exercising newSEP2Embed's cert minting
+// and listener bind at this layer; the boot-over-mTLS proof lives in
+// sep2embed_wiring_test.go.
+func TestSEP2EmbedConfigMapsFields(t *testing.T) {
+	t.Parallel()
+
+	cfg := config{
+		SEP2ServerAddr:    "127.0.0.1:8443",
+		SEP2ServerCertDir: "/var/lib/bridge/sep2-certs",
+	}
+
+	got := sep2EmbedConfig(cfg)
+	if got.Addr != cfg.SEP2ServerAddr {
+		t.Errorf("Addr: got %q, want %q", got.Addr, cfg.SEP2ServerAddr)
+	}
+	if got.CertDir != cfg.SEP2ServerCertDir {
+		t.Errorf("CertDir: got %q, want %q", got.CertDir, cfg.SEP2ServerCertDir)
+	}
+}
