@@ -24,6 +24,16 @@ import (
 // This closes the gap the previous doc comment on this function
 // described: every device that clears the mTLS handshake used to be
 // able to read or write any other device's resources. It now cannot.
+//
+// acl (aclMiddleware) is composed inside identityMiddleware here, and
+// this whole chain is dispatched to only after
+// assembly.BuildProtocolRouter's outer "top" http.ServeMux has already
+// matched and, where needed, path-cleaned the request: that outer mux
+// owns the canonicalizing redirect (".." / "//" / percent-encoded-slash
+// forms are 301-redirected to their cleaned form before top ever
+// dispatches into this Wrap chain). aclMiddleware therefore never
+// observes an uncleaned path. See aclMiddleware's own doc comment for
+// why that ordering is load-bearing for its path parsing.
 func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, identity sep2srv.Identity, notifier assembly.ResourceNotifier) http.Handler {
 	resolver := newStoreOwnerResolver(stores.EndDevices)
 	acl := aclMiddleware(resolver)
