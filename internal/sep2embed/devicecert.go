@@ -108,18 +108,15 @@ type DeviceIdentity struct {
 // EnsureDeviceIdentities derives a real, certificate-backed IEEE 2030.5
 // identity for every mRID in mrids, keyed by mRID.
 //
-// It first load-or-creates the embedded server's own CA and leaf
-// material under dir via ensureServerIdentity, so the CA that will sign
-// (DevMint) or is expected to already have signed (Preprovisioned)
-// every device cert is fixed and stable BEFORE any device cert is
-// touched. Calling ensureServerIdentity here, ahead of any per-device
-// work, matters: it prevents the hazard where a LATER sep2embed.New
-// call (which also calls ensureServerIdentity) finds an incomplete
-// four-file set (a CA present but no server leaf yet, for example) and
-// re-mints a FRESH CA, silently orphaning every device cert this
-// function already signed against the old one. Once this function has
-// run, a subsequent ensureServerIdentity call from New finds all four
-// files present and only loads them: a cheap, idempotent no-op.
+// The CA that signs (DevMint) or is expected to have already signed
+// (Preprovisioned) every device cert is obtained via
+// loadDeviceSigningCA, whose doc comment covers the mode-dependent
+// least-privilege shape: DevMint load-or-creates the embedded server's
+// full four-file identity set (including the CA private key) BEFORE
+// any device cert is touched, to prevent a later re-mint from orphaning
+// already-signed device certs; Preprovisioned reads only the CA
+// certificate and never the CA private key, since it never signs
+// anything.
 //
 // Each device's cert lives at dir/devices/<safe-mrid-hash>.pem (see
 // deviceCertFileBase); in DevMint mode a freshly minted device also
@@ -127,7 +124,11 @@ type DeviceIdentity struct {
 // dial in as that device. "Cert file exists" is the sole load-vs-mint
 // signal per device, matching ensureServerIdentity's own load-or-create
 // shape: the private key is dev-tooling material, not something this
-// function or New reads back.
+// function or New reads back. A Preprovisioned-mode load additionally
+// verifies the loaded cert chains to the CA (see ensureDeviceCert and
+// verifyDeviceCertChain), so a misconfigured or wrong-signer
+// operator-supplied cert fails here rather than at the real mTLS
+// handshake.
 //
 // mrids with an empty string, or duplicate entries, are both rejected:
 // an empty mRID cannot address a file (see deviceCertFileBase), and
@@ -154,23 +155,9 @@ func EnsureDeviceIdentities(dir string, mode DeviceCertMode, mrids []string) (ma
 		seen[mrid] = struct{}{}
 	}
 
-	_, _, caFile, err := ensureServerIdentity(dir)
+	caCert, caKey, err := loadDeviceSigningCA(dir, mode)
 	if err != nil {
-		return nil, fmt.Errorf("sep2embed: device identities: server CA: %w", err)
-	}
-	caKeyFile := filepath.Join(dir, caKeyFileName)
-
-	caCertPEM, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("sep2embed: device identities: read CA cert: %w", err)
-	}
-	caKeyPEM, err := os.ReadFile(caKeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("sep2embed: device identities: read CA key: %w", err)
-	}
-	caCert, caKey, err := parseCAPair(caCertPEM, caKeyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("sep2embed: device identities: parse CA: %w", err)
+		return nil, err
 	}
 
 	devicesDir := filepath.Join(dir, deviceCertDirName)
@@ -187,6 +174,65 @@ func EnsureDeviceIdentities(dir string, mode DeviceCertMode, mrids []string) (ma
 		}
 	}
 	return out, nil
+}
+
+// loadDeviceSigningCA obtains the CA certificate that device
+// certificates are signed by (DevMint) or verified against
+// (Preprovisioned), and, ONLY in DevMint mode, its private key.
+//
+// DevMint calls ensureServerIdentity, which load-or-creates the
+// embedded server's full four-file identity set (ca.pem, ca-key.pem,
+// server.pem, server-key.pem) BEFORE any device cert is touched: this
+// prevents the hazard where a LATER sep2embed.New call (which also
+// calls ensureServerIdentity) finds an incomplete four-file set and
+// re-mints a fresh CA, silently orphaning every device cert this
+// function already signed against the old one. Once EnsureDeviceIdentities
+// has run in DevMint mode, a subsequent ensureServerIdentity call from
+// New finds all four files present and only loads them: a cheap,
+// idempotent no-op.
+//
+// Preprovisioned mode never signs anything here, so it deliberately
+// does NOT call ensureServerIdentity (whose all-four-files-present
+// check would require ca-key.pem to exist on disk purely to satisfy
+// that check, even though the key's bytes are never read on the
+// all-four-present load path) and does NOT read the CA private key at
+// all. The CA signing key is the highest-value secret in this trust
+// chain; a production bridge host that only ever LOADS operator-issued
+// device certs has no legitimate need for it on the box (least
+// privilege). Preprovisioned mode reads ca.pem directly and requires it
+// to exist; a missing CA cert is a fail-closed error naming the
+// expected path.
+func loadDeviceSigningCA(dir string, mode DeviceCertMode) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+	if mode == DeviceCertModeDevMint {
+		_, _, caFile, err := ensureServerIdentity(dir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("sep2embed: device identities: server CA: %w", err)
+		}
+		caCertPEM, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("sep2embed: device identities: read CA cert: %w", err)
+		}
+		caKeyPEM, err := os.ReadFile(filepath.Join(dir, caKeyFileName))
+		if err != nil {
+			return nil, nil, fmt.Errorf("sep2embed: device identities: read CA key: %w", err)
+		}
+		caCert, caKey, err := parseCAPair(caCertPEM, caKeyPEM)
+		if err != nil {
+			return nil, nil, fmt.Errorf("sep2embed: device identities: parse CA: %w", err)
+		}
+		return caCert, caKey, nil
+	}
+
+	caFile := filepath.Join(dir, caCertFileName)
+	caCertPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sep2embed: device identities: preprovisioned mode requires a CA certificate at %q: %w", caFile, err)
+	}
+	caCert, err := sep2cert.ParseCertificatePEM(caCertPEM)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sep2embed: device identities: parse CA cert %q: %w", caFile, err)
+	}
+	return caCert, nil, nil
 }
 
 // ensureDeviceCert loads mrid's device certificate from devicesDir if
@@ -209,6 +255,20 @@ func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCer
 		cert, err := sep2cert.ParseCertificatePEM(certPEM)
 		if err != nil {
 			return nil, fmt.Errorf("sep2embed: parse device cert %q (mRID %q): %w", certFile, mrid, err)
+		}
+		if mode == DeviceCertModePreprovisioned {
+			// A DevMint-mode load (the second-call path, where the cert
+			// already exists from a prior mint) was signed by caCert
+			// moments earlier in this same process; re-verifying it
+			// would be redundant, so this check is scoped to
+			// Preprovisioned mode only. An operator-supplied cert has no
+			// such guarantee: a wrong-signer or self-signed cert must
+			// fail here, at seed time, rather than silently producing a
+			// syntactically valid LFDI/SFDI that then fails the real
+			// mTLS handshake at runtime.
+			if err := verifyDeviceCertChain(cert, caCert); err != nil {
+				return nil, fmt.Errorf("sep2embed: device cert %q (mRID %q): %w", certFile, mrid, err)
+			}
 		}
 		return cert, nil
 	}
@@ -241,9 +301,37 @@ func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCer
 	log.Printf("sep2embed: WARNING: minted development-only device certificate for mRID %q at %q; DO NOT use in production. Provide a preprovisioned cert instead.",
 		mrid, certFile)
 
+	// Parsed from the in-memory devCertPEM just written, not re-read
+	// from certFile: writeFileAtomic's rename-based all-or-nothing
+	// guarantee (see its own doc comment) means certFile on disk is now
+	// either exactly these bytes, or, on an error already returned
+	// above, untouched. There is no partial-write state on disk a
+	// re-read could observe that this parse of the in-memory PEM would
+	// miss, so the round trip through the filesystem is unnecessary.
 	cert, err := sep2cert.ParseCertificatePEM(devCertPEM)
 	if err != nil {
 		return nil, fmt.Errorf("sep2embed: parse minted device cert for mRID %q: %w", mrid, err)
 	}
 	return cert, nil
+}
+
+// verifyDeviceCertChain verifies that cert chains to caCert, via core's
+// sep2tls.VerifyPeerCertWithHardwareModuleSAN rather than a bare
+// stdlib x509.Certificate.Verify call. This matters: a CSIP device
+// cert's HardwareModuleName SAN (RFC 4108, spec section 6.11 / CSIP
+// section 6.2) is a critical extension the stdlib x509 parser does not
+// understand, so stdlib Verify would otherwise reject even a
+// correctly-signed, well-formed device cert with "unhandled critical
+// extension". VerifyPeerCertWithHardwareModuleSAN is the same
+// acknowledge-then-verify helper the mTLS handshake path uses (or
+// would use, per sep2tls's own doc comment), so this check has the
+// identical tolerance shape. Used only for Preprovisioned-mode loads;
+// see ensureDeviceCert's call site for why DevMint mode skips it.
+func verifyDeviceCertChain(cert, caCert *x509.Certificate) error {
+	roots := x509.NewCertPool()
+	roots.AddCert(caCert)
+	if err := sepTLS.VerifyPeerCertWithHardwareModuleSAN([][]byte{cert.Raw}, roots); err != nil {
+		return fmt.Errorf("does not chain to the trusted CA: %w", err)
+	}
+	return nil
 }

@@ -1,6 +1,8 @@
 package sep2embed
 
 import (
+	"crypto/ecdsa"
+	"crypto/x509"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,26 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 )
+
+// genTestCA mints a standalone, in-memory-only CA (never written to
+// disk), for tests that need a CA distinct from the one
+// EnsureDeviceIdentities load-or-creates under a given dir. Returns the
+// parsed certificate and key plus the certificate's own PEM bytes, so
+// callers that need to write ca.pem to a test dir do not have to
+// re-encode cert.Raw by hand.
+func genTestCA(t *testing.T, commonName string) (cert *x509.Certificate, key *ecdsa.PrivateKey, certPEM []byte) {
+	t.Helper()
+
+	certPEM, keyPEM, err := sep2cert.GenerateCA(sep2cert.CAOptions{CommonName: commonName})
+	if err != nil {
+		t.Fatalf("GenerateCA(%q): %v", commonName, err)
+	}
+	cert, key, err = parseCAPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("parseCAPair(%q): %v", commonName, err)
+	}
+	return cert, key, certPEM
+}
 
 // TestEnsureDeviceIdentitiesDevMintDerivesRealLFDIMatchingSepTLS is the
 // data-invariants-required VALUE assertion: the LFDI/SFDI
@@ -136,7 +158,12 @@ func TestEnsureDeviceIdentitiesPreprovisionedMissingCertFailsClosed(t *testing.T
 // TestEnsureDeviceIdentitiesPreprovisionedLoadsExistingCert proves the
 // load half of Preprovisioned mode: an operator-supplied cert (signed
 // by the same CA ensureServerIdentity load-or-creates under dir) is
-// loaded and its LFDI/SFDI derived, with no mint attempted.
+// loaded and its LFDI/SFDI derived, with no mint attempted. Because the
+// cert genuinely chains to the CA loaded from dir, this also exercises
+// (and must still pass through) the chain-verify check Preprovisioned
+// mode now performs: this is the "a correctly-signed cert passes" half
+// of that check; TestEnsureDeviceIdentitiesPreprovisionedRejectsWrongSignerCert
+// is the "wrong signer is rejected" half.
 func TestEnsureDeviceIdentitiesPreprovisionedLoadsExistingCert(t *testing.T) {
 	t.Parallel()
 
@@ -207,6 +234,174 @@ func TestEnsureDeviceIdentitiesPreprovisionedLoadsExistingCert(t *testing.T) {
 	keyFile := filepath.Join(devicesDir, base+"-key.pem")
 	if _, statErr := os.Stat(keyFile); statErr == nil {
 		t.Errorf("Preprovisioned mode wrote a device key file at %q; it should only ever load", keyFile)
+	}
+}
+
+// TestEnsureDeviceIdentitiesPreprovisionedSucceedsWithoutCAKey is the
+// least-privilege proof (PR #7 review, Leon): Preprovisioned mode must
+// derive a device identity successfully even when ca-key.pem was NEVER
+// written to dir, and must never require or read it. The CA here is
+// generated entirely in memory and only its PUBLIC certificate is
+// written to dir, mirroring how a real operator would deploy: the CA
+// signing key stays wherever certs are issued offline, never on the
+// running bridge host.
+func TestEnsureDeviceIdentitiesPreprovisionedSucceedsWithoutCAKey(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mrid := "mrid-no-ca-key-on-host"
+
+	caCert, caKey, caCertPEM := genTestCA(t, "offline-issuing-ca")
+
+	if err := os.WriteFile(filepath.Join(dir, caCertFileName), caCertPEM, certFilePerm); err != nil {
+		t.Fatalf("WriteFile(ca.pem): %v", err)
+	}
+
+	devCertPEM, _, err := sep2cert.GenerateDeviceCert(caCert, caKey, sep2cert.DeviceCertOptions{
+		DeviceType:  sep2cert.DeviceTypeGeneric,
+		HWSerialNum: "no-ca-key-serial-001",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDeviceCert: %v", err)
+	}
+	wantCert, err := sep2cert.ParseCertificatePEM(devCertPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificatePEM: %v", err)
+	}
+
+	base, err := deviceCertFileBase(mrid)
+	if err != nil {
+		t.Fatalf("deviceCertFileBase: %v", err)
+	}
+	devicesDir := filepath.Join(dir, deviceCertDirName)
+	if err := os.MkdirAll(devicesDir, certDirPerm); err != nil {
+		t.Fatalf("MkdirAll(devicesDir): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(devicesDir, base+".pem"), devCertPEM, certFilePerm); err != nil {
+		t.Fatalf("WriteFile(device cert): %v", err)
+	}
+
+	// Load-bearing precondition: no ca-key.pem exists anywhere under dir.
+	if _, statErr := os.Stat(filepath.Join(dir, caKeyFileName)); statErr == nil {
+		t.Fatalf("test setup wrote a ca-key.pem; the precondition this test proves against is violated")
+	}
+
+	got, err := EnsureDeviceIdentities(dir, DeviceCertModePreprovisioned, []string{mrid})
+	if err != nil {
+		t.Fatalf("EnsureDeviceIdentities with no ca-key.pem on disk: %v", err)
+	}
+	identity, ok := got[mrid]
+	if !ok {
+		t.Fatalf("no identity returned for mRID %q", mrid)
+	}
+	if want := sepTLS.LFDI(wantCert); identity.LFDI != want {
+		t.Errorf("LFDI = %q, want %q", identity.LFDI, want)
+	}
+	if want := sepTLS.SFDI(wantCert); identity.SFDI != want {
+		t.Errorf("SFDI = %q, want %q", identity.SFDI, want)
+	}
+
+	// Postcondition: EnsureDeviceIdentities must not have created a
+	// ca-key.pem as a side effect either.
+	if _, statErr := os.Stat(filepath.Join(dir, caKeyFileName)); statErr == nil {
+		t.Errorf("EnsureDeviceIdentities created ca-key.pem in Preprovisioned mode; it must never touch the CA private key")
+	}
+}
+
+// TestEnsureDeviceIdentitiesPreprovisionedRejectsWrongSignerCert is the
+// fail-closed chain-verify proof (PR #7 review, Leon): a device cert
+// signed by a DIFFERENT CA than the one loaded from dir must be
+// rejected at EnsureDeviceIdentities time, with a clear error, rather
+// than silently producing a syntactically valid identity that would
+// only fail later, at the real mTLS handshake.
+func TestEnsureDeviceIdentitiesPreprovisionedRejectsWrongSignerCert(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mrid := "mrid-wrong-signer"
+
+	// The CA EnsureDeviceIdentities will load and verify against.
+	_, _, trustedCACertPEM := genTestCA(t, "trusted-ca")
+	if err := os.WriteFile(filepath.Join(dir, caCertFileName), trustedCACertPEM, certFilePerm); err != nil {
+		t.Fatalf("WriteFile(ca.pem): %v", err)
+	}
+
+	// A DIFFERENT CA signs the device cert placed under dir/devices.
+	rogueCACert, rogueCAKey, _ := genTestCA(t, "rogue-ca")
+	devCertPEM, _, err := sep2cert.GenerateDeviceCert(rogueCACert, rogueCAKey, sep2cert.DeviceCertOptions{
+		DeviceType:  sep2cert.DeviceTypeGeneric,
+		HWSerialNum: "wrong-signer-serial-001",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDeviceCert (rogue CA): %v", err)
+	}
+
+	base, err := deviceCertFileBase(mrid)
+	if err != nil {
+		t.Fatalf("deviceCertFileBase: %v", err)
+	}
+	devicesDir := filepath.Join(dir, deviceCertDirName)
+	if err := os.MkdirAll(devicesDir, certDirPerm); err != nil {
+		t.Fatalf("MkdirAll(devicesDir): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(devicesDir, base+".pem"), devCertPEM, certFilePerm); err != nil {
+		t.Fatalf("WriteFile(device cert): %v", err)
+	}
+
+	_, err = EnsureDeviceIdentities(dir, DeviceCertModePreprovisioned, []string{mrid})
+	if err == nil {
+		t.Fatal("EnsureDeviceIdentities with a wrong-signer device cert: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "chain") {
+		t.Errorf("error should mention the chain-verify failure: %v", err)
+	}
+}
+
+// TestEnsureDeviceIdentitiesDevMintRequiresAndWritesCAKey is the
+// DevMint-side complement to
+// TestEnsureDeviceIdentitiesPreprovisionedSucceedsWithoutCAKey: DevMint
+// mode's signing path genuinely needs the CA private key, so a DevMint
+// call must both produce it (via ensureServerIdentity, when absent) and
+// use it to mint a device cert whose signature verifies against the
+// same CA.
+func TestEnsureDeviceIdentitiesDevMintRequiresAndWritesCAKey(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mrid := "mrid-dev-mint-needs-ca-key"
+
+	if _, err := EnsureDeviceIdentities(dir, DeviceCertModeDevMint, []string{mrid}); err != nil {
+		t.Fatalf("EnsureDeviceIdentities: %v", err)
+	}
+
+	caKeyFile := filepath.Join(dir, caKeyFileName)
+	if _, err := os.Stat(caKeyFile); err != nil {
+		t.Fatalf("DevMint mode did not write %q: %v", caKeyFile, err)
+	}
+
+	caCertPEM, err := os.ReadFile(filepath.Join(dir, caCertFileName))
+	if err != nil {
+		t.Fatalf("ReadFile(ca.pem): %v", err)
+	}
+	caCert, err := sep2cert.ParseCertificatePEM(caCertPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificatePEM(ca.pem): %v", err)
+	}
+
+	base, err := deviceCertFileBase(mrid)
+	if err != nil {
+		t.Fatalf("deviceCertFileBase: %v", err)
+	}
+	certPEM, err := os.ReadFile(filepath.Join(dir, deviceCertDirName, base+".pem"))
+	if err != nil {
+		t.Fatalf("ReadFile(device cert): %v", err)
+	}
+	cert, err := sep2cert.ParseCertificatePEM(certPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificatePEM(device cert): %v", err)
+	}
+	if err := verifyDeviceCertChain(cert, caCert); err != nil {
+		t.Errorf("minted device cert does not verify against the minted CA: %v", err)
 	}
 }
 
