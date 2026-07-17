@@ -72,6 +72,25 @@ type Config struct {
 	// DefaultNotifyWorkers / DefaultNotifyQueueSize.
 	NotifyWorkers   int
 	NotifyQueueSize int
+
+	// Bus is the optional GridAPPS-D message-bus publisher used for the
+	// GAGO-034 UP-path telemetry relay: each successful PUT of an
+	// owning device's DERStatus is mapped to a diff.Message (see
+	// telemetry.go) and sent over Bus to TelemetryDestination. Nil (the
+	// zero value) disables the relay entirely: DERStatus PUT still
+	// succeeds and is stored exactly as before, it is just not echoed
+	// to the bus. See BusPublisher's doc comment for why this is not
+	// internal/cimstomp.Publisher.
+	Bus BusPublisher
+
+	// TelemetryDestination is the bus destination the relay publishes
+	// to (typically internal/cim/sim.InputTopic(simID)). Empty disables
+	// the relay.
+	TelemetryDestination string
+
+	// TelemetrySimulationID is stamped into the outgoing diff.Message
+	// envelope's simulation_id field. Empty disables the relay.
+	TelemetrySimulationID string
 }
 
 // protocolServer is the minimal surface Run needs from the embedded mTLS
@@ -148,8 +167,15 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		ShutdownTimeout: cfg.ShutdownTimeout,
 	}
 
+	telemetry := telemetryConfig{
+		bus:   cfg.Bus,
+		reg:   reg,
+		dest:  cfg.TelemetryDestination,
+		simID: cfg.TelemetrySimulationID,
+	}
+
 	build := func(identity sep2srv.Identity) http.Handler {
-		return buildHandler(cfg.Router, stores, identity, notifier)
+		return buildHandler(cfg.Router, stores, identity, notifier, telemetry)
 	}
 
 	srv, err := sep2srv.New(opts, build)
@@ -170,6 +196,17 @@ func (e *Embed) Addr() string {
 // certificate during New.
 func (e *Embed) Identity() sep2srv.Identity {
 	return e.identity
+}
+
+// ApplyControlDelta maps one GridAPPS-D control delta onto this Embed's
+// own resource stores and subscription notifier (GAGO-034 DOWN path).
+// See the package-level ApplyControlDelta function for the full
+// contract (owner scoping, field mapping, supersede semantics); this
+// method is the entry point a caller holding an *Embed (rather than the
+// package-private stores/notifier fields) uses, e.g. a future
+// GridAPPS-D control-delta subscriber in cmd/bridge.
+func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, delta ControlDelta) error {
+	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, delta)
 }
 
 // Run starts the subscription notifier's worker pool and serves the
