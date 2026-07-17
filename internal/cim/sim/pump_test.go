@@ -27,7 +27,7 @@ type fakeSubscribeClient struct {
 	endErr           error
 }
 
-func (f *fakeSubscribeClient) Subscribe(ctx context.Context, destination string) (*cimstomp.Subscription, error) {
+func (f *fakeSubscribeClient) Subscribe(ctx context.Context, destination string) (Subscription, error) {
 	f.mu.Lock()
 	f.dest = destination
 	frames := f.frames

@@ -9,11 +9,28 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
 )
 
+// Subscription is the small interface Pump consumes from a live
+// subscribe call. *cimstomp.Subscription satisfies it unchanged: the
+// method set below is exactly the subset of *cimstomp.Subscription that
+// Pump uses. Declaring it here (rather than requiring the concrete
+// cimstomp type) lets any transport, not just cimstomp, back a
+// SubscribeClient: see internal/gridappsdclient.Subscriber for the
+// gridappsd-go-backed implementation.
+//
+// cimstomp.Message stays the shared value DTO on the wire between
+// SubscribeClient implementations and Pump; only the handle around the
+// channel is now abstracted.
+type Subscription interface {
+	Messages() <-chan cimstomp.Message
+	Err() error
+}
+
 // SubscribeClient is the small interface Pump consumes. The cimstomp
-// *Client satisfies it; tests pass a fake. Defining the interface here
+// *Client satisfies it (via *cimstomp.Subscription implementing
+// Subscription above); tests pass a fake. Defining the interface here
 // keeps cimstomp-as-test-dependency from leaking into Pump's tests.
 type SubscribeClient interface {
-	Subscribe(ctx context.Context, destination string) (*cimstomp.Subscription, error)
+	Subscribe(ctx context.Context, destination string) (Subscription, error)
 }
 
 // Pump subscribes to a simulation output topic and dispatches each
