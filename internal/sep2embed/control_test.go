@@ -1,0 +1,509 @@
+package sep2embed
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
+
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+)
+
+// twoDeviceFixture seeds a Registry and a fully populated assembly.Stores
+// (via the package's own seedStores, not a parallel construction) with
+// two devices, A and B, so tests below can assert owner scoping between
+// them.
+func twoDeviceFixture(t *testing.T) (reg *registry.Registry, st *assembly.Stores) {
+	t.Helper()
+
+	reg = registry.New()
+	if err := reg.AddBatch([]registry.Entry{
+		{MRID: "mrid-a", Name: "Device A", LFDI: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", SFDI: "11111111111"},
+		{MRID: "mrid-b", Name: "Device B", LFDI: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", SFDI: "22222222222"},
+	}); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+
+	st = newStores()
+	if err := seedStores(context.Background(), st, reg); err != nil {
+		t.Fatalf("seedStores: %v", err)
+	}
+
+	return reg, st
+}
+
+func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
+	t.Parallel()
+
+	reg, st := twoDeviceFixture(t)
+	notifier := coresub.NewManager(st.Subscriptions, 2, 10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go notifier.Start(ctx)
+
+	var hitsA, hitsB atomic.Int32
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsA.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srvA.Close()
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsB.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srvB.Close()
+
+	lfdiA, _ := reg.LFDI("mrid-a")
+	lfdiB, _ := reg.LFDI("mrid-b")
+
+	if err := st.Subscriptions.Create(ctx, "sub-a", sep2.Subscription{
+		SubscribableResource: sep2.SubscribableResource{Resource: sep2.Resource{Href: "/edev/" + lfdiA + "/sub/1"}},
+		SubscribedResource:   derProgramListHref(lfdiA, controlFSAID),
+		NotificationURI:      srvA.URL + "/notify",
+	}); err != nil {
+		t.Fatalf("seed subscription A: %v", err)
+	}
+	if err := st.Subscriptions.Create(ctx, "sub-b", sep2.Subscription{
+		SubscribableResource: sep2.SubscribableResource{Resource: sep2.Resource{Href: "/edev/" + lfdiB + "/sub/1"}},
+		SubscribedResource:   derProgramListHref(lfdiB, controlFSAID),
+		NotificationURI:      srvB.URL + "/notify",
+	}); err != nil {
+		t.Fatalf("seed subscription B: %v", err)
+	}
+
+	delta := diff.Difference{
+		Object:    "mrid-a",
+		Attribute: "DERControl.DERControlBase.opModTargetW",
+		Value:     map[string]any{"multiplier": 0.0, "value": 5000.0},
+	}
+
+	if err := ApplyControlDelta(ctx, st, notifier, reg, delta); err != nil {
+		t.Fatalf("ApplyControlDelta: %v", err)
+	}
+
+	// Field fidelity: A's control carries exactly the delta's value.
+	scopeA := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+	control, err := st.DERControls.Get(ctx, scopeA, activeControlID)
+	if err != nil {
+		t.Fatalf("DERControls.Get(A): %v", err)
+	}
+	if control.DERControlBase == nil || control.DERControlBase.OpModTargetW == nil {
+		t.Fatalf("device A control has no OpModTargetW: %+v", control)
+	}
+	if control.DERControlBase.OpModTargetW.Value != 5000 || control.DERControlBase.OpModTargetW.Multiplier != 0 {
+		t.Errorf("device A OpModTargetW = %+v, want {Multiplier:0 Value:5000}", control.DERControlBase.OpModTargetW)
+	}
+
+	// Owner scoping: device B's own scope carries NO control at all.
+	scopeB := derControlScope(lfdiB, controlFSAID, controlDERProgramID)
+	if _, err := st.DERControls.Get(ctx, scopeB, activeControlID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DERControls.Get(B) = (%v), want store.ErrNotFound (control must not leak to device B)", err)
+	}
+
+	// Notifier scoping: only A's subscriber is notified.
+	deadline := time.After(2 * time.Second)
+	for hitsA.Load() < 1 {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for device A's subscriber notification (hitsA=%d)", hitsA.Load())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// Give a full notification cycle for the fan-out to reach B if it
+	// (incorrectly) were going to.
+	time.Sleep(100 * time.Millisecond)
+	if hitsB.Load() != 0 {
+		t.Errorf("device B's subscriber received %d notifications, want 0 (cross-device notify leak)", hitsB.Load())
+	}
+}
+
+func TestApplyControlDeltaRefusesUnknownDevice(t *testing.T) {
+	t.Parallel()
+
+	reg, st := twoDeviceFixture(t)
+	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go notifier.Start(ctx)
+
+	delta := diff.Difference{
+		Object:    "mrid-does-not-exist",
+		Attribute: "DERControl.DERControlBase.opModTargetW",
+		Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
+	}
+
+	err := ApplyControlDelta(ctx, st, notifier, reg, delta)
+	if !errors.Is(err, ErrUnknownControlDevice) {
+		t.Fatalf("ApplyControlDelta(unknown device) error = %v, want ErrUnknownControlDevice", err)
+	}
+
+	// Neither device's scope gained a control from the refused delta.
+	lfdiA, _ := reg.LFDI("mrid-a")
+	scopeA := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+	if _, err := st.DERControls.Get(ctx, scopeA, activeControlID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DERControls.Get(A) after refused delta = (%v), want store.ErrNotFound", err)
+	}
+}
+
+func TestApplyControlDeltaRefusesUnsupportedAttribute(t *testing.T) {
+	t.Parallel()
+
+	reg, st := twoDeviceFixture(t)
+	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
+
+	tests := []struct {
+		name string
+		attr string
+	}{
+		{"wrong prefix entirely", "DERStatus.genConnectStatus"},
+		{"shallow DERControl without DERControlBase", "DERControl.mRID"},
+		{"unrecognized DERControlBase field", "DERControl.DERControlBase.opModNoSuchField"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			delta := diff.Difference{Object: "mrid-a", Attribute: tt.attr, Value: true}
+			err := ApplyControlDelta(context.Background(), st, notifier, reg, delta)
+			if !errors.Is(err, ErrUnsupportedControlAttribute) {
+				t.Fatalf("ApplyControlDelta(%q) error = %v, want ErrUnsupportedControlAttribute", tt.attr, err)
+			}
+		})
+	}
+}
+
+// TestApplyControlDeltaMergesSecondFieldNotDuplicate proves the
+// supersede semantics documented on ApplyControlDelta: two deltas for
+// the same device, touching two different DERControlBase fields, result
+// in ONE DERControl carrying BOTH fields, not two competing controls.
+func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
+	t.Parallel()
+
+	reg, st := twoDeviceFixture(t)
+	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
+	ctx := context.Background()
+
+	first := diff.Difference{
+		Object:    "mrid-a",
+		Attribute: "DERControl.DERControlBase.opModTargetW",
+		Value:     map[string]any{"multiplier": 0.0, "value": 3000.0},
+	}
+	second := diff.Difference{
+		Object:    "mrid-a",
+		Attribute: "DERControl.DERControlBase.opModTargetVar",
+		Value:     map[string]any{"multiplier": 0.0, "value": 500.0},
+	}
+
+	if err := ApplyControlDelta(ctx, st, notifier, reg, first); err != nil {
+		t.Fatalf("ApplyControlDelta(first): %v", err)
+	}
+	if err := ApplyControlDelta(ctx, st, notifier, reg, second); err != nil {
+		t.Fatalf("ApplyControlDelta(second): %v", err)
+	}
+
+	lfdiA, _ := reg.LFDI("mrid-a")
+	scope := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+
+	// Exactly one control exists at the active slot; List confirms no
+	// second entry was created alongside it.
+	list, err := st.DERControls.ForParent(scope).List(ctx, store.ListOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if list.All != 1 {
+		t.Fatalf("DERControl count for device A = %d, want 1 (merge, not duplicate)", list.All)
+	}
+
+	control, err := st.DERControls.Get(ctx, scope, activeControlID)
+	if err != nil {
+		t.Fatalf("DERControls.Get: %v", err)
+	}
+	if control.DERControlBase == nil {
+		t.Fatal("merged control has nil DERControlBase")
+	}
+	if control.DERControlBase.OpModTargetW == nil || control.DERControlBase.OpModTargetW.Value != 3000 {
+		t.Errorf("merged control OpModTargetW = %+v, want Value=3000 (preserved from first delta)", control.DERControlBase.OpModTargetW)
+	}
+	if control.DERControlBase.OpModTargetVar == nil || control.DERControlBase.OpModTargetVar.Value != 500 {
+		t.Errorf("merged control OpModTargetVar = %+v, want Value=500 (applied by second delta)", control.DERControlBase.OpModTargetVar)
+	}
+}
+
+func TestDecodeActivePower(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		value   any
+		want    sep2.ActivePower
+		wantErr bool
+	}{
+		{"typed value passthrough", sep2.ActivePower{Multiplier: 2, Value: 42}, sep2.ActivePower{Multiplier: 2, Value: 42}, false},
+		{"typed pointer passthrough", func() *sep2.ActivePower { v := sep2.ActivePower{Multiplier: -1, Value: 7}; return &v }(), sep2.ActivePower{Multiplier: -1, Value: 7}, false},
+		{"json-decoded map", map[string]any{"multiplier": 0.0, "value": 5000.0}, sep2.ActivePower{Multiplier: 0, Value: 5000}, false},
+		{"map missing value", map[string]any{"multiplier": 0.0}, sep2.ActivePower{}, true},
+		{"map fractional value refused", map[string]any{"multiplier": 0.0, "value": 5000.5}, sep2.ActivePower{}, true},
+		{"unsupported type", "not a power value", sep2.ActivePower{}, true},
+		{"nil typed pointer", (*sep2.ActivePower)(nil), sep2.ActivePower{}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeActivePower(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("decodeActivePower(%v): want error, got %+v", tt.value, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeActivePower(%v): unexpected error: %v", tt.value, err)
+			}
+			if *got != tt.want {
+				t.Errorf("decodeActivePower(%v) = %+v, want %+v", tt.value, *got, tt.want)
+			}
+		})
+	}
+}
+
+// TestApplyDERControlBaseFieldCoversEverySupportedField exercises every
+// field applyDERControlBaseField supports (not just the two exercised
+// end-to-end via ApplyControlDelta above), so this table, not the
+// end-to-end tests, is the source of truth for "which fields are
+// mapped" and "with what decode".
+func TestApplyDERControlBaseFieldCoversEverySupportedField(t *testing.T) {
+	t.Parallel()
+
+	powerVal := map[string]any{"multiplier": 1.0, "value": 250.0}
+
+	tests := []struct {
+		name    string
+		field   string
+		value   any
+		check   func(t *testing.T, base sep2.DERControlBase)
+		wantErr bool
+	}{
+		{
+			name:  "opModTargetW",
+			field: "opModTargetW",
+			value: powerVal,
+			check: func(t *testing.T, base sep2.DERControlBase) {
+				if base.OpModTargetW == nil || base.OpModTargetW.Value != 250 || base.OpModTargetW.Multiplier != 1 {
+					t.Errorf("OpModTargetW = %+v, want {Multiplier:1 Value:250}", base.OpModTargetW)
+				}
+			},
+		},
+		{
+			name:  "opModTargetVar",
+			field: "opModTargetVar",
+			value: powerVal,
+			check: func(t *testing.T, base sep2.DERControlBase) {
+				if base.OpModTargetVar == nil || base.OpModTargetVar.Value != 250 {
+					t.Errorf("OpModTargetVar = %+v, want Value=250", base.OpModTargetVar)
+				}
+			},
+		},
+		{
+			name:  "opModFixedW",
+			field: "opModFixedW",
+			value: powerVal,
+			check: func(t *testing.T, base sep2.DERControlBase) {
+				if base.OpModFixedW == nil || base.OpModFixedW.Value != 250 {
+					t.Errorf("OpModFixedW = %+v, want Value=250", base.OpModFixedW)
+				}
+			},
+		},
+		{
+			name:  "opModFixedVar",
+			field: "opModFixedVar",
+			value: powerVal,
+			check: func(t *testing.T, base sep2.DERControlBase) {
+				if base.OpModFixedVar == nil || base.OpModFixedVar.Value != 250 {
+					t.Errorf("OpModFixedVar = %+v, want Value=250", base.OpModFixedVar)
+				}
+			},
+		},
+		{
+			name:  "opModMaxLimW",
+			field: "opModMaxLimW",
+			value: powerVal,
+			check: func(t *testing.T, base sep2.DERControlBase) {
+				if base.OpModMaxLimW == nil || base.OpModMaxLimW.Value != 250 {
+					t.Errorf("OpModMaxLimW = %+v, want Value=250", base.OpModMaxLimW)
+				}
+			},
+		},
+		{
+			name:  "opModConnect",
+			field: "opModConnect",
+			value: true,
+			check: func(t *testing.T, base sep2.DERControlBase) {
+				if base.OpModConnect == nil || *base.OpModConnect != true {
+					t.Errorf("OpModConnect = %v, want true", base.OpModConnect)
+				}
+			},
+		},
+		{
+			name:  "opModEnergize",
+			field: "opModEnergize",
+			value: false,
+			check: func(t *testing.T, base sep2.DERControlBase) {
+				if base.OpModEnergize == nil || *base.OpModEnergize != false {
+					t.Errorf("OpModEnergize = %v, want false", base.OpModEnergize)
+				}
+			},
+		},
+		{
+			name:    "opModTargetW bad decode propagates",
+			field:   "opModTargetW",
+			value:   "not a power",
+			wantErr: true,
+		},
+		{
+			name:    "opModTargetVar bad decode propagates",
+			field:   "opModTargetVar",
+			value:   "not a power",
+			wantErr: true,
+		},
+		{
+			name:    "opModConnect bad decode propagates",
+			field:   "opModConnect",
+			value:   "not a bool",
+			wantErr: true,
+		},
+		{
+			name:    "unrecognized field",
+			field:   "opModDoesNotExist",
+			value:   true,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var base sep2.DERControlBase
+			err := applyDERControlBaseField(&base, tt.field, tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("applyDERControlBaseField(%q, %v): want error, got nil", tt.field, tt.value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("applyDERControlBaseField(%q, %v): unexpected error: %v", tt.field, tt.value, err)
+			}
+			tt.check(t, base)
+		})
+	}
+}
+
+func TestDecodeReactivePower(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		value   any
+		want    sep2.ReactivePower
+		wantErr bool
+	}{
+		{"typed value passthrough", sep2.ReactivePower{Multiplier: 1, Value: 99}, sep2.ReactivePower{Multiplier: 1, Value: 99}, false},
+		{"typed pointer passthrough", func() *sep2.ReactivePower { v := sep2.ReactivePower{Multiplier: 0, Value: 12}; return &v }(), sep2.ReactivePower{Multiplier: 0, Value: 12}, false},
+		{"json-decoded map", map[string]any{"multiplier": 0.0, "value": 500.0}, sep2.ReactivePower{Multiplier: 0, Value: 500}, false},
+		{"nil typed pointer", (*sep2.ReactivePower)(nil), sep2.ReactivePower{}, true},
+		{"unsupported type", 42, sep2.ReactivePower{}, true},
+		{"map missing multiplier", map[string]any{"value": 1.0}, sep2.ReactivePower{}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeReactivePower(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("decodeReactivePower(%v): want error, got %+v", tt.value, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeReactivePower(%v): unexpected error: %v", tt.value, err)
+			}
+			if *got != tt.want {
+				t.Errorf("decodeReactivePower(%v) = %+v, want %+v", tt.value, *got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToFloat64(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		value  any
+		want   float64
+		wantOK bool
+	}{
+		{"float64", 3.5, 3.5, true},
+		{"int", 7, 7, true},
+		{"int64", int64(9), 9, true},
+		{"unsupported", "nope", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := toFloat64(tt.value)
+			if ok != tt.wantOK {
+				t.Fatalf("toFloat64(%v) ok = %v, want %v", tt.value, ok, tt.wantOK)
+			}
+			if ok && got != tt.want {
+				t.Errorf("toFloat64(%v) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeBool(t *testing.T) {
+	t.Parallel()
+
+	trueVal := true
+	tests := []struct {
+		name    string
+		value   any
+		want    bool
+		wantErr bool
+	}{
+		{"bool true", true, true, false},
+		{"bool false", false, false, false},
+		{"pointer passthrough", &trueVal, true, false},
+		{"nil pointer", (*bool)(nil), false, true},
+		{"unsupported type", "yes", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeBool(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("decodeBool(%v): want error, got %v", tt.value, *got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeBool(%v): unexpected error: %v", tt.value, err)
+			}
+			if *got != tt.want {
+				t.Errorf("decodeBool(%v) = %v, want %v", tt.value, *got, tt.want)
+			}
+		})
+	}
+}
