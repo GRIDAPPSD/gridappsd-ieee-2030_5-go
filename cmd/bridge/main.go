@@ -246,6 +246,21 @@ func queryDevices(
 	return out, nil
 }
 
+// cimstompSubscribeClient adapts *cimstomp.Client to sim.SubscribeClient.
+// *cimstomp.Client.Subscribe returns the concrete *cimstomp.Subscription,
+// which no longer satisfies sim.SubscribeClient directly now that
+// Subscribe returns the sim.Subscription interface (GAGO-038 sim-side
+// interface reshape, so any transport, not just cimstomp, can back a
+// SubscribeClient). This wrapper narrows the concrete return type to the
+// interface at the one call site that needs it.
+type cimstompSubscribeClient struct {
+	*cimstomp.Client
+}
+
+func (c cimstompSubscribeClient) Subscribe(ctx context.Context, destination string) (sim.Subscription, error) {
+	return c.Client.Subscribe(ctx, destination)
+}
+
 // runPump subscribes to the simulation output topic and runs the Pump
 // until ctx is cancelled or the subscription closes. The handler logs a
 // one-liner per frame and then walks each measurement, performing an
@@ -264,7 +279,7 @@ func runPump(ctx context.Context, client *cimstomp.Client, reg *registry.Registr
 	dest := sim.OutputTopic(simID)
 	log.Printf("bridge: subscribing to %s", dest)
 
-	pump := sim.NewPump(client, simID)
+	pump := sim.NewPump(cimstompSubscribeClient{client}, simID)
 
 	// seen dedupes the per-mRID lookup log so a 1Hz simulation does not
 	// reprint the same line every timestep. Plain map plus mutex; the

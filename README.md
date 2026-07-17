@@ -15,19 +15,21 @@ This repository is private under the GRIDAPPSD GitHub org. A reader needs
 `GRIDAPPSD` org access (or an explicit collaborator grant) to clone it at
 all.
 
-Today's dependency graph is entirely public: the only third-party
-requirement is `github.com/go-stomp/stomp/v3`, so `go build ./...` succeeds
-for any reader who can already clone the repo, with no further access
-grants needed.
+Today's dependency graph is mixed: `github.com/go-stomp/stomp/v3` is
+public, but the bridge also `require`s the private
+`github.com/GRIDAPPSD/gridappsd-go` module (the standard GridAPPS-D Go
+client). `go build ./...` therefore needs `GOPRIVATE=github.com/GRIDAPPSD/*`
+set and `GRIDAPPSD` org read access to `gridappsd-go` in addition to this
+repo; a reader who can clone this repo but lacks access to `gridappsd-go`
+will fail at `go mod download`, not at clone time.
 
-That will change with the planned IEEE 2030.5 server embedding (see
-`cmd/bridge/README.md`, "Out of scope"). Once that work lands, the bridge
-will `require` the private `github.com/GRIDAPPSD/ieee-2030_5-core-go`
-module, and a builder will additionally need read access to that module
-(a fine-grained GitHub PAT scoped to it, per the family migration plan).
-A reader with access to the private core module will be able to build;
-a reader without it will not. This section will be updated with the exact
-access steps when that dependency lands.
+That access requirement will widen with the planned IEEE 2030.5 server
+embedding (see `cmd/bridge/README.md`, "Out of scope"). Once that work
+lands, the bridge will additionally `require` the private
+`github.com/GRIDAPPSD/ieee-2030_5-core-go` module, and a builder will need
+read access to that module too (a fine-grained GitHub PAT scoped to it,
+per the family migration plan). This section will be updated with the
+exact access steps when that dependency lands.
 
 ## Layout
 
