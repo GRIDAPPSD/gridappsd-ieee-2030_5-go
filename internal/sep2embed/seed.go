@@ -27,12 +27,20 @@ import (
 //	DER id (within the EndDevice's DER scope)             = "1"
 //	DER.Href                                              = "/edev/" + id + "/der/1"
 //
-// The store id uses the LFDI (not a sequential counter) so seeding is
-// deterministic across restarts against the same registry snapshot and
-// so a device's EndDeviceStore.GetByLFDI lookup resolves to the same id
-// every time. LFDI is guaranteed non-empty and unique by
-// registry.Registry's own Add/AddBatch validation, and is already
-// URL-safe (40 uppercase hex characters).
+// The store id uses the LFDI (not a sequential counter) so a device's
+// EndDeviceStore.GetByLFDI lookup resolves to the same id every time,
+// and so re-seeding the same registry entry against a fresh store
+// always produces the same store key. reg.Snapshot() itself iterates a
+// Go map and its element order is unspecified per seeding run; that is
+// fine because store id assignment does not depend on iteration order
+// (each entry's id is derived solely from its own LFDI, not from its
+// position in the snapshot). What IS ordered, and is what an /edev GET
+// actually returns, is core's memory.Store[T].List: it walks a
+// separately maintained sorted key slice, so list responses are sorted
+// by id (i.e., by LFDI) regardless of the order seedStores wrote them
+// in. LFDI is guaranteed non-empty and unique by registry.Registry's
+// own Add/AddBatch validation, and is already URL-safe (40 uppercase
+// hex characters).
 //
 // An empty registry seeds empty stores without error: the /edev list
 // still serves (0 results), it is simply empty rather than absent.
