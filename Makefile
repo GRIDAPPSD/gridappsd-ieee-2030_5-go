@@ -82,7 +82,15 @@ test-gridappsd:
 #     SEP2_STOMP_USER=system \
 #     SEP2_STOMP_PASSWORD=manager \
 #     SEP2_SIMULATION_ID=1234567890 \
-#     SEP2_FEEDER_MRID=_C1C3E687-6FFD-C753-582B-632A27E28507
+#     SEP2_FEEDER_MRID=_C1C3E687-6FFD-C753-582B-632A27E28507 \
+#     SEP2_STOMP_ALLOW_PLAINTEXT=true
+#
+# SEP2_STOMP_ALLOW_PLAINTEXT defaults true here because this target's
+# two documented dev brokers (bare ActiveMQ via `docker compose up -d`
+# and gridappsd-docker) are both plain TCP. The bridge binary's own
+# compiled-in default stays fail-closed (TLS); this dev-only default
+# lives in the Makefile, not the binary, so a production invocation of
+# `bridge` still has to opt in explicitly.
 #
 # The probe tolerates `nc` being absent: if no nc on PATH the target
 # warns and proceeds to `go run`, letting the bridge produce its own
@@ -95,6 +103,7 @@ SEP2_STOMP_USER ?= system
 SEP2_STOMP_PASSWORD ?= manager
 SEP2_SIMULATION_ID ?=
 SEP2_FEEDER_MRID ?= _C1C3E687-6FFD-C753-582B-632A27E28507
+SEP2_STOMP_ALLOW_PLAINTEXT ?= true
 
 bridge-e2e:
 	@set -e; \
@@ -116,6 +125,7 @@ bridge-e2e:
 	SEP2_STOMP_PASSWORD=$(SEP2_STOMP_PASSWORD) \
 	SEP2_SIMULATION_ID=$(SEP2_SIMULATION_ID) \
 	SEP2_FEEDER_MRID=$(SEP2_FEEDER_MRID) \
+	SEP2_STOMP_ALLOW_PLAINTEXT=$(SEP2_STOMP_ALLOW_PLAINTEXT) \
 	go run ./cmd/bridge
 
 vet:
