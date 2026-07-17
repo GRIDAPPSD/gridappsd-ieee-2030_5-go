@@ -41,7 +41,7 @@ func NewRequester(bus fieldbus.MessageBus) *Requester {
 func (r *Requester) Request(ctx context.Context, destination string, body []byte) ([]byte, error) {
 	reply, err := r.bus.GetResponse(ctx, destination, requestContentType, body)
 	if err != nil {
-		return nil, fmt.Errorf("gridappsdclient: request %s: %w", destination, err)
+		return nil, fmt.Errorf("gridappsdclient.Requester: request %s: %w", destination, err)
 	}
 	return reply, nil
 }

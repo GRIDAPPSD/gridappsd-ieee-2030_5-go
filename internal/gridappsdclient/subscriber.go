@@ -98,7 +98,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, destination string) (sim.Sub
 
 	tok, err := s.bus.Subscribe(ctx, destination, handler)
 	if err != nil {
-		return nil, fmt.Errorf("gridappsdclient: subscribe %s: %w", destination, err)
+		return nil, fmt.Errorf("gridappsdclient.Subscriber: subscribe %s: %w", destination, err)
 	}
 
 	go s.relay(ctx, destination, tok, raw, sub)
