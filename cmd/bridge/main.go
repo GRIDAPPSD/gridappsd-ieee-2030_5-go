@@ -1,17 +1,18 @@
-// Command bridge is the GridAPPS-D side (Stage 1) of the IEEE 2030.5
-// to GridAPPS-D bridge. It connects to the GridAPPS-D message bus,
+// Command bridge is the GridAPPS-D side of the IEEE 2030.5 to
+// GridAPPS-D bridge. It connects to the GridAPPS-D message bus,
 // queries the CIM feeder for inverter / solar / battery DERs, populates
-// an in-memory mRID-to-LFDI registry, and (when a SimulationID is
-// configured) subscribes to the simulation output topic and logs each
-// MeasurementFrame.
+// an in-memory mRID-to-LFDI registry, boots an in-process IEEE 2030.5
+// mTLS server (internal/sep2embed) seeded from that registry, and (when
+// a SimulationID is configured) subscribes to the simulation output
+// topic and logs each MeasurementFrame.
 //
-// This binary intentionally does NOT speak IEEE 2030.5. The 2030.5
-// server side is a Stage 2 follow-up filed separately; it requires the
-// `ieee-2030_5-go/internal/server` package to expose a public Server
-// constructor, plus the real LFDI mapping derived from device certs.
-// Stage 1 ships the GridAPPS-D plumbing so the connect plus CIM query
-// plus subscribe path can be validated end-to-end against a live
-// gridappsd-docker stack.
+// The embedded IEEE 2030.5 server speaks real mTLS but still carries
+// Stage 1 placeholders: the LFDI on every EndDevice is a deterministic
+// hash of the CIM mRID rather than one derived from a real device
+// certificate (GAGO-032 follow-up), and the listener has no per-device
+// ACL yet (GAGO-043 follow-up), which is why it binds to loopback by
+// default. Bidirectional control flow (device writes reaching the CIM
+// side) is a further follow-up.
 //
 // The GridAPPS-D connection rides github.com/GRIDAPPSD/gridappsd-go's
 // fieldbus.MessageBus (GAGO-039), adapted to this bridge's own
@@ -22,9 +23,11 @@
 // bridge's connection.
 //
 // Lifecycle: the process runs until SIGINT or SIGTERM. Cancellation
-// flows through a single context.Context root: the
-// fieldbus.MessageBus and any sim.Pump goroutines exit on ctx cancel;
-// the bridge then disconnects the bus and returns.
+// flows through a single context.Context root: the sep2embed server,
+// the fieldbus.MessageBus, and any sim.Pump goroutines all exit on ctx
+// cancel (or, for the sep2embed/STOMP pair, when either side exits on
+// its own so neither is left running orphaned); the bridge then
+// disconnects the bus and returns.
 package main
 
 import (
@@ -45,6 +48,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
 const version = "0.1.0-stage1"
@@ -117,20 +121,112 @@ func run(ctx context.Context, cfg config) error {
 		log.Printf("bridge: -publish-on-start requested; DifferenceBuilder envelope publish is filed as Stage 2 follow-up; skipping")
 	}
 
-	if cfg.SimulationID == "" {
-		log.Printf("bridge: no SEP2_SIMULATION_ID set; skipping simulation subscribe; idling until shutdown")
-		<-ctx.Done()
-		return ctx.Err()
+	// The embed seeds its EndDevice/DER stores from reg, so it must be
+	// built after bootstrapRegistry above, not before.
+	embed, err := newSEP2Embed(ctx, cfg, reg)
+	if err != nil {
+		return fmt.Errorf("sep2 embed: %w", err)
+	}
+	id := embed.Identity()
+	log.Printf("bridge: sep2 embed listening addr=%s sfdi=%s lfdi=%s (LFDI placeholder; real cert mapping is a follow-up)",
+		embed.Addr(), id.SFDI, id.LFDI)
+
+	// stompRun adapts the SimulationID branch (idle-wait, or runPump)
+	// to the func(context.Context) error shape runEmbedAndStomp expects
+	// for its second seam.
+	stompRun := func(runCtx context.Context) error {
+		if cfg.SimulationID == "" {
+			log.Printf("bridge: no SEP2_SIMULATION_ID set; skipping simulation subscribe; idling until shutdown")
+			<-runCtx.Done()
+			return runCtx.Err()
+		}
+		// runCtx is the pump's root. gridappsd-go's router does not yet
+		// surface a broker-teardown signal to fieldbus.MessageBus
+		// callers (upstream gap GAG-009; see the relay doc comment in
+		// internal/gridappsdclient/subscriber.go), so a mid-run broker
+		// disconnect does NOT independently wake the pump: only
+		// runCtx's cancellation (SIGINT/SIGTERM, or the embed side
+		// exiting) does.
+		return runPump(runCtx, bus, reg, cfg.SimulationID)
 	}
 
-	// ctx is the pump's root, the same signal-derived ctx that governed
-	// connect and the CIM query above. gridappsd-go's router does not
-	// yet surface a broker-teardown signal to fieldbus.MessageBus
-	// callers (upstream gap GAG-009; see the relay doc comment in
-	// internal/gridappsdclient/subscriber.go), so a mid-run broker
-	// disconnect does NOT independently wake the pump: only this ctx's
-	// cancellation (SIGINT/SIGTERM) does.
-	return runPump(ctx, bus, reg, cfg.SimulationID)
+	return runEmbedAndStomp(ctx, embed.Run, stompRun)
+}
+
+// runEmbedAndStomp runs the embedded IEEE 2030.5 server (embedRun) and
+// the STOMP-side pump/idle loop (stompRun) concurrently under a single
+// ctx derived from the caller's shutdown root, and blocks until both
+// have finished.
+//
+// embedRun and stompRun are injectable seams, each shaped
+// func(context.Context) error: run() passes embed.Run and a closure
+// wrapping the SimulationID branch, but a unit test can pass stub
+// runners to drive every branch below without a live broker or a real
+// mTLS listener.
+//
+// runCtx is a child of ctx: SIGINT/SIGTERM cancelling ctx propagates to
+// runCtx automatically. In addition, each side's goroutine cancels
+// runCtx itself on exit (the embedRun goroutine's deferred cancelRun,
+// and the explicit cancelRun call after stompRun returns below), so an
+// early, independent failure on either side (a Serve error in the
+// embed, a broker drop reaching the pump) tears the other down too
+// rather than leaving it running orphaned until the next signal.
+//
+// Error precedence: a stompRun error is returned as-is unless embedRun
+// also failed with something other than a graceful (context.Canceled)
+// shutdown. If only embedRun failed, that error is returned wrapped. If
+// both failed independently (neither error is a graceful shutdown),
+// both are preserved via errors.Join rather than discarding one, so
+// errors.Is/errors.As against either failure still matches.
+func runEmbedAndStomp(ctx context.Context, embedRun, stompRun func(context.Context) error) error {
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	embedErr := make(chan error, 1)
+	go func() {
+		defer cancelRun()
+		embedErr <- embedRun(runCtx)
+	}()
+
+	stompErr := stompRun(runCtx)
+	// Ask the embed side to stop even when stompRun returned on its own
+	// (rather than via runCtx cancellation), so this function never
+	// returns while the embed side is still active.
+	cancelRun()
+
+	// Wait for embedRun to actually finish (for the real embed: its own
+	// listener Serve goroutine plus its subscription notifier's worker
+	// pool; see sep2embed.Embed.Run) before this function returns, so
+	// the caller never observes "runEmbedAndStomp returned" while the
+	// embed is still tearing down.
+	eerr := <-embedErr
+	if eerr == nil || errors.Is(eerr, context.Canceled) {
+		return stompErr
+	}
+
+	wrappedEmbedErr := fmt.Errorf("sep2 embed: %w", eerr)
+	if stompErr == nil || errors.Is(stompErr, context.Canceled) {
+		return wrappedEmbedErr
+	}
+	return errors.Join(stompErr, wrappedEmbedErr)
+}
+
+// sep2EmbedConfig projects the bridge's config onto sep2embed.Config.
+// Split out from newSEP2Embed so the address/cert-dir mapping can be
+// asserted by a unit test without minting real certificate material or
+// binding a listener.
+func sep2EmbedConfig(cfg config) sep2embed.Config {
+	return sep2embed.Config{
+		Addr:    cfg.SEP2ServerAddr,
+		CertDir: cfg.SEP2ServerCertDir,
+	}
+}
+
+// newSEP2Embed builds, seeds, and binds the in-process IEEE 2030.5
+// protocol server from the bridge's registry. It does not start
+// serving; the caller starts embed.Run once this returns successfully.
+func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry) (*sep2embed.Embed, error) {
+	return sep2embed.New(ctx, sep2EmbedConfig(cfg), reg)
 }
 
 // busConfig projects the bridge's config onto gridappsd-go's connection

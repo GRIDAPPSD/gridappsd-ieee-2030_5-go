@@ -59,6 +59,25 @@ type config struct {
 	// to be plaintext, such as gridappsd-docker's dev stack on
 	// 127.0.0.1:61613.
 	AllowPlaintext bool
+
+	// SEP2ServerAddr is the "host:port" the embedded IEEE 2030.5 mTLS
+	// listener (internal/sep2embed) binds. Defaults to loopback only:
+	// the embed has no per-device ACL yet (GAGO-043 follow-up), so a
+	// loopback default keeps that unfinished access-control story from
+	// being reachable off-box out of the box. Binding to a non-loopback
+	// address is an explicit operator choice made by overriding
+	// SEP2_SERVER_ADDR / -sep2-server-addr, mirroring AllowPlaintext's
+	// explicit-opt-in shape.
+	SEP2ServerAddr string
+
+	// SEP2ServerCertDir is the directory holding the embedded server's
+	// mTLS identity material. See sep2embed.Config.CertDir: when the
+	// directory is missing or incomplete, fresh dev-mint material is
+	// generated and written there; a production deployment points this
+	// at a directory holding preprovisioned CA and server cert/key
+	// material instead. Never committed; the operator owns keeping it
+	// out of version control.
+	SEP2ServerCertDir string
 }
 
 // envDefaults are the gridappsd-docker dev-stack defaults. They are
@@ -76,6 +95,18 @@ const (
 	defaultSTOMPUser     = "system"
 	defaultSTOMPPassword = "manager"
 	defaultFeederMRID    = "_C1C3E687-6FFD-C753-582B-632A27E28507"
+
+	// defaultSEP2ServerAddr binds the embedded IEEE 2030.5 mTLS listener
+	// to loopback only by default; see config.SEP2ServerAddr's doc
+	// comment for why (GAGO-043, no per-device ACL yet).
+	defaultSEP2ServerAddr = "127.0.0.1:8443"
+
+	// defaultSEP2ServerCertDir is where dev-mint mTLS material is
+	// written when no preprovisioned CA/server cert pair exists yet
+	// (see sep2embed.Config.CertDir). Relative to the process's working
+	// directory so a bare `go run ./cmd/bridge` boots the embed with no
+	// extra setup; a production deployment overrides this via the env.
+	defaultSEP2ServerCertDir = "./sep2-certs"
 )
 
 // loadConfig reads bridge config from env vars and the command-line
@@ -91,9 +122,11 @@ const (
 // the same precedence as the non-credential flags.
 func loadConfig(args []string) (config, error) {
 	cfg := config{
-		STOMPAddr:    getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
-		SimulationID: os.Getenv("SEP2_SIMULATION_ID"),
-		FeederMRID:   getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
+		STOMPAddr:         getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
+		SimulationID:      os.Getenv("SEP2_SIMULATION_ID"),
+		FeederMRID:        getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
+		SEP2ServerAddr:    getenvDefault("SEP2_SERVER_ADDR", defaultSEP2ServerAddr),
+		SEP2ServerCertDir: getenvDefault("SEP2_SERVER_CERT_DIR", defaultSEP2ServerCertDir),
 	}
 	pubFromEnv, err := getenvBool("SEP2_PUBLISH_ON_START", false)
 	if err != nil {
@@ -122,6 +155,8 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.FeederMRID, "feeder-mrid", cfg.FeederMRID, "CIM feeder mRID to enumerate DERs from")
 	fs.BoolVar(&cfg.PublishOnStart, "publish-on-start", cfg.PublishOnStart, "publish a smoke-test DifferenceBuilder envelope after registry bootstrap")
 	fs.BoolVar(&cfg.AllowPlaintext, "stomp-allow-plaintext", cfg.AllowPlaintext, "dial the GridAPPS-D broker over plain TCP instead of TLS (dev-only; default false)")
+	fs.StringVar(&cfg.SEP2ServerAddr, "sep2-server-addr", cfg.SEP2ServerAddr, "embedded IEEE 2030.5 mTLS listener host:port (defaults to loopback only)")
+	fs.StringVar(&cfg.SEP2ServerCertDir, "sep2-server-cert-dir", cfg.SEP2ServerCertDir, "directory holding (or receiving dev-mint) the embedded server's CA/leaf cert material")
 
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("parse flags: %w", err)
@@ -180,6 +215,12 @@ func (c config) validate() error {
 	}
 	if c.PublishOnStart && c.SimulationID == "" {
 		return errors.New("config: -publish-on-start requires SEP2_SIMULATION_ID")
+	}
+	if c.SEP2ServerAddr == "" {
+		return errors.New("config: SEP2_SERVER_ADDR / -sep2-server-addr is required")
+	}
+	if c.SEP2ServerCertDir == "" {
+		return errors.New("config: SEP2_SERVER_CERT_DIR / -sep2-server-cert-dir is required")
 	}
 	return nil
 }
