@@ -362,6 +362,127 @@ func TestSubscriber_HandlerDeliveryAfterCtxCancelDoesNotPanicOrBlock(t *testing.
 	}
 }
 
+// TestSubscriber_CtxCancelWhileRelayBlockedOnFullBuffer exercises the
+// nested-select ctx.Done() branch inside relay (subscriber.go:150-152),
+// which fires when relay has already popped a message off raw and is
+// blocked sending it into a full sub.msgs while ctx is canceled
+// concurrently. This is distinct from TestSubscriber_CtxCancelClosesMessagesAndSetsErr,
+// which cancels while relay is idle at the outer select
+// (subscriber.go:144-146).
+func TestSubscriber_CtxCancelWhileRelayBlockedOnFullBuffer(t *testing.T) {
+	t.Parallel()
+
+	bus := &fakeSubscribeBus{tokenToReturn: 55}
+	s := NewSubscriber(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	const dest = "dest"
+	sub, err := s.Subscribe(ctx, dest)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// Fill the msgs buffer. raw is unbuffered, so each deliver call only
+	// returns once relay has popped that message off raw; and relay
+	// cannot loop back to pop the next one until it has finished writing
+	// the previous message into msgs (sub.msgs <- msg is the immediate
+	// next statement and is ready to fire while the buffer has room).
+	// Calling these synchronously therefore fully sequences with relay:
+	// after this loop, all subscriptionMsgBuf messages are provably
+	// resident in msgs and relay is back idle at the outer select.
+	for i := 0; i < subscriptionMsgBuf; i++ {
+		bus.deliver(nil, []byte{byte(i)})
+	}
+
+	// Deliver one more message. This call rendezvous on raw and returns
+	// quickly (relay was idle, ready to receive), but relay's next step,
+	// sub.msgs <- msg, now blocks: the buffer is full and nothing drains
+	// Messages(). This is the target state: relay is stuck in the nested
+	// select at subscriber.go:148-153.
+	bus.deliver(nil, []byte{byte(subscriptionMsgBuf)})
+
+	// Prove relay is no longer listening on raw, i.e. it is inside the
+	// nested select rather than the outer one: attempt one further
+	// delivery from a background goroutine. raw is unbuffered, so this
+	// send can only complete if relay's outer select is receiving on
+	// raw. Given the code structure (relay is single-goroutine, with no
+	// statement between the raw-receive and the nested select), relay
+	// structurally cannot be back at the outer select until it has
+	// either completed the send to msgs (impossible: full, no consumer)
+	// or observed ctx.Done() (not yet canceled). The probe therefore
+	// cannot complete before we cancel, regardless of scheduler timing;
+	// the bounded window below is a stability margin for the test, not
+	// the correctness mechanism.
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		bus.deliver(nil, []byte{byte(subscriptionMsgBuf + 1)})
+	}()
+	select {
+	case <-probeDone:
+		t.Fatal("probe delivery completed immediately; relay was not blocked mid-send to a full msgs buffer as expected")
+	case <-time.After(200 * time.Millisecond):
+		// expected: relay is not listening on raw.
+	}
+
+	// Cancel while relay is blocked exactly there. This exercises the
+	// ctx.Done() branch inside the nested select (subscriber.go:150-152).
+	cancel()
+
+	// The probe's handler is itself ctx-guarded (Subscribe's handler
+	// select), so once ctx is done it drops the probe message and
+	// returns promptly rather than blocking forever.
+	select {
+	case <-probeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("probe delivery did not return after ctx cancel; handler's ctx guard did not fire")
+	}
+
+	// relay must exit promptly. The already-buffered messages remain
+	// readable, in order, after cancel; drain and assert.
+	for i := 0; i < subscriptionMsgBuf; i++ {
+		select {
+		case msg, ok := <-sub.Messages():
+			if !ok {
+				t.Fatalf("Messages() closed early at index %d, want %d buffered messages first", i, subscriptionMsgBuf)
+			}
+			if len(msg.Body) != 1 || int(msg.Body[0]) != i {
+				t.Fatalf("buffered message %d = %v, want body [%d] (order preserved)", i, msg.Body, i)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out draining buffered message %d", i)
+		}
+	}
+
+	// The message relay was blocked trying to send (the 17th) is not
+	// delivered: relay took the ctx.Done() branch instead of completing
+	// the send, matching cimstomp.runSubscription's identical contract
+	// on its own subscription-teardown path. The channel must now be
+	// closed rather than deliver a further value.
+	select {
+	case _, ok := <-sub.Messages():
+		if ok {
+			t.Fatal("Messages() delivered an unexpected value after draining the buffered messages; want closed channel")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Messages() to close after cancel")
+	}
+
+	if !errors.Is(sub.Err(), context.Canceled) {
+		t.Errorf("Err() = %v, want context.Canceled", sub.Err())
+	}
+	if got := bus.unsubscribeCallCount(); got != 1 {
+		t.Fatalf("Unsubscribe called %d times, want exactly 1", got)
+	}
+	call := bus.lastUnsubscribeCall()
+	if call.destination != dest {
+		t.Errorf("Unsubscribe destination = %q, want %q", call.destination, dest)
+	}
+	if call.tok != fieldbus.Token(55) {
+		t.Errorf("Unsubscribe token = %v, want %v", call.tok, fieldbus.Token(55))
+	}
+}
+
 // compile-time sanity: cimstomp.Message is the wire DTO Subscription
 // delivers; referenced here so a signature drift on either type fails
 // this test file to build, not silently.
