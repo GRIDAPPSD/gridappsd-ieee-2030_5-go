@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
+)
 
 // TestBusConfigMapsFields verifies busConfig's field-by-field mapping
 // from the bridge's own config onto gridappsd.Config, in particular
@@ -90,11 +95,56 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 		SEP2ServerCertDir: "/var/lib/bridge/sep2-certs",
 	}
 
-	got := sep2EmbedConfig(cfg)
+	got := sep2EmbedConfig(cfg, nil)
 	if got.Addr != cfg.SEP2ServerAddr {
 		t.Errorf("Addr: got %q, want %q", got.Addr, cfg.SEP2ServerAddr)
 	}
 	if got.CertDir != cfg.SEP2ServerCertDir {
 		t.Errorf("CertDir: got %q, want %q", got.CertDir, cfg.SEP2ServerCertDir)
 	}
+	if got.Bus != nil {
+		t.Errorf("Bus: got %v, want nil (no bus passed in)", got.Bus)
+	}
+	if got.TelemetryDestination != "" {
+		t.Errorf("TelemetryDestination: got %q, want empty (no SimulationID set)", got.TelemetryDestination)
+	}
+	if got.TelemetrySimulationID != "" {
+		t.Errorf("TelemetrySimulationID: got %q, want empty (no SimulationID set)", got.TelemetrySimulationID)
+	}
 }
+
+// TestSEP2EmbedConfigWiresTelemetryWhenSimulationIDSet proves the
+// GAGO-034 UP-path wiring: when the bridge is configured with a
+// SimulationID (and a non-nil bus is threaded through), sep2EmbedConfig
+// derives TelemetryDestination from internal/cim/sim.InputTopic and
+// carries the bus and simulation ID straight through, so
+// sep2embed.New's telemetry relay is actually enabled end to end.
+func TestSEP2EmbedConfigWiresTelemetryWhenSimulationIDSet(t *testing.T) {
+	t.Parallel()
+
+	cfg := config{
+		SEP2ServerAddr:    "127.0.0.1:8443",
+		SEP2ServerCertDir: "/var/lib/bridge/sep2-certs",
+		SimulationID:      "sim-123",
+	}
+
+	fakeBus := fakeBusPublisherForTest{}
+	got := sep2EmbedConfig(cfg, fakeBus)
+
+	wantDest := sim.InputTopic("sim-123")
+	if got.TelemetryDestination != wantDest {
+		t.Errorf("TelemetryDestination: got %q, want %q", got.TelemetryDestination, wantDest)
+	}
+	if got.TelemetrySimulationID != "sim-123" {
+		t.Errorf("TelemetrySimulationID: got %q, want %q", got.TelemetrySimulationID, "sim-123")
+	}
+	if got.Bus == nil {
+		t.Error("Bus: got nil, want the passed-in bus")
+	}
+}
+
+// fakeBusPublisherForTest satisfies sep2embed.BusPublisher without
+// pulling a real fieldbus.MessageBus into this test.
+type fakeBusPublisherForTest struct{}
+
+func (fakeBusPublisherForTest) Send(_ context.Context, _, _ string, _ []byte) error { return nil }

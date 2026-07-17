@@ -33,6 +33,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -46,6 +47,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-go/fieldbus"
 	"github.com/GRIDAPPSD/gridappsd-go/gridappsd"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -128,7 +130,7 @@ func run(ctx context.Context, cfg config) error {
 
 	// The embed seeds its EndDevice/DER stores from reg, so it must be
 	// built after bootstrapRegistry above, not before.
-	embed, err := newSEP2Embed(ctx, cfg, reg)
+	embed, err := newSEP2Embed(ctx, cfg, reg, bus)
 	if err != nil {
 		return fmt.Errorf("sep2 embed: %w", err)
 	}
@@ -136,8 +138,9 @@ func run(ctx context.Context, cfg config) error {
 	log.Printf("bridge: sep2 embed listening addr=%s sfdi=%s lfdi=%s",
 		embed.Addr(), id.SFDI, id.LFDI)
 
-	// stompRun adapts the SimulationID branch (idle-wait, or runPump)
-	// to the func(context.Context) error shape runEmbedAndStomp expects
+	// stompRun adapts the SimulationID branch (idle-wait, or the
+	// measurement pump plus the GAGO-034 control-delta subscriber) to
+	// the func(context.Context) error shape runEmbedAndStomp expects
 	// for its second seam.
 	stompRun := func(runCtx context.Context) error {
 		if cfg.SimulationID == "" {
@@ -145,14 +148,15 @@ func run(ctx context.Context, cfg config) error {
 			<-runCtx.Done()
 			return runCtx.Err()
 		}
-		// runCtx is the pump's root. gridappsd-go's router does not yet
-		// surface a broker-teardown signal to fieldbus.MessageBus
-		// callers (upstream gap GAG-009; see the relay doc comment in
+		// runCtx is the pump's (and the control subscriber's) root.
+		// gridappsd-go's router does not yet surface a broker-teardown
+		// signal to fieldbus.MessageBus callers (upstream gap GAG-009;
+		// see the relay doc comment in
 		// internal/gridappsdclient/subscriber.go), so a mid-run broker
-		// disconnect does NOT independently wake the pump: only
+		// disconnect does NOT independently wake either loop: only
 		// runCtx's cancellation (SIGINT/SIGTERM, or the embed side
 		// exiting) does.
-		return runPump(runCtx, bus, reg, cfg.SimulationID)
+		return runSimSide(runCtx, bus, embed, reg, cfg.SimulationID)
 	}
 
 	return runEmbedAndStomp(ctx, embed.Run, stompRun)
@@ -220,18 +224,33 @@ func runEmbedAndStomp(ctx context.Context, embedRun, stompRun func(context.Conte
 // Split out from newSEP2Embed so the address/cert-dir mapping can be
 // asserted by a unit test without minting real certificate material or
 // binding a listener.
-func sep2EmbedConfig(cfg config) sep2embed.Config {
+//
+// bus is threaded through as sep2embed.Config.Bus for the GAGO-034
+// UP-path telemetry relay (SEP2 DERStatus -> GridAPPS-D bus). A nil bus
+// (or an empty cfg.SimulationID) disables the relay: see
+// sep2embed.Config.Bus's doc comment. TelemetryDestination reuses
+// internal/cim/sim.InputTopic, the same simulation-input destination
+// this bridge's own -publish-on-start smoke test already documents as
+// the outgoing-difference channel.
+func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher) sep2embed.Config {
+	dest := ""
+	if cfg.SimulationID != "" {
+		dest = sim.InputTopic(cfg.SimulationID)
+	}
 	return sep2embed.Config{
-		Addr:    cfg.SEP2ServerAddr,
-		CertDir: cfg.SEP2ServerCertDir,
+		Addr:                  cfg.SEP2ServerAddr,
+		CertDir:               cfg.SEP2ServerCertDir,
+		Bus:                   bus,
+		TelemetryDestination:  dest,
+		TelemetrySimulationID: cfg.SimulationID,
 	}
 }
 
 // newSEP2Embed builds, seeds, and binds the in-process IEEE 2030.5
 // protocol server from the bridge's registry. It does not start
 // serving; the caller starts embed.Run once this returns successfully.
-func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry) (*sep2embed.Embed, error) {
-	return sep2embed.New(ctx, sep2EmbedConfig(cfg), reg)
+func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, bus sep2embed.BusPublisher) (*sep2embed.Embed, error) {
+	return sep2embed.New(ctx, sep2EmbedConfig(cfg, bus), reg)
 }
 
 // busConfig projects the bridge's config onto gridappsd-go's connection
@@ -482,4 +501,115 @@ func runPump(ctx context.Context, bus fieldbus.MessageBus, reg *registry.Registr
 		return fmt.Errorf("pump: %w", err)
 	}
 	return nil
+}
+
+// runSimSide runs the measurement pump (runPump) and the GAGO-034
+// control-delta subscriber (runControlSubscriber) concurrently under
+// ctx, and returns once BOTH have finished. Splitting the two loops out
+// as a pair (rather than folding control consumption into runPump
+// itself) keeps runPump's existing MeasurementFrame contract untouched;
+// they are independent subscriptions on independent (if, for now,
+// identically-named) destinations.
+//
+// Error precedence mirrors runEmbedAndStomp: if only one side failed
+// with something other than a graceful ctx cancellation, that error is
+// returned; if both failed independently, both are preserved via
+// errors.Join.
+func runSimSide(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.Embed, reg *registry.Registry, simID string) error {
+	pumpErr := make(chan error, 1)
+	go func() { pumpErr <- runPump(ctx, bus, reg, simID) }()
+
+	ctrlErr := runControlSubscriber(ctx, bus, embed, reg, simID)
+
+	perr := <-pumpErr
+	pGraceful := perr == nil || errors.Is(perr, context.Canceled)
+	cGraceful := ctrlErr == nil || errors.Is(ctrlErr, context.Canceled)
+
+	switch {
+	case pGraceful && cGraceful:
+		return nil
+	case pGraceful:
+		return ctrlErr
+	case cGraceful:
+		return perr
+	default:
+		return errors.Join(perr, ctrlErr)
+	}
+}
+
+// runControlSubscriber subscribes to the same differences destination
+// this bridge's own -publish-on-start smoke test and the UP-path
+// telemetry relay (internal/sep2embed's Config.TelemetryDestination)
+// already publish to (internal/cim/sim.InputTopic), decodes each frame
+// as a diff.Message, and applies every forward difference to embed via
+// sep2embed.Embed.ApplyControlDelta.
+//
+// Topic-convention caveat (GAGO-034 follow-up): the Python upstream
+// reference this bridge reproduces
+// (ieee_2030_5/adapters/gridappsd_adapter.py:_input_detected, in the
+// gridappsd-2030_5 project) subscribes to a dedicated
+// application-input topic (topics.application_input_topic), not the
+// shared simulation-input topic used here. This bridge has no Go
+// equivalent of that helper yet, and reusing sim.InputTopic is a
+// deliberate, documented interim choice rather than an invented
+// convention: it is the only "differences" destination this codebase
+// already has. Confirming the production topic convention (shared
+// sim-input vs. a dedicated per-app input queue) is left to a follow-up
+// card; this loop is written so only the destination string need change
+// once that is settled.
+//
+// LOAD-BEARING INVARIANT (Leon INFO / Pike LOW, GAGO-034 PR #9 review):
+// this DOWN-path subscriber and the UP-path telemetry relay
+// (internal/sep2embed's telemetryMiddleware, which also publishes to
+// this same destination) are safe to share sim.InputTopic ONLY because
+// their attribute namespaces never overlap: ApplyControlDelta acts
+// exclusively on "DERControl.DERControlBase."-prefixed attributes
+// (derControlAttributePrefix), and the telemetry relay publishes
+// exclusively "DERStatus."-prefixed attributes
+// (derStatusAttributePrefix). This bridge's own DERStatus echoes are
+// therefore ignored here, not misapplied as controls, purely because
+// the two prefixes never collide. THIS IS A GUARD, NOT A DESIGN: any
+// future field added under a THIRD shared prefix (or, worse, under
+// "DERControl." without the DERControlBase suffix, or under
+// "DERStatus." on the DOWN side) silently regresses this invariant and
+// reopens a self-echo/misapply bug. Give any new UP- or DOWN-path
+// attribute family its own distinct, non-overlapping prefix, or split
+// the two directions onto separate topics (the shared-topic choice
+// itself is not re-litigated by this comment; only the prefix
+// discipline that currently makes it safe is).
+//
+// Decode and per-delta apply errors are logged and skipped; the loop
+// continues, matching runPump's resilience style (a malformed or
+// inapplicable frame must not take down the whole subscriber).
+func runControlSubscriber(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.Embed, reg *registry.Registry, simID string) error {
+	dest := sim.InputTopic(simID)
+	log.Printf("bridge: subscribing to %s for control deltas", dest)
+
+	sub, err := gridappsdclient.NewSubscriber(bus).Subscribe(ctx, dest)
+	if err != nil {
+		return fmt.Errorf("control subscriber: subscribe %s: %w", dest, err)
+	}
+
+	for msg := range sub.Messages() {
+		var envelope diff.Message
+		if derr := json.Unmarshal(msg.Body, &envelope); derr != nil {
+			log.Printf("control subscriber: skip malformed frame on %s: %v", dest, derr)
+			continue
+		}
+		for _, delta := range envelope.Input.Message.ForwardDifferences {
+			if aerr := embed.ApplyControlDelta(ctx, reg, delta); aerr != nil {
+				log.Printf("control subscriber: skip delta object=%q attribute=%q: %v",
+					delta.Object, delta.Attribute, aerr)
+			}
+		}
+	}
+
+	endErr := sub.Err()
+	if endErr == nil {
+		return nil
+	}
+	if errors.Is(endErr, context.Canceled) || errors.Is(endErr, context.DeadlineExceeded) {
+		return endErr
+	}
+	return fmt.Errorf("control subscriber: subscription ended: %w", endErr)
 }

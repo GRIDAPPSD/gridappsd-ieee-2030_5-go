@@ -34,13 +34,22 @@ import (
 // dispatches into this Wrap chain). aclMiddleware therefore never
 // observes an uncleaned path. See aclMiddleware's own doc comment for
 // why that ordering is load-bearing for its path parsing.
-func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, identity sep2srv.Identity, notifier assembly.ResourceNotifier) http.Handler {
+//
+// telemetry (GAGO-034) is composed INSIDE acl, not outside it: it must
+// only ever observe requests the ACL has already confirmed are the
+// caller's own device, so it can trust the {id} path segment as the
+// caller's own LFDI without a separate ownership check. A disabled
+// telemetryConfig (the zero value) makes telemetryMiddleware a
+// pass-through, so this composition is a no-op when the relay isn't
+// configured.
+func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, identity sep2srv.Identity, notifier assembly.ResourceNotifier, telemetry telemetryConfig) http.Handler {
 	resolver := newStoreOwnerResolver(stores.EndDevices)
 	acl := aclMiddleware(resolver)
+	relay := telemetryMiddleware(telemetry)
 
 	authPolicy := assembly.AuthPolicy{
 		Wrap: func(next http.Handler) http.Handler {
-			return identityMiddleware(acl(next))
+			return identityMiddleware(acl(relay(next)))
 		},
 		Identity:   identityFromContext,
 		SFDIPrefix: sfdiPrefix,
