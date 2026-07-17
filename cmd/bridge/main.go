@@ -13,10 +13,18 @@
 // plus subscribe path can be validated end-to-end against a live
 // gridappsd-docker stack.
 //
+// The GridAPPS-D connection rides github.com/GRIDAPPSD/gridappsd-go's
+// fieldbus.MessageBus (GAGO-039), adapted to this bridge's own
+// internal/cim.Requester and internal/cim/sim.SubscribeClient
+// interfaces via internal/gridappsdclient. internal/cimstomp, this
+// repo's own STOMP implementation, stays in the tree for its
+// Publisher and DifferenceBuilder types but no longer backs the
+// bridge's connection.
+//
 // Lifecycle: the process runs until SIGINT or SIGTERM. Cancellation
-// flows through a single context.Context root: the cimstomp.Client and
-// any sim.Pump goroutines exit on ctx cancel; the bridge then closes
-// the publisher (if any) and the client and returns.
+// flows through a single context.Context root: the
+// fieldbus.MessageBus and any sim.Pump goroutines exit on ctx cancel;
+// the bridge then disconnects the bus and returns.
 package main
 
 import (
@@ -31,9 +39,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/GRIDAPPSD/gridappsd-go/fieldbus"
+	"github.com/GRIDAPPSD/gridappsd-go/gridappsd"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
-	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
@@ -78,17 +88,17 @@ func main() {
 // registry populate) are fatal: the bridge has nothing useful to do
 // without them.
 func run(ctx context.Context, cfg config) error {
-	client, err := connectClient(ctx, cfg)
+	bus, err := connectClient(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if cerr := client.Close(); cerr != nil {
-			log.Printf("bridge: client close: %v", cerr)
+		if cerr := bus.Disconnect(); cerr != nil {
+			log.Printf("bridge: bus disconnect: %v", cerr)
 		}
 	}()
 
-	cimClient := cim.NewClient(client)
+	cimClient := cim.NewClient(gridappsdclient.NewRequester(bus))
 
 	reg, err := bootstrapRegistry(ctx, cimClient, cfg.FeederMRID)
 	if err != nil {
@@ -98,14 +108,13 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.PublishOnStart {
 		// The publish smoke test wants to send a DifferenceBuilder
 		// envelope to /topic/goss.gridappsd.simulation.input.<sim_id>.
-		// At Stage 1, cimstomp.Publisher.Publish marshals a
-		// sample-array body and cimstomp.Client has no public Send
-		// primitive; either path is the wrong shape for a diff
-		// envelope. Adding a SendRaw method is a deliberate widening
-		// of the cimstomp surface and belongs in its own ticket. The
-		// flag is wired so callers can opt in once the primitive
-		// lands; for now we log and proceed.
-		log.Printf("bridge: -publish-on-start requested; cimstomp Publish/SendRaw primitive for diff envelopes is filed as Stage 2 follow-up; skipping")
+		// fieldbus.MessageBus.Send can carry an arbitrary body, but
+		// building the DifferenceBuilder envelope itself and wiring
+		// it through here is a deliberate Stage 2 follow-up, not part
+		// of this connection swap. The flag is wired so callers can
+		// opt in once that follow-up lands; for now we log and
+		// proceed.
+		log.Printf("bridge: -publish-on-start requested; DifferenceBuilder envelope publish is filed as Stage 2 follow-up; skipping")
 	}
 
 	if cfg.SimulationID == "" {
@@ -114,29 +123,51 @@ func run(ctx context.Context, cfg config) error {
 		return ctx.Err()
 	}
 
-	return runPump(ctx, client, reg, cfg.SimulationID)
+	// ctx is the pump's root, the same signal-derived ctx that governed
+	// connect and the CIM query above. gridappsd-go's router does not
+	// yet surface a broker-teardown signal to fieldbus.MessageBus
+	// callers (upstream gap GAG-009; see the relay doc comment in
+	// internal/gridappsdclient/subscriber.go), so a mid-run broker
+	// disconnect does NOT independently wake the pump: only this ctx's
+	// cancellation (SIGINT/SIGTERM) does.
+	return runPump(ctx, bus, reg, cfg.SimulationID)
 }
 
-// connectClient dials the GridAPPS-D STOMP broker, runs the auth-token
-// bootstrap, and returns a connected Client. The connect uses its own
-// timeout so a stuck platform fails fast rather than hanging on the
-// caller's parent ctx.
-func connectClient(ctx context.Context, cfg config) (*cimstomp.Client, error) {
+// busConfig projects the bridge's config onto gridappsd-go's connection
+// config. Split out from connectClient so the mapping, in particular
+// the plaintext opt-in, can be asserted by a unit test without dialing
+// a broker.
+func busConfig(cfg config) gridappsd.Config {
+	return gridappsd.Config{
+		Address:        cfg.STOMPAddr,
+		User:           cfg.STOMPUser,
+		Password:       cfg.STOMPPassword,
+		AllowPlaintext: cfg.AllowPlaintext,
+	}
+}
+
+// connectClient dials the GridAPPS-D broker, runs the two-step GOSS
+// token bootstrap, and returns a connected fieldbus.MessageBus. The
+// connect uses its own timeout so a stuck platform fails fast rather
+// than hanging on the caller's parent ctx.
+//
+// Transport selection is entirely cfg.AllowPlaintext's call: the zero
+// value dials TLS against the system trust store (gridappsd.Config's
+// fail-closed default), matching this bridge's own config default.
+// cfg.AllowPlaintext must be set explicitly to reach a plaintext
+// broker such as gridappsd-docker's dev stack.
+func connectClient(ctx context.Context, cfg config) (fieldbus.MessageBus, error) {
 	log.Printf("bridge: connecting to %s as %s", cfg.STOMPAddr, cfg.STOMPUser)
 
 	cctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 
-	client := cimstomp.NewClient(cimstomp.STOMPConfig{
-		Address:  cfg.STOMPAddr,
-		User:     cfg.STOMPUser,
-		Password: cfg.STOMPPassword,
-	})
-	if err := client.Connect(cctx); err != nil {
+	bus := fieldbus.New(busConfig(cfg))
+	if err := bus.Connect(cctx); err != nil {
 		return nil, fmt.Errorf("connect %s: %w", cfg.STOMPAddr, err)
 	}
 	log.Printf("bridge: connected; auth token bootstrapped")
-	return client, nil
+	return bus, nil
 }
 
 // bootstrapRegistry runs the three CIM enumeration queries against the
@@ -246,21 +277,6 @@ func queryDevices(
 	return out, nil
 }
 
-// cimstompSubscribeClient adapts *cimstomp.Client to sim.SubscribeClient.
-// *cimstomp.Client.Subscribe returns the concrete *cimstomp.Subscription,
-// which no longer satisfies sim.SubscribeClient directly now that
-// Subscribe returns the sim.Subscription interface (GAGO-038 sim-side
-// interface reshape, so any transport, not just cimstomp, can back a
-// SubscribeClient). This wrapper narrows the concrete return type to the
-// interface at the one call site that needs it.
-type cimstompSubscribeClient struct {
-	*cimstomp.Client
-}
-
-func (c cimstompSubscribeClient) Subscribe(ctx context.Context, destination string) (sim.Subscription, error) {
-	return c.Client.Subscribe(ctx, destination)
-}
-
 // runPump subscribes to the simulation output topic and runs the Pump
 // until ctx is cancelled or the subscription closes. The handler logs a
 // one-liner per frame and then walks each measurement, performing an
@@ -275,11 +291,11 @@ func (c cimstompSubscribeClient) Subscribe(ctx context.Context, destination stri
 // lookup key (e.g., to the parent ConductingEquipment mRID) without
 // reworking the pump glue. Richer downstream consumption (IEEE 2030.5
 // MirrorMeterReading mapping) is Stage 2.
-func runPump(ctx context.Context, client *cimstomp.Client, reg *registry.Registry, simID string) error {
+func runPump(ctx context.Context, bus fieldbus.MessageBus, reg *registry.Registry, simID string) error {
 	dest := sim.OutputTopic(simID)
 	log.Printf("bridge: subscribing to %s", dest)
 
-	pump := sim.NewPump(cimstompSubscribeClient{client}, simID)
+	pump := sim.NewPump(gridappsdclient.NewSubscriber(bus), simID)
 
 	// seen dedupes the per-mRID lookup log so a 1Hz simulation does not
 	// reprint the same line every timestep. Plain map plus mutex; the
