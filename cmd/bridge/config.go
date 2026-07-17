@@ -78,7 +78,24 @@ type config struct {
 	// material instead. Never committed; the operator owns keeping it
 	// out of version control.
 	SEP2ServerCertDir string
+
+	// SEP2DeviceCertMode selects how bootstrapRegistry sources each
+	// device's IEEE 2030.5 identity certificate (spec section 6.3.4
+	// LFDI, section 6.3.3 SFDI; see internal/sep2embed.DeviceCertMode).
+	// One of the two deviceCertMode* flag values below; loadConfig
+	// rejects anything else. Defaults to "dev-mint": an operator must
+	// set this explicitly to "preprovisioned" to get the fail-closed
+	// production behavior, mirroring AllowPlaintext's explicit-opt-in
+	// shape for the "this is production" signal.
+	SEP2DeviceCertMode string
 }
+
+// deviceCertMode* are the only two values config.validate accepts for
+// SEP2DeviceCertMode / SEP2_DEVICE_CERT_MODE.
+const (
+	deviceCertModeDevMintFlag        = "dev-mint"
+	deviceCertModePreprovisionedFlag = "preprovisioned"
+)
 
 // envDefaults are the gridappsd-docker dev-stack defaults. They are
 // safe to bake into the binary because:
@@ -107,6 +124,12 @@ const (
 	// directory so a bare `go run ./cmd/bridge` boots the embed with no
 	// extra setup; a production deployment overrides this via the env.
 	defaultSEP2ServerCertDir = "./sep2-certs"
+
+	// defaultSEP2DeviceCertMode is "dev-mint": a bare `go run
+	// ./cmd/bridge` derives working device identities with no extra
+	// setup. A production deployment must opt into "preprovisioned"
+	// explicitly; see config.SEP2DeviceCertMode's doc comment.
+	defaultSEP2DeviceCertMode = deviceCertModeDevMintFlag
 )
 
 // loadConfig reads bridge config from env vars and the command-line
@@ -122,11 +145,12 @@ const (
 // the same precedence as the non-credential flags.
 func loadConfig(args []string) (config, error) {
 	cfg := config{
-		STOMPAddr:         getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
-		SimulationID:      os.Getenv("SEP2_SIMULATION_ID"),
-		FeederMRID:        getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
-		SEP2ServerAddr:    getenvDefault("SEP2_SERVER_ADDR", defaultSEP2ServerAddr),
-		SEP2ServerCertDir: getenvDefault("SEP2_SERVER_CERT_DIR", defaultSEP2ServerCertDir),
+		STOMPAddr:          getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
+		SimulationID:       os.Getenv("SEP2_SIMULATION_ID"),
+		FeederMRID:         getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
+		SEP2ServerAddr:     getenvDefault("SEP2_SERVER_ADDR", defaultSEP2ServerAddr),
+		SEP2ServerCertDir:  getenvDefault("SEP2_SERVER_CERT_DIR", defaultSEP2ServerCertDir),
+		SEP2DeviceCertMode: getenvDefault("SEP2_DEVICE_CERT_MODE", defaultSEP2DeviceCertMode),
 	}
 	pubFromEnv, err := getenvBool("SEP2_PUBLISH_ON_START", false)
 	if err != nil {
@@ -157,6 +181,7 @@ func loadConfig(args []string) (config, error) {
 	fs.BoolVar(&cfg.AllowPlaintext, "stomp-allow-plaintext", cfg.AllowPlaintext, "dial the GridAPPS-D broker over plain TCP instead of TLS (dev-only; default false)")
 	fs.StringVar(&cfg.SEP2ServerAddr, "sep2-server-addr", cfg.SEP2ServerAddr, "embedded IEEE 2030.5 mTLS listener host:port (defaults to loopback only)")
 	fs.StringVar(&cfg.SEP2ServerCertDir, "sep2-server-cert-dir", cfg.SEP2ServerCertDir, "directory holding (or receiving dev-mint) the embedded server's CA/leaf cert material")
+	fs.StringVar(&cfg.SEP2DeviceCertMode, "sep2-device-cert-mode", cfg.SEP2DeviceCertMode, `device identity certificate source: "dev-mint" (default) or "preprovisioned"`)
 
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("parse flags: %w", err)
@@ -221,6 +246,10 @@ func (c config) validate() error {
 	}
 	if c.SEP2ServerCertDir == "" {
 		return errors.New("config: SEP2_SERVER_CERT_DIR / -sep2-server-cert-dir is required")
+	}
+	if c.SEP2DeviceCertMode != deviceCertModeDevMintFlag && c.SEP2DeviceCertMode != deviceCertModePreprovisionedFlag {
+		return fmt.Errorf("config: SEP2_DEVICE_CERT_MODE / -sep2-device-cert-mode must be %q or %q, got %q",
+			deviceCertModeDevMintFlag, deviceCertModePreprovisionedFlag, c.SEP2DeviceCertMode)
 	}
 	return nil
 }

@@ -6,13 +6,14 @@
 // a SimulationID is configured) subscribes to the simulation output
 // topic and logs each MeasurementFrame.
 //
-// The embedded IEEE 2030.5 server speaks real mTLS but still carries
-// Stage 1 placeholders: the LFDI on every EndDevice is a deterministic
-// hash of the CIM mRID rather than one derived from a real device
-// certificate (GAGO-032 follow-up), and the listener has no per-device
-// ACL yet (GAGO-043 follow-up), which is why it binds to loopback by
-// default. Bidirectional control flow (device writes reaching the CIM
-// side) is a further follow-up.
+// The embedded IEEE 2030.5 server speaks real mTLS with real,
+// certificate-derived device identity (GAGO-033): the LFDI on every
+// EndDevice is per spec section 6.3.4 and the SFDI is per section
+// 6.3.3, both derived from each device's own certificate rather than a
+// placeholder hash of the CIM mRID. The listener still has no
+// per-device ACL (GAGO-043 follow-up), which is why it binds to
+// loopback by default. Bidirectional control flow (device writes
+// reaching the CIM side) is a further follow-up.
 //
 // The GridAPPS-D connection rides github.com/GRIDAPPSD/gridappsd-go's
 // fieldbus.MessageBus (GAGO-039), adapted to this bridge's own
@@ -104,7 +105,11 @@ func run(ctx context.Context, cfg config) error {
 
 	cimClient := cim.NewClient(gridappsdclient.NewRequester(bus))
 
-	reg, err := bootstrapRegistry(ctx, cimClient, cfg.FeederMRID)
+	mode, err := deviceCertMode(cfg.SEP2DeviceCertMode)
+	if err != nil {
+		return err
+	}
+	reg, err := bootstrapRegistry(ctx, cimClient, cfg.FeederMRID, cfg.SEP2ServerCertDir, mode)
 	if err != nil {
 		return err
 	}
@@ -128,7 +133,7 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("sep2 embed: %w", err)
 	}
 	id := embed.Identity()
-	log.Printf("bridge: sep2 embed listening addr=%s sfdi=%s lfdi=%s (LFDI placeholder; real cert mapping is a follow-up)",
+	log.Printf("bridge: sep2 embed listening addr=%s sfdi=%s lfdi=%s",
 		embed.Addr(), id.SFDI, id.LFDI)
 
 	// stompRun adapts the SimulationID branch (idle-wait, or runPump)
@@ -266,12 +271,41 @@ func connectClient(ctx context.Context, cfg config) (fieldbus.MessageBus, error)
 	return bus, nil
 }
 
+// deviceCertMode maps the bridge's SEP2DeviceCertMode config string onto
+// sep2embed.DeviceCertMode. config.validate already restricts the
+// stored string to deviceCertModeDevMintFlag or
+// deviceCertModePreprovisionedFlag, so the default branch below should
+// be unreachable once loadConfig has run; it still returns an error
+// rather than silently picking a mode, matching the fail-closed
+// posture the preprovisioned mode itself is for.
+func deviceCertMode(s string) (sep2embed.DeviceCertMode, error) {
+	switch s {
+	case deviceCertModeDevMintFlag:
+		return sep2embed.DeviceCertModeDevMint, nil
+	case deviceCertModePreprovisionedFlag:
+		return sep2embed.DeviceCertModePreprovisioned, nil
+	default:
+		return 0, fmt.Errorf("config: unknown SEP2_DEVICE_CERT_MODE %q (want %q or %q)",
+			s, deviceCertModeDevMintFlag, deviceCertModePreprovisionedFlag)
+	}
+}
+
 // bootstrapRegistry runs the three CIM enumeration queries against the
 // feeder, dedupes by mRID (a single device may surface in multiple
-// queries when the upstream filter is open), and populates a fresh
-// registry with a placeholder LFDI per device. Returns the populated
+// queries when the upstream filter is open), derives each device's real
+// IEEE 2030.5 identity from its certificate (GAGO-033, spec sections
+// 6.3.4 LFDI / 6.3.3 SFDI, via sep2embed.EnsureDeviceIdentities), and
+// populates a fresh registry from the result. Returns the populated
 // registry; the caller does not need a separate add step.
-func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID string) (*registry.Registry, error) {
+//
+// certDir and mode are threaded straight through to
+// EnsureDeviceIdentities: certDir is cfg.SEP2ServerCertDir, the SAME
+// directory the embedded server's own CA and leaf material live under
+// (device certs are signed by that same CA; see
+// sep2embed.EnsureDeviceIdentities's doc comment for why this must run
+// before sep2embed.New's own load-or-create call against the same
+// dir). mode selects dev-mint vs fail-closed preprovisioned sourcing.
+func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir string, mode sep2embed.DeviceCertMode) (*registry.Registry, error) {
 	log.Printf("bridge: querying CIM feeder %s", feederMRID)
 
 	qctx, cancel := context.WithTimeout(ctx, queryTimeout)
@@ -297,7 +331,7 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID string) (*
 	// QueryInverter (open filter) and QuerySolar; the registry must
 	// only carry one entry per mRID.
 	seen := make(map[string]struct{})
-	var entries []registry.Entry
+	var devices []device
 	for _, src := range [][]device{inverters, solar, battery} {
 		for _, d := range src {
 			if d.MRID == "" {
@@ -307,26 +341,47 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID string) (*
 				continue
 			}
 			seen[d.MRID] = struct{}{}
-			lfdi := placeholderLFDI(d.MRID)
-			entries = append(entries, registry.Entry{
-				MRID:        d.MRID,
-				Name:        d.Name,
-				LFDI:        lfdi,
-				Placeholder: true,
-			})
-			// One line per device at populate time so an operator can
-			// grep "(placeholder)" to confirm Stage 2 LFDI work has not
-			// happened yet. Logged before the summary so the order is
-			// "per-device, then total".
-			log.Printf("bridge: device mrid=%s lfdi=%s (placeholder)", d.MRID, lfdi)
+			devices = append(devices, d)
 		}
+	}
+
+	mrids := make([]string, len(devices))
+	for i, d := range devices {
+		mrids[i] = d.MRID
+	}
+
+	identities, err := sep2embed.EnsureDeviceIdentities(certDir, mode, mrids)
+	if err != nil {
+		return nil, fmt.Errorf("device identities: %w", err)
+	}
+
+	entries := make([]registry.Entry, 0, len(devices))
+	for _, d := range devices {
+		id, ok := identities[d.MRID]
+		if !ok {
+			// EnsureDeviceIdentities is contracted to return an identity
+			// for every mRID it was given, or a single overall error;
+			// this branch should be unreachable, but fail loudly rather
+			// than silently seeding a device with an empty LFDI (which
+			// registry.AddBatch would reject anyway, with a far less
+			// actionable error than this one).
+			return nil, fmt.Errorf("device identities: no identity returned for mRID %q", d.MRID)
+		}
+		entries = append(entries, registry.Entry{
+			MRID:        d.MRID,
+			Name:        d.Name,
+			LFDI:        id.LFDI,
+			SFDI:        id.SFDI,
+			Placeholder: false,
+		})
+		log.Printf("bridge: device mrid=%s lfdi=%s sfdi=%s (certificate-derived)", d.MRID, id.LFDI, id.SFDI)
 	}
 
 	reg := registry.New()
 	if err := reg.AddBatch(entries); err != nil {
 		return nil, fmt.Errorf("registry populate: %w", err)
 	}
-	log.Printf("bridge: registry populated: %d entries (LFDI placeholder; real cert mapping is Stage 2)",
+	log.Printf("bridge: registry populated: %d entries (LFDI/SFDI certificate-derived per spec 6.3.4/6.3.3)",
 		reg.Len())
 	return reg, nil
 }
@@ -416,7 +471,7 @@ func runPump(ctx context.Context, bus fieldbus.MessageBus, reg *registry.Registr
 				continue
 			}
 			if lfdi, ok := reg.LFDI(mrid); ok {
-				log.Printf("bridge: frame for mrid=%s lfdi=%s (placeholder)", mrid, lfdi)
+				log.Printf("bridge: frame for mrid=%s lfdi=%s", mrid, lfdi)
 			} else {
 				log.Printf("bridge: frame for mrid=%s lfdi=<not registered>", mrid)
 			}
