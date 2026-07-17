@@ -49,6 +49,16 @@ type config struct {
 	// off because it requires a SimulationID to land somewhere
 	// observable.
 	PublishOnStart bool
+
+	// AllowPlaintext opts into a plain TCP dial to the GridAPPS-D
+	// broker instead of TLS. Defaults false: gridappsd-go's
+	// gridappsd.Config is fail-closed (nil TLSConfig plus
+	// AllowPlaintext false dials TLS against the system trust store),
+	// and this bridge's zero-value config preserves that default
+	// rather than inverting it. Set true only against a broker known
+	// to be plaintext, such as gridappsd-docker's dev stack on
+	// 127.0.0.1:61613.
+	AllowPlaintext bool
 }
 
 // envDefaults are the gridappsd-docker dev-stack defaults. They are
@@ -91,6 +101,15 @@ func loadConfig(args []string) (config, error) {
 	}
 	cfg.PublishOnStart = pubFromEnv
 
+	// AllowPlaintext defaults false (fail-closed): see the field's doc
+	// comment on config. Only an explicit env or flag override flips
+	// it on.
+	plaintextFromEnv, err := getenvBool("SEP2_STOMP_ALLOW_PLAINTEXT", false)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.AllowPlaintext = plaintextFromEnv
+
 	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
 	fs.StringVar(&cfg.STOMPAddr, "stomp-addr", cfg.STOMPAddr, "GridAPPS-D STOMP broker host:port")
 	// User and password flags register with an empty default so the
@@ -102,6 +121,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.SimulationID, "simulation-id", cfg.SimulationID, "GridAPPS-D simulation_id (empty disables sim subscribe)")
 	fs.StringVar(&cfg.FeederMRID, "feeder-mrid", cfg.FeederMRID, "CIM feeder mRID to enumerate DERs from")
 	fs.BoolVar(&cfg.PublishOnStart, "publish-on-start", cfg.PublishOnStart, "publish a smoke-test DifferenceBuilder envelope after registry bootstrap")
+	fs.BoolVar(&cfg.AllowPlaintext, "stomp-allow-plaintext", cfg.AllowPlaintext, "dial the GridAPPS-D broker over plain TCP instead of TLS (dev-only; default false)")
 
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("parse flags: %w", err)
