@@ -19,6 +19,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("SEP2_STOMP_ALLOW_PLAINTEXT", "")
 	t.Setenv("SEP2_SERVER_ADDR", "")
 	t.Setenv("SEP2_SERVER_CERT_DIR", "")
+	t.Setenv("SEP2_DEVICE_CERT_MODE", "")
 
 	cfg, err := loadConfig(nil)
 	if err != nil {
@@ -50,6 +51,53 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.SEP2ServerCertDir != defaultSEP2ServerCertDir {
 		t.Errorf("SEP2ServerCertDir: got %q want %q", cfg.SEP2ServerCertDir, defaultSEP2ServerCertDir)
+	}
+	// The zero-value default must be dev-mint, not preprovisioned: a bare
+	// `go run ./cmd/bridge` must derive working device identities with
+	// no extra setup. See config.SEP2DeviceCertMode's doc comment.
+	if cfg.SEP2DeviceCertMode != defaultSEP2DeviceCertMode {
+		t.Errorf("SEP2DeviceCertMode: got %q want %q", cfg.SEP2DeviceCertMode, defaultSEP2DeviceCertMode)
+	}
+}
+
+// TestLoadConfigSEP2DeviceCertModeEnvOverride verifies the device-cert
+// mode env override passes through unmodified.
+func TestLoadConfigSEP2DeviceCertModeEnvOverride(t *testing.T) {
+	t.Setenv("SEP2_DEVICE_CERT_MODE", "preprovisioned")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2DeviceCertMode != "preprovisioned" {
+		t.Errorf("SEP2DeviceCertMode: got %q, want the explicit override unchanged", cfg.SEP2DeviceCertMode)
+	}
+}
+
+// TestLoadConfigSEP2DeviceCertModeFlagShadowsEnv matches the precedence
+// shape already covered for -sep2-server-addr / SEP2_SERVER_ADDR.
+func TestLoadConfigSEP2DeviceCertModeFlagShadowsEnv(t *testing.T) {
+	t.Setenv("SEP2_DEVICE_CERT_MODE", "preprovisioned")
+
+	cfg, err := loadConfig([]string{"-sep2-device-cert-mode=dev-mint"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2DeviceCertMode != "dev-mint" {
+		t.Errorf("SEP2DeviceCertMode: got %q want flag value", cfg.SEP2DeviceCertMode)
+	}
+}
+
+// TestLoadConfigSEP2DeviceCertModeRejectsUnknownValue verifies the
+// fail-closed contract: an unrecognized mode string is a loadConfig
+// error naming the field, not a silent fallback to dev-mint.
+func TestLoadConfigSEP2DeviceCertModeRejectsUnknownValue(t *testing.T) {
+	_, err := loadConfig([]string{"-sep2-device-cert-mode=bogus"})
+	if err == nil {
+		t.Fatal("expected validate error for an unknown SEP2_DEVICE_CERT_MODE value, got nil")
+	}
+	if !strings.Contains(err.Error(), "SEP2_DEVICE_CERT_MODE") {
+		t.Errorf("error should name the field: %v", err)
 	}
 }
 

@@ -16,10 +16,20 @@ import (
 // the populate-time logs for "(placeholder)" to confirm whether the
 // real LFDI mapping has landed yet. The flag is informational; lookup
 // behavior is identical for placeholder and real entries.
+//
+// SFDI is the companion IEEE 2030.5 short form device ID (spec section
+// 6.3.3), populated alongside a certificate-derived LFDI (see
+// internal/sep2embed.EnsureDeviceIdentities, GAGO-033). It is optional:
+// an empty SFDI is valid on an entry whose caller only tracks LFDI (all
+// existing registry-only tests, and any Placeholder entry that predates
+// GAGO-033), and downstream seeding (internal/sep2embed/seed.go) falls
+// back to deriving a syntactically valid placeholder SFDI from LFDI when
+// this field is empty.
 type Entry struct {
 	MRID        string // CIM master resource ID
 	Name        string // human friendly name (optional, may be empty)
 	LFDI        string // IEEE 2030.5 long form device ID, hex string
+	SFDI        string // IEEE 2030.5 short form device ID, decimal string (optional)
 	Placeholder bool   // true when LFDI is a Stage 1 stand-in
 }
 
