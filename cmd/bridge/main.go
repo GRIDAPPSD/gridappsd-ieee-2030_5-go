@@ -553,14 +553,30 @@ func runSimSide(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.E
 // equivalent of that helper yet, and reusing sim.InputTopic is a
 // deliberate, documented interim choice rather than an invented
 // convention: it is the only "differences" destination this codebase
-// already has, and it is self-consistent because ApplyControlDelta only
-// ever acts on "DERControl.DERControlBase.*"-prefixed attributes, so
-// this bridge's own DERStatus telemetry echoes (published with a
-// "DERStatus."-prefixed attribute) are safely ignored rather than
-// misapplied. Confirming the production topic convention (shared
+// already has. Confirming the production topic convention (shared
 // sim-input vs. a dedicated per-app input queue) is left to a follow-up
 // card; this loop is written so only the destination string need change
 // once that is settled.
+//
+// LOAD-BEARING INVARIANT (Leon INFO / Pike LOW, GAGO-034 PR #9 review):
+// this DOWN-path subscriber and the UP-path telemetry relay
+// (internal/sep2embed's telemetryMiddleware, which also publishes to
+// this same destination) are safe to share sim.InputTopic ONLY because
+// their attribute namespaces never overlap: ApplyControlDelta acts
+// exclusively on "DERControl.DERControlBase."-prefixed attributes
+// (derControlAttributePrefix), and the telemetry relay publishes
+// exclusively "DERStatus."-prefixed attributes
+// (derStatusAttributePrefix). This bridge's own DERStatus echoes are
+// therefore ignored here, not misapplied as controls, purely because
+// the two prefixes never collide. THIS IS A GUARD, NOT A DESIGN: any
+// future field added under a THIRD shared prefix (or, worse, under
+// "DERControl." without the DERControlBase suffix, or under
+// "DERStatus." on the DOWN side) silently regresses this invariant and
+// reopens a self-echo/misapply bug. Give any new UP- or DOWN-path
+// attribute family its own distinct, non-overlapping prefix, or split
+// the two directions onto separate topics (the shared-topic choice
+// itself is not re-litigated by this comment; only the prefix
+// discipline that currently makes it safe is).
 //
 // Decode and per-delta apply errors are logged and skipped; the loop
 // continues, matching runPump's resilience style (a malformed or
