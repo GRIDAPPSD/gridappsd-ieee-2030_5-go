@@ -131,31 +131,15 @@ func run(ctx context.Context, cfg config) error {
 	log.Printf("bridge: sep2 embed listening addr=%s sfdi=%s lfdi=%s (LFDI placeholder; real cert mapping is a follow-up)",
 		embed.Addr(), id.SFDI, id.LFDI)
 
-	// runCtx is a child of the signal-derived ctx and is the single
-	// shutdown root for both the embed and the STOMP-side pump/idle
-	// loop below: SIGINT/SIGTERM cancels ctx, which propagates to
-	// runCtx automatically. In addition, each side's goroutine cancels
-	// runCtx itself on exit (see the embed goroutine's deferred
-	// cancelRun and the explicit cancelRun call after the pump/idle
-	// branch below), so an early, independent failure on either side
-	// (a Serve error in the embed, a broker drop reaching runPump)
-	// tears the other down too rather than leaving it running orphaned
-	// until the next signal.
-	runCtx, cancelRun := context.WithCancel(ctx)
-	defer cancelRun()
-
-	embedErr := make(chan error, 1)
-	go func() {
-		defer cancelRun()
-		embedErr <- embed.Run(runCtx)
-	}()
-
-	var stompErr error
-	if cfg.SimulationID == "" {
-		log.Printf("bridge: no SEP2_SIMULATION_ID set; skipping simulation subscribe; idling until shutdown")
-		<-runCtx.Done()
-		stompErr = runCtx.Err()
-	} else {
+	// stompRun adapts the SimulationID branch (idle-wait, or runPump)
+	// to the func(context.Context) error shape runEmbedAndStomp expects
+	// for its second seam.
+	stompRun := func(runCtx context.Context) error {
+		if cfg.SimulationID == "" {
+			log.Printf("bridge: no SEP2_SIMULATION_ID set; skipping simulation subscribe; idling until shutdown")
+			<-runCtx.Done()
+			return runCtx.Err()
+		}
 		// runCtx is the pump's root. gridappsd-go's router does not yet
 		// surface a broker-teardown signal to fieldbus.MessageBus
 		// callers (upstream gap GAG-009; see the relay doc comment in
@@ -163,27 +147,68 @@ func run(ctx context.Context, cfg config) error {
 		// disconnect does NOT independently wake the pump: only
 		// runCtx's cancellation (SIGINT/SIGTERM, or the embed side
 		// exiting) does.
-		stompErr = runPump(runCtx, bus, reg, cfg.SimulationID)
+		return runPump(runCtx, bus, reg, cfg.SimulationID)
 	}
-	// Ask the embed to stop even when the pump/idle branch above exited
-	// on its own (rather than via runCtx cancellation), so this
-	// function never returns while the embed's listener is still
-	// serving.
+
+	return runEmbedAndStomp(ctx, embed.Run, stompRun)
+}
+
+// runEmbedAndStomp runs the embedded IEEE 2030.5 server (embedRun) and
+// the STOMP-side pump/idle loop (stompRun) concurrently under a single
+// ctx derived from the caller's shutdown root, and blocks until both
+// have finished.
+//
+// embedRun and stompRun are injectable seams, each shaped
+// func(context.Context) error: run() passes embed.Run and a closure
+// wrapping the SimulationID branch, but a unit test can pass stub
+// runners to drive every branch below without a live broker or a real
+// mTLS listener.
+//
+// runCtx is a child of ctx: SIGINT/SIGTERM cancelling ctx propagates to
+// runCtx automatically. In addition, each side's goroutine cancels
+// runCtx itself on exit (the embedRun goroutine's deferred cancelRun,
+// and the explicit cancelRun call after stompRun returns below), so an
+// early, independent failure on either side (a Serve error in the
+// embed, a broker drop reaching the pump) tears the other down too
+// rather than leaving it running orphaned until the next signal.
+//
+// Error precedence: a stompRun error is returned as-is unless embedRun
+// also failed with something other than a graceful (context.Canceled)
+// shutdown. If only embedRun failed, that error is returned wrapped. If
+// both failed independently (neither error is a graceful shutdown),
+// both are preserved via errors.Join rather than discarding one, so
+// errors.Is/errors.As against either failure still matches.
+func runEmbedAndStomp(ctx context.Context, embedRun, stompRun func(context.Context) error) error {
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	embedErr := make(chan error, 1)
+	go func() {
+		defer cancelRun()
+		embedErr <- embedRun(runCtx)
+	}()
+
+	stompErr := stompRun(runCtx)
+	// Ask the embed side to stop even when stompRun returned on its own
+	// (rather than via runCtx cancellation), so this function never
+	// returns while the embed side is still active.
 	cancelRun()
 
-	// Wait for the embed's Run to actually finish (its own listener
-	// Serve goroutine plus its subscription notifier's worker pool; see
-	// sep2embed.Embed.Run) before this function returns, so the caller
-	// never observes "run() returned" while the embed is still tearing
-	// down.
-	if eerr := <-embedErr; eerr != nil && !errors.Is(eerr, context.Canceled) {
-		if stompErr == nil || errors.Is(stompErr, context.Canceled) {
-			return fmt.Errorf("sep2 embed: %w", eerr)
-		}
-		log.Printf("bridge: sep2 embed: %v", eerr)
+	// Wait for embedRun to actually finish (for the real embed: its own
+	// listener Serve goroutine plus its subscription notifier's worker
+	// pool; see sep2embed.Embed.Run) before this function returns, so
+	// the caller never observes "runEmbedAndStomp returned" while the
+	// embed is still tearing down.
+	eerr := <-embedErr
+	if eerr == nil || errors.Is(eerr, context.Canceled) {
+		return stompErr
 	}
 
-	return stompErr
+	wrappedEmbedErr := fmt.Errorf("sep2 embed: %w", eerr)
+	if stompErr == nil || errors.Is(stompErr, context.Canceled) {
+		return wrappedEmbedErr
+	}
+	return errors.Join(stompErr, wrappedEmbedErr)
 }
 
 // sep2EmbedConfig projects the bridge's config onto sep2embed.Config.
