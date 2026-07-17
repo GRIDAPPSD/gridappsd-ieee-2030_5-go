@@ -15,6 +15,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("SEP2_SIMULATION_ID", "")
 	t.Setenv("SEP2_FEEDER_MRID", "")
 	t.Setenv("SEP2_PUBLISH_ON_START", "")
+	t.Setenv("SEP2_STOMP_ALLOW_PLAINTEXT", "")
 
 	cfg, err := loadConfig(nil)
 	if err != nil {
@@ -34,6 +35,56 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.PublishOnStart {
 		t.Errorf("PublishOnStart: got true, want false")
+	}
+	// The zero-value default must be fail-closed: a bare invocation with
+	// no override dials TLS, never plaintext. See config.AllowPlaintext's
+	// doc comment.
+	if cfg.AllowPlaintext {
+		t.Errorf("AllowPlaintext: got true, want false (fail-closed default)")
+	}
+}
+
+// TestLoadConfigAllowPlaintextEnvOverride verifies the plaintext opt-in
+// is honored from the env var, matching the other boolean knob
+// (PublishOnStart)'s precedence shape.
+func TestLoadConfigAllowPlaintextEnvOverride(t *testing.T) {
+	t.Setenv("SEP2_STOMP_ALLOW_PLAINTEXT", "true")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.AllowPlaintext {
+		t.Errorf("AllowPlaintext: want true from SEP2_STOMP_ALLOW_PLAINTEXT=true")
+	}
+}
+
+// TestLoadConfigAllowPlaintextFlagShadowsEnv verifies the flag wins
+// over the env var, matching the merge order documented on loadConfig.
+func TestLoadConfigAllowPlaintextFlagShadowsEnv(t *testing.T) {
+	t.Setenv("SEP2_STOMP_ALLOW_PLAINTEXT", "false")
+
+	cfg, err := loadConfig([]string{"-stomp-allow-plaintext=true"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.AllowPlaintext {
+		t.Errorf("AllowPlaintext: want true, flag should shadow the false env value")
+	}
+}
+
+// TestLoadConfigAllowPlaintextBadBool verifies a malformed env value is
+// a loadConfig error naming the field, matching SEP2_PUBLISH_ON_START's
+// existing behavior (TestLoadConfigBadBool).
+func TestLoadConfigAllowPlaintextBadBool(t *testing.T) {
+	t.Setenv("SEP2_STOMP_ALLOW_PLAINTEXT", "notabool")
+
+	_, err := loadConfig(nil)
+	if err == nil {
+		t.Fatal("expected error for invalid bool, got nil")
+	}
+	if !strings.Contains(err.Error(), "SEP2_STOMP_ALLOW_PLAINTEXT") {
+		t.Errorf("error should name the env var: %v", err)
 	}
 }
 
