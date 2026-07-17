@@ -74,13 +74,25 @@ type Config struct {
 	NotifyQueueSize int
 }
 
+// protocolServer is the minimal surface Run needs from the embedded mTLS
+// listener. *sep2srv.Server satisfies it. Defined here at the consumer
+// (Pike rule: interfaces at the consumer, not the producer) so Run's
+// notifier-teardown behavior is unit-testable against a fake that
+// returns from Run independent of ctx cancellation, without standing up
+// a real TCP listener. See embed_test.go's fakeProtocolServer.
+type protocolServer interface {
+	Run(ctx context.Context) error
+	Addr() string
+}
+
 // Embed is the in-process IEEE 2030.5 protocol server: seeded resource
 // stores, the subscription fan-out manager, and the mTLS listener from
 // core's pkg/sep2srv. Construct with New; start with Run.
 type Embed struct {
-	srv      *sep2srv.Server
+	srv      protocolServer
 	notifier *coresub.Manager
 	stores   *assembly.Stores
+	identity sep2srv.Identity
 }
 
 // New builds the resource stores, seeds EndDevices and DERs from reg,
@@ -88,7 +100,14 @@ type Embed struct {
 // NOT start serving; call Run to do that. On any error, New leaves no
 // bound listener behind (sep2srv.New closes any listener it opened on
 // its own error paths).
-func New(cfg Config, reg *registry.Registry) (*Embed, error) {
+//
+// ctx scopes the seeding writes only (New's own store.Create calls);
+// it is not retained. Run below takes its own ctx, which is the one
+// that governs the listener and notifier lifecycle. Two separate ctx
+// parameters rather than one stored on the struct: per the workspace Go
+// standards, a Context is never stored in a struct and is passed
+// explicitly through the call chain that needs it.
+func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error) {
 	if cfg.Addr == "" {
 		return nil, errors.New("sep2embed: Config.Addr is required")
 	}
@@ -105,7 +124,7 @@ func New(cfg Config, reg *registry.Registry) (*Embed, error) {
 	}
 
 	stores := newStores()
-	if err := seedStores(context.Background(), stores, reg); err != nil {
+	if err := seedStores(ctx, stores, reg); err != nil {
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)
 	}
 
@@ -138,7 +157,7 @@ func New(cfg Config, reg *registry.Registry) (*Embed, error) {
 		return nil, fmt.Errorf("sep2embed: %w", err)
 	}
 
-	return &Embed{srv: srv, notifier: notifier, stores: stores}, nil
+	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity}, nil
 }
 
 // Addr returns the listener's actual bound address. Useful when
@@ -150,23 +169,40 @@ func (e *Embed) Addr() string {
 // Identity returns the server's SFDI/LFDI, derived from its leaf
 // certificate during New.
 func (e *Embed) Identity() sep2srv.Identity {
-	return e.srv.Identity
+	return e.identity
 }
 
 // Run starts the subscription notifier's worker pool and serves the
-// protocol listener until ctx is cancelled or the listener fails, then
-// shuts both down gracefully. Run blocks until BOTH the listener's
-// Serve goroutine and the notifier's worker pool have exited, so a
-// caller that observes Run return knows there is no goroutine left
-// running: everything ties to the single ctx root passed in here.
+// protocol listener until ctx is cancelled or the listener fails on its
+// own (e.g. an accept error unrelated to shutdown), then shuts both down
+// gracefully. Run blocks until BOTH the listener's Serve goroutine and
+// the notifier's worker pool have exited, on EVERY exit path: the
+// notifier runs under notifyCtx, a child of ctx that is cancelled
+// immediately after srv.Run returns, regardless of which of srv.Run's
+// two internal branches (ctx.Done, or its own errCh) produced that
+// return. Without that explicit cancel, the errCh branch would return
+// without ever cancelling ctx, and the notifier's `<-ctx.Done()` inside
+// Start would block forever, deadlocking this function on
+// `<-notifierDone`. A caller that observes Run return therefore knows
+// there is no goroutine left running on every path, not just the
+// ctx-cancel path.
 func (e *Embed) Run(ctx context.Context) error {
+	notifyCtx, cancelNotify := context.WithCancel(ctx)
+	defer cancelNotify() // backstop: guarantees cancellation even if a future edit adds an early return above the explicit call below
+
 	notifierDone := make(chan struct{})
 	go func() {
 		defer close(notifierDone)
-		e.notifier.Start(ctx)
+		e.notifier.Start(notifyCtx)
 	}()
 
 	err := e.srv.Run(ctx)
+
+	// Explicit cancel here (not just the deferred one) is what actually
+	// unblocks the notifier before we wait on it: the defer only fires
+	// after this function returns, which is too late to unblock the
+	// very `<-notifierDone` line below it.
+	cancelNotify()
 
 	<-notifierDone
 

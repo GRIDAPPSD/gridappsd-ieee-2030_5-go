@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/xml"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -93,12 +95,13 @@ func TestEmbedServesSeededDevicesOverMTLS(t *testing.T) {
 		ShutdownTimeout: time.Second,
 	}
 
-	e, err := New(cfg, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	e, err := New(ctx, cfg, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
 	go func() {
 		runErr <- e.Run(ctx)
@@ -213,7 +216,8 @@ func TestEmbedIdentityMatchesServerLeafCertificate(t *testing.T) {
 	}
 
 	certDir := t.TempDir()
-	e, err := New(Config{Addr: "127.0.0.1:0", CertDir: certDir, ShutdownTimeout: time.Second}, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	e, err := New(ctx, Config{Addr: "127.0.0.1:0", CertDir: certDir, ShutdownTimeout: time.Second}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -225,13 +229,29 @@ func TestEmbedIdentityMatchesServerLeafCertificate(t *testing.T) {
 	if id.LFDI == "" {
 		t.Error("Embed.Identity().LFDI is empty")
 	}
-	if id != e.srv.Identity {
-		t.Errorf("Embed.Identity() = %+v, want e.srv.Identity = %+v", id, e.srv.Identity)
+
+	// Independently re-derive the expected SFDI/LFDI from the leaf
+	// certificate New wrote to disk, rather than reaching into Embed's
+	// unexported srv field (now an interface; see protocolServer).
+	serverCertPEM, err := os.ReadFile(filepath.Join(certDir, serverCertFileName))
+	if err != nil {
+		t.Fatalf("read server.pem: %v", err)
+	}
+	leaf, err := sep2cert.ParseCertificatePEM(serverCertPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificatePEM(server.pem): %v", err)
+	}
+	wantSFDI := sepTLS.SFDI(leaf)
+	wantLFDI := sepTLS.LFDI(leaf)
+	if id.SFDI != wantSFDI {
+		t.Errorf("Embed.Identity().SFDI = %q, want %q (derived from server.pem)", id.SFDI, wantSFDI)
+	}
+	if id.LFDI != wantLFDI {
+		t.Errorf("Embed.Identity().LFDI = %q, want %q (derived from server.pem)", id.LFDI, wantLFDI)
 	}
 
 	// Run and immediately cancel so the bound listener from New doesn't
 	// outlive the test.
-	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
 	go func() { runErr <- e.Run(ctx) }()
 	cancel()
@@ -249,14 +269,76 @@ func TestEmbedRejectsMissingRequiredConfig(t *testing.T) {
 	t.Parallel()
 
 	reg := registry.New()
+	ctx := context.Background()
 
-	if _, err := New(Config{CertDir: t.TempDir()}, reg); err == nil {
+	if _, err := New(ctx, Config{CertDir: t.TempDir()}, reg); err == nil {
 		t.Error("New with empty Addr: want error, got nil")
 	}
-	if _, err := New(Config{Addr: "127.0.0.1:0"}, reg); err == nil {
+	if _, err := New(ctx, Config{Addr: "127.0.0.1:0"}, reg); err == nil {
 		t.Error("New with empty CertDir: want error, got nil")
 	}
-	if _, err := New(Config{Addr: "127.0.0.1:0", CertDir: t.TempDir()}, nil); err == nil {
+	if _, err := New(ctx, Config{Addr: "127.0.0.1:0", CertDir: t.TempDir()}, nil); err == nil {
 		t.Error("New with nil registry: want error, got nil")
+	}
+}
+
+// fakeProtocolServer is a protocolServer whose Run returns immediately
+// with a fixed error, independent of ctx: it simulates sep2srv.Server.Run
+// exiting via its own errCh branch (a Serve failure unrelated to
+// shutdown), which is NOT observable through the real listener from a
+// test without reaching into core-internal fields. Used only to prove
+// Embed.Run's notifier teardown does not depend on ctx ever being
+// cancelled by the caller.
+type fakeProtocolServer struct {
+	addr string
+	err  error
+}
+
+func (f *fakeProtocolServer) Run(_ context.Context) error {
+	return f.err
+}
+
+func (f *fakeProtocolServer) Addr() string {
+	return f.addr
+}
+
+// TestRunTearsDownNotifierWhenServeFailsIndependentOfCtxCancel is the
+// regression test for the HIGH deadlock finding: previously, Run passed
+// the caller's ctx directly to notifier.Start, so if srv.Run returned via
+// its errCh branch (a Serve failure) rather than ctx.Done, the notifier's
+// internal `<-ctx.Done()` never unblocked and Run hung forever on
+// `<-notifierDone`. Run now derives notifyCtx := context.WithCancel(ctx)
+// and cancels it immediately after srv.Run returns, on every path, so
+// the notifier tears down regardless of why srv.Run exited.
+func TestRunTearsDownNotifierWhenServeFailsIndependentOfCtxCancel(t *testing.T) {
+	t.Parallel()
+
+	stores := newStores()
+	notifier := coresub.NewManager(stores.Subscriptions, 1, 1)
+
+	wantErr := errors.New("fake serve failure, unrelated to ctx cancellation")
+	e := &Embed{
+		srv:      &fakeProtocolServer{addr: "127.0.0.1:0", err: wantErr},
+		notifier: notifier,
+		stores:   stores,
+	}
+
+	// ctx is deliberately never cancelled by this test: if Embed.Run
+	// still depended on ctx.Done() to tear the notifier down, this
+	// would hang until the select's timeout branch fires.
+	ctx := context.Background()
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- e.Run(ctx)
+	}()
+
+	select {
+	case err := <-runErr:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("Run() error = %v, want %v", err, wantErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return within 2s when srv.Run failed independent of ctx cancel (notifier teardown deadlock regression)")
 	}
 }
