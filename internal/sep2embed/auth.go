@@ -14,20 +14,24 @@ import (
 // once the server's mTLS Identity is known (sep2srv.New guarantees this
 // ordering: Identity before build runs).
 //
-// AuthPolicy scope note: Wrap below extracts the caller's LFDI/SFDI from
-// the verified TLS peer certificate so Identity() is meaningful, but it
-// does NOT enforce per-device ACL rules (auth.DefaultACLRules is
-// server-of-record-internal and not part of core's exported surface).
-// Every device that clears the mTLS handshake (a cert chaining to the
-// trusted CA, carrying a valid HardwareModuleName SAN per
-// sep2tls.VerifyPeerCertWithHardwareModuleSAN) can read any resource.
-// That is sufficient for GAGO-030's discovery exit criteria; per-device
-// read/write scoping is a follow-up, not a regression from the
-// server-of-record's own nil-Wrap test posture, and stricter than it
-// (identity IS extracted here, just not gated further).
+// AuthPolicy scope (GAGO-043): Wrap below composes identityMiddleware
+// (extracts the caller's LFDI/SFDI from the verified TLS peer
+// certificate) with aclMiddleware (enforces the section 6.2.3 method
+// allow-list from internal/sep2acl, plus per-device ownership scoping
+// backed by stores.EndDevices). identityMiddleware runs first so
+// aclMiddleware's identityFromContext read has something to find;
+// see aclMiddleware's own doc comment for the ordering requirement.
+// This closes the gap the previous doc comment on this function
+// described: every device that clears the mTLS handshake used to be
+// able to read or write any other device's resources. It now cannot.
 func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, identity sep2srv.Identity, notifier assembly.ResourceNotifier) http.Handler {
+	resolver := newStoreOwnerResolver(stores.EndDevices)
+	acl := aclMiddleware(resolver)
+
 	authPolicy := assembly.AuthPolicy{
-		Wrap:       identityMiddleware,
+		Wrap: func(next http.Handler) http.Handler {
+			return identityMiddleware(acl(next))
+		},
 		Identity:   identityFromContext,
 		SFDIPrefix: sfdiPrefix,
 	}
