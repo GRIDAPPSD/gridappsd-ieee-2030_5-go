@@ -288,11 +288,12 @@ func TestApplyDERControlBaseFieldCoversEverySupportedField(t *testing.T) {
 	powerVal := map[string]any{"multiplier": 1.0, "value": 250.0}
 
 	tests := []struct {
-		name    string
-		field   string
-		value   any
-		check   func(t *testing.T, base sep2.DERControlBase)
-		wantErr bool
+		name      string
+		field     string
+		value     any
+		check     func(t *testing.T, base sep2.DERControlBase)
+		wantErr   bool
+		wantErrIs error
 	}{
 		{
 			name:  "opModTargetW",
@@ -311,36 +312,6 @@ func TestApplyDERControlBaseFieldCoversEverySupportedField(t *testing.T) {
 			check: func(t *testing.T, base sep2.DERControlBase) {
 				if base.OpModTargetVar == nil || base.OpModTargetVar.Value != 250 {
 					t.Errorf("OpModTargetVar = %+v, want Value=250", base.OpModTargetVar)
-				}
-			},
-		},
-		{
-			name:  "opModFixedW",
-			field: "opModFixedW",
-			value: powerVal,
-			check: func(t *testing.T, base sep2.DERControlBase) {
-				if base.OpModFixedW == nil || base.OpModFixedW.Value != 250 {
-					t.Errorf("OpModFixedW = %+v, want Value=250", base.OpModFixedW)
-				}
-			},
-		},
-		{
-			name:  "opModFixedVar",
-			field: "opModFixedVar",
-			value: powerVal,
-			check: func(t *testing.T, base sep2.DERControlBase) {
-				if base.OpModFixedVar == nil || base.OpModFixedVar.Value != 250 {
-					t.Errorf("OpModFixedVar = %+v, want Value=250", base.OpModFixedVar)
-				}
-			},
-		},
-		{
-			name:  "opModMaxLimW",
-			field: "opModMaxLimW",
-			value: powerVal,
-			check: func(t *testing.T, base sep2.DERControlBase) {
-				if base.OpModMaxLimW == nil || base.OpModMaxLimW.Value != 250 {
-					t.Errorf("OpModMaxLimW = %+v, want Value=250", base.OpModMaxLimW)
 				}
 			},
 		},
@@ -388,6 +359,36 @@ func TestApplyDERControlBaseFieldCoversEverySupportedField(t *testing.T) {
 			value:   true,
 			wantErr: true,
 		},
+		// HIGH-1 (Vance, power-systems review of GAGO-034 PR #9):
+		// opModFixedW/opModFixedVar/opModMaxLimW are IEEE 2030.5
+		// PERCENT types (SignedPercent/PercentLimit/FixedVar), not
+		// absolute watts/vars, and this bridge has no seeded
+		// DERCapability rtg reference to convert a GridAPPS-D absolute
+		// delta against. Mapping them would silently command the wrong
+		// physical setpoint, so they are refused exactly like any other
+		// unsupported attribute rather than mapped incorrectly. Percent
+		// support returns once DERCapability is seeded: GAGO-045.
+		{
+			name:      "opModFixedW refused, not mapped as absolute power",
+			field:     "opModFixedW",
+			value:     powerVal,
+			wantErr:   true,
+			wantErrIs: ErrUnsupportedControlAttribute,
+		},
+		{
+			name:      "opModFixedVar refused, not mapped as absolute power",
+			field:     "opModFixedVar",
+			value:     powerVal,
+			wantErr:   true,
+			wantErrIs: ErrUnsupportedControlAttribute,
+		},
+		{
+			name:      "opModMaxLimW refused, not mapped as absolute power",
+			field:     "opModMaxLimW",
+			value:     powerVal,
+			wantErr:   true,
+			wantErrIs: ErrUnsupportedControlAttribute,
+		},
 	}
 
 	for _, tt := range tests {
@@ -398,6 +399,9 @@ func TestApplyDERControlBaseFieldCoversEverySupportedField(t *testing.T) {
 				if err == nil {
 					t.Fatalf("applyDERControlBaseField(%q, %v): want error, got nil", tt.field, tt.value)
 				}
+				if tt.wantErrIs != nil && !errors.Is(err, tt.wantErrIs) {
+					t.Fatalf("applyDERControlBaseField(%q, %v) error = %v, want wrapping %v", tt.field, tt.value, err, tt.wantErrIs)
+				}
 				return
 			}
 			if err != nil {
@@ -405,6 +409,121 @@ func TestApplyDERControlBaseFieldCoversEverySupportedField(t *testing.T) {
 			}
 			tt.check(t, base)
 		})
+	}
+}
+
+// TestApplyControlDeltaRefusesPercentModeAttributes is the end-to-end
+// (ApplyControlDelta, not just the field-mapper) proof for HIGH-1: a
+// delta targeting one of the removed percent-mode attributes is refused
+// via ErrUnsupportedControlAttribute and writes no DERControl anywhere,
+// the same fail-closed shape as any other unsupported attribute.
+func TestApplyControlDeltaRefusesPercentModeAttributes(t *testing.T) {
+	t.Parallel()
+
+	reg, st := twoDeviceFixture(t)
+	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
+	ctx := context.Background()
+
+	for _, attr := range []string{
+		"DERControl.DERControlBase.opModFixedW",
+		"DERControl.DERControlBase.opModFixedVar",
+		"DERControl.DERControlBase.opModMaxLimW",
+	} {
+		t.Run(attr, func(t *testing.T) {
+			delta := diff.Difference{
+				Object:    "mrid-a",
+				Attribute: attr,
+				Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
+			}
+			err := ApplyControlDelta(ctx, st, notifier, reg, delta)
+			if !errors.Is(err, ErrUnsupportedControlAttribute) {
+				t.Fatalf("ApplyControlDelta(%q) error = %v, want ErrUnsupportedControlAttribute", attr, err)
+			}
+		})
+	}
+
+	lfdiA, _ := reg.LFDI("mrid-a")
+	scopeA := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+	if _, err := st.DERControls.Get(ctx, scopeA, activeControlID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DERControls.Get(A) after refused percent-mode deltas = (%v), want store.ErrNotFound", err)
+	}
+}
+
+// TestSignFlipConstantsPinnedEffect is the regression lock HIGH-2 asks
+// for: it asserts each of activeSignFlip / reactiveSignFlip's CURRENT
+// numeric effect on a mapped value, so an accidental flip of either
+// constant is caught by a failing test. This is NOT a claim about which
+// physical direction is correct (see activeSignFlip's doc comment):
+// only GAGO-044's co-simulation loopback can verify that. If a future
+// change deliberately flips a constant, this test's want values must be
+// updated in the same commit as the flip, with the commit message
+// stating why (e.g. "GAGO-044 confirmed reactive sign is inverted").
+func TestSignFlipConstantsPinnedEffect(t *testing.T) {
+	t.Parallel()
+
+	if activeSignFlip {
+		t.Fatal("activeSignFlip pinned default changed to true; update this test's want value in the same commit and state why")
+	}
+	if reactiveSignFlip {
+		t.Fatal("reactiveSignFlip pinned default changed to true; update this test's want value in the same commit and state why")
+	}
+
+	in := map[string]any{"multiplier": 0.0, "value": 1234.0}
+
+	var base sep2.DERControlBase
+	if err := applyDERControlBaseField(&base, "opModTargetW", in); err != nil {
+		t.Fatalf("applyDERControlBaseField(opModTargetW): %v", err)
+	}
+	if base.OpModTargetW == nil || base.OpModTargetW.Value != 1234 {
+		t.Errorf("with activeSignFlip=false, OpModTargetW.Value = %v, want 1234 (no negation)", base.OpModTargetW)
+	}
+
+	base = sep2.DERControlBase{}
+	if err := applyDERControlBaseField(&base, "opModTargetVar", in); err != nil {
+		t.Fatalf("applyDERControlBaseField(opModTargetVar): %v", err)
+	}
+	if base.OpModTargetVar == nil || base.OpModTargetVar.Value != 1234 {
+		t.Errorf("with reactiveSignFlip=false, OpModTargetVar.Value = %v, want 1234 (no negation)", base.OpModTargetVar)
+	}
+}
+
+// TestFlipActivePowerSign and TestFlipReactivePowerSign exercise the
+// flip helpers directly (both the flip=true and flip=false, nil-safe
+// branches), independent of which constant value is pinned today.
+func TestFlipActivePowerSign(t *testing.T) {
+	t.Parallel()
+
+	ap := &sep2.ActivePower{Multiplier: 2, Value: 500}
+	if got := flipActivePowerSign(ap, false); got.Value != 500 {
+		t.Errorf("flipActivePowerSign(flip=false).Value = %d, want 500", got.Value)
+	}
+	if got := flipActivePowerSign(ap, true); got.Value != -500 {
+		t.Errorf("flipActivePowerSign(flip=true).Value = %d, want -500", got.Value)
+	}
+	// Original must be unmutated by the flip=true branch.
+	if ap.Value != 500 {
+		t.Errorf("flipActivePowerSign mutated its input: ap.Value = %d, want 500", ap.Value)
+	}
+	if got := flipActivePowerSign(nil, true); got != nil {
+		t.Errorf("flipActivePowerSign(nil, true) = %v, want nil", got)
+	}
+}
+
+func TestFlipReactivePowerSign(t *testing.T) {
+	t.Parallel()
+
+	rp := &sep2.ReactivePower{Multiplier: -1, Value: 42}
+	if got := flipReactivePowerSign(rp, false); got.Value != 42 {
+		t.Errorf("flipReactivePowerSign(flip=false).Value = %d, want 42", got.Value)
+	}
+	if got := flipReactivePowerSign(rp, true); got.Value != -42 {
+		t.Errorf("flipReactivePowerSign(flip=true).Value = %d, want -42", got.Value)
+	}
+	if rp.Value != 42 {
+		t.Errorf("flipReactivePowerSign mutated its input: rp.Value = %d, want 42", rp.Value)
+	}
+	if got := flipReactivePowerSign(nil, true); got != nil {
+		t.Errorf("flipReactivePowerSign(nil, true) = %v, want nil", got)
 	}
 }
 

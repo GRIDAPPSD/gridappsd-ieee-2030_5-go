@@ -106,9 +106,10 @@ func derControlScope(edevID, fsaID, derpID string) string {
 //
 // Field-value fidelity: the delta's Value is decoded and assigned to
 // exactly the DERControlBase field named by Attribute (see
-// applyDERControlBaseField); no unit or sign conversion happens beyond
-// what that decode performs (ActivePower/ReactivePower's
-// multiplier+value pair is carried through unchanged).
+// applyDERControlBaseField). ActivePower/ReactivePower's
+// multiplier+value pair is carried through unchanged except for the
+// explicit, currently-no-op activeSignFlip / reactiveSignFlip seam (see
+// their doc comment): no other unit or sign conversion happens.
 //
 // Supersede semantics: a second delta for the same device does not
 // create a second DERControl. ApplyControlDelta reads the device's
@@ -223,11 +224,57 @@ func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, fsaI
 	return nil
 }
 
+// activeSignFlip and reactiveSignFlip are the explicit, testable seam
+// for the CIM-vs-IEEE-2030.5 sign convention on the real/reactive power
+// target mappings below (Vance, power-systems review of GAGO-034 PR #9,
+// HIGH-2). GridAPPS-D's PowerElectronicsConnection p/q carries the
+// classic CIM load-vs-generator sign ambiguity: some CIM profiles and
+// tools report p/q positive as consumed (load convention), others
+// positive as produced (generator convention), and which one a given
+// GridAPPS-D feeder model and app use is not something this bridge can
+// infer from the wire alone. IEEE 2030.5 section 10.10 defines
+// opModTargetW positive as discharging/exporting (generator-positive)
+// and opModTargetVar positive as over-excited/injecting VARs.
+//
+// The working default below (false, false: no flip on either side)
+// assumes the GridAPPS-D side is ALREADY generator-positive, matching
+// IEEE 2030.5 with no conversion needed. This is Vance's placeholder,
+// NOT a verified physical-direction claim: it is unverified pending a
+// co-simulation loopback (GAGO-044: Hale runs OpenDSS and asserts the
+// inverter actually moves in the commanded direction end to end). Until
+// GAGO-044 closes, this DOWN path is dev-only and MUST NOT be pointed
+// at a real inverter. Flipping either constant changes the sign of
+// every OpModTargetW / OpModTargetVar value this bridge writes; see
+// TestSignFlipConstantsPinnedEffect, which locks today's numeric effect
+// of each constant (not a claim about which effect is physically
+// correct) so an accidental flip is caught by a failing test rather
+// than silently changing every commanded device's direction.
+const (
+	activeSignFlip   = false
+	reactiveSignFlip = false
+)
+
 // applyDERControlBaseField decodes value and assigns it to the
 // DERControlBase field named by field, in place. Supported fields cover
-// the real/reactive power target and fixed setpoints plus the
-// connect/energize booleans; an unrecognized field is refused
-// (ErrUnsupportedControlAttribute) rather than silently dropped.
+// the real/reactive power target and the connect/energize booleans
+// (Vance confirmed these mappings are dimensionally correct: GridAPPS-D
+// dispatches absolute watts/vars, and OpModTargetW/OpModTargetVar are
+// absolute-power types). An unrecognized field, INCLUDING
+// opModFixedW/opModFixedVar/opModMaxLimW (removed below, HIGH-1), is
+// refused (ErrUnsupportedControlAttribute) rather than silently
+// dropped.
+//
+// opModFixedW, opModFixedVar, and opModMaxLimW are deliberately NOT
+// mapped: per IEEE 2030.5 section 10.10 these are PERCENT types
+// (SignedPercent / PercentLimit / FixedVar, a percentage of the
+// device's rated capability), not absolute watts/vars. Mapping a
+// GridAPPS-D absolute-power delta directly onto a percent field would
+// silently command the wrong physical setpoint (a "5000" watt delta
+// read back as "5000%"). Converting correctly requires the device's
+// rated capability (DERCapability), and this bridge's DERCapabilities
+// store exists but is never seeded (no rtg values available yet), so
+// there is no reference to convert against. Percent-mode support
+// returns once DERCapability rtg values are seeded: GAGO-045.
 func applyDERControlBaseField(base *sep2.DERControlBase, field string, value any) error {
 	switch field {
 	case "opModTargetW":
@@ -235,31 +282,13 @@ func applyDERControlBaseField(base *sep2.DERControlBase, field string, value any
 		if err != nil {
 			return fmt.Errorf("%s: %w", field, err)
 		}
-		base.OpModTargetW = ap
+		base.OpModTargetW = flipActivePowerSign(ap, activeSignFlip)
 	case "opModTargetVar":
 		rp, err := decodeReactivePower(value)
 		if err != nil {
 			return fmt.Errorf("%s: %w", field, err)
 		}
-		base.OpModTargetVar = rp
-	case "opModFixedW":
-		ap, err := decodeActivePower(value)
-		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
-		}
-		base.OpModFixedW = ap
-	case "opModFixedVar":
-		rp, err := decodeReactivePower(value)
-		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
-		}
-		base.OpModFixedVar = rp
-	case "opModMaxLimW":
-		ap, err := decodeActivePower(value)
-		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
-		}
-		base.OpModMaxLimW = ap
+		base.OpModTargetVar = flipReactivePowerSign(rp, reactiveSignFlip)
 	case "opModConnect":
 		b, err := decodeBool(value)
 		if err != nil {
@@ -276,6 +305,30 @@ func applyDERControlBaseField(base *sep2.DERControlBase, field string, value any
 		return fmt.Errorf("%w: field %q", ErrUnsupportedControlAttribute, field)
 	}
 	return nil
+}
+
+// flipActivePowerSign negates ap.Value in place (returning a copy) when
+// flip is true; a nil ap or flip=false returns ap unchanged. See
+// activeSignFlip's doc comment for what flip means and why it is not
+// yet a verified physical-direction claim.
+func flipActivePowerSign(ap *sep2.ActivePower, flip bool) *sep2.ActivePower {
+	if ap == nil || !flip {
+		return ap
+	}
+	cp := *ap
+	cp.Value = -cp.Value
+	return &cp
+}
+
+// flipReactivePowerSign is flipActivePowerSign's ReactivePower
+// counterpart; see reactiveSignFlip's doc comment.
+func flipReactivePowerSign(rp *sep2.ReactivePower, flip bool) *sep2.ReactivePower {
+	if rp == nil || !flip {
+		return rp
+	}
+	cp := *rp
+	cp.Value = -cp.Value
+	return &cp
 }
 
 // decodeActivePower accepts either a already-typed sep2.ActivePower (the
