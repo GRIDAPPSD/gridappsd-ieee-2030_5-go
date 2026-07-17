@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/x509"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -41,9 +42,26 @@ const (
 // the expected files gets a fresh, consistent set rather than a mix of
 // old and new material.
 //
+// Each of the four files is written via writeFileAtomic (temp file in
+// the same directory, then rename), so a process crash mid-write leaves
+// either the old file (rename never happened) or the new one
+// (rename is the last step), never a truncated PEM. allExist's
+// presence-only check is therefore checking a set of files that are
+// each internally all-or-nothing; it is not itself a parse/validate
+// step (see the certs_test.go coverage for what happens when a file
+// exists but is not valid PEM: that is caught downstream by
+// sep2tls.NewServerTLSConfigWithExtraCAs when New wires the listener,
+// not here).
+//
 // Returns the three file paths sep2srv.Options needs (CertFile, KeyFile,
-// CAFile); the CA private key file is written but never returned, since
-// nothing past this function needs to sign anything with it.
+// CAFile). The CA private key file is written and its path returned to
+// nothing further inside this package, but it is NOT dead weight: a
+// caller (or a dev-only tooling script) that wants to mint additional
+// device certs trusted by this same dev CA, for local testing, needs to
+// sign against caKeyFile. See certs_test.go and embed_test.go's
+// mintTestDeviceClient, which do exactly that. Dropping it would break
+// that local-signing path with no runtime benefit, since the file
+// already carries 0600 permissions.
 func ensureServerIdentity(dir string) (certFile, keyFile, caFile string, err error) {
 	caFile = filepath.Join(dir, caCertFileName)
 	caKeyFile := filepath.Join(dir, caKeyFileName)
@@ -53,6 +71,9 @@ func ensureServerIdentity(dir string) (certFile, keyFile, caFile string, err err
 	if allExist(caFile, caKeyFile, certFile, keyFile) {
 		return certFile, keyFile, caFile, nil
 	}
+
+	log.Printf("sep2embed: WARNING: no complete pre-provisioned certificate material found in %q; minting a development-only self-signed CA and server certificate. DO NOT use this material in production; provide preprovisioned %s, %s, %s, and %s instead.",
+		dir, caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName)
 
 	if err := os.MkdirAll(dir, certDirPerm); err != nil {
 		return "", "", "", fmt.Errorf("create cert dir %q: %w", dir, err)
@@ -89,7 +110,7 @@ func ensureServerIdentity(dir string) (certFile, keyFile, caFile string, err err
 		{keyFile, serverKeyPEM},
 	}
 	for _, w := range writes {
-		if err := os.WriteFile(w.path, w.data, certFilePerm); err != nil {
+		if err := writeFileAtomic(w.path, w.data, certFilePerm); err != nil {
 			return "", "", "", fmt.Errorf("write %s: %w", w.path, err)
 		}
 	}
@@ -108,6 +129,51 @@ func allExist(paths ...string) bool {
 		}
 	}
 	return true
+}
+
+// writeFileAtomic writes data to path as a single all-or-nothing
+// operation: it writes to a temp file in the same directory as path
+// (same filesystem, so the final rename is atomic on POSIX), sets perm,
+// then renames the temp file over path. A crash or error at any point
+// before the rename leaves path exactly as it was (untouched, or absent);
+// a crash after the rename leaves the complete new file. There is no
+// window in which path exists but holds a partial write.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	// Clean up the temp file on any path that does not reach the
+	// rename; renamed-away files are not removed by this defer since
+	// os.Remove on an already-renamed path is a harmless not-exist error
+	// we deliberately ignore here (best-effort cleanup, not the primary
+	// error return).
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, writeErr := tmp.Write(data); writeErr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", writeErr)
+	}
+	if closeErr := tmp.Close(); closeErr != nil {
+		return fmt.Errorf("close temp file: %w", closeErr)
+	}
+	if chmodErr := os.Chmod(tmpName, perm); chmodErr != nil {
+		return fmt.Errorf("chmod temp file: %w", chmodErr)
+	}
+	if renameErr := os.Rename(tmpName, path); renameErr != nil {
+		return fmt.Errorf("rename temp file to %s: %w", path, renameErr)
+	}
+	renamed = true
+
+	return nil
 }
 
 func parseCAPair(certPEM, keyPEM []byte) (*x509.Certificate, *ecdsa.PrivateKey, error) {

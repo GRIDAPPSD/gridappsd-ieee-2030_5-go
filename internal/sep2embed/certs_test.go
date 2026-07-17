@@ -111,6 +111,61 @@ func TestEnsureServerIdentityLoadsWhenAllFourPresent(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtomicWritesCompleteFileAndCleansUpTemp(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target.txt")
+	want := []byte("all-or-nothing contents")
+
+	if err := writeFileAtomic(path, want, certFilePerm); err != nil {
+		t.Fatalf("writeFileAtomic: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("file contents = %q, want %q", got, want)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != certFilePerm {
+		t.Errorf("Mode().Perm() = %o, want %o", perm, certFilePerm)
+	}
+
+	// No leftover temp file: the rename consumed it and the defer's
+	// cleanup only fires on the non-renamed path.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "target.txt" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("dir contents = %v, want exactly [target.txt]", names)
+	}
+}
+
+func TestWriteFileAtomicErrorsOnUnwritableDir(t *testing.T) {
+	t.Parallel()
+
+	// A path whose directory does not exist: os.CreateTemp must fail
+	// before anything is written, and writeFileAtomic must surface that
+	// error rather than silently succeeding.
+	path := filepath.Join(t.TempDir(), "missing-subdir", "target.txt")
+
+	if err := writeFileAtomic(path, []byte("x"), certFilePerm); err == nil {
+		t.Fatal("writeFileAtomic into a nonexistent directory: want error, got nil")
+	}
+}
+
 func TestParseCAPairRejectsInvalidPEM(t *testing.T) {
 	t.Parallel()
 
