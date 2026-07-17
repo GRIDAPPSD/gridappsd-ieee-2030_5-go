@@ -1,0 +1,3 @@
+helics==3.6.1
+numpy==2.5.1
+opendssdirect.py==0.9.4
