@@ -20,6 +20,16 @@ import (
 // segWild marks a wildcard path segment (an id, such as {id}, {derId},
 // {fsaId}, or {derpId}) in a family pattern: it matches any single,
 // non-consumed path segment regardless of value.
+//
+// segWild is compared only against families' own fixed pattern tokens
+// (see matchesPrefix: "if p == segWild", where p ranges over pattern,
+// never over segs), so a request path segment whose literal value
+// happens to be "*" cannot be mistaken for the wildcard marker: this
+// package never tests an actual path segment against segWild. Real
+// EndDevice ids are also structurally excluded from ever equaling
+// "*": they are LFDIs, 40-character uppercase hex strings per IEEE
+// 2030.5 spec section 6.3.4, so this is defense in depth, not the
+// only reason the check is safe.
 const segWild = "*"
 
 // family pairs a path pattern (a sequence of literal or wildcard
