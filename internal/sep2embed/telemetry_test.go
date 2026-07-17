@@ -135,7 +135,9 @@ func TestPublishDERStatusSendsMappedDifferences(t *testing.T) {
 
 	pub := &fakeBusPublisher{}
 	conn := sep2.ConnectStatusType{Value: 1}
-	status := sep2.DERStatus{GenConnectStatus: &conn}
+	mode := sep2.OperationalModeStatusType{Value: 2}
+	alarm := uint32(9)
+	status := sep2.DERStatus{GenConnectStatus: &conn, OperationalModeStatus: &mode, AlarmStatus: &alarm}
 
 	now := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
 	if err := PublishDERStatus(context.Background(), pub, "/topic/dest", "sim-1", "mrid-a", status, now); err != nil {
@@ -157,12 +159,42 @@ func TestPublishDERStatusSendsMappedDifferences(t *testing.T) {
 	if msg.Input.SimulationID == nil || *msg.Input.SimulationID != "sim-1" {
 		t.Errorf("simulation_id = %v, want \"sim-1\"", msg.Input.SimulationID)
 	}
-	if len(msg.Input.Message.ForwardDifferences) != 1 {
-		t.Fatalf("forward_differences len = %d, want 1", len(msg.Input.Message.ForwardDifferences))
+	if len(msg.Input.Message.ForwardDifferences) != 3 {
+		t.Fatalf("forward_differences len = %d, want 3", len(msg.Input.Message.ForwardDifferences))
 	}
-	fd := msg.Input.Message.ForwardDifferences[0]
-	if fd.Object != "mrid-a" || fd.Attribute != "DERStatus.genConnectStatus" {
-		t.Errorf("forward difference = %+v, want Object=mrid-a Attribute=DERStatus.genConnectStatus", fd)
+
+	// Value fidelity AND exact attribute names, asserted after a real
+	// JSON encode/decode round trip (not just against the intermediate
+	// Go struct): a SEP2 operationalModeStatus of 2 must arrive on the
+	// bus as exactly 2, under exactly "DERStatus.operationalModeStatus",
+	// so any later remap of these names or a value-mangling bug shows
+	// up as a failing assertion here, per Vance/GAGO-034 PR #9 review.
+	byAttr := make(map[string]float64, len(msg.Input.Message.ForwardDifferences))
+	for _, fd := range msg.Input.Message.ForwardDifferences {
+		if fd.Object != "mrid-a" {
+			t.Errorf("forward difference %q: Object = %v, want %q", fd.Attribute, fd.Object, "mrid-a")
+		}
+		v, ok := fd.Value.(float64)
+		if !ok {
+			t.Fatalf("forward difference %q: Value = %v (%T), want a JSON number", fd.Attribute, fd.Value, fd.Value)
+		}
+		byAttr[fd.Attribute] = v
+	}
+
+	wantByAttr := map[string]float64{
+		"DERStatus.genConnectStatus":      1,
+		"DERStatus.operationalModeStatus": 2,
+		"DERStatus.alarmStatus":           9,
+	}
+	for attr, want := range wantByAttr {
+		got, ok := byAttr[attr]
+		if !ok {
+			t.Errorf("missing forward difference for attribute %q", attr)
+			continue
+		}
+		if got != want {
+			t.Errorf("forward difference %q: Value = %v, want %v", attr, got, want)
+		}
 	}
 }
 
@@ -236,8 +268,8 @@ func TestTelemetryMiddlewareRelaysSuccessfulPUT(t *testing.T) {
 	})
 	handler := telemetryMiddleware(cfg)(inner)
 
-	conn := sep2.ConnectStatusType{Value: 1}
-	status := sep2.DERStatus{GenConnectStatus: &conn}
+	mode := sep2.OperationalModeStatusType{Value: 2}
+	status := sep2.DERStatus{OperationalModeStatus: &mode}
 	body, err := xml.Marshal(&status)
 	if err != nil {
 		t.Fatalf("marshal DERStatus: %v", err)
@@ -260,8 +292,18 @@ func TestTelemetryMiddlewareRelaysSuccessfulPUT(t *testing.T) {
 		t.Fatalf("forward_differences len = %d, want 1", len(msg.Input.Message.ForwardDifferences))
 	}
 	fd := msg.Input.Message.ForwardDifferences[0]
+	// Value fidelity AND exact attribute name, over the real JSON wire
+	// bytes actually sent to the bus: a SEP2 operationalModeStatus of 2
+	// must arrive as exactly 2 under exactly
+	// "DERStatus.operationalModeStatus".
 	if fd.Object != "mrid-a" {
 		t.Errorf("forward difference Object = %q, want %q (reverse-resolved via registry.MRID)", fd.Object, "mrid-a")
+	}
+	if fd.Attribute != "DERStatus.operationalModeStatus" {
+		t.Errorf("forward difference Attribute = %q, want %q", fd.Attribute, "DERStatus.operationalModeStatus")
+	}
+	if v, ok := fd.Value.(float64); !ok || v != 2 {
+		t.Errorf("forward difference Value = %v (%T), want 2", fd.Value, fd.Value)
 	}
 }
 

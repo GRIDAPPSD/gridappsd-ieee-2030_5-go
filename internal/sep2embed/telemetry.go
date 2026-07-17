@@ -83,6 +83,20 @@ const derStatusAttributePrefix = "DERStatus."
 // the device's prior status to synthesize a real reverse. Documented
 // here rather than silently reusing diff.Builder's undo-oriented
 // contract without comment.
+//
+// Raw passthrough, unbounded (Leon LOW, GAGO-034 PR #9 review): every
+// value below is carried through exactly as the device reported it, at
+// its full wire type range (genConnectStatus/operationalModeStatus are
+// uint8, alarmStatus is uint32), with no plausibility or range check
+// against what a real device could sanely report. This is a deliberate
+// discovery-stage choice (GAGO-046 tracks the enum/bitmap passthrough
+// broadly), not an oversight: these are device-SUPPLIED values from an
+// already ACL-scoped, mTLS-authenticated caller, so an out-of-range
+// value is a malfunctioning-or-malicious device signal worth seeing
+// unmodified on the bus rather than silently clamped. Adding a runtime
+// bound (a sane alarmStatus bitmask, a known genConnectStatus/
+// operationalModeStatus enum range) is a defense-in-depth follow-up,
+// not part of this PR.
 func MapDERStatusToDifferences(mrid string, status sep2.DERStatus) ([]diff.Difference, error) {
 	if mrid == "" {
 		return nil, errors.New("sep2embed: MapDERStatusToDifferences: empty mrid")
