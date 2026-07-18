@@ -74,7 +74,7 @@ func deviceClient(t *testing.T, certPEM, keyPEM, caCertPEM []byte) *http.Client 
 // GAGO-043: it boots a real embedded server over real mTLS with two
 // seeded devices whose LFDIs are derived from their own certificates
 // (not placeholders), and proves the full stack (identityMiddleware +
-// aclMiddleware + registryOwnerResolver, wired exactly as buildHandler
+// aclMiddleware + storeOwnerResolver, wired exactly as buildHandler
 // composes them) enforces per-device ownership end to end: a device
 // can read and write its own resources, and is denied on the other
 // device's resources, for both reads and writes.

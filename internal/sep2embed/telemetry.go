@@ -262,18 +262,17 @@ func telemetryMiddleware(cfg telemetryConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			// edevID is the device's ADVERTISED id (a file-hash alias when
-			// it has one, otherwise its canonical LFDI), so resolve it
-			// through GetByEdevID (the advertised-id index), not MRID
-			// (which is keyed by canonical LFDI only and would miss an
-			// aliased device). This middleware runs inside aclMiddleware,
-			// so edevID is already the caller's own confirmed device.
-			entry, ok := cfg.reg.GetByEdevID(edevID)
+			// edevID is the device's ADVERTISED id, which is its canonical
+			// LFDI (seed.go keys stores.EndDevices by Entry.LFDI alone, no
+			// separate alias), so resolve it through reg.MRID, the
+			// canonical LFDI to mRID reverse lookup. This middleware runs
+			// inside aclMiddleware, so edevID is already the caller's own
+			// confirmed device.
+			mrid, ok := cfg.reg.MRID(edevID)
 			if !ok {
 				log.Printf("sep2embed: telemetry relay: no registered mRID for edev=%s; dropping telemetry", edevID)
 				return
 			}
-			mrid := entry.MRID
 
 			if err := PublishDERStatus(r.Context(), cfg.bus, cfg.dest, cfg.simID, mrid, status, time.Now()); err != nil {
 				log.Printf("sep2embed: telemetry relay: publish edev=%s mrid=%s: %v", edevID, mrid, err)

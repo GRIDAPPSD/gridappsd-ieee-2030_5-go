@@ -548,120 +548,60 @@ func TestEntryPlaceholderReplacementUpdatesFlag(t *testing.T) {
 	}
 }
 
-// TestStoreIDPrefersAliasOverCanonical pins the advertised-id selection:
-// StoreID returns the alias file-hash when one is set, and falls back to
-// the canonical LFDI when the alias is empty. This is the single source
-// of truth for the /edev id, so a regression here silently changes what
-// every device is advertised and keyed under.
-func TestStoreIDPrefersAliasOverCanonical(t *testing.T) {
-	t.Parallel()
-
-	withAlias := Entry{MRID: "m1", LFDI: "CANON", AliasLFDI: "alias"}
-	if got := withAlias.StoreID(); got != "alias" {
-		t.Errorf("StoreID() with alias = %q, want %q", got, "alias")
-	}
-	noAlias := Entry{MRID: "m2", LFDI: "CANON2"}
-	if got := noAlias.StoreID(); got != "CANON2" {
-		t.Errorf("StoreID() without alias = %q, want %q (canonical fallback)", got, "CANON2")
-	}
-}
-
-// TestGetByEdevIDResolvesAliasAndCanonical proves the advertised-id
-// reverse index resolves a device by its StoreID: by the alias for an
-// aliased device, and by the canonical LFDI for a no-alias device. It
-// also proves an aliased device is NOT resolvable by its (shadowed)
-// canonical LFDI through this index, so a caller cannot address a device
-// by a canonical LFDI it is not advertised under.
-func TestGetByEdevIDResolvesAliasAndCanonical(t *testing.T) {
+// TestMRIDResolvesCanonicalLFDI proves the canonical-LFDI reverse index
+// (MRID) resolves an entry's LFDI back to its mRID, and reports not found
+// for an unregistered LFDI.
+func TestMRIDResolvesCanonicalLFDI(t *testing.T) {
 	t.Parallel()
 
 	r := New()
-	aliased := Entry{MRID: "m-aliased", Name: "Aliased", LFDI: "CANON-A", AliasLFDI: "alias-a"}
-	plain := Entry{MRID: "m-plain", Name: "Plain", LFDI: "CANON-P"}
-	if err := r.AddBatch([]Entry{aliased, plain}); err != nil {
-		t.Fatalf("AddBatch: %v", err)
-	}
-
-	// Aliased device: resolvable by its alias, returns its full Entry
-	// (carrying the canonical LFDI the ownership check needs).
-	got, ok := r.GetByEdevID("alias-a")
-	if !ok || got != aliased {
-		t.Errorf("GetByEdevID(alias-a) = (%+v, %t), want (%+v, true)", got, ok, aliased)
-	}
-	// Aliased device is NOT resolvable by its canonical LFDI: it is
-	// advertised under the alias only.
-	if _, ok := r.GetByEdevID("CANON-A"); ok {
-		t.Error("GetByEdevID(CANON-A) resolved an aliased device by its shadowed canonical LFDI; want not found")
-	}
-	// No-alias device: resolvable by its canonical LFDI (its StoreID).
-	got, ok = r.GetByEdevID("CANON-P")
-	if !ok || got != plain {
-		t.Errorf("GetByEdevID(CANON-P) = (%+v, %t), want (%+v, true)", got, ok, plain)
-	}
-	// Fail closed on blank and unknown.
-	if _, ok := r.GetByEdevID(""); ok {
-		t.Error("GetByEdevID(\"\") ok = true, want false")
-	}
-	if _, ok := r.GetByEdevID("nope"); ok {
-		t.Error("GetByEdevID(nope) ok = true, want false")
-	}
-}
-
-// TestMRIDIndexIgnoresAlias proves the canonical-LFDI reverse index
-// (MRID) never carries the alias: MRID resolves only the canonical LFDI,
-// so it cannot be tricked into treating an alias file-hash as a caller's
-// canonical identity.
-func TestMRIDIndexIgnoresAlias(t *testing.T) {
-	t.Parallel()
-
-	r := New()
-	if err := r.Add(Entry{MRID: "m1", LFDI: "CANON", AliasLFDI: "alias"}); err != nil {
+	if err := r.Add(Entry{MRID: "m1", LFDI: "CANON"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if got, ok := r.MRID("CANON"); !ok || got != "m1" {
 		t.Errorf("MRID(CANON) = (%q, %t), want (m1, true)", got, ok)
 	}
-	if got, ok := r.MRID("alias"); ok {
-		t.Errorf("MRID(alias) = (%q, true), want not found: the alias must never reverse-resolve as a canonical LFDI", got)
+	if _, ok := r.MRID("unknown"); ok {
+		t.Error("MRID(unknown) ok = true, want false")
 	}
 }
 
-// TestAliasIndexMutationIntegrity proves the edev (StoreID) index stays
-// consistent through Add-replacement and Remove: a re-add that changes a
-// device's alias leaves no stale alias entry resolving to the mRID, and
-// a Remove clears the alias entry too.
-func TestAliasIndexMutationIntegrity(t *testing.T) {
+// TestLFDIIndexMutationIntegrity proves the canonical LFDI reverse index
+// stays consistent through Add-replacement and Remove: a re-add that
+// changes a device's LFDI leaves no stale entry resolving to the mRID,
+// and a Remove clears the entry too.
+func TestLFDIIndexMutationIntegrity(t *testing.T) {
 	t.Parallel()
 
 	r := New()
-	if err := r.Add(Entry{MRID: "m1", LFDI: "CANON", AliasLFDI: "alias-old"}); err != nil {
+	if err := r.Add(Entry{MRID: "m1", LFDI: "CANON-OLD"}); err != nil {
 		t.Fatalf("Add old: %v", err)
 	}
-	if _, ok := r.GetByEdevID("alias-old"); !ok {
-		t.Fatal("GetByEdevID(alias-old) not found after initial Add")
+	if _, ok := r.MRID("CANON-OLD"); !ok {
+		t.Fatal("MRID(CANON-OLD) not found after initial Add")
 	}
 
-	// Re-add with a changed alias: the old alias must no longer resolve.
-	if err := r.Add(Entry{MRID: "m1", LFDI: "CANON", AliasLFDI: "alias-new"}); err != nil {
+	// Re-add with a changed LFDI: the old LFDI must no longer resolve.
+	if err := r.Add(Entry{MRID: "m1", LFDI: "CANON-NEW"}); err != nil {
 		t.Fatalf("Add new: %v", err)
 	}
-	if _, ok := r.GetByEdevID("alias-old"); ok {
-		t.Error("GetByEdevID(alias-old) still resolves after alias change; stale alias index entry")
+	if _, ok := r.MRID("CANON-OLD"); ok {
+		t.Error("MRID(CANON-OLD) still resolves after LFDI change; stale index entry")
 	}
-	got, ok := r.GetByEdevID("alias-new")
-	if !ok || got.MRID != "m1" {
-		t.Errorf("GetByEdevID(alias-new) = (%+v, %t), want mRID m1", got, ok)
+	got, ok := r.MRID("CANON-NEW")
+	if !ok || got != "m1" {
+		t.Errorf("MRID(CANON-NEW) = (%q, %t), want (m1, true)", got, ok)
 	}
 	if r.Len() != 1 {
-		t.Errorf("Len() = %d, want 1 after alias-changing replacement", r.Len())
+		t.Errorf("Len() = %d, want 1 after LFDI-changing replacement", r.Len())
 	}
 
-	// Remove must clear the alias entry.
+	// Remove must clear the LFDI entry.
 	if _, ok := r.Remove("m1"); !ok {
 		t.Fatal("Remove(m1) ok = false")
 	}
-	if _, ok := r.GetByEdevID("alias-new"); ok {
-		t.Error("GetByEdevID(alias-new) still resolves after Remove; alias index leak")
+	if _, ok := r.MRID("CANON-NEW"); ok {
+		t.Error("MRID(CANON-NEW) still resolves after Remove; index leak")
 	}
 }
 

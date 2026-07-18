@@ -45,7 +45,7 @@ import (
 // pass-through, so this composition is a no-op when the relay isn't
 // configured.
 func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, reg *registry.Registry, identity sep2srv.Identity, notifier assembly.ResourceNotifier, telemetry telemetryConfig) http.Handler {
-	resolver := newRegistryOwnerResolver(reg)
+	resolver := newStoreOwnerResolver(stores.EndDevices)
 	acl := aclMiddleware(resolver)
 	relay := telemetryMiddleware(telemetry)
 
