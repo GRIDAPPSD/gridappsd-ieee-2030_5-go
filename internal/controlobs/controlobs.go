@@ -24,6 +24,11 @@ import (
 type LastDelta struct {
 	Object    string
 	Attribute string
+	// Value is a json-decoded wire value (string, float64, bool, nil,
+	// or a nested map/slice of those) that the writer never mutates
+	// after recording it, so Snapshot's shallow copy of this field is
+	// safe. If a future writer ever stores a mutable value here,
+	// Snapshot must deep-copy it instead.
 	Value     any
 	AppliedAt time.Time
 }

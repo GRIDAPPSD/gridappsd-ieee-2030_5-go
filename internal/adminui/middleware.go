@@ -1,6 +1,7 @@
 package adminui
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 )
@@ -39,11 +40,18 @@ func (s *Server) buildHandler() http.Handler {
 // bearerAuth rejects any request whose Authorization header is not
 // exactly "Bearer <Config.Key>" with 401 Unauthorized. It never logs
 // the presented or expected token: only that a request was rejected.
+// The token equality test uses subtle.ConstantTimeCompare rather than
+// a plain byte or string compare, so a wrong token takes the same time
+// to reject regardless of how many leading bytes match: a plain
+// compare short-circuits on the first mismatched byte and leaks a
+// timing signal an attacker could use to recover the token one byte
+// at a time.
 func (s *Server) bearerAuth(next http.Handler) http.Handler {
 	const prefix = "Bearer "
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := r.Header.Get("Authorization")
-		if !strings.HasPrefix(got, prefix) || got[len(prefix):] != s.cfg.Key {
+		presented, hasPrefix := strings.CutPrefix(got, prefix)
+		if !hasPrefix || subtle.ConstantTimeCompare([]byte(presented), []byte(s.cfg.Key)) != 1 {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

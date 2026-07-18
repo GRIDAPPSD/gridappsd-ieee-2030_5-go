@@ -40,6 +40,19 @@ var ErrDisabled = errors.New("adminui: SEP2_ADMIN_UI_KEY unset, admin UI disable
 // cancelled, mirroring sep2embed's own shutdown timeout pattern.
 const defaultShutdownTimeout = 5 * time.Second
 
+// HTTP server timeouts. This is a read only, low traffic local API, so
+// the values are generous rather than tight, but every one of them is
+// still bounded: an http.Server with no timeouts set is exposed to a
+// slow client (deliberate or not) holding a connection open
+// indefinitely, which matters once Config.AllowNonLoopback lets this
+// server bind somewhere reachable off the local host.
+const (
+	defaultReadHeaderTimeout = 5 * time.Second
+	defaultReadTimeout       = 10 * time.Second
+	defaultWriteTimeout      = 10 * time.Second
+	defaultIdleTimeout       = 60 * time.Second
+)
+
 // Config configures a Server.
 type Config struct {
 	// Addr is the "host:port" the admin HTTP listener binds. Required.
@@ -184,7 +197,13 @@ func (s *Server) Handler() http.Handler {
 // doc comment) so a future three-way combinator can treat this runner
 // identically to embed.Run and stompRun.
 func (s *Server) Run(ctx context.Context) error {
-	httpSrv := &http.Server{Handler: s.handler}
+	httpSrv := &http.Server{
+		Handler:           s.handler,
+		ReadHeaderTimeout: defaultReadHeaderTimeout,
+		ReadTimeout:       defaultReadTimeout,
+		WriteTimeout:      defaultWriteTimeout,
+		IdleTimeout:       defaultIdleTimeout,
+	}
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.Serve(s.ln) }()
