@@ -390,15 +390,10 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 			MRID:        d.MRID,
 			Name:        d.Name,
 			LFDI:        id.LFDI,
-			AliasLFDI:   id.AliasLFDI,
 			SFDI:        id.SFDI,
 			Placeholder: false,
 		})
-		if id.AliasLFDI != "" {
-			log.Printf("bridge: device mrid=%s lfdi=%s alias=%s sfdi=%s (certificate-derived; advertised under file-hash alias for file-mode client discovery)", d.MRID, id.LFDI, id.AliasLFDI, id.SFDI)
-		} else {
-			log.Printf("bridge: device mrid=%s lfdi=%s sfdi=%s (certificate-derived; advertised under canonical LFDI)", d.MRID, id.LFDI, id.SFDI)
-		}
+		log.Printf("bridge: device mrid=%s lfdi=%s sfdi=%s (certificate-derived)", d.MRID, id.LFDI, id.SFDI)
 	}
 
 	reg := registry.New()
