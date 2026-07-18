@@ -8,6 +8,8 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
+
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
 // buildHandler assembles the protocol router for one Embed instance,
@@ -42,8 +44,8 @@ import (
 // telemetryConfig (the zero value) makes telemetryMiddleware a
 // pass-through, so this composition is a no-op when the relay isn't
 // configured.
-func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, identity sep2srv.Identity, notifier assembly.ResourceNotifier, telemetry telemetryConfig) http.Handler {
-	resolver := newStoreOwnerResolver(stores.EndDevices)
+func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, reg *registry.Registry, identity sep2srv.Identity, notifier assembly.ResourceNotifier, telemetry telemetryConfig) http.Handler {
+	resolver := newRegistryOwnerResolver(reg)
 	acl := aclMiddleware(resolver)
 	relay := telemetryMiddleware(telemetry)
 

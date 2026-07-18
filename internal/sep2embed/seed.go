@@ -16,10 +16,11 @@ import (
 // one child DER resource (the bridge does not yet carry more than one
 // DER per device's CIM identity; see internal/cim.DictItem, which is all
 // the registry entries are built from as of GAGO-025). The mapping,
-// field by field:
+// field by field (id = Entry.StoreID: the file-hash alias when set,
+// otherwise the canonical LFDI):
 //
-//	store id (both EndDevice and the DER's parent key) = Entry.LFDI
-//	EndDevice.LFDI                                      = Entry.LFDI
+//	store id (both EndDevice and the DER's parent key) = Entry.StoreID
+//	EndDevice.LFDI                                      = Entry.StoreID (advertised)
 //	EndDevice.SFDI                                       = Entry.SFDI, or
 //	                                                       derivePlaceholderSFDI(Entry.LFDI)
 //	                                                       when Entry.SFDI is empty
@@ -29,20 +30,25 @@ import (
 //	DER id (within the EndDevice's DER scope)             = "1"
 //	DER.Href                                              = "/edev/" + id + "/der/1"
 //
-// The store id uses the LFDI (not a sequential counter) so a device's
-// EndDeviceStore.GetByLFDI lookup resolves to the same id every time,
-// and so re-seeding the same registry entry against a fresh store
-// always produces the same store key. reg.Snapshot() itself iterates a
-// Go map and its element order is unspecified per seeding run; that is
-// fine because store id assignment does not depend on iteration order
-// (each entry's id is derived solely from its own LFDI, not from its
-// position in the snapshot). What IS ordered, and is what an /edev GET
-// actually returns, is core's memory.Store[T].List: it walks a
-// separately maintained sorted key slice, so list responses are sorted
-// by id (i.e., by LFDI) regardless of the order seedStores wrote them
-// in. LFDI is guaranteed non-empty and unique by registry.Registry's
-// own Add/AddBatch validation, and is already URL-safe (40 uppercase
-// hex characters).
+// The store id uses Entry.StoreID (not a sequential counter) so a
+// device's EndDeviceStore.GetByLFDI lookup resolves to the same id every
+// time, and so re-seeding the same registry entry against a fresh store
+// always produces the same store key. A device with a file-hash alias is
+// advertised under that alias so a file-mode EPRI client discovers it;
+// the advertised EndDevice.LFDI is a discovery identity, NOT the
+// ownership identity (ownership matches the canonical LFDI via the
+// registry: see acl.go). reg.Snapshot() itself iterates a Go map and its
+// element order is unspecified per seeding run; that is fine because
+// store id assignment does not depend on iteration order (each entry's
+// id is derived solely from its own StoreID, not from its position in
+// the snapshot). What IS ordered, and is what an /edev GET actually
+// returns, is core's memory.Store[T].List: it walks a separately
+// maintained sorted key slice, so list responses are sorted by id
+// regardless of the order seedStores wrote them in. StoreID is
+// guaranteed non-empty (StoreID falls back to LFDI, which registry
+// validation requires non-empty) and unique per device, and both the
+// uppercase-hex canonical LFDI and the lowercase-hex file-hash alias are
+// URL-safe (40 hex characters).
 //
 // An empty registry seeds empty stores without error: the /edev list
 // still serves (0 results), it is simply empty rather than absent.
@@ -60,8 +66,22 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 // direct map manipulation), so the EndDeviceStore's SFDI/LFDI secondary
 // indexes are built as a side effect, exactly as they would be for a
 // device that self-registered over HTTP.
+//
+// Advertised identity (dual-index): the store id, the EndDevice.LFDI
+// field, and every derived href use Entry.StoreID (the file-hash alias
+// when the device has one, otherwise the canonical DER-hash LFDI). A
+// device with an alias is therefore discoverable by an EPRI file-mode
+// client, which walks GET /edev matching EndDevice.LFDI against its OWN
+// self-computed file-hash. A device with no alias advertises under its
+// canonical LFDI exactly as before this change. The advertised
+// EndDevice.LFDI is NOT the ownership identity: ownership is matched
+// against the canonical LFDI via the registry, never against this
+// advertised field (see acl.go's registryOwnerResolver). SFDI is unchanged:
+// still the canonical certificate-derived SFDI (or the LFDI-derived
+// placeholder), which is a shape-valid device SFDI regardless of which
+// LFDI the device advertises under.
 func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry) error {
-	id := e.LFDI
+	id := e.StoreID()
 
 	sfdi := e.SFDI
 	if sfdi == "" {
@@ -71,7 +91,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry) err
 	enabled := true
 	dev := sep2.EndDevice{
 		Enabled: &enabled,
-		LFDI:    e.LFDI,
+		LFDI:    id,
 		SFDI:    sfdi,
 	}
 	dev.Href = "/edev/" + id

@@ -229,6 +229,12 @@ func TestEnsureDeviceIdentitiesPreprovisionedLoadsExistingCert(t *testing.T) {
 	if want := sepTLS.SFDI(wantCert); identity.SFDI != want {
 		t.Errorf("SFDI = %q, want %q (derived from the preprovisioned cert)", identity.SFDI, want)
 	}
+	// Preprovisioned mode never computes a file-hash alias: the bridge
+	// may not hold the device private key, so the device advertises under
+	// (and is owned via) its canonical LFDI alone.
+	if identity.AliasLFDI != "" {
+		t.Errorf("Preprovisioned AliasLFDI = %q, want empty (no combined-file alias without the device key)", identity.AliasLFDI)
+	}
 
 	// No key file should have been written: Preprovisioned mode never mints.
 	keyFile := filepath.Join(devicesDir, base+"-key.pem")

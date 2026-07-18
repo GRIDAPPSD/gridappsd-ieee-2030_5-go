@@ -127,10 +127,18 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		return fmt.Errorf("%w: attribute %q (want prefix %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix)
 	}
 
-	edevID, ok := reg.LFDI(delta.Object)
+	// edevID must be the device's ADVERTISED store id (Entry.StoreID: the
+	// file-hash alias when set, otherwise the canonical LFDI), because
+	// seed.go keys stores.EndDevices (and every /edev/{id} href) by
+	// StoreID. Using the canonical LFDI here would miss an aliased
+	// device's seeded EndDevice and write the DERControl under a key no
+	// client can reach. reg.Get resolves the delta's mRID to its Entry;
+	// StoreID is then the same id the device is advertised under.
+	entry, ok := reg.Get(delta.Object)
 	if !ok {
 		return fmt.Errorf("%w: mrid=%q", ErrUnknownControlDevice, delta.Object)
 	}
+	edevID := entry.StoreID()
 
 	// Defense in depth: the registry and stores.EndDevices are seeded
 	// together (bridge.bootstrapRegistry + sep2embed.New), but if they

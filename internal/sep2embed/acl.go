@@ -1,11 +1,9 @@
 package sep2embed
 
 import (
-	"context"
 	"net/http"
 
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
-
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2acl"
 )
 
@@ -23,57 +21,66 @@ type OwnerResolver interface {
 	OwnsEndDevice(callerLFDI, edevID string) bool
 }
 
-// storeOwnerResolver implements OwnerResolver against the same
-// EndDeviceStore seed.go populates and the /edev/{id} handlers
-// themselves read: there is no separate ownership index to drift out
-// of sync with the seeded devices. The device at store key edevID owns
-// itself if and only if its own EndDevice.LFDI field equals the
-// caller's LFDI (per Noor's design: "authoritative EndDevice.LFDI ==
-// the owning device").
-type storeOwnerResolver struct {
-	endDevices store.EndDeviceStore
+// registryOwnerResolver implements OwnerResolver against the registry,
+// the single source of truth for the canonical-vs-advertised identity
+// split (dual-index LFDI). The device addressed by the wire path segment
+// edevID (which is the device's ADVERTISED id: a file-hash alias when it
+// has one, otherwise its canonical LFDI) owns itself if and only if the
+// caller's LFDI equals that device's CANONICAL LFDI.
+//
+// Why the registry and not the EndDeviceStore: the EndDeviceStore's
+// EndDevice.LFDI field is now the ADVERTISED identity (the alias for an
+// EPRI device), which is a lowercase file-hash the wire caller never
+// presents. Matching callerLFDI against that advertised field would
+// therefore fail for every aliased device (and, worse, would be the
+// wrong identity to match against on principle). The registry carries
+// BOTH identities per device (Entry.LFDI canonical, Entry.AliasLFDI
+// advertised) and resolves an /edev id back to its Entry via
+// GetByEdevID, so the ownership match is always against the canonical
+// LFDI regardless of which identity the device is advertised under.
+type registryOwnerResolver struct {
+	reg *registry.Registry
 }
 
-func newStoreOwnerResolver(endDevices store.EndDeviceStore) *storeOwnerResolver {
-	return &storeOwnerResolver{endDevices: endDevices}
+func newRegistryOwnerResolver(reg *registry.Registry) *registryOwnerResolver {
+	return &registryOwnerResolver{reg: reg}
 }
 
 // OwnsEndDevice implements OwnerResolver.
 //
-// context.Background() below is deliberate, not an entry-point
-// violation of the workspace's context discipline: the OwnerResolver
-// interface signature is fixed by the settled design (GAGO-043) with
-// no ctx parameter, because the backing lookup is a synchronous
-// in-memory map read with nothing to cancel. This mirrors core's own
-// EndDeviceStore.GetBySFDI/GetByLFDI (pkg/store/memory/enddevice.go),
-// which ignore their ctx parameter and call context.Background()
-// internally for the exact same reason.
-//
 // The comparison below is an exact, uppercase-sensitive string compare
 // with no case-folding, and that is correct, not an oversight: both
-// operands derive from the same function, sepTLS.LFDI, which always
-// returns the canonical uppercase-hex form (spec section 6.3.4).
-// callerLFDI reaches here via identityMiddleware's
-// sepTLS.LFDI(r.TLS.PeerCertificates[0]) call; the stored
-// EndDevice.LFDI reaches here via seed.go's seedOne, which sets it
-// from registry.Entry.LFDI, itself sourced (GAGO-033) from
+// operands are CANONICAL LFDIs derived from the same function,
+// sepTLS.LFDI, which always returns the uppercase-hex form (spec
+// section 6.3.4). callerLFDI reaches here via identityMiddleware's
+// sepTLS.LFDI(r.TLS.PeerCertificates[0]) call; the stored canonical
+// LFDI reaches here via registry.Entry.LFDI, sourced (GAGO-033) from
 // sepTLS.LFDI on that same device's certificate. Two callers of one
 // canonicalizing function agree by construction, so exact-string
 // compare is the correct check. Do NOT add runtime case-folding here:
 // that would mask a real drift bug (one side no longer deriving from
-// sepTLS.LFDI) instead of surfacing it. TestOwnsEndDeviceAgreesWithSepTLSLFDIDerivation
-// locks this invariant: it derives both sides from the same
-// certificate the way each real caller does, and fails if either
-// derivation path's casing or shape ever drifts.
-func (r *storeOwnerResolver) OwnsEndDevice(callerLFDI, edevID string) bool {
+// sepTLS.LFDI) instead of surfacing it.
+//
+// SECURITY BOUNDARY (dual-index): edevID is resolved to a device via
+// GetByEdevID (the advertised-id index), then the caller is matched
+// against THAT device's canonical LFDI. The caller's DER-hash LFDI is
+// never compared against any device's file-hash ALIAS, so an alias
+// value a wire caller could somehow present can never satisfy the
+// ownership check for a device it does not canonically own. The match
+// resolves device-by-advertised-id then compares-by-canonical-LFDI, so
+// device A's caller (canonical LFDI A) owns exactly the device whose
+// canonical LFDI is A, whether B is addressed by B's alias or B's
+// canonical id. Fail closed: a blank callerLFDI, a blank edevID, or an
+// edevID that resolves to no registered device all return false.
+func (r *registryOwnerResolver) OwnsEndDevice(callerLFDI, edevID string) bool {
 	if callerLFDI == "" || edevID == "" {
 		return false
 	}
-	dev, err := r.endDevices.Get(context.Background(), edevID)
-	if err != nil {
+	entry, ok := r.reg.GetByEdevID(edevID)
+	if !ok {
 		return false
 	}
-	return dev.LFDI == callerLFDI
+	return entry.LFDI == callerLFDI
 }
 
 // aclMiddleware enforces the IEEE 2030.5 section 6.2.3 method

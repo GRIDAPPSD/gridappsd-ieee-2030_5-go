@@ -8,10 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store/memory"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
@@ -261,16 +259,17 @@ func TestACLMiddlewareUnmatchedEdevScopedPathStillEnforcesOwnership(t *testing.T
 	}
 }
 
-func TestStoreOwnerResolverOwnsEndDevice(t *testing.T) {
+func TestRegistryOwnerResolverOwnsEndDevice(t *testing.T) {
 	t.Parallel()
 
-	store := memory.NewEndDeviceStore()
-	enabled := true
-	if err := store.Create(context.Background(), "DEV-A", sep2.EndDevice{Enabled: &enabled, LFDI: "LFDI-A"}); err != nil {
-		t.Fatalf("seed EndDevice: %v", err)
+	// A conformant (no-alias) device: advertised under and owned via its
+	// canonical LFDI, so its /edev id and its ownership identity coincide.
+	reg := registry.New()
+	if err := reg.Add(registry.Entry{MRID: "mrid-a", Name: "Device A", LFDI: "LFDI-A"}); err != nil {
+		t.Fatalf("Add: %v", err)
 	}
 
-	resolver := newStoreOwnerResolver(store)
+	resolver := newRegistryOwnerResolver(reg)
 
 	tests := []struct {
 		name       string
@@ -278,10 +277,10 @@ func TestStoreOwnerResolverOwnsEndDevice(t *testing.T) {
 		edevID     string
 		want       bool
 	}{
-		{"caller's own LFDI matches the device at that id", "LFDI-A", "DEV-A", true},
-		{"different caller LFDI is not the owner", "LFDI-WRONG", "DEV-A", false},
+		{"caller's own LFDI matches the device at that id", "LFDI-A", "LFDI-A", true},
+		{"different caller LFDI is not the owner", "LFDI-WRONG", "LFDI-A", false},
 		{"unknown device id fails closed", "LFDI-A", "DEV-UNKNOWN", false},
-		{"blank caller LFDI fails closed", "", "DEV-A", false},
+		{"blank caller LFDI fails closed", "", "LFDI-A", false},
 		{"blank device id fails closed", "LFDI-A", "", false},
 		{"both blank fail closed", "", "", false},
 	}
@@ -297,9 +296,109 @@ func TestStoreOwnerResolverOwnsEndDevice(t *testing.T) {
 	}
 }
 
+// TestRegistryOwnerResolverAliasedDeviceOwnedByCanonicalLFDI proves the
+// dual-index ownership contract for a device advertised under a
+// file-hash alias: the device is addressed on the wire by its alias
+// (the /edev/{id} segment), but the caller is matched against its
+// CANONICAL LFDI, never its alias. The alias must NOT satisfy the
+// ownership check even when presented as the caller identity, because a
+// wire caller is always identified by the DER-hash canonical LFDI and
+// never by the file-hash alias.
+func TestRegistryOwnerResolverAliasedDeviceOwnedByCanonicalLFDI(t *testing.T) {
+	t.Parallel()
+
+	const (
+		canonicalA = "AAAA000000000000000000000000000000AAAA00" // uppercase DER-hash shape
+		aliasA     = "bbbb000000000000000000000000000000bbbb00" // lowercase file-hash shape
+	)
+	reg := registry.New()
+	if err := reg.Add(registry.Entry{MRID: "mrid-a", Name: "Aliased A", LFDI: canonicalA, AliasLFDI: aliasA}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	resolver := newRegistryOwnerResolver(reg)
+
+	tests := []struct {
+		name       string
+		callerLFDI string
+		edevID     string
+		want       bool
+	}{
+		{"canonical caller owns the device addressed by its alias", canonicalA, aliasA, true},
+		{"alias presented as caller does NOT own the device (alias is never a caller identity)", aliasA, aliasA, false},
+		{"canonical caller addressing the device by its canonical LFDI fails: it is advertised under the alias, not the canonical id", canonicalA, canonicalA, false},
+		{"alias addressing the device by canonical id fails closed", aliasA, canonicalA, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := resolver.OwnsEndDevice(tt.callerLFDI, tt.edevID)
+			if got != tt.want {
+				t.Errorf("OwnsEndDevice(%q, %q) = %v, want %v", tt.callerLFDI, tt.edevID, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRegistryOwnerResolverNoCrossDeviceResolution is the SECURITY
+// BOUNDARY test (data-invariants Rule 3, boundary-of-the-boundary): with
+// two devices each carrying distinct canonical AND alias LFDIs, device
+// A's caller (its canonical LFDI) owns ONLY device A, and never device
+// B, whether B is addressed by its alias OR its canonical id, and
+// regardless of any alias/canonical confusion. It proves the dual index
+// creates no path by which one cert controls another device.
+func TestRegistryOwnerResolverNoCrossDeviceResolution(t *testing.T) {
+	t.Parallel()
+
+	const (
+		canonA = "A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1"
+		aliasA = "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+		canonB = "B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1"
+		aliasB = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+	)
+
+	reg := registry.New()
+	if err := reg.AddBatch([]registry.Entry{
+		{MRID: "mrid-a", Name: "A", LFDI: canonA, AliasLFDI: aliasA},
+		{MRID: "mrid-b", Name: "B", LFDI: canonB, AliasLFDI: aliasB},
+	}); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+	resolver := newRegistryOwnerResolver(reg)
+
+	// A's canonical caller owns A (addressed by A's alias) and NOTHING
+	// else. Every other (caller, edevID) combination across the two
+	// devices' four identities must be denied.
+	if !resolver.OwnsEndDevice(canonA, aliasA) {
+		t.Fatal("device A's canonical caller must own device A (addressed by A's alias)")
+	}
+
+	denied := []struct {
+		name       string
+		callerLFDI string
+		edevID     string
+	}{
+		{"A caller cannot own B via B's alias", canonA, aliasB},
+		{"A caller cannot own B via B's canonical id", canonA, canonB},
+		{"A caller cannot own A via A's canonical id (A is advertised under its alias)", canonA, canonA},
+		{"B caller cannot own A via A's alias", canonB, aliasA},
+		{"B caller cannot own A via A's canonical id", canonB, canonA},
+		{"A's alias presented as caller owns nothing (alias is never a caller identity)", aliasA, aliasA},
+		{"A's alias presented as caller cannot own B", aliasA, aliasB},
+		{"B's alias presented as caller owns nothing", aliasB, aliasB},
+	}
+	for _, tt := range denied {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if resolver.OwnsEndDevice(tt.callerLFDI, tt.edevID) {
+				t.Errorf("OwnsEndDevice(%q, %q) = true, want false: no cross-device or alias-as-caller resolution allowed", tt.callerLFDI, tt.edevID)
+			}
+		})
+	}
+}
+
 // TestOwnsEndDeviceAgreesWithSepTLSLFDIDerivation locks the invariant
-// storeOwnerResolver.OwnsEndDevice's doc comment states: the caller
-// LFDI and the stored EndDevice.LFDI both derive from sepTLS.LFDI and
+// registryOwnerResolver.OwnsEndDevice's doc comment states: the caller
+// LFDI and the device's canonical LFDI both derive from sepTLS.LFDI and
 // are therefore always the same canonical uppercase-hex form, which is
 // why an exact, non-case-folded string compare is correct.
 //
@@ -347,17 +446,18 @@ func TestOwnsEndDeviceAgreesWithSepTLSLFDIDerivation(t *testing.T) {
 		t.Fatalf("ParseCertificatePEM: %v", err)
 	}
 
-	// Stored side: the real production seeding path (seed.go's
-	// seedOne), from a registry.Entry whose LFDI is certificate-derived
-	// exactly as GAGO-033's EnsureDeviceIdentities produces it.
-	stores := newStores()
+	// Stored side: a registry.Entry whose canonical LFDI is
+	// certificate-derived exactly as GAGO-033's EnsureDeviceIdentities
+	// produces it, with no alias (the conformant path). The device is
+	// therefore advertised under, and owned via, its canonical LFDI.
+	reg := registry.New()
 	entry := registry.Entry{
 		MRID: "mrid-lfdi-invariant-test",
 		Name: "LFDI Invariant Test Device",
 		LFDI: sepTLS.LFDI(leaf),
 	}
-	if err := seedOne(context.Background(), stores, entry); err != nil {
-		t.Fatalf("seedOne: %v", err)
+	if err := reg.Add(entry); err != nil {
+		t.Fatalf("registry Add: %v", err)
 	}
 
 	// Caller side: the real identityMiddleware, fed a request whose
@@ -376,11 +476,17 @@ func TestOwnsEndDeviceAgreesWithSepTLSLFDIDerivation(t *testing.T) {
 	identityMiddleware(spy).ServeHTTP(httptest.NewRecorder(), req)
 
 	if gotCallerLFDI != entry.LFDI {
-		t.Fatalf("identityMiddleware-derived caller LFDI %q != seedOne-stored EndDevice.LFDI %q; the two derivation paths disagree", gotCallerLFDI, entry.LFDI)
+		t.Fatalf("identityMiddleware-derived caller LFDI %q != registry canonical LFDI %q; the two derivation paths disagree", gotCallerLFDI, entry.LFDI)
 	}
 
-	resolver := newStoreOwnerResolver(stores.EndDevices)
-	if !resolver.OwnsEndDevice(gotCallerLFDI, entry.LFDI) {
-		t.Errorf("OwnsEndDevice(%q, %q) = false, want true: both sides derive from sepTLS.LFDI on the same certificate", gotCallerLFDI, entry.LFDI)
+	resolver := newRegistryOwnerResolver(reg)
+	// The conformant device's advertised /edev id is its canonical LFDI
+	// (StoreID falls back to LFDI when there is no alias), so the caller
+	// addresses it by, and is matched against, the same canonical LFDI.
+	if entry.StoreID() != entry.LFDI {
+		t.Fatalf("conformant entry StoreID %q != canonical LFDI %q; a no-alias device must advertise under its canonical LFDI", entry.StoreID(), entry.LFDI)
+	}
+	if !resolver.OwnsEndDevice(gotCallerLFDI, entry.StoreID()) {
+		t.Errorf("OwnsEndDevice(%q, %q) = false, want true: both sides derive from sepTLS.LFDI on the same certificate", gotCallerLFDI, entry.StoreID())
 	}
 }

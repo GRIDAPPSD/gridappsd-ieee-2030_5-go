@@ -79,6 +79,52 @@ func deviceCertFileBase(mrid string) (string, error) {
 	return safe + "-" + hex.EncodeToString(sum[:8]), nil
 }
 
+// aliasLFDILen is the character length of an IEEE 2030.5 LFDI: 40 hex
+// characters (160 bits). The alias file-hash is left-truncated to this
+// length, matching the Python reference's Lfdi(fp[:40]).
+const aliasLFDILen = 40
+
+// combinedPEM returns the exact bytes the EPRI oeg_client and the Python
+// gridappsd-2030_5 reference hash to self-compute their file-mode LFDI:
+// the device certificate PEM block immediately followed by the device
+// private key PEM block, back to back, no CA block, each PEM line
+// newline-terminated. pem.EncodeToMemory already emits each block as
+// newline-terminated lines ending in a trailing newline after the
+// "-----END-----" line, so a plain cert-then-key concatenation is that
+// layout exactly, with no re-serialization between the bytes hashed here
+// and the bytes the client would receive.
+//
+// This function is the SINGLE definition of "the combined-file bytes".
+// combinedFileLFDI hashes exactly what this returns; any future export
+// of the combined file for a device MUST also go through this function
+// so the hashed bytes and the shipped bytes never diverge.
+//
+// ASSUMED-AND-TO-BE-VERIFIED (re-gate): that this cert-then-key,
+// no-CA byte layout is byte-for-byte what the client hashes. Devi's
+// Stage 1 trace derived it from the Python reference's
+// tls_create_pkcs23_pem_and_cert (which strips openssl pkcs12 -nodes
+// output to its BEGIN..END blocks); the interop re-gate confirms it
+// against a live client.
+func combinedPEM(certPEM, keyPEM []byte) []byte {
+	out := make([]byte, 0, len(certPEM)+len(keyPEM))
+	out = append(out, certPEM...)
+	out = append(out, keyPEM...)
+	return out
+}
+
+// combinedFileLFDI computes the file-mode alias LFDI from a device's
+// combined cert+key PEM: the lowercase-hex SHA-256 digest of
+// combinedPEM(certPEM, keyPEM), left-truncated to aliasLFDILen (40)
+// characters. Lowercase is deliberate and load-bearing: the Python
+// reference's hashlib.hexdigest() is always lowercase and the client
+// matches on that exact casing, so this value must NOT be uppercased to
+// match the canonical LFDI's casing (see registry.Entry.AliasLFDI).
+func combinedFileLFDI(certPEM, keyPEM []byte) string {
+	sum := sha256.Sum256(combinedPEM(certPEM, keyPEM))
+	full := hex.EncodeToString(sum[:]) // lowercase per encoding/hex
+	return full[:aliasLFDILen]
+}
+
 // DeviceCertMode selects how EnsureDeviceIdentities sources each
 // device's identity certificate.
 type DeviceCertMode int
@@ -100,9 +146,27 @@ const (
 
 // DeviceIdentity is one device's certificate-derived IEEE 2030.5
 // identity: LFDI per spec section 6.3.4, SFDI per spec section 6.3.3.
+//
+// LFDI and SFDI are the CANONICAL, spec-conformant identities, derived
+// from the certificate's DER bytes (sepTLS.LFDI / sepTLS.SFDI). LFDI is
+// always the identity a wire caller is matched against for ownership.
+//
+// AliasLFDI is the OPTIONAL, non-conformant discovery identity: the
+// lowercase-hex SHA-256 hash of the device's combined PEM (device cert
+// block then private key block), left-truncated to 40 characters,
+// matching the file-hash the EPRI oeg_client and the Python
+// gridappsd-2030_5 reference self-compute in lfdi_mode_from_file. It is
+// populated ONLY in DevMint mode, where the bridge holds the device's
+// private key and can therefore reproduce the exact combined-file bytes
+// the client would hash. In Preprovisioned mode the bridge may not hold
+// the private key, so AliasLFDI is left empty and the device advertises
+// under (and is owned via) its canonical LFDI alone. An empty AliasLFDI
+// is always valid; see registry.Entry.AliasLFDI for how it flows into
+// advertising and ownership.
 type DeviceIdentity struct {
-	LFDI string
-	SFDI string
+	LFDI      string
+	SFDI      string
+	AliasLFDI string
 }
 
 // EnsureDeviceIdentities derives a real, certificate-backed IEEE 2030.5
@@ -164,13 +228,14 @@ func EnsureDeviceIdentities(dir string, mode DeviceCertMode, mrids []string) (ma
 
 	out := make(map[string]DeviceIdentity, len(mrids))
 	for _, mrid := range mrids {
-		cert, err := ensureDeviceCert(devicesDir, mode, mrid, caCert, caKey)
+		cert, aliasLFDI, err := ensureDeviceCert(devicesDir, mode, mrid, caCert, caKey)
 		if err != nil {
 			return nil, err
 		}
 		out[mrid] = DeviceIdentity{
-			LFDI: sepTLS.LFDI(cert),
-			SFDI: sepTLS.SFDI(cert),
+			LFDI:      sepTLS.LFDI(cert),
+			SFDI:      sepTLS.SFDI(cert),
+			AliasLFDI: aliasLFDI,
 		}
 	}
 	return out, nil
@@ -240,21 +305,30 @@ func loadDeviceSigningCA(dir string, mode DeviceCertMode) (*x509.Certificate, *e
 // and writes it (plus its private key) to devicesDir. In Preprovisioned
 // mode a missing certificate is a hard error: see EnsureDeviceIdentities
 // and the card's fail-closed invariant for production deployments.
-func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCert *x509.Certificate, caKey *ecdsa.PrivateKey) (*x509.Certificate, error) {
+//
+// The second return value is the device's alias LFDI (the combined-file
+// hash the EPRI client self-computes), non-empty ONLY in DevMint mode
+// where the bridge holds the private key and can reproduce the exact
+// combined-file bytes. In Preprovisioned mode it is always empty
+// (the bridge does not read the CA key and may not hold the device key),
+// so a preprovisioned device advertises under, and is owned via, its
+// canonical LFDI alone. See combinedFileLFDI and DeviceIdentity.AliasLFDI.
+func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCert *x509.Certificate, caKey *ecdsa.PrivateKey) (*x509.Certificate, string, error) {
 	base, err := deviceCertFileBase(mrid)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	certFile := filepath.Join(devicesDir, base+".pem")
+	keyFile := filepath.Join(devicesDir, base+"-key.pem")
 
 	if _, statErr := os.Stat(certFile); statErr == nil {
 		certPEM, err := os.ReadFile(certFile)
 		if err != nil {
-			return nil, fmt.Errorf("sep2embed: read device cert %q (mRID %q): %w", certFile, mrid, err)
+			return nil, "", fmt.Errorf("sep2embed: read device cert %q (mRID %q): %w", certFile, mrid, err)
 		}
 		cert, err := sep2cert.ParseCertificatePEM(certPEM)
 		if err != nil {
-			return nil, fmt.Errorf("sep2embed: parse device cert %q (mRID %q): %w", certFile, mrid, err)
+			return nil, "", fmt.Errorf("sep2embed: parse device cert %q (mRID %q): %w", certFile, mrid, err)
 		}
 		if mode == DeviceCertModePreprovisioned {
 			// A DevMint-mode load (the second-call path, where the cert
@@ -267,18 +341,32 @@ func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCer
 			// syntactically valid LFDI/SFDI that then fails the real
 			// mTLS handshake at runtime.
 			if err := verifyDeviceCertChain(cert, caCert); err != nil {
-				return nil, fmt.Errorf("sep2embed: device cert %q (mRID %q): %w", certFile, mrid, err)
+				return nil, "", fmt.Errorf("sep2embed: device cert %q (mRID %q): %w", certFile, mrid, err)
 			}
+			// Preprovisioned mode never computes an alias: empty alias.
+			return cert, "", nil
 		}
-		return cert, nil
+		// DevMint load (restart, cert already minted in a prior run):
+		// reproduce the alias from the on-disk cert+key, which are the
+		// same bytes a prior mint wrote. A missing key file is a degraded
+		// dev-cert dir (the bridge no longer holds the private key); it is
+		// not fatal, but the alias cannot be reproduced, so fall back to
+		// advertising under the canonical LFDI (empty alias) with a
+		// warning rather than fabricating a wrong alias from partial data.
+		keyPEM, keyErr := os.ReadFile(keyFile)
+		if keyErr != nil {
+			log.Printf("sep2embed: WARNING: device key %q for mRID %q is unreadable (%v); advertising under the canonical LFDI with no file-hash alias, so a file-mode client may not discover this device", keyFile, mrid, keyErr)
+			return cert, "", nil
+		}
+		return cert, combinedFileLFDI(certPEM, keyPEM), nil
 	}
 
 	if mode == DeviceCertModePreprovisioned {
-		return nil, fmt.Errorf("sep2embed: device cert for mRID %q not found at %q: preprovisioned mode requires an operator-supplied cert and refuses to mint one (fail closed)", mrid, certFile)
+		return nil, "", fmt.Errorf("sep2embed: device cert for mRID %q not found at %q: preprovisioned mode requires an operator-supplied cert and refuses to mint one (fail closed)", mrid, certFile)
 	}
 
 	if err := os.MkdirAll(devicesDir, certDirPerm); err != nil {
-		return nil, fmt.Errorf("sep2embed: create device cert dir %q: %w", devicesDir, err)
+		return nil, "", fmt.Errorf("sep2embed: create device cert dir %q: %w", devicesDir, err)
 	}
 
 	devCertPEM, devKeyPEM, err := sep2cert.GenerateDeviceCert(caCert, caKey, sep2cert.DeviceCertOptions{
@@ -287,15 +375,14 @@ func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCer
 		IsTestCert:  true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("sep2embed: mint device cert for mRID %q: %w", mrid, err)
+		return nil, "", fmt.Errorf("sep2embed: mint device cert for mRID %q: %w", mrid, err)
 	}
 
 	if err := writeFileAtomic(certFile, devCertPEM, certFilePerm); err != nil {
-		return nil, fmt.Errorf("sep2embed: write %s: %w", certFile, err)
+		return nil, "", fmt.Errorf("sep2embed: write %s: %w", certFile, err)
 	}
-	keyFile := filepath.Join(devicesDir, base+"-key.pem")
 	if err := writeFileAtomic(keyFile, devKeyPEM, certFilePerm); err != nil {
-		return nil, fmt.Errorf("sep2embed: write %s: %w", keyFile, err)
+		return nil, "", fmt.Errorf("sep2embed: write %s: %w", keyFile, err)
 	}
 
 	log.Printf("sep2embed: WARNING: minted development-only device certificate for mRID %q at %q; DO NOT use in production. Provide a preprovisioned cert instead.",
@@ -310,9 +397,13 @@ func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCer
 	// miss, so the round trip through the filesystem is unnecessary.
 	cert, err := sep2cert.ParseCertificatePEM(devCertPEM)
 	if err != nil {
-		return nil, fmt.Errorf("sep2embed: parse minted device cert for mRID %q: %w", mrid, err)
+		return nil, "", fmt.Errorf("sep2embed: parse minted device cert for mRID %q: %w", mrid, err)
 	}
-	return cert, nil
+	// The alias is computed from the SAME in-memory PEM bytes just
+	// written atomically to disk, so the value hashed here is exactly the
+	// value a subsequent DevMint load (above) would recompute from disk,
+	// and exactly the combined-file bytes a client would receive.
+	return cert, combinedFileLFDI(devCertPEM, devKeyPEM), nil
 }
 
 // verifyDeviceCertChain verifies that cert chains to caCert, via core's
