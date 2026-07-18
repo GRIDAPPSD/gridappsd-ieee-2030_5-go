@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
@@ -110,13 +110,13 @@ func TestBootstrapRegistryDerivesRealCertBackedIdentities(t *testing.T) {
 		}
 
 		certFile := deviceCertFileForTest(t, certDir, mrid)
-		certPEM, err := os.ReadFile(certFile)
+		certDER, err := os.ReadFile(certFile)
 		if err != nil {
 			t.Fatalf("mRID %q: ReadFile(%q): %v", mrid, certFile, err)
 		}
-		cert, err := sep2cert.ParseCertificatePEM(certPEM)
+		cert, err := x509.ParseCertificate(certDER)
 		if err != nil {
-			t.Fatalf("mRID %q: ParseCertificatePEM: %v", mrid, err)
+			t.Fatalf("mRID %q: ParseCertificate: %v", mrid, err)
 		}
 
 		if want := sepTLS.LFDI(cert); entry.LFDI != want {
@@ -146,24 +146,17 @@ func deviceCertFileForTest(t *testing.T, certDir, mrid string) string {
 			b.WriteByte('_')
 		}
 	}
-	pattern := filepath.Join(certDir, "devices", b.String()+"-*.pem")
+	// The glob matches only the DER certificate leaf: the sibling private
+	// key is "<base>.pem" and the cert is "<base>-<hash>.x509", so a
+	// ".x509" pattern cannot match the key file.
+	pattern := filepath.Join(certDir, "devices", b.String()+"-*.x509")
 
-	all, err := filepath.Glob(pattern)
+	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		t.Fatalf("Glob(%q): %v", pattern, err)
 	}
-	// Exclude the sibling "-key.pem" private-key file DevMint mode also
-	// writes: it matches the same glob (its name is "<base>-key.pem",
-	// which itself ends in ".pem"), but this helper wants the leaf
-	// certificate only.
-	var matches []string
-	for _, m := range all {
-		if !strings.HasSuffix(m, "-key.pem") {
-			matches = append(matches, m)
-		}
-	}
 	if len(matches) != 1 {
-		t.Fatalf("Glob(%q) matched %d certificate files (excluding -key.pem), want exactly 1: %v", pattern, len(matches), matches)
+		t.Fatalf("Glob(%q) matched %d certificate files, want exactly 1: %v", pattern, len(matches), matches)
 	}
 	return matches[0]
 }
