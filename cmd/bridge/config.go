@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // config carries the runtime knobs the Stage 1 bridge needs. Only the
@@ -88,6 +89,31 @@ type config struct {
 	// production behavior, mirroring AllowPlaintext's explicit-opt-in
 	// shape for the "this is production" signal.
 	SEP2DeviceCertMode string
+
+	// SEP2AdminUIAddr is the "host:port" the read only admin UI HTTP
+	// listener (internal/adminui) binds. See adminui.Config.Addr:
+	// loopback only unless SEP2AdminUIAllowNonLoopback is set. Defaults
+	// to loopback so an operator opts in to any wider exposure
+	// explicitly, mirroring SEP2ServerAddr's own default shape.
+	SEP2AdminUIAddr string
+
+	// SEP2AdminUIAllowNonLoopback must be explicitly set to bind
+	// SEP2AdminUIAddr to a non-loopback host. See
+	// adminui.Config.AllowNonLoopback.
+	SEP2AdminUIAllowNonLoopback bool
+
+	// SEP2AdminUIKey is the Bearer token the admin UI requires on every
+	// request. Deliberately NOT validated as required by config.validate:
+	// an empty key is the intentional "admin UI disabled" state per
+	// adminui.New's fail closed ErrDisabled contract (GAGO-058). An
+	// operator opts in to the admin UI by setting this explicitly.
+	SEP2AdminUIKey string
+
+	// SEP2AdminUIAllowedHosts is an additional, comma separated set of
+	// Host header values the admin UI's host allowlist middleware
+	// accepts, beyond its own built in defaults (localhost, 127.0.0.1,
+	// ::1). See adminui.Config.AllowedHosts.
+	SEP2AdminUIAllowedHosts []string
 }
 
 // deviceCertMode* are the only two values config.validate accepts for
@@ -130,6 +156,13 @@ const (
 	// setup. A production deployment must opt into "preprovisioned"
 	// explicitly; see config.SEP2DeviceCertMode's doc comment.
 	defaultSEP2DeviceCertMode = deviceCertModeDevMintFlag
+
+	// defaultSEP2AdminUIAddr binds the admin UI listener to loopback
+	// only by default; see config.SEP2AdminUIAddr's doc comment.
+	// SEP2AdminUIKey has no compiled-in default (and no fallback
+	// constant here): its zero value, the empty string, is the
+	// intentional "admin UI disabled" state.
+	defaultSEP2AdminUIAddr = "127.0.0.1:8444"
 )
 
 // loadConfig reads bridge config from env vars and the command-line
@@ -145,12 +178,14 @@ const (
 // the same precedence as the non-credential flags.
 func loadConfig(args []string) (config, error) {
 	cfg := config{
-		STOMPAddr:          getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
-		SimulationID:       os.Getenv("SEP2_SIMULATION_ID"),
-		FeederMRID:         getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
-		SEP2ServerAddr:     getenvDefault("SEP2_SERVER_ADDR", defaultSEP2ServerAddr),
-		SEP2ServerCertDir:  getenvDefault("SEP2_SERVER_CERT_DIR", defaultSEP2ServerCertDir),
-		SEP2DeviceCertMode: getenvDefault("SEP2_DEVICE_CERT_MODE", defaultSEP2DeviceCertMode),
+		STOMPAddr:               getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
+		SimulationID:            os.Getenv("SEP2_SIMULATION_ID"),
+		FeederMRID:              getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
+		SEP2ServerAddr:          getenvDefault("SEP2_SERVER_ADDR", defaultSEP2ServerAddr),
+		SEP2ServerCertDir:       getenvDefault("SEP2_SERVER_CERT_DIR", defaultSEP2ServerCertDir),
+		SEP2DeviceCertMode:      getenvDefault("SEP2_DEVICE_CERT_MODE", defaultSEP2DeviceCertMode),
+		SEP2AdminUIAddr:         getenvDefault("SEP2_ADMIN_UI_ADDR", defaultSEP2AdminUIAddr),
+		SEP2AdminUIAllowedHosts: getenvList("SEP2_ADMIN_UI_ALLOWED_HOSTS"),
 	}
 	pubFromEnv, err := getenvBool("SEP2_PUBLISH_ON_START", false)
 	if err != nil {
@@ -167,6 +202,15 @@ func loadConfig(args []string) (config, error) {
 	}
 	cfg.AllowPlaintext = plaintextFromEnv
 
+	// SEP2AdminUIAllowNonLoopback mirrors AllowPlaintext's explicit
+	// opt-in shape: defaults false, and only an explicit env or flag
+	// override flips it on.
+	adminUINonLoopbackFromEnv, err := getenvBool("SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK", false)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.SEP2AdminUIAllowNonLoopback = adminUINonLoopbackFromEnv
+
 	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
 	fs.StringVar(&cfg.STOMPAddr, "stomp-addr", cfg.STOMPAddr, "GridAPPS-D STOMP broker host:port")
 	// User and password flags register with an empty default so the
@@ -182,6 +226,13 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.SEP2ServerAddr, "sep2-server-addr", cfg.SEP2ServerAddr, "embedded IEEE 2030.5 mTLS listener host:port (defaults to loopback only)")
 	fs.StringVar(&cfg.SEP2ServerCertDir, "sep2-server-cert-dir", cfg.SEP2ServerCertDir, "directory holding (or receiving dev-mint) the embedded server's CA/leaf cert material")
 	fs.StringVar(&cfg.SEP2DeviceCertMode, "sep2-device-cert-mode", cfg.SEP2DeviceCertMode, `device identity certificate source: "dev-mint" (default) or "preprovisioned"`)
+	fs.StringVar(&cfg.SEP2AdminUIAddr, "admin-ui-addr", cfg.SEP2AdminUIAddr, "admin UI read only HTTP listener host:port (defaults to loopback only)")
+	fs.BoolVar(&cfg.SEP2AdminUIAllowNonLoopback, "admin-ui-allow-non-loopback", cfg.SEP2AdminUIAllowNonLoopback, "bind the admin UI listener to a non-loopback host (dev-only; default false)")
+	// admin-ui-key registers with an empty default so flag.PrintDefaults
+	// never echoes a real token, matching -stomp-user / -stomp-password
+	// above. The precedence merge happens below after Parse.
+	var adminUIKeyFlag string
+	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
 
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("parse flags: %w", err)
@@ -193,6 +244,12 @@ func loadConfig(args []string) (config, error) {
 	// in which case the env-or-default is the right answer.
 	cfg.STOMPUser = resolveCred(stompUserFlag, "SEP2_STOMP_USER", defaultSTOMPUser)
 	cfg.STOMPPassword = resolveCred(stompPasswordFlag, "SEP2_STOMP_PASSWORD", defaultSTOMPPassword)
+
+	// SEP2AdminUIKey has no compiled-in fallback: an empty result here
+	// (no flag, no env) is the intentional "admin UI disabled" state,
+	// not a missing-required-field error. resolveCred's empty-string
+	// fallback argument encodes exactly that.
+	cfg.SEP2AdminUIKey = resolveCred(adminUIKeyFlag, "SEP2_ADMIN_UI_KEY", "")
 
 	if err := cfg.validate(); err != nil {
 		return config{}, err
@@ -227,7 +284,10 @@ func resolveCred(flagVal, envKey, fallback string) string {
 
 // validate enforces the minimum field set the run loop assumes. Empty
 // SimulationID is allowed: the bridge still validates connect plus CIM
-// query plus registry; the Pump will just sit idle.
+// query plus registry; the Pump will just sit idle. SEP2AdminUIKey is
+// deliberately NOT checked here: an empty key is the intentional
+// "admin UI disabled" state (GAGO-058's fail closed contract), not a
+// missing-required-field error.
 func (c config) validate() error {
 	if c.STOMPAddr == "" {
 		return errors.New("config: SEP2_STOMP_ADDR / -stomp-addr is required")
@@ -274,4 +334,31 @@ func getenvBool(key string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("config: %s is not a boolean (%q): %w", key, v, err)
 	}
 	return parsed, nil
+}
+
+// getenvList reads a comma separated env var into a string slice,
+// trimming surrounding whitespace from each entry and dropping empty
+// entries (so a trailing comma or repeated commas do not produce a
+// blank allowlist entry that could accidentally match an empty Host
+// header). Unset or empty returns nil, not an empty non-nil slice: the
+// admin UI's own AllowedHosts zero value already means "no extra
+// hosts", so there is no meaningful distinction here between nil and
+// empty for this field.
+func getenvList(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

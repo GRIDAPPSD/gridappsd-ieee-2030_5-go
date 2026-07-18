@@ -399,3 +399,207 @@ func TestLoadConfigCredentialPrecedence(t *testing.T) {
 		}
 	})
 }
+
+// TestLoadConfigSEP2AdminUIDisabledByDefault is the GAGO-058 "admin UI
+// disabled by default" acceptance test at the config layer: with no
+// SEP2_ADMIN_UI_KEY override, the resolved key is empty (the intentional
+// disabled state adminui.New's ErrDisabled contract reads), the addr
+// defaults to loopback, and AllowNonLoopback defaults false.
+func TestLoadConfigSEP2AdminUIDisabledByDefault(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_KEY", "")
+	t.Setenv("SEP2_ADMIN_UI_ADDR", "")
+	t.Setenv("SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK", "")
+	t.Setenv("SEP2_ADMIN_UI_ALLOWED_HOSTS", "")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2AdminUIKey != "" {
+		t.Errorf("SEP2AdminUIKey: got %q, want empty (admin UI disabled by default)", cfg.SEP2AdminUIKey)
+	}
+	if cfg.SEP2AdminUIAddr != defaultSEP2AdminUIAddr {
+		t.Errorf("SEP2AdminUIAddr: got %q want %q", cfg.SEP2AdminUIAddr, defaultSEP2AdminUIAddr)
+	}
+	host, _, err := net.SplitHostPort(cfg.SEP2AdminUIAddr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", cfg.SEP2AdminUIAddr, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		t.Errorf("SEP2AdminUIAddr host = %q, want a loopback address", host)
+	}
+	if cfg.SEP2AdminUIAllowNonLoopback {
+		t.Errorf("SEP2AdminUIAllowNonLoopback: got true, want false (fail-closed default)")
+	}
+	if cfg.SEP2AdminUIAllowedHosts != nil {
+		t.Errorf("SEP2AdminUIAllowedHosts: got %v, want nil", cfg.SEP2AdminUIAllowedHosts)
+	}
+}
+
+// TestLoadConfigSEP2AdminUIKeyEnvOverride verifies an operator opting in
+// to the admin UI via the env var is honored unmodified, matching the
+// other credential-shaped knobs (-stomp-password's precedence shape).
+func TestLoadConfigSEP2AdminUIKeyEnvOverride(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_KEY", "env-admin-token")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2AdminUIKey != "env-admin-token" {
+		t.Errorf("SEP2AdminUIKey: got %q, want the explicit override unchanged", cfg.SEP2AdminUIKey)
+	}
+}
+
+// TestLoadConfigSEP2AdminUIKeyFlagShadowsEnv matches the precedence shape
+// already covered for -stomp-password / SEP2_STOMP_PASSWORD.
+func TestLoadConfigSEP2AdminUIKeyFlagShadowsEnv(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_KEY", "env-admin-token")
+
+	cfg, err := loadConfig([]string{"-admin-ui-key=flag-admin-token"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2AdminUIKey != "flag-admin-token" {
+		t.Errorf("SEP2AdminUIKey: got %q want flag value", cfg.SEP2AdminUIKey)
+	}
+}
+
+// TestLoadConfigSEP2AdminUIKeyFlagDefaultHidden verifies that even when
+// SEP2_ADMIN_UI_KEY is set in the environment, parsing -h does not echo
+// the token value, matching TestLoadConfigCredentialFlagDefaultsHidden's
+// coverage for -stomp-user / -stomp-password.
+func TestLoadConfigSEP2AdminUIKeyFlagDefaultHidden(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_KEY", "topsecret-admin-token")
+
+	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
+	var key string
+	fs.StringVar(&key, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
+
+	var buf bytes.Buffer
+	fs.SetOutput(&buf)
+	fs.PrintDefaults()
+	usage := buf.String()
+
+	if strings.Contains(usage, "topsecret-admin-token") {
+		t.Errorf("usage banner echoed admin UI token value: %q", usage)
+	}
+	if !strings.Contains(usage, "SEP2_ADMIN_UI_KEY") {
+		t.Errorf("usage banner should mention env var SEP2_ADMIN_UI_KEY: %q", usage)
+	}
+}
+
+// TestLoadConfigSEP2AdminUIAddrEnvOverride verifies a non-loopback bind
+// is honored when the operator sets it explicitly, matching
+// SEP2ServerAddr's own override shape.
+func TestLoadConfigSEP2AdminUIAddrEnvOverride(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_ADDR", "0.0.0.0:8444")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2AdminUIAddr != "0.0.0.0:8444" {
+		t.Errorf("SEP2AdminUIAddr: got %q, want the explicit override unchanged", cfg.SEP2AdminUIAddr)
+	}
+}
+
+// TestLoadConfigSEP2AdminUIAddrFlagShadowsEnv matches the precedence
+// shape already covered for -sep2-server-addr / SEP2_SERVER_ADDR.
+func TestLoadConfigSEP2AdminUIAddrFlagShadowsEnv(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_ADDR", "env.example:8444")
+
+	cfg, err := loadConfig([]string{"-admin-ui-addr=flag.example:8444"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2AdminUIAddr != "flag.example:8444" {
+		t.Errorf("SEP2AdminUIAddr: got %q want flag value", cfg.SEP2AdminUIAddr)
+	}
+}
+
+// TestLoadConfigSEP2AdminUIAllowNonLoopbackEnvOverride verifies the
+// non-loopback opt-in is honored from the env var, matching
+// AllowPlaintext's precedence shape.
+func TestLoadConfigSEP2AdminUIAllowNonLoopbackEnvOverride(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK", "true")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.SEP2AdminUIAllowNonLoopback {
+		t.Errorf("SEP2AdminUIAllowNonLoopback: want true from SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK=true")
+	}
+}
+
+// TestLoadConfigSEP2AdminUIAllowNonLoopbackFlagShadowsEnv verifies the
+// flag wins over the env var, matching AllowPlaintext's precedence
+// shape (TestLoadConfigAllowPlaintextFlagShadowsEnv).
+func TestLoadConfigSEP2AdminUIAllowNonLoopbackFlagShadowsEnv(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK", "false")
+
+	cfg, err := loadConfig([]string{"-admin-ui-allow-non-loopback=true"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.SEP2AdminUIAllowNonLoopback {
+		t.Errorf("SEP2AdminUIAllowNonLoopback: want true, flag should shadow the false env value")
+	}
+}
+
+// TestLoadConfigSEP2AdminUIAllowNonLoopbackBadBool verifies a malformed
+// env value is a loadConfig error naming the field, matching
+// SEP2_STOMP_ALLOW_PLAINTEXT's existing behavior.
+func TestLoadConfigSEP2AdminUIAllowNonLoopbackBadBool(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK", "notabool")
+
+	_, err := loadConfig(nil)
+	if err == nil {
+		t.Fatal("expected error for invalid bool, got nil")
+	}
+	if !strings.Contains(err.Error(), "SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK") {
+		t.Errorf("error should name the env var: %v", err)
+	}
+}
+
+// TestLoadConfigSEP2AdminUIAllowedHostsParsesCommaSeparatedList verifies
+// getenvList's comma-splitting, whitespace-trimming, and empty-entry
+// dropping behavior end to end through loadConfig, including a trailing
+// comma and repeated commas which must not produce a blank allowlist
+// entry.
+func TestLoadConfigSEP2AdminUIAllowedHostsParsesCommaSeparatedList(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_ALLOWED_HOSTS", "admin.internal.example, second.example,,third.example,")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	want := []string{"admin.internal.example", "second.example", "third.example"}
+	if len(cfg.SEP2AdminUIAllowedHosts) != len(want) {
+		t.Fatalf("SEP2AdminUIAllowedHosts: got %v, want %v", cfg.SEP2AdminUIAllowedHosts, want)
+	}
+	for i, w := range want {
+		if cfg.SEP2AdminUIAllowedHosts[i] != w {
+			t.Errorf("SEP2AdminUIAllowedHosts[%d]: got %q, want %q", i, cfg.SEP2AdminUIAllowedHosts[i], w)
+		}
+	}
+}
+
+// TestLoadConfigSEP2AdminUIKeyNotRequiredByValidate is the fail-closed
+// contract's other half: an unset admin UI key must NOT fail
+// config.validate, because empty is the intentional disabled state, not
+// a missing-required-field error. This locks in the doc comment on
+// config.validate against a future accidental tightening.
+func TestLoadConfigSEP2AdminUIKeyNotRequiredByValidate(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_KEY", "")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2AdminUIKey != "" {
+		t.Errorf("SEP2AdminUIKey: got %q, want empty", cfg.SEP2AdminUIKey)
+	}
+}

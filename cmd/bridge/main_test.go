@@ -143,6 +143,55 @@ func TestSEP2EmbedConfigWiresTelemetryWhenSimulationIDSet(t *testing.T) {
 	}
 }
 
+// TestAdminUIConfigMapsFields verifies adminUIConfig's field-by-field
+// mapping from the bridge's own config onto adminui.Config, mirroring
+// TestSEP2EmbedConfigMapsFields for the embedded IEEE 2030.5 side. This
+// is the pure-mapping unit test GAGO-058 asks for: no listener bound,
+// no admin token required.
+func TestAdminUIConfigMapsFields(t *testing.T) {
+	t.Parallel()
+
+	cfg := config{
+		SEP2AdminUIAddr:             "127.0.0.1:8444",
+		SEP2AdminUIAllowNonLoopback: true,
+		SEP2AdminUIKey:              "secret-token",
+		SEP2AdminUIAllowedHosts:     []string{"admin.internal.example"},
+	}
+
+	got := adminUIConfig(cfg)
+	if got.Addr != cfg.SEP2AdminUIAddr {
+		t.Errorf("Addr: got %q, want %q", got.Addr, cfg.SEP2AdminUIAddr)
+	}
+	if got.AllowNonLoopback != cfg.SEP2AdminUIAllowNonLoopback {
+		t.Errorf("AllowNonLoopback: got %v, want %v", got.AllowNonLoopback, cfg.SEP2AdminUIAllowNonLoopback)
+	}
+	if got.Key != cfg.SEP2AdminUIKey {
+		t.Errorf("Key: got %q, want %q", got.Key, cfg.SEP2AdminUIKey)
+	}
+	if len(got.AllowedHosts) != 1 || got.AllowedHosts[0] != "admin.internal.example" {
+		t.Errorf("AllowedHosts: got %v, want [admin.internal.example]", got.AllowedHosts)
+	}
+}
+
+// TestAdminUIConfigZeroValueMapsToDisabledShape confirms a zero-value
+// config (the "admin UI disabled" state loadConfig produces when
+// SEP2_ADMIN_UI_KEY is unset) projects to an empty Key, matching
+// adminui.New's ErrDisabled contract at the next layer down.
+func TestAdminUIConfigZeroValueMapsToDisabledShape(t *testing.T) {
+	t.Parallel()
+
+	got := adminUIConfig(config{})
+	if got.Key != "" {
+		t.Errorf("Key: got %q, want empty for a zero-value config", got.Key)
+	}
+	if got.AllowNonLoopback {
+		t.Errorf("AllowNonLoopback: got true, want false for a zero-value config")
+	}
+	if got.AllowedHosts != nil {
+		t.Errorf("AllowedHosts: got %v, want nil for a zero-value config", got.AllowedHosts)
+	}
+}
+
 // fakeBusPublisherForTest satisfies sep2embed.BusPublisher without
 // pulling a real fieldbus.MessageBus into this test.
 type fakeBusPublisherForTest struct{}

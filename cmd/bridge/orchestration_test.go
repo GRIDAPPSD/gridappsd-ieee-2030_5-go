@@ -160,3 +160,171 @@ func TestRunEmbedAndStompBothFailJoinsErrors(t *testing.T) {
 		t.Fatal("runEmbedAndStomp did not return within 2s when both sides failed independently")
 	}
 }
+
+// TestRunBridgeRunnersNilAdminDelegatesToRunEmbedAndStomp is the
+// GAGO-058 "admin UI disabled" acceptance test at the orchestration
+// layer: a nil adminUIRun (the disabled state run() produces) must not
+// start a third goroutine at all, and must behave exactly like
+// runEmbedAndStomp on the same embed/stomp pair.
+func TestRunBridgeRunnersNilAdminDelegatesToRunEmbedAndStomp(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("stomp: pump exited on its own")
+	var embedObservedCancel atomic.Bool
+	stompRun := failImmediately(wantErr)
+	embedRun := waitForCancelThenReturn(&embedObservedCancel, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, nil) }()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("runBridgeRunners(nil admin) error = %v, want %v", err, wantErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBridgeRunners(nil admin) did not return within 2s")
+	}
+	if !embedObservedCancel.Load() {
+		t.Error("embed-side runner never observed cancellation with a nil admin UI runner")
+	}
+}
+
+// TestRunBridgeRunnersAdminFailureCancelsEmbedAndStomp covers an admin
+// UI failing independently: runBridgeRunners must cancel both the embed
+// and stomp sides and surface the admin UI's error, wrapped so
+// errors.Is still matches the original.
+func TestRunBridgeRunnersAdminFailureCancelsEmbedAndStomp(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("adminui: fake serve failure")
+	var embedObservedCancel, stompObservedCancel atomic.Bool
+	embedRun := waitForCancelThenReturn(&embedObservedCancel, nil)
+	stompRun := waitForCancelThenReturn(&stompObservedCancel, context.Canceled)
+	adminRun := failImmediately(wantErr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun) }()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("runBridgeRunners error = %v, want it to wrap %v", err, wantErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBridgeRunners did not return within 2s (admin UI failure did not cancel embed/stomp)")
+	}
+	if !embedObservedCancel.Load() {
+		t.Error("embed-side runner never observed cancellation after the admin UI failed independently")
+	}
+	if !stompObservedCancel.Load() {
+		t.Error("stomp-side runner never observed cancellation after the admin UI failed independently")
+	}
+}
+
+// TestRunBridgeRunnersCoreExitCancelsAdmin covers the embed/stomp pair
+// exiting on its own (runEmbedAndStomp returning): runBridgeRunners must
+// cancel the admin UI's ctx too, and surface the core error rather than
+// letting the admin UI's own graceful nil override it.
+func TestRunBridgeRunnersCoreExitCancelsAdmin(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("embed: fake serve failure")
+	var stompObservedCancel, adminObservedCancel atomic.Bool
+	embedRun := failImmediately(wantErr)
+	stompRun := waitForCancelThenReturn(&stompObservedCancel, context.Canceled)
+	adminRun := waitForCancelThenReturn(&adminObservedCancel, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun) }()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("runBridgeRunners error = %v, want it to wrap %v", err, wantErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBridgeRunners did not return within 2s (core exit did not cancel the admin UI)")
+	}
+	if !adminObservedCancel.Load() {
+		t.Error("admin UI runner never observed cancellation after the embed/stomp pair exited")
+	}
+}
+
+// TestRunBridgeRunnersParentCancelTearsDownAllThree is the SIGINT/SIGTERM
+// analog with all three runners active: a parent ctx cancel must tear
+// down the embed, stomp, and admin UI sides and return a graceful
+// (context.Canceled) result.
+func TestRunBridgeRunnersParentCancelTearsDownAllThree(t *testing.T) {
+	t.Parallel()
+
+	var embedObservedCancel, stompObservedCancel, adminObservedCancel atomic.Bool
+	embedRun := waitForCancelThenReturn(&embedObservedCancel, nil)
+	stompRun := waitForCancelThenReturn(&stompObservedCancel, context.Canceled)
+	adminRun := waitForCancelThenReturn(&adminObservedCancel, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun) }()
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runBridgeRunners error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBridgeRunners did not return within 2s of the parent ctx cancel")
+	}
+	if !embedObservedCancel.Load() {
+		t.Error("embed-side runner never observed the parent ctx cancellation")
+	}
+	if !stompObservedCancel.Load() {
+		t.Error("stomp-side runner never observed the parent ctx cancellation")
+	}
+	if !adminObservedCancel.Load() {
+		t.Error("admin UI runner never observed the parent ctx cancellation")
+	}
+}
+
+// TestRunBridgeRunnersAdminAndCoreBothFailJoinsErrors is the three-way
+// analog of TestRunEmbedAndStompBothFailJoinsErrors: when the admin UI
+// and the embed/stomp core both fail independently, runBridgeRunners
+// must not silently drop one error.
+func TestRunBridgeRunnersAdminAndCoreBothFailJoinsErrors(t *testing.T) {
+	t.Parallel()
+
+	embedFailErr := errors.New("embed: fake serve failure")
+	adminFailErr := errors.New("adminui: fake serve failure")
+	embedRun := failImmediately(embedFailErr)
+	stompRun := waitForCancelThenReturn(new(atomic.Bool), context.Canceled)
+	adminRun := failImmediately(adminFailErr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun) }()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, embedFailErr) {
+			t.Errorf("runBridgeRunners error = %v, want it to wrap the embed failure %v", err, embedFailErr)
+		}
+		if !errors.Is(err, adminFailErr) {
+			t.Errorf("runBridgeRunners error = %v, want it to wrap the admin UI failure %v", err, adminFailErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBridgeRunners did not return within 2s when the admin UI and core both failed independently")
+	}
+}
