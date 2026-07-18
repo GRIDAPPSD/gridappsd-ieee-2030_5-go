@@ -175,7 +175,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	build := func(identity sep2srv.Identity) http.Handler {
-		return buildHandler(cfg.Router, stores, identity, notifier, telemetry)
+		return buildHandler(cfg.Router, stores, reg, identity, notifier, telemetry)
 	}
 
 	srv, err := sep2srv.New(opts, build)
