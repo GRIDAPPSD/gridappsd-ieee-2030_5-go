@@ -46,9 +46,11 @@ import (
 
 	"github.com/GRIDAPPSD/gridappsd-go/fieldbus"
 	"github.com/GRIDAPPSD/gridappsd-go/gridappsd"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
@@ -138,6 +140,15 @@ func run(ctx context.Context, cfg config) error {
 	log.Printf("bridge: sep2 embed listening addr=%s sfdi=%s lfdi=%s",
 		embed.Addr(), id.SFDI, id.LFDI)
 
+	// controlHook is the GAGO-057 read-only observation point over the
+	// control-delta down path (and the sim-output/control-input topic
+	// pair): runSimSide's two loops are its only writers, and the future
+	// admin UI controlflow endpoint (GAGO-059) is its only reader. It is
+	// safe to construct unconditionally, even when SimulationID is
+	// empty and stompRun never touches it: the zero value is a valid,
+	// all-empty observation state.
+	var controlHook controlobs.Hook
+
 	// stompRun adapts the SimulationID branch (idle-wait, or the
 	// measurement pump plus the GAGO-034 control-delta subscriber) to
 	// the func(context.Context) error shape runEmbedAndStomp expects
@@ -156,10 +167,29 @@ func run(ctx context.Context, cfg config) error {
 		// disconnect does NOT independently wake either loop: only
 		// runCtx's cancellation (SIGINT/SIGTERM, or the embed side
 		// exiting) does.
-		return runSimSide(runCtx, bus, embed, reg, cfg.SimulationID)
+		return runSimSide(runCtx, bus, embed, reg, cfg.SimulationID, &controlHook)
 	}
 
-	return runEmbedAndStomp(ctx, embed.Run, stompRun)
+	// adminSrv is the GAGO-058/GAGO-059 read only operator HTTP API. It
+	// is off by default: adminui.New returns ErrDisabled when
+	// SEP2_ADMIN_UI_KEY is unset, in which case no listener is opened and
+	// no runner goroutine is started at all, matching the "off by
+	// default" hard rule. Any other error from New (an invalid Addr, or
+	// a non-loopback Addr without the explicit opt-in) is a genuine
+	// startup failure, not the disabled state.
+	var adminUIRun func(context.Context) error
+	adminSrv, err := adminui.New(adminUIConfig(cfg), reg, embed, embed, &controlHook)
+	switch {
+	case errors.Is(err, adminui.ErrDisabled):
+		log.Printf("bridge: admin UI disabled, SEP2_ADMIN_UI_KEY unset")
+	case err != nil:
+		return fmt.Errorf("admin ui: %w", err)
+	default:
+		log.Printf("bridge: admin UI listening addr=%s", adminSrv.Addr())
+		adminUIRun = adminSrv.Run
+	}
+
+	return runBridgeRunners(ctx, embed.Run, stompRun, adminUIRun)
 }
 
 // runEmbedAndStomp runs the embedded IEEE 2030.5 server (embedRun) and
@@ -220,6 +250,55 @@ func runEmbedAndStomp(ctx context.Context, embedRun, stompRun func(context.Conte
 	return errors.Join(stompErr, wrappedEmbedErr)
 }
 
+// runBridgeRunners runs the embedded IEEE 2030.5 server (embedRun) and
+// the STOMP side (stompRun) concurrently, exactly as runEmbedAndStomp
+// does, and additionally runs the read only admin UI (adminUIRun)
+// concurrently with both when it is non-nil.
+//
+// adminUIRun is nil when the admin UI is disabled (SEP2_ADMIN_UI_KEY
+// unset, see adminui.ErrDisabled handling in run()): in that case no
+// third goroutine is started at all, and this function delegates
+// entirely to runEmbedAndStomp, so the disabled path exercises the exact
+// same, already tested two way combinator with no behavior change.
+//
+// When adminUIRun is supplied, an admin UI failure (Run returning a non
+// graceful error) tears down both the embed and stomp sides the same way
+// an embed or stomp failure already tears down the other, and a clean
+// shutdown of embedRun/stompRun tears the admin UI down too: all three
+// share one derived context, following the same cancel on any exit,
+// join errors on independent failure pattern as runEmbedAndStomp.
+func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(context.Context) error) error {
+	if adminUIRun == nil {
+		return runEmbedAndStomp(ctx, embedRun, stompRun)
+	}
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	adminErr := make(chan error, 1)
+	go func() {
+		defer cancelRun()
+		adminErr <- adminUIRun(runCtx)
+	}()
+
+	coreErr := runEmbedAndStomp(runCtx, embedRun, stompRun)
+	// Ask the admin UI to stop even when the embed/stomp side returned
+	// on its own, so this function never returns while the admin UI is
+	// still serving.
+	cancelRun()
+
+	aerr := <-adminErr
+	if aerr == nil || errors.Is(aerr, context.Canceled) {
+		return coreErr
+	}
+
+	wrappedAdminErr := fmt.Errorf("admin ui: %w", aerr)
+	if coreErr == nil || errors.Is(coreErr, context.Canceled) {
+		return wrappedAdminErr
+	}
+	return errors.Join(coreErr, wrappedAdminErr)
+}
+
 // sep2EmbedConfig projects the bridge's config onto sep2embed.Config.
 // Split out from newSEP2Embed so the address/cert-dir mapping can be
 // asserted by a unit test without minting real certificate material or
@@ -243,6 +322,18 @@ func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher) sep2embed.Config {
 		Bus:                   bus,
 		TelemetryDestination:  dest,
 		TelemetrySimulationID: cfg.SimulationID,
+	}
+}
+
+// adminUIConfig projects the bridge's config onto adminui.Config. Split
+// out from run() so the field mapping can be asserted by a unit test
+// with no listener bound and no admin token required.
+func adminUIConfig(cfg config) adminui.Config {
+	return adminui.Config{
+		Addr:             cfg.SEP2AdminUIAddr,
+		AllowNonLoopback: cfg.SEP2AdminUIAllowNonLoopback,
+		Key:              cfg.SEP2AdminUIKey,
+		AllowedHosts:     cfg.SEP2AdminUIAllowedHosts,
 	}
 }
 
@@ -515,11 +606,23 @@ func runPump(ctx context.Context, bus fieldbus.MessageBus, reg *registry.Registr
 // with something other than a graceful ctx cancellation, that error is
 // returned; if both failed independently, both are preserved via
 // errors.Join.
-func runSimSide(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.Embed, reg *registry.Registry, simID string) error {
+//
+// hook is the GAGO-057 read-only observation point (see controlHook's
+// doc comment in run): runSimSide records both subscription
+// destinations on it up front, before either loop starts, since both
+// destinations are known unconditionally from simID and recording them
+// does not depend on either loop actually receiving a frame. hook may be
+// nil (tests that do not care about observation can omit it); every
+// call below guards for that.
+func runSimSide(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook) error {
+	if hook != nil {
+		hook.SetTopics(sim.OutputTopic(simID), sim.InputTopic(simID))
+	}
+
 	pumpErr := make(chan error, 1)
 	go func() { pumpErr <- runPump(ctx, bus, reg, simID) }()
 
-	ctrlErr := runControlSubscriber(ctx, bus, embed, reg, simID)
+	ctrlErr := runControlSubscriber(ctx, bus, embed, reg, simID, hook)
 
 	perr := <-pumpErr
 	pGraceful := perr == nil || errors.Is(perr, context.Canceled)
@@ -581,7 +684,14 @@ func runSimSide(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.E
 // Decode and per-delta apply errors are logged and skipped; the loop
 // continues, matching runPump's resilience style (a malformed or
 // inapplicable frame must not take down the whole subscriber).
-func runControlSubscriber(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.Embed, reg *registry.Registry, simID string) error {
+//
+// hook, when non-nil, is the GAGO-057 read-only observation point: this
+// function is the down path's only writer, so it is the only place that
+// calls hook.Applied / hook.Skipped. A malformed frame that never
+// resolves to a delta is not counted at all (there is no delta to
+// report skipping); only a decoded delta that ApplyControlDelta accepts
+// or rejects is counted.
+func runControlSubscriber(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook) error {
 	dest := sim.InputTopic(simID)
 	log.Printf("bridge: subscribing to %s for control deltas", dest)
 
@@ -600,6 +710,13 @@ func runControlSubscriber(ctx context.Context, bus fieldbus.MessageBus, embed *s
 			if aerr := embed.ApplyControlDelta(ctx, reg, delta); aerr != nil {
 				log.Printf("control subscriber: skip delta object=%q attribute=%q: %v",
 					delta.Object, delta.Attribute, aerr)
+				if hook != nil {
+					hook.Skipped()
+				}
+				continue
+			}
+			if hook != nil {
+				hook.Applied(delta)
 			}
 		}
 	}

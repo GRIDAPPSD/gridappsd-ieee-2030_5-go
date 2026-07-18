@@ -18,6 +18,7 @@ import (
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
@@ -177,7 +178,8 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 
 	bus := &fakeControlBus{}
 	subErr := make(chan error, 1)
-	go func() { subErr <- runControlSubscriber(ctx, bus, embed, reg, "sim-1") }()
+	var hook controlobs.Hook
+	go func() { subErr <- runControlSubscriber(ctx, bus, embed, reg, "sim-1", &hook) }()
 
 	waitFor(2*time.Second, func() bool {
 		bus.mu.Lock()
@@ -240,6 +242,20 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	base := list.DERControl[0].DERControlBase
 	if base == nil || base.OpModTargetW == nil || base.OpModTargetW.Value != 4200 {
 		t.Errorf("applied control OpModTargetW = %+v, want Value=4200", base)
+	}
+
+	// GAGO-057: the observation hook must have recorded this same delta
+	// as applied, with zero skips, since the delta is well formed and
+	// targets a real, registered device.
+	snap := hook.Snapshot()
+	if snap.Applied != 1 {
+		t.Errorf("hook.Snapshot().Applied = %d, want 1", snap.Applied)
+	}
+	if snap.Skipped != 0 {
+		t.Errorf("hook.Snapshot().Skipped = %d, want 0", snap.Skipped)
+	}
+	if snap.Last == nil || snap.Last.Object != deviceMRID {
+		t.Errorf("hook.Snapshot().Last = %+v, want Object=%q", snap.Last, deviceMRID)
 	}
 
 	cancel()
