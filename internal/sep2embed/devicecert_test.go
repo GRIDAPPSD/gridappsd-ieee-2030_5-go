@@ -2,7 +2,9 @@ package sep2embed
 
 import (
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,14 +59,14 @@ func TestEnsureDeviceIdentitiesDevMintDerivesRealLFDIMatchingSepTLS(t *testing.T
 	if err != nil {
 		t.Fatalf("deviceCertFileBase: %v", err)
 	}
-	certFile := filepath.Join(dir, deviceCertDirName, base+".pem")
-	certPEM, err := os.ReadFile(certFile)
+	certFile := filepath.Join(dir, deviceCertDirName, base+".x509")
+	certDER, err := os.ReadFile(certFile)
 	if err != nil {
 		t.Fatalf("ReadFile(%q): %v", certFile, err)
 	}
-	cert, err := sep2cert.ParseCertificatePEM(certPEM)
+	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		t.Fatalf("ParseCertificatePEM: %v", err)
+		t.Fatalf("ParseCertificate: %v", err)
 	}
 
 	wantLFDI := sepTLS.LFDI(cert)
@@ -80,10 +82,117 @@ func TestEnsureDeviceIdentitiesDevMintDerivesRealLFDIMatchingSepTLS(t *testing.T
 		t.Errorf("SFDI %q fails ValidateSFDI (bad check digit)", identity.SFDI)
 	}
 
-	// The device key must also have been written for DevMint tooling.
-	keyFile := filepath.Join(dir, deviceCertDirName, base+"-key.pem")
+	// The device key must also have been written for DevMint tooling,
+	// as the sibling ".pem" path (same base name, extension swapped)
+	// the reference client derives from the cert path, not a
+	// "-key.pem" suffixed name: see TestEnsureDeviceKeyUsesClientCompatSiblingPath.
+	keyFile := filepath.Join(dir, deviceCertDirName, base+".pem")
 	if _, err := os.Stat(keyFile); err != nil {
 		t.Errorf("device key file missing after DevMint: %v", err)
+	}
+}
+
+// TestClientSelfHashOfX509FileMatchesServedLFDI is the end to end
+// interop invariant this change exists to establish: a client that
+// never calls into sepTLS at all, and instead just reads the minted
+// .x509 file's raw bytes off disk and computes SHA256 over them by
+// hand (exactly what an external client does with a certificate it is
+// handed), derives the SAME 40 character uppercase hex value as the
+// LFDI EnsureDeviceIdentities returns and the server would advertise.
+// This is the reason device certs are now written as raw DER rather
+// than PEM: PEM armoring (base64 plus header and footer lines) is not
+// byte identical to the DER payload sepTLS.LFDI hashes, so a naive
+// client hashing PEM bytes would compute a different, non matching
+// value. Proving this end to end, without going through sepTLS.LFDI on
+// the client side, is what distinguishes this test from
+// TestEnsureDeviceIdentitiesDevMintDerivesRealLFDIMatchingSepTLS above,
+// which only proves internal agreement between the server side helpers.
+func TestClientSelfHashOfX509FileMatchesServedLFDI(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mrid := "_D2D4F798-7GGE-D864-693C-743B38F39618"
+
+	got, err := EnsureDeviceIdentities(dir, DeviceCertModeDevMint, []string{mrid})
+	if err != nil {
+		t.Fatalf("EnsureDeviceIdentities: %v", err)
+	}
+	identity, ok := got[mrid]
+	if !ok {
+		t.Fatalf("EnsureDeviceIdentities: no identity returned for mRID %q", mrid)
+	}
+
+	base, err := deviceCertFileBase(mrid)
+	if err != nil {
+		t.Fatalf("deviceCertFileBase: %v", err)
+	}
+	certFile := filepath.Join(dir, deviceCertDirName, base+".x509")
+
+	// The client side of this invariant: read the raw file bytes and
+	// hash them directly, with no sepTLS call and no certificate
+	// parsing at all. This is exactly what a client that is only
+	// handed the .x509 file does to discover the device's LFDI.
+	fileBytes, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", certFile, err)
+	}
+	sum := sha256.Sum256(fileBytes)
+	clientComputedLFDI := fmt.Sprintf("%X", sum[:20])
+
+	if clientComputedLFDI != identity.LFDI {
+		t.Errorf("client self hash LFDI = %q, want EnsureDeviceIdentities LFDI = %q", clientComputedLFDI, identity.LFDI)
+	}
+
+	// The server side of the same invariant: sepTLS.LFDI on the parsed
+	// certificate must agree too, confirming the file on disk really is
+	// the DER sepTLS hashes, not some other encoding that happens to
+	// produce the same length.
+	cert, err := x509.ParseCertificate(fileBytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	if want := sepTLS.LFDI(cert); clientComputedLFDI != want {
+		t.Errorf("client self hash LFDI = %q, want sepTLS.LFDI(cert) = %q", clientComputedLFDI, want)
+	}
+}
+
+// TestEnsureDeviceKeyUsesClientCompatSiblingPath pins the reference
+// client's key discovery convention: the client derives a device's
+// private key path from its certificate path by replacing the ".x509"
+// extension with ".pem", not by appending a "-key" suffix. So for a
+// cert minted at <base>.x509, the key must land at the sibling
+// <base>.pem, and a <base>-key.pem file must NOT exist. A future rename
+// back to a "-key.pem" suffix would compile and pass every other test
+// in this file, since none of them assert the exact key filename
+// against the client's derivation rule, but it would silently break the
+// client's TLS handshake with no cert side symptom. This test exists so
+// that rename cannot land unnoticed.
+func TestEnsureDeviceKeyUsesClientCompatSiblingPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mrid := "_E3E5G8A9-8HHF-E975-7A4D-854C49G4A729"
+
+	if _, err := EnsureDeviceIdentities(dir, DeviceCertModeDevMint, []string{mrid}); err != nil {
+		t.Fatalf("EnsureDeviceIdentities: %v", err)
+	}
+
+	base, err := deviceCertFileBase(mrid)
+	if err != nil {
+		t.Fatalf("deviceCertFileBase: %v", err)
+	}
+	devicesDir := filepath.Join(dir, deviceCertDirName)
+
+	wantKeyFile := filepath.Join(devicesDir, base+".pem")
+	if _, err := os.Stat(wantKeyFile); err != nil {
+		t.Errorf("device key file missing at the client compat sibling path %q: %v", wantKeyFile, err)
+	}
+
+	staleKeyFile := filepath.Join(devicesDir, base+"-key.pem")
+	if _, err := os.Stat(staleKeyFile); err == nil {
+		t.Errorf("device key file also exists at the stale suffixed path %q; the client cannot discover a key there", staleKeyFile)
+	} else if !os.IsNotExist(err) {
+		t.Errorf("Stat(%q): unexpected error %v", staleKeyFile, err)
 	}
 }
 
@@ -107,7 +216,7 @@ func TestEnsureDeviceIdentitiesDevMintLoadsOnSecondCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deviceCertFileBase: %v", err)
 	}
-	certFile := filepath.Join(dir, deviceCertDirName, base+".pem")
+	certFile := filepath.Join(dir, deviceCertDirName, base+".x509")
 	original, err := os.ReadFile(certFile)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -149,7 +258,7 @@ func TestEnsureDeviceIdentitiesPreprovisionedMissingCertFailsClosed(t *testing.T
 	if berr != nil {
 		t.Fatalf("deviceCertFileBase: %v", berr)
 	}
-	certFile := filepath.Join(dir, deviceCertDirName, base+".pem")
+	certFile := filepath.Join(dir, deviceCertDirName, base+".x509")
 	if _, statErr := os.Stat(certFile); statErr == nil {
 		t.Fatalf("Preprovisioned mode minted a device cert at %q despite the missing-cert error (not fail closed)", certFile)
 	}
@@ -210,8 +319,12 @@ func TestEnsureDeviceIdentitiesPreprovisionedLoadsExistingCert(t *testing.T) {
 	if err := os.MkdirAll(devicesDir, certDirPerm); err != nil {
 		t.Fatalf("MkdirAll(devicesDir): %v", err)
 	}
-	certFile := filepath.Join(devicesDir, base+".pem")
-	if err := os.WriteFile(certFile, devCertPEM, certFilePerm); err != nil {
+	devCertDER, err := sep2cert.CertificateDER(devCertPEM)
+	if err != nil {
+		t.Fatalf("CertificateDER: %v", err)
+	}
+	certFile := filepath.Join(devicesDir, base+".x509")
+	if err := os.WriteFile(certFile, devCertDER, certFilePerm); err != nil {
 		t.Fatalf("WriteFile(certFile): %v", err)
 	}
 
@@ -229,15 +342,8 @@ func TestEnsureDeviceIdentitiesPreprovisionedLoadsExistingCert(t *testing.T) {
 	if want := sepTLS.SFDI(wantCert); identity.SFDI != want {
 		t.Errorf("SFDI = %q, want %q (derived from the preprovisioned cert)", identity.SFDI, want)
 	}
-	// Preprovisioned mode never computes a file-hash alias: the bridge
-	// may not hold the device private key, so the device advertises under
-	// (and is owned via) its canonical LFDI alone.
-	if identity.AliasLFDI != "" {
-		t.Errorf("Preprovisioned AliasLFDI = %q, want empty (no combined-file alias without the device key)", identity.AliasLFDI)
-	}
-
 	// No key file should have been written: Preprovisioned mode never mints.
-	keyFile := filepath.Join(devicesDir, base+"-key.pem")
+	keyFile := filepath.Join(devicesDir, base+".pem")
 	if _, statErr := os.Stat(keyFile); statErr == nil {
 		t.Errorf("Preprovisioned mode wrote a device key file at %q; it should only ever load", keyFile)
 	}
@@ -283,7 +389,11 @@ func TestEnsureDeviceIdentitiesPreprovisionedSucceedsWithoutCAKey(t *testing.T) 
 	if err := os.MkdirAll(devicesDir, certDirPerm); err != nil {
 		t.Fatalf("MkdirAll(devicesDir): %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(devicesDir, base+".pem"), devCertPEM, certFilePerm); err != nil {
+	devCertDER, err := sep2cert.CertificateDER(devCertPEM)
+	if err != nil {
+		t.Fatalf("CertificateDER: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(devicesDir, base+".x509"), devCertDER, certFilePerm); err != nil {
 		t.Fatalf("WriteFile(device cert): %v", err)
 	}
 
@@ -350,7 +460,11 @@ func TestEnsureDeviceIdentitiesPreprovisionedRejectsWrongSignerCert(t *testing.T
 	if err := os.MkdirAll(devicesDir, certDirPerm); err != nil {
 		t.Fatalf("MkdirAll(devicesDir): %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(devicesDir, base+".pem"), devCertPEM, certFilePerm); err != nil {
+	devCertDER, err := sep2cert.CertificateDER(devCertPEM)
+	if err != nil {
+		t.Fatalf("CertificateDER: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(devicesDir, base+".x509"), devCertDER, certFilePerm); err != nil {
 		t.Fatalf("WriteFile(device cert): %v", err)
 	}
 
@@ -398,13 +512,13 @@ func TestEnsureDeviceIdentitiesDevMintRequiresAndWritesCAKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deviceCertFileBase: %v", err)
 	}
-	certPEM, err := os.ReadFile(filepath.Join(dir, deviceCertDirName, base+".pem"))
+	certDER, err := os.ReadFile(filepath.Join(dir, deviceCertDirName, base+".x509"))
 	if err != nil {
 		t.Fatalf("ReadFile(device cert): %v", err)
 	}
-	cert, err := sep2cert.ParseCertificatePEM(certPEM)
+	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		t.Fatalf("ParseCertificatePEM(device cert): %v", err)
+		t.Fatalf("ParseCertificate(device cert): %v", err)
 	}
 	if err := verifyDeviceCertChain(cert, caCert); err != nil {
 		t.Errorf("minted device cert does not verify against the minted CA: %v", err)
