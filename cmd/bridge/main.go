@@ -53,6 +53,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
@@ -117,6 +118,14 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
+
+	// policy is loaded once, here at boot, matching this bridge's other
+	// config sources. Nothing yet consumes DefaultControl or
+	// ModesSupported: seeding DERCapability/DefaultDERControl from these
+	// values is GAGO-049/GAGO-050's job. This load is deliberately inert.
+	policy := sep2config.DefaultPolicy()
+	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s",
+		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
 
 	if cfg.PublishOnStart {
 		// The publish smoke test wants to send a DifferenceBuilder
@@ -388,6 +397,17 @@ func connectClient(ctx context.Context, cfg config) (fieldbus.MessageBus, error)
 // be unreachable once loadConfig has run; it still returns an error
 // rather than silently picking a mode, matching the fail-closed
 // posture the preprovisioned mode itself is for.
+// fmtU32Ptr renders a *uint32 as its decimal value, or "unset" for nil.
+// sep2config.SEP2Policy's ModesSupported/DefaultPollRate/DefaultPostRate
+// are pointer-typed precisely so a real 0 is distinguishable from unset;
+// this keeps that distinction visible in the boot log too.
+func fmtU32Ptr(v *uint32) string {
+	if v == nil {
+		return "unset"
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
 func deviceCertMode(s string) (sep2embed.DeviceCertMode, error) {
 	switch s {
 	case deviceCertModeDevMintFlag:
