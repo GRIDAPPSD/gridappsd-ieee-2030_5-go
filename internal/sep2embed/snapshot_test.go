@@ -5,9 +5,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
+
+// testDefaultControlSnapshot is the GAGO-050 seed value newTestEmbed
+// configures every Embed with in this file: a realistic, non-zero
+// DefaultDERControl (opModConnect and opModEnergize true, everything
+// else nil), mirroring sep2config.DefaultPolicy()'s own value without
+// importing that package here (this file is testing sep2embed's own
+// seeding mechanics, not sep2config's policy defaults).
+func testDefaultControlSnapshot() sep2.DefaultDERControl {
+	connect := true
+	energize := true
+	return sep2.DefaultDERControl{
+		DERControlBase: &sep2.DERControlBase{
+			OpModConnect:  &connect,
+			OpModEnergize: &energize,
+		},
+	}
+}
 
 // newTestEmbed builds an Embed seeded from fixtureEntries, using ":0" so
 // no fixed port is claimed, and returns it alongside the same reg for a
@@ -21,7 +40,12 @@ func newTestEmbed(t *testing.T) (*Embed, *registry.Registry) {
 		t.Fatalf("AddBatch: %v", err)
 	}
 
-	e, err := New(context.Background(), Config{Addr: "127.0.0.1:0", CertDir: t.TempDir(), ShutdownTimeout: time.Second}, reg)
+	e, err := New(context.Background(), Config{
+		Addr:            "127.0.0.1:0",
+		CertDir:         t.TempDir(),
+		ShutdownTimeout: time.Second,
+		DefaultControl:  testDefaultControlSnapshot(),
+	}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -157,6 +181,13 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 	if programs[0].Primacy != 1 {
 		t.Errorf("DERPrograms[0].Primacy = %d, want 1 (ensureDERProgram always writes Primacy: 1)", programs[0].Primacy)
 	}
+	// GAGO-050: every DERProgram carries a non-empty DefaultDERControlLink,
+	// and it resolves to the seeded DefaultDERControl below (asserted
+	// after the dderc fetch, so the same href is checked from both the
+	// program's own link and the singleton's own Href field).
+	if programs[0].DefaultDERControlLink == "" {
+		t.Fatalf("DERPrograms[0].DefaultDERControlLink is empty, want a populated href (CSIP-mandatory: Devi's finding)")
+	}
 
 	controls, err := e.DERControls(context.Background(), edevID, controlFSAID, controlDERProgramID)
 	if err != nil {
@@ -195,14 +226,48 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 		t.Errorf("DERControls[0].Base.OpModTargetVar = %+v, want nil (delta never touched this field)", got.Base.OpModTargetVar)
 	}
 
-	// The DefaultDERControl accessor must still report nil: the delta
-	// wrote a DERControl, never a DefaultDERControl singleton.
+	// GAGO-050: ensureDERProgram seeds the DefaultDERControl singleton at
+	// the same moment it lazily creates the DERProgram itself (the first
+	// ApplyControlDelta for this device, above), from the Embed's own
+	// configured DefaultControl (testDefaultControlSnapshot, set in
+	// newTestEmbed). The accessor must now report that seeded value, not
+	// nil: the CSIP-mandatory hole Devi flagged is exactly a client
+	// following DefaultDERControlLink and finding nothing there.
 	dderc, err := e.DefaultDERControl(context.Background(), edevID, controlFSAID, controlDERProgramID)
 	if err != nil {
 		t.Fatalf("DefaultDERControl after delta: %v", err)
 	}
-	if dderc != nil {
-		t.Fatalf("DefaultDERControl after DERControl-only delta = %+v, want nil", dderc)
+	if dderc == nil {
+		t.Fatal("DefaultDERControl after ensureDERProgram = nil, want the seeded default (CSIP-mandatory: Devi's finding)")
+	}
+	if dderc.Href != programs[0].DefaultDERControlLink {
+		t.Errorf("DefaultDERControl.Href = %q, want it to match DERProgram's own DefaultDERControlLink %q", dderc.Href, programs[0].DefaultDERControlLink)
+	}
+	if dderc.Base == nil {
+		t.Fatal("DefaultDERControl.Base = nil, want a populated DERControlBaseSnapshot")
+	}
+
+	// Positive invariant: opModConnect and opModEnergize are both true,
+	// exactly as sep2config.DefaultPolicy() (and this file's
+	// testDefaultControlSnapshot) configure them.
+	if dderc.Base.OpModConnect == nil || !*dderc.Base.OpModConnect {
+		t.Errorf("DefaultDERControl.Base.OpModConnect = %+v, want true", dderc.Base.OpModConnect)
+	}
+	if dderc.Base.OpModEnergize == nil || !*dderc.Base.OpModEnergize {
+		t.Errorf("DefaultDERControl.Base.OpModEnergize = %+v, want true", dderc.Base.OpModEnergize)
+	}
+
+	// Negative invariant (the actual hazard this card guards against):
+	// opModTargetW and opModTargetVar must stay nil on the seeded
+	// default. A stray value here would silently disable the device's
+	// own autonomous volt-var / curtailment behavior per IEEE 1547-2018
+	// clause 5.3's mutual exclusivity, exactly the failure mode Vance's
+	// physics verdict warned about.
+	if dderc.Base.OpModTargetW != nil {
+		t.Errorf("DefaultDERControl.Base.OpModTargetW = %+v, want nil (stray value would curtail PV)", dderc.Base.OpModTargetW)
+	}
+	if dderc.Base.OpModTargetVar != nil {
+		t.Errorf("DefaultDERControl.Base.OpModTargetVar = %+v, want nil (stray value would disable autonomous volt-var per 1547-2018 5.3)", dderc.Base.OpModTargetVar)
 	}
 }
 

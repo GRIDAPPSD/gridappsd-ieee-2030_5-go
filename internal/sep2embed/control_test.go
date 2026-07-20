@@ -18,6 +18,14 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
+// testDefaultControl is the GAGO-050 seed value this file's tests pass to
+// ApplyControlDelta. These tests assert GAGO-034 DOWN-path field mapping
+// and owner scoping, not the GAGO-050 seeding behavior itself (that is
+// snapshot_test.go's job), so the zero value is deliberate: a valid but
+// degenerate DefaultDERControl, sufficient for ensureDERProgram's lazy
+// DERProgram creation without asserting anything about its contents here.
+var testDefaultControl = sep2.DefaultDERControl{}
+
 // twoDeviceFixture seeds a Registry and a fully populated assembly.Stores
 // (via the package's own seedStores, not a parallel construction) with
 // two devices, A and B, so tests below can assert owner scoping between
@@ -87,7 +95,7 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 		Value:     map[string]any{"multiplier": 0.0, "value": 5000.0},
 	}
 
-	if err := ApplyControlDelta(ctx, st, notifier, reg, delta); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, delta); err != nil {
 		t.Fatalf("ApplyControlDelta: %v", err)
 	}
 
@@ -144,7 +152,7 @@ func TestApplyControlDeltaRefusesUnknownDevice(t *testing.T) {
 		Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
 	}
 
-	err := ApplyControlDelta(ctx, st, notifier, reg, delta)
+	err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, delta)
 	if !errors.Is(err, ErrUnknownControlDevice) {
 		t.Fatalf("ApplyControlDelta(unknown device) error = %v, want ErrUnknownControlDevice", err)
 	}
@@ -175,7 +183,7 @@ func TestApplyControlDeltaRefusesUnsupportedAttribute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			delta := diff.Difference{Object: "mrid-a", Attribute: tt.attr, Value: true}
-			err := ApplyControlDelta(context.Background(), st, notifier, reg, delta)
+			err := ApplyControlDelta(context.Background(), st, notifier, reg, testDefaultControl, delta)
 			if !errors.Is(err, ErrUnsupportedControlAttribute) {
 				t.Fatalf("ApplyControlDelta(%q) error = %v, want ErrUnsupportedControlAttribute", tt.attr, err)
 			}
@@ -205,10 +213,10 @@ func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
 		Value:     map[string]any{"multiplier": 0.0, "value": 500.0},
 	}
 
-	if err := ApplyControlDelta(ctx, st, notifier, reg, first); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, first); err != nil {
 		t.Fatalf("ApplyControlDelta(first): %v", err)
 	}
-	if err := ApplyControlDelta(ctx, st, notifier, reg, second); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, second); err != nil {
 		t.Fatalf("ApplyControlDelta(second): %v", err)
 	}
 
@@ -237,6 +245,98 @@ func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
 	}
 	if control.DERControlBase.OpModTargetVar == nil || control.DERControlBase.OpModTargetVar.Value != 500 {
 		t.Errorf("merged control OpModTargetVar = %+v, want Value=500 (applied by second delta)", control.DERControlBase.OpModTargetVar)
+	}
+}
+
+// TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram is the
+// GAGO-050 test: ensureDERProgram's lazy-creation seam must seed a
+// DefaultDERControl (sourced from the caller-supplied defaultControl,
+// never hardcoded) into stores.DefaultDERControls and point the new
+// DERProgram's DefaultDERControlLink at it, closing the CSIP-mandatory
+// hole Devi flagged (a client following DefaultDERControlLink from a
+// DERProgram must find a well-formed DefaultDERControl).
+func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) {
+	t.Parallel()
+
+	reg, st := twoDeviceFixture(t)
+	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
+	ctx := context.Background()
+
+	connect := true
+	energize := true
+	seed := sep2.DefaultDERControl{
+		DERControlBase: &sep2.DERControlBase{
+			OpModConnect:  &connect,
+			OpModEnergize: &energize,
+		},
+	}
+
+	delta := diff.Difference{
+		Object:    "mrid-a",
+		Attribute: "DERControl.DERControlBase.opModTargetW",
+		Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
+	}
+	if err := ApplyControlDelta(ctx, st, notifier, reg, seed, delta); err != nil {
+		t.Fatalf("ApplyControlDelta: %v", err)
+	}
+
+	lfdiA, _ := reg.LFDI("mrid-a")
+
+	// The DERProgram's own DefaultDERControlLink is populated.
+	program, err := st.DERPrograms.ForParent(lfdiA).Get(ctx, controlDERProgramID)
+	if err != nil {
+		t.Fatalf("DERPrograms.Get: %v", err)
+	}
+	if program.DefaultDERControlLink == nil || program.DefaultDERControlLink.Href == "" {
+		t.Fatalf("DERProgram.DefaultDERControlLink = %+v, want a populated href (CSIP-mandatory: Devi's finding)", program.DefaultDERControlLink)
+	}
+
+	// The link resolves: the store holds a DefaultDERControl at this
+	// program's scope whose Href matches the link exactly.
+	scope := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+	dderc, err := st.DefaultDERControls.Get(ctx, scope, singletonKey)
+	if err != nil {
+		t.Fatalf("DefaultDERControls.Get: %v", err)
+	}
+	if dderc.Href != program.DefaultDERControlLink.Href {
+		t.Errorf("DefaultDERControl.Href = %q, want it to match DERProgram.DefaultDERControlLink.Href %q", dderc.Href, program.DefaultDERControlLink.Href)
+	}
+	if dderc.DERControlBase == nil {
+		t.Fatal("seeded DefaultDERControl.DERControlBase = nil, want a populated base")
+	}
+
+	// Positive invariant.
+	if dderc.DERControlBase.OpModConnect == nil || !*dderc.DERControlBase.OpModConnect {
+		t.Errorf("seeded DefaultDERControl.OpModConnect = %+v, want true", dderc.DERControlBase.OpModConnect)
+	}
+	if dderc.DERControlBase.OpModEnergize == nil || !*dderc.DERControlBase.OpModEnergize {
+		t.Errorf("seeded DefaultDERControl.OpModEnergize = %+v, want true", dderc.DERControlBase.OpModEnergize)
+	}
+
+	// Negative invariants: the exact CSIP/1547 hazard this card guards
+	// against is a stray value in any of these four fields.
+	// opModTargetVar set would silently disable autonomous volt-var per
+	// 1547-2018 clause 5.3; opModTargetW set would curtail PV;
+	// setGradW/setSoftGradW set would overwrite the device's own
+	// commissioned ramp with no randomization.
+	if dderc.DERControlBase.OpModTargetW != nil {
+		t.Errorf("seeded DefaultDERControl.OpModTargetW = %+v, want nil", dderc.DERControlBase.OpModTargetW)
+	}
+	if dderc.DERControlBase.OpModTargetVar != nil {
+		t.Errorf("seeded DefaultDERControl.OpModTargetVar = %+v, want nil", dderc.DERControlBase.OpModTargetVar)
+	}
+	if dderc.SetGradW != nil {
+		t.Errorf("seeded DefaultDERControl.SetGradW = %+v, want nil", dderc.SetGradW)
+	}
+	if dderc.SetSoftGradW != nil {
+		t.Errorf("seeded DefaultDERControl.SetSoftGradW = %+v, want nil", dderc.SetSoftGradW)
+	}
+
+	// Owner scoping: device B never had ApplyControlDelta called for it,
+	// so it must have no DERProgram, and therefore no DefaultDERControl.
+	lfdiB, _ := reg.LFDI("mrid-b")
+	if _, err := st.DERPrograms.ForParent(lfdiB).Get(ctx, controlDERProgramID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DERPrograms.Get(B) = (%v), want store.ErrNotFound (program must not leak to device B)", err)
 	}
 }
 
@@ -435,7 +535,7 @@ func TestApplyControlDeltaRefusesPercentModeAttributes(t *testing.T) {
 				Attribute: attr,
 				Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
 			}
-			err := ApplyControlDelta(ctx, st, notifier, reg, delta)
+			err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, delta)
 			if !errors.Is(err, ErrUnsupportedControlAttribute) {
 				t.Fatalf("ApplyControlDelta(%q) error = %v, want ErrUnsupportedControlAttribute", attr, err)
 			}
