@@ -49,6 +49,14 @@ type DERProgramSnapshot struct {
 	MRID        string
 	Description string
 	Primacy     uint8
+
+	// DefaultDERControlLink is the href of this program's
+	// DefaultDERControl singleton (GAGO-050), or empty if the program
+	// somehow has none (should not happen post-ensureDERProgram: every
+	// program this bridge creates seeds its default control in the same
+	// call). A caller resolves it by GET against the embedded server, or
+	// via this package's own DefaultDERControl accessor.
+	DefaultDERControlLink string
 }
 
 // DERControlBaseSnapshot is a plain, read only copy of the operating-mode
@@ -166,12 +174,17 @@ func (e *Embed) DERPrograms(ctx context.Context, edevID string) ([]DERProgramSna
 
 	snaps := make([]DERProgramSnapshot, 0, len(result.Items))
 	for _, p := range result.Items {
+		var dderc string
+		if p.DefaultDERControlLink != nil {
+			dderc = p.DefaultDERControlLink.Href
+		}
 		snaps = append(snaps, DERProgramSnapshot{
-			ID:          controlDERProgramID,
-			Href:        p.Href,
-			MRID:        p.MRID,
-			Description: p.Description,
-			Primacy:     p.Primacy,
+			ID:                    controlDERProgramID,
+			Href:                  p.Href,
+			MRID:                  p.MRID,
+			Description:           p.Description,
+			Primacy:               p.Primacy,
+			DefaultDERControlLink: dderc,
 		})
 	}
 	return snaps, nil

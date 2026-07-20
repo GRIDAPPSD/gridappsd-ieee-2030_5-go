@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
 	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
@@ -91,6 +92,17 @@ type Config struct {
 	// TelemetrySimulationID is stamped into the outgoing diff.Message
 	// envelope's simulation_id field. Empty disables the relay.
 	TelemetrySimulationID string
+
+	// DefaultControl is the DefaultDERControl GAGO-050 seeds onto every
+	// DERProgram's DefaultDERControlLink, at the same lazy-creation
+	// moment ensureDERProgram creates the program itself (first
+	// ApplyControlDelta for a device, not at New/seedStores time). The
+	// zero value (every DERControlBase field nil, including
+	// OpModConnect/OpModEnergize) is a valid but degenerate
+	// configuration: a CSIP client would find a well-formed but
+	// all-unset DefaultDERControl. Callers should source this from
+	// sep2config.SEP2Policy.DefaultControl rather than leaving it zero.
+	DefaultControl sep2.DefaultDERControl
 }
 
 // protocolServer is the minimal surface Run needs from the embedded mTLS
@@ -108,10 +120,11 @@ type protocolServer interface {
 // stores, the subscription fan-out manager, and the mTLS listener from
 // core's pkg/sep2srv. Construct with New; start with Run.
 type Embed struct {
-	srv      protocolServer
-	notifier *coresub.Manager
-	stores   *assembly.Stores
-	identity sep2srv.Identity
+	srv            protocolServer
+	notifier       *coresub.Manager
+	stores         *assembly.Stores
+	identity       sep2srv.Identity
+	defaultControl sep2.DefaultDERControl
 }
 
 // New builds the resource stores, seeds EndDevices and DERs from reg,
@@ -183,7 +196,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return nil, fmt.Errorf("sep2embed: %w", err)
 	}
 
-	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity}, nil
+	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, defaultControl: cfg.DefaultControl}, nil
 }
 
 // Addr returns the listener's actual bound address. Useful when
@@ -206,7 +219,7 @@ func (e *Embed) Identity() sep2srv.Identity {
 // package-private stores/notifier fields) uses, e.g. a future
 // GridAPPS-D control-delta subscriber in cmd/bridge.
 func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, delta ControlDelta) error {
-	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, delta)
+	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, e.defaultControl, delta)
 }
 
 // Run starts the subscription notifier's worker pool and serves the

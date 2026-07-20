@@ -121,7 +121,14 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // fields (opModTargetW and opModTargetVar can both be active
 // simultaneously), so "one active control per device, fields merged in"
 // is the correct model, not an arbitrary limitation.
-func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, delta ControlDelta) error {
+//
+// defaultControl is GAGO-050's seed value for the DERProgram's
+// DefaultDERControl singleton, forwarded unchanged to ensureDERProgram.
+// It is sourced by the caller from SEP2Policy.DefaultControl
+// (cmd/bridge/main.go), never hardcoded here: ApplyControlDelta itself
+// carries no opinion on the value, only the plumbing to seed it once
+// per (edevID, fsaID, derpID).
+func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, defaultControl sep2.DefaultDERControl, delta ControlDelta) error {
 	field, ok := strings.CutPrefix(delta.Attribute, derControlAttributePrefix)
 	if !ok || field == "" {
 		return fmt.Errorf("%w: attribute %q (want prefix %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix)
@@ -146,7 +153,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		return fmt.Errorf("%w: edev %q not seeded: %v", ErrUnknownControlDevice, edevID, err)
 	}
 
-	if err := ensureDERProgram(ctx, stores, edevID, controlFSAID, controlDERProgramID); err != nil {
+	if err := ensureDERProgram(ctx, stores, edevID, controlFSAID, controlDERProgramID, defaultControl); err != nil {
 		return fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
 	}
 
@@ -206,11 +213,24 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 // server-of-record's documented contract; it is core's existing
 // behavior, not something introduced here).
 //
+// GAGO-050: the same lazy-creation moment also seeds this program's
+// DefaultDERControl singleton (into stores.DefaultDERControls, keyed by
+// derControlScope + singletonKey, mirroring core's own
+// DefaultDERControlHandler parent-key derivation) and points the new
+// program's DefaultDERControlLink at it. This closes the CSIP-mandatory
+// hole Devi flagged: a client that GETs this DERProgram and follows
+// DefaultDERControlLink must find a well-formed DefaultDERControl, not
+// an absent one. defaultControl is the caller-supplied seed value
+// (sourced from SEP2Policy.DefaultControl, never hardcoded here); it is
+// written verbatim except for Href/MRID, which this function stamps to
+// match the program's own scope.
+//
 // This does not modify seed.go: seed.go's EndDevice/DER seeding stays
-// untouched (per this card's hard rule); the DERProgram this function
-// creates is control-flow plumbing local to the DOWN path, created
-// lazily on first use rather than at bulk seed time.
-func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, fsaID, derpID string) error {
+// untouched (per this card's hard rule); the DERProgram (and its
+// DefaultDERControl) this function creates is control-flow plumbing
+// local to the DOWN path, created lazily on first use rather than at
+// bulk seed time.
+func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, fsaID, derpID string, defaultControl sep2.DefaultDERControl) error {
 	inner := stores.DERPrograms.ForParent(edevID)
 	if _, err := inner.Get(ctx, derpID); err == nil {
 		return nil
@@ -218,11 +238,21 @@ func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, fsaI
 		return fmt.Errorf("get der program: %w", err)
 	}
 
+	dderc := defaultControl.Copy()
+	dderc.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/dderc"
+	dderc.MRID = edevID + "-dderc"
+
+	scope := derControlScope(edevID, fsaID, derpID)
+	if err := stores.DefaultDERControls.Create(ctx, scope, singletonKey, dderc); err != nil {
+		return fmt.Errorf("create default der control: %w", err)
+	}
+
 	program := sep2.DERProgram{Primacy: 1}
 	program.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID
 	program.DERControlListLink = &sep2.ListLink{
 		Href: "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/derc",
 	}
+	program.DefaultDERControlLink = &sep2.Link{Href: dderc.Href}
 
 	if err := inner.Create(ctx, derpID, program); err != nil {
 		return fmt.Errorf("create der program: %w", err)

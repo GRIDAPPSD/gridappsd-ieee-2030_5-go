@@ -20,6 +20,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 )
 
 // fakeControlBus is a minimal fieldbus.MessageBus test double: Subscribe
@@ -106,7 +107,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 		bootstrapEmbed, err := newSEP2Embed(bootstrapCtx, config{
 			SEP2ServerAddr:    "127.0.0.1:0",
 			SEP2ServerCertDir: certDir,
-		}, registry.New(), nil)
+		}, registry.New(), nil, sep2config.DefaultPolicy())
 		if err != nil {
 			bootstrapCancel()
 			t.Fatalf("newSEP2Embed (CA bootstrap): %v", err)
@@ -169,7 +170,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	embed, err := newSEP2Embed(ctx, config{
 		SEP2ServerAddr:    "127.0.0.1:0",
 		SEP2ServerCertDir: certDir,
-	}, reg, nil)
+	}, reg, nil, sep2config.DefaultPolicy())
 	if err != nil {
 		t.Fatalf("newSEP2Embed: %v", err)
 	}

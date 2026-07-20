@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 )
 
 // TestBusConfigMapsFields verifies busConfig's field-by-field mapping
@@ -95,7 +96,8 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 		SEP2ServerCertDir: "/var/lib/bridge/sep2-certs",
 	}
 
-	got := sep2EmbedConfig(cfg, nil)
+	policy := sep2config.DefaultPolicy()
+	got := sep2EmbedConfig(cfg, nil, policy)
 	if got.Addr != cfg.SEP2ServerAddr {
 		t.Errorf("Addr: got %q, want %q", got.Addr, cfg.SEP2ServerAddr)
 	}
@@ -110,6 +112,16 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 	}
 	if got.TelemetrySimulationID != "" {
 		t.Errorf("TelemetrySimulationID: got %q, want empty (no SimulationID set)", got.TelemetrySimulationID)
+	}
+
+	// GAGO-050: DefaultControl passes through from policy verbatim,
+	// never hardcoded at the sep2EmbedConfig mapping layer.
+	base := got.DefaultControl.DERControlBase
+	if base == nil || base.OpModConnect == nil || !*base.OpModConnect {
+		t.Errorf("DefaultControl.DERControlBase.OpModConnect = %+v, want true", base)
+	}
+	if base == nil || base.OpModEnergize == nil || !*base.OpModEnergize {
+		t.Errorf("DefaultControl.DERControlBase.OpModEnergize = %+v, want true", base)
 	}
 }
 
@@ -129,7 +141,7 @@ func TestSEP2EmbedConfigWiresTelemetryWhenSimulationIDSet(t *testing.T) {
 	}
 
 	fakeBus := fakeBusPublisherForTest{}
-	got := sep2EmbedConfig(cfg, fakeBus)
+	got := sep2EmbedConfig(cfg, fakeBus, sep2config.DefaultPolicy())
 
 	wantDest := sim.InputTopic("sim-123")
 	if got.TelemetryDestination != wantDest {
