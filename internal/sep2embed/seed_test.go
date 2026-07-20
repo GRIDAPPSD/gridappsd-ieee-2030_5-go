@@ -26,7 +26,7 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg); err != nil {
+	if err := seedStores(ctx, stores, reg, nil); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -97,6 +97,23 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 		if derList.Items[0].Href != wantDERHref {
 			t.Errorf("DER.Href = %q, want %q", derList.Items[0].Href, wantDERHref)
 		}
+
+		// Exactly one DERCapability, keyed "default" under the DER's own
+		// parent scope (LFDI + "/1"), matching core's DERSingletonHandlers
+		// derParentKey and the fixed singleton key. modesSupported is nil
+		// here: seedStores above was called with a nil modesSupported
+		// argument, and seedOne must not fabricate a bitmap.
+		dercap, err := stores.DERCapabilities.Get(ctx, e.LFDI+"/1", "default")
+		if err != nil {
+			t.Fatalf("DERCapabilities.Get(%q, %q): %v", e.LFDI+"/1", "default", err)
+		}
+		wantDERCapHref := "/edev/" + e.LFDI + "/der/1/dercap"
+		if dercap.Href != wantDERCapHref {
+			t.Errorf("DERCapability.Href = %q, want %q", dercap.Href, wantDERCapHref)
+		}
+		if dercap.ModesSupported != nil {
+			t.Errorf("DERCapability.ModesSupported = %v, want nil (no policy value supplied)", *dercap.ModesSupported)
+		}
 	}
 
 	// Distinct registry entries must not collide on SFDI: derivePlaceholderSFDI
@@ -122,7 +139,7 @@ func TestSeedStoresEmptyRegistrySeedsEmptyStoresWithoutError(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 
-	if err := seedStores(ctx, stores, reg); err != nil {
+	if err := seedStores(ctx, stores, reg, nil); err != nil {
 		t.Fatalf("seedStores on empty registry: %v", err)
 	}
 
@@ -159,7 +176,7 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 
 	ctx := context.Background()
 	stores := newStores()
-	if err := seedOne(ctx, stores, entry); err != nil {
+	if err := seedOne(ctx, stores, entry, nil); err != nil {
 		t.Fatalf("pre-seed via seedOne: %v", err)
 	}
 
@@ -168,7 +185,7 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	err := seedStores(ctx, stores, reg)
+	err := seedStores(ctx, stores, reg, nil)
 	if err == nil {
 		t.Fatal("seedStores against a store pre-populated with the same id: want error, got nil")
 	}
@@ -178,6 +195,153 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 	}
 	if !strings.Contains(got, "create EndDevice") {
 		t.Errorf("seedStores error = %q, want it to mention the failing create", got)
+	}
+}
+
+// TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil confirms
+// seedStores threads a non-nil modesSupported bitmap into every seeded
+// DERCapability, exactly (no truncation, no reinterpretation), per
+// GAGO-049. A battery-flavored registry.Entry (Name mentions "Battery")
+// is included to exercise the tolerance that seeding a DERCapability
+// never requires or inspects any battery-specific rating (ratedE,
+// storedE): registry.Entry carries none of that, and this test is the
+// standing assertion that seeding still succeeds and produces the same
+// modesSupported stamp for a battery entry as for a non-battery one.
+func TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil(t *testing.T) {
+	t.Parallel()
+
+	const wantModes uint32 = 0x00000005 // arbitrary non-zero test bitmap
+
+	reg := registry.New()
+	entries := []registry.Entry{
+		{MRID: "mrid-inv-2", Name: "Inverter 2", LFDI: "EEEE000000000000000000000000000000EEEE", Placeholder: true},
+		{MRID: "mrid-bat-2", Name: "Battery 2", LFDI: "FFFF000000000000000000000000000000FFFF", Placeholder: true},
+	}
+	if err := reg.AddBatch(entries); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+
+	stores := newStores()
+	ctx := context.Background()
+	modes := wantModes
+	if err := seedStores(ctx, stores, reg, &modes); err != nil {
+		t.Fatalf("seedStores: %v", err)
+	}
+
+	for _, e := range entries {
+		dercap, err := stores.DERCapabilities.Get(ctx, e.LFDI+"/1", "default")
+		if err != nil {
+			t.Fatalf("DERCapabilities.Get(%q, %q): %v", e.LFDI+"/1", "default", err)
+		}
+		if dercap.ModesSupported == nil {
+			t.Fatalf("DERCapability.ModesSupported is nil for LFDI %q, want %#x", e.LFDI, wantModes)
+		}
+		if *dercap.ModesSupported != wantModes {
+			t.Errorf("DERCapability.ModesSupported = %#x, want %#x", *dercap.ModesSupported, wantModes)
+		}
+	}
+
+	// Mutating the caller's pointee after seeding must not retroactively
+	// change what was stored: seedOne must copy the value, not alias the
+	// pointer, matching sep2.DERCapability.Copy's own by-value semantics.
+	modes = 0xFFFFFFFF
+	dercap, err := stores.DERCapabilities.Get(ctx, entries[0].LFDI+"/1", "default")
+	if err != nil {
+		t.Fatalf("DERCapabilities.Get after mutating caller's pointee: %v", err)
+	}
+	if dercap.ModesSupported == nil || *dercap.ModesSupported != wantModes {
+		t.Errorf("DERCapability.ModesSupported aliased the caller's pointer: got %v, want %#x", dercap.ModesSupported, wantModes)
+	}
+}
+
+// TestSeedStoresStampsRTGMaxVarFromEntryMaxQ confirms seedOne builds
+// DERCapability.RTGMaxVar from registry.Entry.MaxQ (the CIM
+// PowerElectronicsConnection maxQ attribute) with the exact
+// value/multiplier magnitude, and leaves RTGMaxVar nil (not a
+// fabricated zero) for an entry whose MaxQ is nil, per
+// [[data-invariants]].
+func TestSeedStoresStampsRTGMaxVarFromEntryMaxQ(t *testing.T) {
+	t.Parallel()
+
+	var wantMaxQ int64 = 250000 // 250 kVAr in unscaled base VAr
+
+	reg := registry.New()
+	entries := []registry.Entry{
+		{MRID: "mrid-maxq-1", Name: "Inverter MaxQ", LFDI: "1111000000000000000000000000000000AAAA", MaxQ: &wantMaxQ},
+		{MRID: "mrid-nomaxq-1", Name: "Inverter NoMaxQ", LFDI: "2222000000000000000000000000000000BBBB"},
+	}
+	if err := reg.AddBatch(entries); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+
+	stores := newStores()
+	ctx := context.Background()
+	if err := seedStores(ctx, stores, reg, nil); err != nil {
+		t.Fatalf("seedStores: %v", err)
+	}
+
+	withMaxQ, err := stores.DERCapabilities.Get(ctx, entries[0].LFDI+"/1", "default")
+	if err != nil {
+		t.Fatalf("DERCapabilities.Get(%q, %q): %v", entries[0].LFDI+"/1", "default", err)
+	}
+	if withMaxQ.RTGMaxVar == nil {
+		t.Fatalf("DERCapability.RTGMaxVar is nil for LFDI %q, want value+multiplier for maxQ=%d", entries[0].LFDI, wantMaxQ)
+	}
+	if withMaxQ.RTGMaxVar.Value != wantMaxQ {
+		t.Errorf("DERCapability.RTGMaxVar.Value = %d, want %d", withMaxQ.RTGMaxVar.Value, wantMaxQ)
+	}
+	if withMaxQ.RTGMaxVar.Multiplier != 0 {
+		t.Errorf("DERCapability.RTGMaxVar.Multiplier = %d, want 0 (unscaled base VAr)", withMaxQ.RTGMaxVar.Multiplier)
+	}
+
+	withoutMaxQ, err := stores.DERCapabilities.Get(ctx, entries[1].LFDI+"/1", "default")
+	if err != nil {
+		t.Fatalf("DERCapabilities.Get(%q, %q): %v", entries[1].LFDI+"/1", "default", err)
+	}
+	if withoutMaxQ.RTGMaxVar != nil {
+		t.Errorf("DERCapability.RTGMaxVar = %+v for an entry with nil MaxQ, want nil (no fabricated rating)", withoutMaxQ.RTGMaxVar)
+	}
+}
+
+// TestSeedStoresStampsDERCapabilityLinkOnDER confirms seedOne stamps
+// der.DERCapabilityLink onto the seeded DER so a client GETting the DER
+// can discover its capability resource, and that the link resolves to
+// the exact href the seeded DERCapability was created under (Dutch LOW
+// #1, GAGO-049 follow-up).
+func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.New()
+	entry := registry.Entry{MRID: "mrid-link-1", Name: "Inverter Link", LFDI: "3333000000000000000000000000000000CCCC"}
+	if err := reg.Add(entry); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	stores := newStores()
+	ctx := context.Background()
+	if err := seedStores(ctx, stores, reg, nil); err != nil {
+		t.Fatalf("seedStores: %v", err)
+	}
+
+	der, err := stores.DERs.Get(ctx, entry.LFDI, "1")
+	if err != nil {
+		t.Fatalf("DERs.Get(%q, %q): %v", entry.LFDI, "1", err)
+	}
+	if der.DERCapabilityLink == nil {
+		t.Fatalf("DER.DERCapabilityLink is nil for LFDI %q, want a populated link", entry.LFDI)
+	}
+
+	wantHref := "/edev/" + entry.LFDI + "/der/1/dercap"
+	if der.DERCapabilityLink.Href != wantHref {
+		t.Errorf("DER.DERCapabilityLink.Href = %q, want %q", der.DERCapabilityLink.Href, wantHref)
+	}
+
+	dercap, err := stores.DERCapabilities.Get(ctx, entry.LFDI+"/1", "default")
+	if err != nil {
+		t.Fatalf("DERCapabilities.Get(%q, %q): %v", entry.LFDI+"/1", "default", err)
+	}
+	if der.DERCapabilityLink.Href != dercap.Href {
+		t.Errorf("DER.DERCapabilityLink.Href = %q does not resolve to the seeded DERCapability's own Href %q", der.DERCapabilityLink.Href, dercap.Href)
 	}
 }
 

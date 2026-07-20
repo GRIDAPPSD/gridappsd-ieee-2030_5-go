@@ -52,9 +52,15 @@ import (
 //
 // An empty registry seeds empty stores without error: the /edev list
 // still serves (0 results), it is simply empty rather than absent.
-func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry) error {
+//
+// modesSupported is the DERControlType bitmap (sep2config.SEP2Policy's
+// own field of the same name) stamped onto every seeded DERCapability.
+// nil means no policy value was supplied: seedOne leaves the seeded
+// DERCapability.ModesSupported nil rather than fabricating a bitmap
+// (GAGO-049; see [[data-invariants]] on not silently inventing values).
+func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, modesSupported *uint32) error {
 	for _, e := range reg.Snapshot() {
-		if err := seedOne(ctx, stores, e); err != nil {
+		if err := seedOne(ctx, stores, e, modesSupported); err != nil {
 			return fmt.Errorf("seed entry mRID=%q: %w", e.MRID, err)
 		}
 	}
@@ -76,7 +82,55 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 // acl.go's storeOwnerResolver), so the advertised identity and the
 // ownership identity are one and the same value. SFDI is unchanged: the
 // canonical certificate-derived SFDI (or the LFDI-derived placeholder).
-func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry) error {
+//
+// GAGO-049 adds a third resource per entry: a DERCapability, scoped
+// under the DER's own parent key (id + "/1", matching core's
+// DERSingletonHandlers.derParentKey) at the fixed singleton key
+// "default" (core's coresingleton.SingletonKey; duplicated locally as
+// snapshot.go's singletonKey constant rather than imported, see that
+// constant's own doc comment for why). Fields set:
+//
+//   - Href: "/edev/" + id + "/der/1/dercap", matching the DER's own href
+//     pattern.
+//   - ModesSupported: modesSupported, passed straight through unchanged
+//     (nil stays nil; a real bitmap is copied by value via
+//     stores.DERCapabilities.Create -> sep2.DERCapability.Copy, so a
+//     caller mutating its own pointee afterward cannot retroactively
+//     change what was stored).
+//   - RTGMaxVar: built from e.MaxQ (the CIM PowerElectronicsConnection
+//     maxQ attribute, a genuine rated maximum, distinct from the live q
+//     operating point) when e.MaxQ is non-nil; left nil, not a
+//     fabricated zero, when e.MaxQ is nil (the CIM binding was absent
+//     for this device). See buildRTGMaxVar's own doc comment for the
+//     value/multiplier construction.
+//
+// The DER created just above also gets der.DERCapabilityLink stamped to
+// this same href before its own Create call, so a client GETting the DER
+// can discover its capability resource without a separate list walk;
+// see der's construction below.
+//
+// No other rtg* field (RTGMaxW, RTGMaxA, RTGMaxChargeRateW,
+// RTGMaxDischargeRateW) is populated here from the CIM
+// PowerElectronicsConnection query results, and this is deliberate, not
+// a placeholder for later completion of this card:
+//
+//   - The core sep2.DERCapability type (as vendored) has no RTGMaxVA or
+//     RTGMaxV field at all, so the spec-correct ratedS -> rtgMaxVA /
+//     ratedU -> rtgMaxV mapping this card was scoped to has no target to
+//     write into. This is a real gap in the vendored core library
+//     against the full IEEE 2030.5 DERCapability schema, not a staleness
+//     artifact; see this card's report for the cross-checked evidence.
+//   - None of the other already-queried CIM fields cleanly retarget onto
+//     the rtg* fields core's type DOES have: maxIFault is a per-unit
+//     fault-current multiplier (a protection-study parameter, not an
+//     absolute current rating), and p/q are live operating-point values,
+//     not rated/maximum capability values. Mapping either class onto
+//     RTGMaxA/RTGMaxW would be a forced, semantically wrong mapping,
+//     which this card's spec explicitly forbids ("do not force a
+//     mapping"; "do NOT silently invent capability bits"). maxQ is the
+//     one exception: it is itself a rated maximum, not a live value, so
+//     RTGMaxVar is populated from it.
+func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, modesSupported *uint32) error {
 	id := e.LFDI
 
 	sfdi := e.SFDI
@@ -97,14 +151,51 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry) err
 		return fmt.Errorf("create EndDevice: %w", err)
 	}
 
+	dercapHref := "/edev/" + id + "/der/1/dercap"
+
 	der := sep2.DER{}
 	der.Href = "/edev/" + id + "/der/1"
+	der.DERCapabilityLink = &sep2.Link{Href: dercapHref}
 
 	if err := stores.DERs.Create(ctx, id, "1", der); err != nil {
 		return fmt.Errorf("create DER: %w", err)
 	}
 
+	dercap := sep2.DERCapability{
+		ModesSupported: modesSupported,
+		RTGMaxVar:      buildRTGMaxVar(e.MaxQ),
+	}
+	dercap.Href = dercapHref
+
+	if err := stores.DERCapabilities.Create(ctx, id+"/1", singletonKey, dercap); err != nil {
+		return fmt.Errorf("create DERCapability: %w", err)
+	}
+
 	return nil
+}
+
+// buildRTGMaxVar constructs the sep2.ReactivePower value for
+// DERCapability.RTGMaxVar from a registry.Entry's MaxQ (the CIM
+// PowerElectronicsConnection.maxQ attribute), or returns nil when maxQ
+// is nil (the CIM binding was absent for this device; a nil result here
+// is not a fabricated zero, per data-invariants).
+//
+// CIM stores PowerElectronicsConnection.maxQ in whole, unscaled base
+// volt-amperes reactive: cross-checked against CIMHub_2_0's linkml
+// PEC/storage schema comment ("CIM stores in VAr (SI base)") and real
+// CIM100 instance data (ieee9500_2025 fixtures carry raw integers such
+// as 250000 for a 250 kVAr rating). registry.Entry.MaxQ is populated
+// straight from the SPARQL binding in that same unscaled form (see
+// cmd/bridge/main.go's queryDevices), so no additional scaling is
+// needed here: Multiplier: 0 means "Value is already in base units",
+// matching the convention this codebase's other ReactivePower
+// constructions already use (see internal/sep2embed/control_test.go's
+// literal sep2.ReactivePower{Multiplier: 0, Value: ...} fixtures).
+func buildRTGMaxVar(maxQ *int64) *sep2.ReactivePower {
+	if maxQ == nil {
+		return nil
+	}
+	return &sep2.ReactivePower{Multiplier: 0, Value: *maxQ}
 }
 
 // derivePlaceholderSFDI returns a syntactically valid (spec 6.3.3 shaped,
