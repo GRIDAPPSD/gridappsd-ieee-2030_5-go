@@ -53,6 +53,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
@@ -117,6 +118,14 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
+
+	// policy is loaded once, here at boot, matching this bridge's other
+	// config sources. Nothing yet consumes DefaultControl or
+	// ModesSupported: seeding DERCapability/DefaultDERControl from these
+	// values is GAGO-049/GAGO-050's job. This load is deliberately inert.
+	policy := sep2config.DefaultPolicy()
+	log.Printf("bridge: sep2 policy loaded modesSupported=%d pollRate=%d postRate=%d",
+		policy.ModesSupported, policy.DefaultPollRate, policy.DefaultPostRate)
 
 	if cfg.PublishOnStart {
 		// The publish smoke test wants to send a DifferenceBuilder
