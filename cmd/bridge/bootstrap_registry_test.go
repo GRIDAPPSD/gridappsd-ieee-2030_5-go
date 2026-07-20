@@ -40,12 +40,22 @@ func (m *mockCIMRequester) Request(_ context.Context, _ string, _ []byte) ([]byt
 
 // threeDeviceBinding is one SPARQL binding row shaped the way
 // queryDevices expects: an "id" and a "name" field, matching what
-// internal/cim.QueryDataResult.Results.Bindings decodes into.
+// internal/cim.QueryDataResult.Results.Bindings decodes into. maxQ is
+// omitted (OPTIONAL binding absent), matching the current threeDevice*
+// fixtures' scope; see deviceBindingWithMaxQ for a row that carries it.
 func threeDeviceBinding(mrid, name string) map[string]any {
 	return map[string]any{
 		"id":   map[string]string{"type": "literal", "value": mrid},
 		"name": map[string]string{"type": "literal", "value": name},
 	}
+}
+
+// deviceBindingWithMaxQ is threeDeviceBinding plus a maxQ literal
+// binding, exercising the OPTIONAL ?maxQ path queryDevices parses.
+func deviceBindingWithMaxQ(mrid, name, maxQ string) map[string]any {
+	b := threeDeviceBinding(mrid, name)
+	b["maxQ"] = map[string]string{"type": "literal", "value": maxQ}
+	return b
 }
 
 // threeDeviceEnvelope builds the {"data": {...}, "responseComplete":
@@ -179,6 +189,141 @@ func TestBootstrapRegistryPreprovisionedMissingCertFailsClosed(t *testing.T) {
 	}
 	if reg != nil {
 		t.Errorf("bootstrapRegistry returned a non-nil registry alongside the error: %+v", reg)
+	}
+}
+
+// TestQueryDevicesParsesOptionalMaxQ is the data-invariants required
+// VALUE assertion at the queryDevices layer: a row carrying a maxQ
+// literal binding must project to device.MaxQ with the exact parsed
+// int64 magnitude, and a row with the OPTIONAL binding absent (as
+// documented on the PEC SPARQL templates in internal/cim/queries.go)
+// must project to a nil device.MaxQ, not a fabricated zero.
+func TestQueryDevicesParsesOptionalMaxQ(t *testing.T) {
+	t.Parallel()
+
+	fakeQuery := func(_ context.Context, _ string) (*cim.QueryDataResult, error) {
+		return &cim.QueryDataResult{
+			Results: cim.SPARQLResults{
+				Bindings: []map[string]cim.Binding{
+					{
+						"id":   {Value: "mrid-maxq-1"},
+						"name": {Value: "Inverter MaxQ"},
+						"maxQ": {Value: "250000"},
+					},
+					{
+						"id":   {Value: "mrid-nomaxq-1"},
+						"name": {Value: "Inverter NoMaxQ"},
+					},
+				},
+			},
+		}, nil
+	}
+
+	devices, err := queryDevices(context.Background(), "inverter", fakeQuery, "_FEEDER123")
+	if err != nil {
+		t.Fatalf("queryDevices: %v", err)
+	}
+	if len(devices) != 2 {
+		t.Fatalf("queryDevices returned %d devices, want 2", len(devices))
+	}
+
+	if devices[0].MRID != "mrid-maxq-1" {
+		t.Fatalf("devices[0].MRID = %q, want %q", devices[0].MRID, "mrid-maxq-1")
+	}
+	if devices[0].MaxQ == nil {
+		t.Fatalf("devices[0].MaxQ is nil, want 250000")
+	}
+	if *devices[0].MaxQ != 250000 {
+		t.Errorf("devices[0].MaxQ = %d, want 250000", *devices[0].MaxQ)
+	}
+
+	if devices[1].MRID != "mrid-nomaxq-1" {
+		t.Fatalf("devices[1].MRID = %q, want %q", devices[1].MRID, "mrid-nomaxq-1")
+	}
+	if devices[1].MaxQ != nil {
+		t.Errorf("devices[1].MaxQ = %v for a row with no maxQ binding, want nil", *devices[1].MaxQ)
+	}
+}
+
+// TestQueryDevicesRejectsMalformedMaxQ confirms a present-but-unparsable
+// maxQ binding is a hard error, not a silently dropped value.
+func TestQueryDevicesRejectsMalformedMaxQ(t *testing.T) {
+	t.Parallel()
+
+	fakeQuery := func(_ context.Context, _ string) (*cim.QueryDataResult, error) {
+		return &cim.QueryDataResult{
+			Results: cim.SPARQLResults{
+				Bindings: []map[string]cim.Binding{
+					{
+						"id":   {Value: "mrid-bad-1"},
+						"name": {Value: "Bad MaxQ"},
+						"maxQ": {Value: "not-a-number"},
+					},
+				},
+			},
+		}, nil
+	}
+
+	_, err := queryDevices(context.Background(), "inverter", fakeQuery, "_FEEDER123")
+	if err == nil {
+		t.Fatal("queryDevices with a malformed maxQ binding: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "maxQ") {
+		t.Errorf("queryDevices error = %q, want it to mention maxQ", err.Error())
+	}
+}
+
+// TestBootstrapRegistryThreadsMaxQIntoRegistryEntry confirms
+// bootstrapRegistry carries the CIM-sourced MaxQ value from the SPARQL
+// projection all the way into the registry.Entry the caller receives,
+// for a device that has it, and leaves it nil for a device that
+// doesn't (this envelope's other two devices carry no maxQ binding,
+// matching threeDeviceBinding).
+func TestBootstrapRegistryThreadsMaxQIntoRegistryEntry(t *testing.T) {
+	t.Parallel()
+
+	certDir := t.TempDir()
+	data := map[string]any{
+		"head": map[string]any{"vars": []string{"id", "name", "maxQ"}},
+		"results": map[string]any{
+			"bindings": []map[string]any{
+				deviceBindingWithMaxQ("mrid-inv-1", "Inverter 1", "250000"),
+				threeDeviceBinding("mrid-bat-1", "Battery 1"),
+				threeDeviceBinding("mrid-sol-1", "Solar 1"),
+			},
+		},
+	}
+	env := map[string]any{"data": data, "responseComplete": true, "id": "x"}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	requester := &mockCIMRequester{resp: b}
+	client := cim.NewClient(requester)
+
+	reg, err := bootstrapRegistry(context.Background(), client, "_FEEDER123", certDir, sep2embed.DeviceCertModeDevMint)
+	if err != nil {
+		t.Fatalf("bootstrapRegistry: %v", err)
+	}
+
+	withMaxQ, ok := reg.Get("mrid-inv-1")
+	if !ok {
+		t.Fatal("registry missing entry for mRID mrid-inv-1")
+	}
+	if withMaxQ.MaxQ == nil {
+		t.Fatalf("entry mrid-inv-1: MaxQ is nil, want 250000")
+	}
+	if *withMaxQ.MaxQ != 250000 {
+		t.Errorf("entry mrid-inv-1: MaxQ = %d, want 250000", *withMaxQ.MaxQ)
+	}
+
+	withoutMaxQ, ok := reg.Get("mrid-bat-1")
+	if !ok {
+		t.Fatal("registry missing entry for mRID mrid-bat-1")
+	}
+	if withoutMaxQ.MaxQ != nil {
+		t.Errorf("entry mrid-bat-1: MaxQ = %v, want nil (no maxQ binding for this device)", *withoutMaxQ.MaxQ)
 	}
 }
 
