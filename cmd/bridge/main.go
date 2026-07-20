@@ -120,9 +120,9 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	// policy is loaded once, here at boot, matching this bridge's other
-	// config sources. Nothing yet consumes DefaultControl or
-	// ModesSupported: seeding DERCapability/DefaultDERControl from these
-	// values is GAGO-049/GAGO-050's job. This load is deliberately inert.
+	// config sources. GAGO-050 consumes policy.DefaultControl (threaded
+	// through newSEP2Embed below); ModesSupported still awaits GAGO-049's
+	// DERCapability seeding.
 	policy := sep2config.DefaultPolicy()
 	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s",
 		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
@@ -141,7 +141,7 @@ func run(ctx context.Context, cfg config) error {
 
 	// The embed seeds its EndDevice/DER stores from reg, so it must be
 	// built after bootstrapRegistry above, not before.
-	embed, err := newSEP2Embed(ctx, cfg, reg, bus)
+	embed, err := newSEP2Embed(ctx, cfg, reg, bus, policy)
 	if err != nil {
 		return fmt.Errorf("sep2 embed: %w", err)
 	}
@@ -320,7 +320,12 @@ func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(c
 // internal/cim/sim.InputTopic, the same simulation-input destination
 // this bridge's own -publish-on-start smoke test already documents as
 // the outgoing-difference channel.
-func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher) sep2embed.Config {
+//
+// policy is threaded through as sep2embed.Config.DefaultControl
+// (GAGO-050): the fallback DefaultDERControl this bridge seeds onto
+// every DERProgram is sourced from policy.DefaultControl, never
+// hardcoded at this layer.
+func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.SEP2Policy) sep2embed.Config {
 	dest := ""
 	if cfg.SimulationID != "" {
 		dest = sim.InputTopic(cfg.SimulationID)
@@ -331,6 +336,7 @@ func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher) sep2embed.Config {
 		Bus:                   bus,
 		TelemetryDestination:  dest,
 		TelemetrySimulationID: cfg.SimulationID,
+		DefaultControl:        policy.DefaultControl,
 	}
 }
 
@@ -349,8 +355,8 @@ func adminUIConfig(cfg config) adminui.Config {
 // newSEP2Embed builds, seeds, and binds the in-process IEEE 2030.5
 // protocol server from the bridge's registry. It does not start
 // serving; the caller starts embed.Run once this returns successfully.
-func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, bus sep2embed.BusPublisher) (*sep2embed.Embed, error) {
-	return sep2embed.New(ctx, sep2EmbedConfig(cfg, bus), reg)
+func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, bus sep2embed.BusPublisher, policy sep2config.SEP2Policy) (*sep2embed.Embed, error) {
+	return sep2embed.New(ctx, sep2EmbedConfig(cfg, bus, policy), reg)
 }
 
 // busConfig projects the bridge's config onto gridappsd-go's connection
