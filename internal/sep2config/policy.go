@@ -27,16 +27,20 @@ type SEP2Policy struct {
 	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
 	// each seeded DERCapability. Not derivable from CIM: no CIM class
 	// carries which control modes a device advertises over 2030.5.
-	// sep2.DERCapability.ModesSupported is *uint32; this field is the
-	// plain (non-pointer) bit value policy hands to that seed.
-	ModesSupported uint32
+	// Pointer-typed to match the core convention (sep2.DERCapability's own
+	// ModesSupported is *uint32) so a real, deliberate 0 bitmap is
+	// distinguishable from unset; nil means policy imposes no default.
+	ModesSupported *uint32
 
 	// DefaultPollRate and DefaultPostRate are the default polling and
 	// posting intervals, in seconds, that future FunctionSetAssignments
-	// seeding may apply. Zero means unset: no default is imposed and the
-	// consumer falls back to its own (or the spec's) default rate.
-	DefaultPollRate uint32
-	DefaultPostRate uint32
+	// seeding may apply. Pointer-typed to match the core convention (e.g.
+	// sep2.MirrorUsagePoint's own PostRate is *uint32) so a real,
+	// deliberate 0-second rate is distinguishable from unset; nil means no
+	// default is imposed and the consumer falls back to its own (or the
+	// spec's) default rate.
+	DefaultPollRate *uint32
+	DefaultPostRate *uint32
 }
 
 // DefaultPolicy returns the compiled-in, spec-sane SEP2Policy defaults, so
@@ -56,7 +60,7 @@ type SEP2Policy struct {
 // would overwrite the device's own commissioned 1547 settings and risks
 // synchronized reconnection.
 //
-// ModesSupported and the poll/post rates default to zero (unset); GAGO-049
+// ModesSupported and the poll/post rates default to nil (unset); GAGO-049
 // and any future FSA-seeding card supply real values once they exist.
 func DefaultPolicy() SEP2Policy {
 	connect := true
