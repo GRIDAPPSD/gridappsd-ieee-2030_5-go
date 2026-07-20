@@ -36,12 +36,30 @@ import (
 // field are all this value. A client that is handed the device's raw DER
 // certificate (see internal/sep2embed's .x509 emission) self-hashes to
 // this exact value, so no separate discovery-alias identity is needed.
+// MaxQ, when non-nil, is the device's CIM PowerElectronicsConnection
+// maxQ attribute: the maximum nameplate reactive power rating, in whole
+// base-unit volt-amperes reactive (unscaled, matching the raw wire value
+// CIMHub-produced CIM100 instance data stores, e.g. maxQ=250000 for a
+// 250 kVAr rating). It is distinct from the live q operating point,
+// which this registry does not carry at all. maxQ is optional on the
+// CIM side (not every PowerElectronicsConnection carries it), so a nil
+// MaxQ here means the SPARQL binding for this device was absent, not
+// that a real value of zero was queried. internal/sep2embed/seed.go
+// leaves DERCapability.RTGMaxVar nil under the same condition, per
+// data-invariants: no fabricated rating value.
+//
+// Entry stays a plain-numeric carrier here (a *int64, not a
+// sep2.ReactivePower) so the registry package keeps its existing
+// independence from the sep2 wire types; the multiplier/value
+// construction happens once, at the seed.go layer that already imports
+// sep2.
 type Entry struct {
 	MRID        string // CIM master resource ID
 	Name        string // human friendly name (optional, may be empty)
 	LFDI        string // canonical IEEE 2030.5 LFDI (DER-hash, uppercase hex)
 	SFDI        string // IEEE 2030.5 short form device ID, decimal string (optional)
 	Placeholder bool   // true when LFDI is a Stage 1 stand-in
+	MaxQ        *int64 // CIM PowerElectronicsConnection.maxQ, base VAr, optional (nil = absent)
 }
 
 // ErrInvalidEntry is returned by Add and AddBatch when an Entry has an

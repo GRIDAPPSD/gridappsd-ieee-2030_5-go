@@ -40,6 +40,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -516,6 +517,7 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 			LFDI:        id.LFDI,
 			SFDI:        id.SFDI,
 			Placeholder: false,
+			MaxQ:        d.MaxQ,
 		})
 		log.Printf("bridge: device mrid=%s lfdi=%s sfdi=%s (certificate-derived)", d.MRID, id.LFDI, id.SFDI)
 	}
@@ -530,12 +532,16 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 }
 
 // device is the slim projection of a SPARQL binding row this bridge
-// needs at Stage 1: identity plus name. Richer attributes (ratedS,
-// ratedU, phases) stay in the raw QueryDataResult and can be lifted
-// into typed structs when downstream code consumes them.
+// needs at Stage 1: identity, name, and now MaxQ (GAGO-049 follow-up),
+// the one PowerElectronicsConnection rated-maximum value that has a
+// model-correct target in the vendored core library's DERCapability
+// type (RTGMaxVar). Other richer attributes (ratedS, ratedU, phases)
+// stay in the raw QueryDataResult and can be lifted into typed structs
+// when downstream code consumes them.
 type device struct {
 	MRID string
 	Name string
+	MaxQ *int64 // CIM PowerElectronicsConnection.maxQ, base VAr; nil when the binding is absent
 }
 
 // queryDevices runs one of the cim.Client Query* wrappers, projects
@@ -544,6 +550,15 @@ type device struct {
 // readability. The query argument is the bound method on *cim.Client;
 // passing it as a value lets the three call sites share this projection
 // without a type switch.
+//
+// The ?maxQ binding is OPTIONAL in every PEC-rooted SPARQL template
+// (internal/cim/queries.go), so a row can legitimately carry an empty
+// Binding.Value for it: that is treated as "absent", not "zero", and
+// leaves device.MaxQ nil. A present binding that fails to parse as a
+// base-10 integer is a hard error rather than a silently-dropped value,
+// matching the no-fabricated-fallback discipline internal/sep2embed's
+// decodeMultiplierValue already applies to the wire-side ReactivePower
+// shape.
 func queryDevices(
 	ctx context.Context,
 	kind string,
@@ -563,10 +578,18 @@ func queryDevices(
 		if mrid == "" {
 			continue
 		}
-		out = append(out, device{
+		d := device{
 			MRID: mrid,
 			Name: row["name"].Value,
-		})
+		}
+		if raw := row["maxQ"].Value; raw != "" {
+			maxQ, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("query %s: mRID %q: parse maxQ %q: %w", kind, mrid, raw, err)
+			}
+			d.MaxQ = &maxQ
+		}
+		out = append(out, d)
 	}
 	return out, nil
 }

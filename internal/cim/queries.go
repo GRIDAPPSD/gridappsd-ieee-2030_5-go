@@ -63,7 +63,7 @@ const (
 	sparqlQuerySolar = `# Solar - DistSolar
     PREFIX r:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX c:  <http://iec.ch/TC57/CIM100#>
-    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?fdrid ?id ?pecid (group_concat(distinct ?phs;separator="\n") as ?phases) WHERE {
+    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?maxQ ?fdrid ?id ?pecid (group_concat(distinct ?phs;separator="\n") as ?phases) WHERE {
     VALUES ?fdrid {"%s"}
     ?pec a c:PowerElectronicsConnection.
     ?pec c:IdentifiedObject.name ?pecName.
@@ -75,6 +75,7 @@ const (
     ?pec c:PowerElectronicsConnection.maxIFault ?ipu.
     ?pec c:PowerElectronicsConnection.p ?p.
     ?pec c:PowerElectronicsConnection.q ?q.
+    OPTIONAL { ?pec c:PowerElectronicsConnection.maxQ ?maxQ. }
     OPTIONAL {
       ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
       ?s a c:PhotovoltaicUnit.
@@ -90,14 +91,14 @@ const (
     ?t c:Terminal.ConnectivityNode ?cn.
     ?cn c:IdentifiedObject.name ?bus
     }
-    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?fdrid ?id ?pecid
+    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?maxQ ?fdrid ?id ?pecid
     ORDER by ?name
     `
 
 	sparqlQueryBattery = `# Storage - DistStorage
     PREFIX r:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX c:  <http://iec.ch/TC57/CIM100#>
-    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?ratedE ?storedE ?state ?p ?q ?id ?pecid ?fdrid (group_concat(distinct ?phs;separator="\n") as ?phases) WHERE {
+    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?ratedE ?storedE ?state ?p ?q ?maxQ ?id ?pecid ?fdrid (group_concat(distinct ?phs;separator="\n") as ?phases) WHERE {
     VALUES ?fdrid {"%s"}
     ?pec a c:PowerElectronicsConnection.
     ?pec c:IdentifiedObject.name ?pecName.
@@ -109,6 +110,7 @@ const (
     ?pec c:PowerElectronicsConnection.maxIFault ?ipu.
     ?pec c:PowerElectronicsConnection.p ?p.
     ?pec c:PowerElectronicsConnection.q ?q.
+    OPTIONAL { ?pec c:PowerElectronicsConnection.maxQ ?maxQ. }
     OPTIONAL {
       ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
       ?s a c:BatteryUnit.
@@ -128,7 +130,7 @@ const (
     ?t c:Terminal.ConnectivityNode ?cn.
     ?cn c:IdentifiedObject.name ?bus
     }
-    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?ratedE ?storedE ?state ?p ?q ?id ?pecid ?fdrid
+    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?ratedE ?storedE ?state ?p ?q ?maxQ ?id ?pecid ?fdrid
     ORDER by ?name
     `
 
@@ -136,7 +138,7 @@ const (
     PREFIX r: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX c: <http://iec.ch/TC57/CIM100#>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?fdrid ?id ?pecid (group_concat(distinct ?phs;separator="\n") as ?phases)  WHERE {
+    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?maxQ ?fdrid ?id ?pecid (group_concat(distinct ?phs;separator="\n") as ?phases)  WHERE {
     VALUES ?fdrid {"%s"}
     ?pec a c:PowerElectronicsConnection.
     ?pec c:IdentifiedObject.name ?pecName.
@@ -148,6 +150,7 @@ const (
     ?pec c:PowerElectronicsConnection.maxIFault ?ipu.
     ?pec c:PowerElectronicsConnection.p ?p.
     ?pec c:PowerElectronicsConnection.q ?q.
+    OPTIONAL { ?pec c:PowerElectronicsConnection.maxQ ?maxQ. }
     OPTIONAL {
       ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
       ?s c:IdentifiedObject.name ?unitName.
@@ -162,7 +165,7 @@ const (
     ?t c:Terminal.ConnectivityNode ?cn.
     ?cn c:IdentifiedObject.name ?bus
     }
-    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?fdrid ?id ?pecid
+    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?maxQ ?fdrid ?id ?pecid
     ORDER by ?name
     `
 
