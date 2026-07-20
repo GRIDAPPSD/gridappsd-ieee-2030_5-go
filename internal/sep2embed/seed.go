@@ -52,9 +52,15 @@ import (
 //
 // An empty registry seeds empty stores without error: the /edev list
 // still serves (0 results), it is simply empty rather than absent.
-func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry) error {
+//
+// modesSupported is the DERControlType bitmap (sep2config.SEP2Policy's
+// own field of the same name) stamped onto every seeded DERCapability.
+// nil means no policy value was supplied: seedOne leaves the seeded
+// DERCapability.ModesSupported nil rather than fabricating a bitmap
+// (GAGO-049; see [[data-invariants]] on not silently inventing values).
+func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, modesSupported *uint32) error {
 	for _, e := range reg.Snapshot() {
-		if err := seedOne(ctx, stores, e); err != nil {
+		if err := seedOne(ctx, stores, e, modesSupported); err != nil {
 			return fmt.Errorf("seed entry mRID=%q: %w", e.MRID, err)
 		}
 	}
@@ -76,7 +82,42 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 // acl.go's storeOwnerResolver), so the advertised identity and the
 // ownership identity are one and the same value. SFDI is unchanged: the
 // canonical certificate-derived SFDI (or the LFDI-derived placeholder).
-func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry) error {
+//
+// GAGO-049 adds a third resource per entry: a DERCapability, scoped
+// under the DER's own parent key (id + "/1", matching core's
+// DERSingletonHandlers.derParentKey) at the fixed singleton key
+// "default" (core's coresingleton.SingletonKey; duplicated locally as
+// snapshot.go's singletonKey constant rather than imported, see that
+// constant's own doc comment for why). Only two fields are set:
+//
+//   - Href: "/edev/" + id + "/der/1/dercap", matching the DER's own href
+//     pattern.
+//   - ModesSupported: modesSupported, passed straight through unchanged
+//     (nil stays nil; a real bitmap is copied by value via
+//     stores.DERCapabilities.Create -> sep2.DERCapability.Copy, so a
+//     caller mutating its own pointee afterward cannot retroactively
+//     change what was stored).
+//
+// No rtg* field (RTGMaxW, RTGMaxA, RTGMaxVar, RTGMaxChargeRateW,
+// RTGMaxDischargeRateW) is populated here from the CIM
+// PowerElectronicsConnection query results, and this is deliberate, not
+// a placeholder for later completion of this card:
+//
+//   - The core sep2.DERCapability type (as vendored) has no RTGMaxVA or
+//     RTGMaxV field at all, so the spec-correct ratedS -> rtgMaxVA /
+//     ratedU -> rtgMaxV mapping this card was scoped to has no target to
+//     write into. This is a real gap in the vendored core library
+//     against the full IEEE 2030.5 DERCapability schema, not a staleness
+//     artifact; see this card's report for the cross-checked evidence.
+//   - None of the other already-queried CIM fields cleanly retarget onto
+//     the rtg* fields core's type DOES have: maxIFault is a per-unit
+//     fault-current multiplier (a protection-study parameter, not an
+//     absolute current rating), and p/q are live operating-point values,
+//     not rated/maximum capability values. Mapping either class onto
+//     RTGMaxA/RTGMaxW/RTGMaxVar would be a forced, semantically wrong
+//     mapping, which this card's spec explicitly forbids ("do not force
+//     a mapping"; "do NOT silently invent capability bits").
+func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, modesSupported *uint32) error {
 	id := e.LFDI
 
 	sfdi := e.SFDI
@@ -102,6 +143,13 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry) err
 
 	if err := stores.DERs.Create(ctx, id, "1", der); err != nil {
 		return fmt.Errorf("create DER: %w", err)
+	}
+
+	dercap := sep2.DERCapability{ModesSupported: modesSupported}
+	dercap.Href = "/edev/" + id + "/der/1/dercap"
+
+	if err := stores.DERCapabilities.Create(ctx, id+"/1", singletonKey, dercap); err != nil {
+		return fmt.Errorf("create DERCapability: %w", err)
 	}
 
 	return nil

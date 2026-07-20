@@ -103,6 +103,14 @@ type Config struct {
 	// all-unset DefaultDERControl. Callers should source this from
 	// sep2config.SEP2Policy.DefaultControl rather than leaving it zero.
 	DefaultControl sep2.DefaultDERControl
+
+	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
+	// the DERCapability New seeds for every registry entry (see
+	// seedStores/seedOne). Nil (the zero value) leaves every seeded
+	// DERCapability.ModesSupported nil: callers should source this from
+	// sep2config.SEP2Policy.ModesSupported rather than fabricating a
+	// bitmap here.
+	ModesSupported *uint32
 }
 
 // protocolServer is the minimal surface Run needs from the embedded mTLS
@@ -156,7 +164,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	stores := newStores()
-	if err := seedStores(ctx, stores, reg); err != nil {
+	if err := seedStores(ctx, stores, reg, cfg.ModesSupported); err != nil {
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)
 	}
 

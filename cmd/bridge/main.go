@@ -120,9 +120,11 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	// policy is loaded once, here at boot, matching this bridge's other
-	// config sources. GAGO-050 consumes policy.DefaultControl (threaded
-	// through newSEP2Embed below); ModesSupported still awaits GAGO-049's
-	// DERCapability seeding.
+	// config sources. GAGO-050 consumes policy.DefaultControl and
+	// GAGO-049 consumes policy.ModesSupported, both threaded through
+	// newSEP2Embed below. DefaultPolicy leaves ModesSupported nil, so the
+	// DERCapability GAGO-049 seeds is still nil-safe until a real policy
+	// value is configured.
 	policy := sep2config.DefaultPolicy()
 	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s",
 		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
@@ -324,7 +326,11 @@ func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(c
 // policy is threaded through as sep2embed.Config.DefaultControl
 // (GAGO-050): the fallback DefaultDERControl this bridge seeds onto
 // every DERProgram is sourced from policy.DefaultControl, never
-// hardcoded at this layer.
+// hardcoded at this layer. policy.ModesSupported is threaded through the
+// same way (GAGO-049): the DERControlType bitmap seeded onto every
+// device's DERCapability is sourced from policy, never hardcoded here;
+// DefaultPolicy leaves it nil, so seeding is nil-safe until a real
+// policy value is configured.
 func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.SEP2Policy) sep2embed.Config {
 	dest := ""
 	if cfg.SimulationID != "" {
@@ -337,6 +343,7 @@ func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.S
 		TelemetryDestination:  dest,
 		TelemetrySimulationID: cfg.SimulationID,
 		DefaultControl:        policy.DefaultControl,
+		ModesSupported:        policy.ModesSupported,
 	}
 }
 
