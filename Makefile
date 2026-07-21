@@ -1,7 +1,16 @@
 .PHONY: build test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage ui-build
 
+# VERSION is stamped into internal/buildinfo.Version at link time via
+# LDFLAGS below. `git describe` gives the nearest tag plus a
+# commit-count/sha suffix when HEAD is past the last tag, and a
+# `-dirty` suffix when the worktree has uncommitted changes; falling
+# back to "dev" covers a checkout with no tags at all (a shallow clone,
+# or a tarball export with no .git directory).
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo.Version=$(VERSION)
+
 build:
-	go build ./...
+	go build -ldflags "$(LDFLAGS)" ./...
 
 test:
 	go test ./...
@@ -20,7 +29,7 @@ test:
 # under frontend/ has changed and dist/ needs regenerating.
 ui-build:
 	cd internal/adminui/web/frontend && npm ci && npm run build
-	go build ./...
+	go build -ldflags "$(LDFLAGS)" ./...
 
 test-race:
 	go test -race ./...

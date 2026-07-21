@@ -37,6 +37,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -48,6 +49,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-go/fieldbus"
 	"github.com/GRIDAPPSD/gridappsd-go/gridappsd"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
@@ -57,8 +59,6 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
-
-const version = "0.1.0-stage1"
 
 // connectTimeout bounds the initial STOMP dial plus auth-token
 // bootstrap. The platform's broker normally responds in well under a
@@ -72,9 +72,16 @@ const queryTimeout = 30 * time.Second
 func main() {
 	cfg, err := loadConfig(os.Args[1:])
 	if err != nil {
-		// flag.ErrHelp surfaces from -h / -help and is not a usage
-		// error; flag.NewFlagSet has already printed the usage banner.
-		// Exit 0 so shell redirection of `bridge -h` for docs works.
+		// -version and -h / -help both return before validate ever
+		// runs, so neither reaches log.Fatalf below and neither has
+		// any side effect (no ctx, no listener, no CIM query, no
+		// bus connect): handleVersionFlag prints the version and
+		// exits 0 first; flag.ErrHelp's usage banner is already
+		// printed by flag.NewFlagSet, so that path also just exits 0
+		// so shell redirection of `bridge -h` for docs works.
+		if handleVersionFlag(os.Stdout, err) {
+			os.Exit(0)
+		}
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
 		}
@@ -84,11 +91,25 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	log.Printf("bridge %s starting", version)
+	log.Printf("bridge %s starting", buildinfo.Version)
 	if err := run(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("bridge: %v", err)
 	}
 	log.Printf("bridge: shutdown complete")
+}
+
+// handleVersionFlag reports whether err is loadConfig's
+// errVersionRequested sentinel (set when -version was passed), and if
+// so writes the build version to w. Split out as a pure helper (no
+// os.Exit inside it) so a test can drive it directly and assert the
+// printed value without exec-ing a subprocess or exercising main's
+// os.Exit call.
+func handleVersionFlag(w io.Writer, err error) bool {
+	if !errors.Is(err, errVersionRequested) {
+		return false
+	}
+	fmt.Fprintf(w, "bridge %s\n", buildinfo.Version)
+	return true
 }
 
 // run is the bridge lifecycle. It is split out from main so tests can
