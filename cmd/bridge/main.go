@@ -380,6 +380,7 @@ func adminUIConfig(cfg config) adminui.Config {
 		AllowedHosts:     cfg.SEP2AdminUIAllowedHosts,
 		FeederMRID:       cfg.FeederMRID,
 		SimulationID:     cfg.SimulationID,
+		SORLink:          cfg.SEP2AdminUISORLink,
 	}
 }
 

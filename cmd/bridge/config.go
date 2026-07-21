@@ -114,6 +114,15 @@ type config struct {
 	// accepts, beyond its own built in defaults (localhost, 127.0.0.1,
 	// ::1). See adminui.Config.AllowedHosts.
 	SEP2AdminUIAllowedHosts []string
+
+	// SEP2AdminUISORLink is an optional, operator supplied URL to a
+	// server of record dashboard, exposed read only via the admin UI's
+	// /api/health endpoint (GAGO-075). Not a credential: unlike
+	// SEP2AdminUIKey, this value is safe to return in an API response
+	// and is never scrubbed from the environment or logged specially.
+	// Empty means unset: no link, no error, no admin UI behavior
+	// change.
+	SEP2AdminUISORLink string
 }
 
 // deviceCertMode* are the only two values config.validate accepts for
@@ -192,6 +201,7 @@ func loadConfig(args []string) (config, error) {
 		SEP2DeviceCertMode:      getenvDefault("SEP2_DEVICE_CERT_MODE", defaultSEP2DeviceCertMode),
 		SEP2AdminUIAddr:         getenvDefault("SEP2_ADMIN_UI_ADDR", defaultSEP2AdminUIAddr),
 		SEP2AdminUIAllowedHosts: getenvList("SEP2_ADMIN_UI_ALLOWED_HOSTS"),
+		SEP2AdminUISORLink:      getenvDefault("SEP2_ADMIN_UI_SOR_LINK", ""),
 	}
 	pubFromEnv, err := getenvBool("SEP2_PUBLISH_ON_START", false)
 	if err != nil {
@@ -239,6 +249,7 @@ func loadConfig(args []string) (config, error) {
 	// above. The precedence merge happens below after Parse.
 	var adminUIKeyFlag string
 	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
+	fs.StringVar(&cfg.SEP2AdminUISORLink, "admin-ui-sor-link", cfg.SEP2AdminUISORLink, "optional server of record dashboard URL exposed via the admin UI (env: SEP2_ADMIN_UI_SOR_LINK)")
 
 	var versionFlag bool
 	fs.BoolVar(&versionFlag, "version", false, "print the build version and exit")

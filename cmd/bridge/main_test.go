@@ -170,6 +170,7 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 		SEP2AdminUIAllowedHosts:     []string{"admin.internal.example"},
 		FeederMRID:                  "feeder-mrid-1",
 		SimulationID:                "sim-1",
+		SEP2AdminUISORLink:          "https://sor.example/dashboard",
 	}
 
 	got := adminUIConfig(cfg)
@@ -191,6 +192,9 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 	if got.SimulationID != cfg.SimulationID {
 		t.Errorf("SimulationID: got %q, want %q", got.SimulationID, cfg.SimulationID)
 	}
+	if got.SORLink != cfg.SEP2AdminUISORLink {
+		t.Errorf("SORLink: got %q, want %q", got.SORLink, cfg.SEP2AdminUISORLink)
+	}
 }
 
 // TestAdminUIConfigZeroValueMapsToDisabledShape confirms a zero-value
@@ -209,6 +213,9 @@ func TestAdminUIConfigZeroValueMapsToDisabledShape(t *testing.T) {
 	}
 	if got.AllowedHosts != nil {
 		t.Errorf("AllowedHosts: got %v, want nil for a zero-value config", got.AllowedHosts)
+	}
+	if got.SORLink != "" {
+		t.Errorf("SORLink: got %q, want empty for a zero-value config", got.SORLink)
 	}
 }
 

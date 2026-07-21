@@ -85,6 +85,15 @@ type healthResponse struct {
 	// UptimeSeconds is the whole number of seconds since this Server
 	// was constructed (New's startedAt), truncated, not rounded.
 	UptimeSeconds int64 `json:"uptimeSeconds"`
+
+	// SORLink is the optional server-of-record dashboard URL (GAGO-075,
+	// SEP2_ADMIN_UI_SOR_LINK). Serialized as an empty string, never
+	// omitted, when unset: a future frontend reads an always-present
+	// field rather than having to distinguish "absent" from "present
+	// but empty" for a value where those two states carry no different
+	// meaning (this is the explicit serialization-contract choice for
+	// this field: empty means unset, full stop).
+	SORLink string `json:"sorLink"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +120,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		PlaceholderCount: placeholderCount,
 		CertificateCount: certificateCount,
 		UptimeSeconds:    int64(time.Since(s.startedAt).Seconds()),
+		SORLink:          s.cfg.SORLink,
 	})
 }
 

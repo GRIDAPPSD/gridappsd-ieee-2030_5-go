@@ -39,6 +39,7 @@ func TestHandleHealthReturnsAllEnrichedFieldValues(t *testing.T) {
 		Key:          testKey,
 		FeederMRID:   "feeder-mrid-1",
 		SimulationID: "sim-1",
+		SORLink:      "https://sor.example/dashboard",
 	}, reg, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, identity, stomp)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -86,8 +87,28 @@ func TestHandleHealthReturnsAllEnrichedFieldValues(t *testing.T) {
 		t.Errorf("PlaceholderCount(%d) + CertificateCount(%d) = %d, want RegistryCount %d",
 			got.PlaceholderCount, got.CertificateCount, got.PlaceholderCount+got.CertificateCount, got.RegistryCount)
 	}
+	if got.SORLink != "https://sor.example/dashboard" {
+		t.Errorf("SORLink = %q, want %q", got.SORLink, "https://sor.example/dashboard")
+	}
 	if got.UptimeSeconds < 0 {
 		t.Errorf("UptimeSeconds = %d, want a non-negative value", got.UptimeSeconds)
+	}
+}
+
+// TestHandleHealthSORLinkEmptyStringWhenUnset locks in the GAGO-075
+// serialization contract chosen for SORLink: the field is always
+// present in the JSON body, serialized as an empty string, never
+// omitted, when Config.SORLink is unset. This mirrors
+// TestHandleControlFlowOmitsLastWhenNil's literal string-contains
+// pattern for asserting a specific serialization shape.
+func TestHandleHealthSORLinkEmptyStringWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	s := newTestServer(t, testKey, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{})
+	rec := doRequest(t, s.Handler(), "GET", "/api/health", "Bearer "+testKey, "localhost")
+	body := rec.Body.String()
+	if !strings.Contains(body, `"sorLink":""`) {
+		t.Errorf("body = %s, want a literal \"sorLink\":\"\" field present even when unset", body)
 	}
 }
 

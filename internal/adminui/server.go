@@ -93,6 +93,12 @@ type Config struct {
 	// configured with (config.SimulationID). Plain display data, same
 	// posture as FeederMRID. Empty means no simulation is configured.
 	SimulationID string
+
+	// SORLink is an optional, operator supplied URL to a server of
+	// record dashboard for this bridge (GAGO-075, SEP2_ADMIN_UI_SOR_LINK).
+	// It is a URL, not a secret, and is safe to expose over /api/health
+	// unlike Key. Empty means unset: no link, no error.
+	SORLink string
 }
 
 // RegistrySource is the minimal read surface Server needs from
