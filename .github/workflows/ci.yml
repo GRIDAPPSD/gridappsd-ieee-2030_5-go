@@ -1,0 +1,63 @@
+name: CI
+
+# GitHub-hosted runners are acceptable here: this is a public
+# GRIDAPPSD repo, both jobs are read-only verification (build, vet,
+# test, and a local frontend rebuild diffed against the committed
+# bundle), and neither job deploys, pushes to a registry, or touches
+# any secret. See .claude/rules/devops.md "GitHub Actions" in the
+# Knowledge workspace for the posture this exception follows.
+
+on:
+  push:
+    branches: [main]
+    # Doc-only changes do not affect build artifacts, so skip the full
+    # build/vet/test/dist-drift matrix for them.
+    paths-ignore: ['**/*.md', 'docs/**', 'CHANGELOG.md']
+  pull_request:
+    branches: [main]
+    # See the push trigger comment above; the same rationale applies.
+    paths-ignore: ['**/*.md', 'docs/**', 'CHANGELOG.md']
+
+jobs:
+  build-and-test:
+    name: Build, vet, and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race)
+        run: go test -race ./...
+
+  ui-drift-check:
+    name: Admin UI dist drift check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: internal/adminui/web/frontend/package-lock.json
+
+      - name: Rebuild frontend and diff against committed dist/
+        run: make ui-check
