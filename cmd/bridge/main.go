@@ -422,6 +422,68 @@ func fmtU32Ptr(v *uint32) string {
 	return fmt.Sprintf("%d", *v)
 }
 
+// parsePECCount extracts the single "count" binding QueryPECCount's
+// SPARQL template returns. It returns (0, false) for every shape other
+// than exactly one row with a parsable integer "count" binding: a nil
+// result, zero rows, a missing binding, or an unparsable value. Zero
+// itself is a valid, present count and returns (0, true); callers must
+// use the ok return, not a zero check, to distinguish "the feeder has
+// zero PECs" from "the count could not be determined".
+func parsePECCount(res *cim.QueryDataResult) (int, bool) {
+	if res == nil || len(res.Results.Bindings) != 1 {
+		return 0, false
+	}
+	binding, ok := res.Results.Bindings[0]["count"]
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(binding.Value)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// pecCountLogLine renders the GAGO-051 discover-vs-project drop-visibility
+// message for feederMRID, given the QueryPECCount discovery result
+// (discovered, discoveredOK) and the post-dedupe projected device count
+// projected. It returns the message text and whether the caller should
+// log it at WARNING level.
+//
+//   - discoveredOK && discovered <= projected: counts-match path; INFO-level,
+//     no "WARNING" text. discovered < projected is not a valid drop
+//     (the enumeration queries cannot project more devices than truly
+//     exist), so it is treated the same as an exact match rather than
+//     surfaced as a nonsensical negative drop count: the two queries
+//     ran against a moving CIM dataset (queryTimeout apart, see
+//     bootstrapRegistry), so a discovered count that lags the projected
+//     count is a dataset-changed-mid-query artifact, not evidence of a
+//     drop.
+//   - discoveredOK && discovered > projected: some PECs were silently
+//     dropped by the enumeration queries' mandatory attribute joins;
+//     WARNING-level, states both counts and the drop count.
+//   - !discoveredOK: the true discovered count could not be determined
+//     (QueryPECCount failed, or returned an unparsable/missing count);
+//     WARNING-level, states the limitation rather than fabricating a
+//     drop count of 0.
+func pecCountLogLine(feederMRID string, discovered int, discoveredOK bool, projected int) (string, bool) {
+	if !discoveredOK {
+		return fmt.Sprintf(
+			"feeder %s: could not determine the true discovered PowerElectronicsConnection count; "+
+				"projected %d device(s) from the enumeration queries, but cannot confirm whether any were dropped by their mandatory attribute joins",
+			feederMRID, projected), true
+	}
+	if discovered <= projected {
+		return fmt.Sprintf(
+			"feeder %s: discovered %d PowerElectronicsConnection object(s), projected %d device(s); no drops",
+			feederMRID, discovered, projected), false
+	}
+	dropped := discovered - projected
+	return fmt.Sprintf(
+		"feeder %s: discovered %d PowerElectronicsConnection object(s) but only %d were fully projected as devices (%d dropped for missing mandatory attributes)",
+		feederMRID, discovered, projected, dropped), true
+}
+
 func deviceCertMode(s string) (sep2embed.DeviceCertMode, error) {
 	switch s {
 	case deviceCertModeDevMintFlag:
@@ -487,6 +549,71 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 			seen[d.MRID] = struct{}{}
 			devices = append(devices, d)
 		}
+	}
+
+	// GAGO-051: the empty-fleet fail-loud guard. Model-only device
+	// discovery (queryDevices above) finds devices exclusively via
+	// PowerElectronicsConnection (PEC) CIM objects. A load-modeled
+	// feeder (DERs represented as named EnergyConsumer loads instead of
+	// PECs) returns zero rows from every one of the three queries above
+	// with NO error: the SPARQL succeeds, it just has nothing to bind.
+	// Left unchecked, that flows straight through dedupe to an empty
+	// devices slice, an empty registry, and a bridge that boots and
+	// serves an empty /edev list looking perfectly healthy. Fail here,
+	// loudly, naming the actual feeder queried and the actual finding
+	// (zero PECs), so an operator pointed at a load-modeled feeder sees
+	// why immediately instead of debugging a silently-empty fleet. This
+	// deliberately does not fall back to an EnergyConsumer-regex scan;
+	// that fleet-discovery path was excluded by design and this guard
+	// only makes the model-only consequence visible, not reversed.
+	if len(devices) == 0 {
+		return nil, fmt.Errorf(
+			"bridge: feeder %s: found zero PowerElectronicsConnection objects across the inverter/solar/battery queries; "+
+				"this bridge discovers its DER fleet exclusively via PowerElectronicsConnection CIM objects, "+
+				"so a feeder with DERs modeled as EnergyConsumer loads instead of PowerElectronicsConnection objects "+
+				"(a load-modeled feeder) will boot with an empty fleet and no other error; "+
+				"confirm the feeder's DER modeling shape if this is unexpected",
+			feederMRID)
+	}
+
+	// GAGO-051: discover-vs-project drop visibility (Cyrus's finding).
+	// The three device-enumeration queries above use several mandatory
+	// (INNER-join-equivalent) attribute triples (ratedS, ratedU,
+	// maxIFault, p, q, plus the Terminal/ConnectivityNode bus lookup);
+	// any PEC missing one of those attributes is silently dropped from
+	// their row sets rather than surfaced as a partial row. QueryPECCount
+	// runs a second, minimal SPARQL count (identity plus feeder-membership
+	// triples only, see internal/cim/queries.go) so the true discovered
+	// count is available independent of that INNER-join risk; comparing
+	// it against the post-dedupe projected count surfaces exactly what
+	// those joins silently dropped. This is a genuinely extra query
+	// (there is no way to derive a reliable pre-join count from the
+	// enumeration queries' own results, since those results are the
+	// thing with the drops); it is kept minimal by design so its own
+	// query cost is negligible next to the three enumeration queries
+	// already issued above. A failure to run it degrades to a WARN
+	// noting the comparison is unavailable rather than failing the
+	// whole bootstrap: the enumeration queries above already succeeded
+	// and produced a non-empty, usable fleet, so a problem with this
+	// purely-diagnostic second query should not block boot.
+	//
+	// QueryPECCount shares qctx (and its remaining queryTimeout budget)
+	// with the three enumeration queries above rather than getting its
+	// own fresh timeout window; a slow broker can leave this fourth,
+	// purely-diagnostic query starved of time. Accepted as-is: a
+	// dedicated budget would need its own constant and context, which
+	// is more machinery than a diagnostic-only query warrants.
+	pecCountRes, pecCountErr := c.QueryPECCount(qctx, feederMRID)
+	discovered, discoveredOK := parsePECCount(pecCountRes)
+	if pecCountErr != nil {
+		discoveredOK = false
+		log.Printf("bridge: WARNING: feeder %s: QueryPECCount failed, discover-vs-project drop visibility unavailable: %v",
+			feederMRID, pecCountErr)
+	}
+	if msg, warn := pecCountLogLine(feederMRID, discovered, discoveredOK, len(devices)); warn {
+		log.Printf("bridge: WARNING: %s", msg)
+	} else {
+		log.Printf("bridge: %s", msg)
 	}
 
 	mrids := make([]string, len(devices))

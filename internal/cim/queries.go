@@ -169,6 +169,31 @@ const (
     ORDER by ?name
     `
 
+	// sparqlQueryPECCount is the GAGO-051 discovery-count template. It
+	// counts every PowerElectronicsConnection in the feeder using only
+	// the identity-plus-feeder-membership triples every PEC is
+	// guaranteed to carry (a c:PowerElectronicsConnection type triple
+	// and its Equipment.EquipmentContainer link), deliberately omitting
+	// every mandatory attribute join the device-enumeration templates
+	// above require (ratedS, ratedU, maxIFault, p, q, and the
+	// Terminal/ConnectivityNode bus lookup). Those extra INNER joins are
+	// exactly what makes a PEC silently vanish from the enumeration
+	// query's row set when it is missing one of those attributes
+	// (Cyrus's finding); this count exists to surface that gap, so it
+	// cannot itself depend on the attributes whose absence it is meant
+	// to detect. See bootstrapRegistry and pecCountLogLine in
+	// cmd/bridge/main.go for how the discovered-vs-projected comparison
+	// uses this count.
+	sparqlQueryPECCount = `# GAGO-051 discovery count
+    PREFIX c:  <http://iec.ch/TC57/CIM100#>
+    SELECT (COUNT(DISTINCT ?pec) as ?count) WHERE {
+    VALUES ?fdrid {"%s"}
+    ?pec a c:PowerElectronicsConnection.
+    ?pec c:Equipment.EquipmentContainer ?fdr.
+    ?fdr c:IdentifiedObject.mRID ?fdrid.
+    }
+    `
+
 	sparqlQueryAllDERGroups = `#get all EndDeviceGroup
     PREFIX  xsd:  <http://www.w3.org/2001/XMLSchema#>
     PREFIX  r:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -292,4 +317,17 @@ func (c *Client) QueryInverter(ctx context.Context, feederID string) (*QueryData
 // this template is unchanged from the Python upstream.
 func (c *Client) QueryAllDERGroups(ctx context.Context, feederID string) (*QueryDataResult, error) {
 	return c.queryFeederTemplate(ctx, sparqlQueryAllDERGroups, feederID)
+}
+
+// QueryPECCount runs the GAGO-051 discovery-count SPARQL against the
+// powergrid-model service, scoped to feederID, and returns a single-row
+// result whose "count" binding is the number of distinct
+// PowerElectronicsConnection objects in the feeder, counted without any
+// of the mandatory attribute joins QuerySolar/QueryBattery/QueryInverter
+// require. Callers comparing this count against the number of rows
+// those enumeration queries return can detect PECs silently dropped by
+// an INNER join on a missing attribute (see sparqlQueryPECCount's doc
+// comment).
+func (c *Client) QueryPECCount(ctx context.Context, feederID string) (*QueryDataResult, error) {
+	return c.queryFeederTemplate(ctx, sparqlQueryPECCount, feederID)
 }
