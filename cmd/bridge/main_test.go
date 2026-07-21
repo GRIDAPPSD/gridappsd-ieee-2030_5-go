@@ -168,6 +168,8 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 		SEP2AdminUIAllowNonLoopback: true,
 		SEP2AdminUIKey:              "secret-token",
 		SEP2AdminUIAllowedHosts:     []string{"admin.internal.example"},
+		FeederMRID:                  "feeder-mrid-1",
+		SimulationID:                "sim-1",
 	}
 
 	got := adminUIConfig(cfg)
@@ -182,6 +184,12 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 	}
 	if len(got.AllowedHosts) != 1 || got.AllowedHosts[0] != "admin.internal.example" {
 		t.Errorf("AllowedHosts: got %v, want [admin.internal.example]", got.AllowedHosts)
+	}
+	if got.FeederMRID != cfg.FeederMRID {
+		t.Errorf("FeederMRID: got %q, want %q", got.FeederMRID, cfg.FeederMRID)
+	}
+	if got.SimulationID != cfg.SimulationID {
+		t.Errorf("SimulationID: got %q, want %q", got.SimulationID, cfg.SimulationID)
 	}
 }
 

@@ -211,7 +211,7 @@ func run(ctx context.Context, cfg config) error {
 	// a non-loopback Addr without the explicit opt-in) is a genuine
 	// startup failure, not the disabled state.
 	var adminUIRun func(context.Context) error
-	adminSrv, err := adminui.New(adminUIConfig(cfg), reg, embed, embed, &controlHook)
+	adminSrv, err := adminui.New(adminUIConfig(cfg), reg, embed, embed, &controlHook, embed, bus)
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
 		log.Printf("bridge: admin UI disabled, SEP2_ADMIN_UI_KEY unset")
@@ -378,6 +378,8 @@ func adminUIConfig(cfg config) adminui.Config {
 		AllowNonLoopback: cfg.SEP2AdminUIAllowNonLoopback,
 		Key:              cfg.SEP2AdminUIKey,
 		AllowedHosts:     cfg.SEP2AdminUIAllowedHosts,
+		FeederMRID:       cfg.FeederMRID,
+		SimulationID:     cfg.SimulationID,
 	}
 }
 

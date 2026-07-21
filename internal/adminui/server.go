@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv"
+
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
@@ -80,6 +82,17 @@ type Config struct {
 	// (localhost, 127.0.0.1, ::1). Comparison is case insensitive and
 	// ignores any port suffix on the incoming Host header.
 	AllowedHosts []string
+
+	// FeederMRID is the CIM feeder mRID the bridge was configured to
+	// enumerate DERs from (config.FeederMRID). Plain display data: not
+	// validated or defaulted by this package. Empty means the caller
+	// has none configured.
+	FeederMRID string
+
+	// SimulationID is the GridAPPS-D simulation_id the bridge was
+	// configured with (config.SimulationID). Plain display data, same
+	// posture as FeederMRID. Empty means no simulation is configured.
+	SimulationID string
 }
 
 // RegistrySource is the minimal read surface Server needs from
@@ -109,15 +122,37 @@ type ControlFlowSource interface {
 	Snapshot() controlobs.Snapshot
 }
 
+// IdentitySource is the minimal read surface Server needs from
+// *sep2embed.Embed for the health endpoint's server identity and mTLS
+// listener address fields (GAGO-074). *sep2embed.Embed already exposes
+// both methods publicly, so this interface needs no changes on that
+// side; it exists here, at the consumer, per the workspace Go standard.
+type IdentitySource interface {
+	Identity() sep2srv.Identity
+	Addr() string
+}
+
+// StompSource is the minimal read surface Server needs from
+// fieldbus.MessageBus for the health endpoint's connectivity field
+// (GAGO-074). Defined narrowly at the consumer rather than importing
+// the full fieldbus.MessageBus interface at every call site.
+type StompSource interface {
+	IsConnected() bool
+}
+
 // Server is the admin UI's HTTP server: a bound, not yet serving
-// listener, plus the read only handler chain built from the four
-// injected sources above. Construct with New; start serving with Run.
+// listener, plus the read only handler chain built from the injected
+// sources above. Construct with New; start serving with Run.
 type Server struct {
 	cfg      Config
 	registry RegistrySource
 	devices  EndDeviceSource
 	programs DERProgramSource
 	flow     ControlFlowSource
+	identity IdentitySource
+	stomp    StompSource
+
+	startedAt time.Time
 
 	ln      net.Listener
 	handler http.Handler
@@ -134,15 +169,15 @@ type Server struct {
 // A non-loopback cfg.Addr without cfg.AllowNonLoopback is rejected here,
 // before any socket is opened: fail closed on the loopback posture
 // check, exactly as fail closed applies to the missing-token case.
-func New(cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource) (*Server, error) {
+func New(cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource) (*Server, error) {
 	if cfg.Key == "" {
 		return nil, ErrDisabled
 	}
 	if cfg.Addr == "" {
 		return nil, errors.New("adminui: Config.Addr is required")
 	}
-	if reg == nil || devices == nil || programs == nil || flow == nil {
-		return nil, errors.New("adminui: registry, devices, programs, and flow sources are all required")
+	if reg == nil || devices == nil || programs == nil || flow == nil || identity == nil || stomp == nil {
+		return nil, errors.New("adminui: registry, devices, programs, flow, identity, and stomp sources are all required")
 	}
 
 	loopback, err := isLoopbackHost(cfg.Addr)
@@ -162,12 +197,15 @@ func New(cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERPr
 	}
 
 	s := &Server{
-		cfg:      cfg,
-		registry: reg,
-		devices:  devices,
-		programs: programs,
-		flow:     flow,
-		ln:       ln,
+		cfg:       cfg,
+		registry:  reg,
+		devices:   devices,
+		programs:  programs,
+		flow:      flow,
+		identity:  identity,
+		stomp:     stomp,
+		startedAt: time.Now(),
+		ln:        ln,
 	}
 	s.handler = s.buildHandler()
 	return s, nil
