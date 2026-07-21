@@ -158,8 +158,13 @@ func TestBootstrapRegistryHappyPathNoSpuriousWarning(t *testing.T) {
 	}
 
 	logged := buf.String()
-	if strings.Contains(logged, "WARNING") {
-		t.Errorf("happy path (discovered == projected, non-empty fleet) logged a WARNING; want none:\n%s", logged)
+	// "bridge: WARNING" is this diagnostic's own prefix (see
+	// pecCountLogLine's callers in bootstrapRegistry); sep2embed logs its
+	// own unrelated "sep2embed: WARNING" lines on every dev-mint run
+	// (expected, pre-existing behavior), so the assertion is scoped to
+	// this package's diagnostic rather than any "WARNING" substring.
+	if strings.Contains(logged, "bridge: WARNING") {
+		t.Errorf("happy path (discovered == projected, non-empty fleet) logged a bridge WARNING; want none:\n%s", logged)
 	}
 	if !strings.Contains(logged, "no drops") {
 		t.Errorf("happy path log output does not confirm the discover-vs-project match:\n%s", logged)
@@ -191,8 +196,8 @@ func TestBootstrapRegistryLogsDropWhenDiscoveredExceedsProjected(t *testing.T) {
 	}
 
 	logged := buf.String()
-	if !strings.Contains(logged, "WARNING") {
-		t.Errorf("discovered(7) != projected(3): want a WARNING-level log line, got none:\n%s", logged)
+	if !strings.Contains(logged, "bridge: WARNING") {
+		t.Errorf("discovered(7) != projected(3): want a bridge WARNING-level log line, got none:\n%s", logged)
 	}
 	if !strings.Contains(logged, "7") || !strings.Contains(logged, "3") {
 		t.Errorf("drop-visibility log does not surface both the discovered (7) and projected (3) counts:\n%s", logged)
