@@ -228,6 +228,13 @@ func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, err
 //     frames. Pump-level orchestration of resubscribe-on-Reconnect is
 //     the caller's responsibility (deferred to a future ticket).
 //
+// Concurrent Reconnect calls are safe, not merely non-crashing: each
+// caller that dials a new conn either installs it or, if a sibling
+// Reconnect installed one first, Disconnects its own redundant conn
+// under the mutex (see the supersede loop below) so exactly one
+// broker session survives and no session leaks (GAGO-012 Dutch C1 /
+// Leon H1, reworded for GAGO-024 Dutch L1 once that fix had settled).
+//
 // Transport-level failures during the dial or token bootstrap are
 // wrapped so callers can errors.Is(err, ErrConnectionLost) and drive
 // retry policy. ErrClosed remains its own sentinel for the
@@ -249,9 +256,12 @@ func (c *Client) Reconnect(ctx context.Context) error {
 		return mapCtxErr(err)
 	}
 
-	// Tear down the existing connection under the mutex first, so that
-	// concurrent Request callers see ErrNotConnected during the dial
-	// rather than a closed go-stomp handle. Holding c.mu across the
+	// Swap out the existing connection fields under the mutex first, so
+	// that concurrent Request callers see ErrNotConnected during the
+	// dial rather than a closed go-stomp handle (GAGO-024 Dutch L3: the
+	// mutex covers only this field swap, not the Disconnect call below,
+	// which runs after c.mu.Unlock so the actual teardown round-trip
+	// with the broker does not hold the lock). Holding c.mu across the
 	// dial would also work, but the lock-free window during the dial
 	// keeps Request fast-fail-able under broker-drop conditions.
 	c.mu.Lock()
@@ -535,9 +545,15 @@ func fetchAuthToken(ctx context.Context, conn *stomp.Conn, user, password string
 
 // drainStompChan empties any frames currently buffered on a
 // stomp.Subscription channel without blocking. Returns the number of
-// frames consumed. Used before Unsubscribe to reduce broker-side
-// queue accumulation on the token-bootstrap path: the channel is
-// drained, then Unsubscribe drops the consumer.
+// frames consumed. Used before Unsubscribe on the token-bootstrap
+// path: the channel is drained, then Unsubscribe drops the consumer.
+//
+// This is good client-side hygiene only (GAGO-024 Dutch L2): it does
+// NOT reduce broker-side queue accumulation. Unsubscribe drops the
+// consumer but ActiveMQ keeps the (now empty) temp.token_resp.<user>.*
+// queue; draining just avoids leaving unread frames orphaned in the
+// local channel. See fetchAuthToken's doc comment for the accurate
+// broker-side story and the operational mitigation (GAGO-012).
 //
 // drainStompChan does not close the channel and does not block. It is
 // safe to call on an empty channel (returns 0) and on a channel still

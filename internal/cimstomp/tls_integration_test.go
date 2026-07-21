@@ -387,31 +387,75 @@ func TestTLS_ClientConnectsOverTLS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	err := c.Connect(ctx)
-	// Connect will fail at fetchAuthToken because the test server never
-	// replies to the token topic. What we want to assert is that the
-	// failure is NOT a TLS handshake failure: the dial path through TLS
-	// completed and STOMP CONNECTED was processed.
+	assertTLSDialSucceededTokenFetchFailed(t, "Connect", err)
+}
+
+// assertTLSDialSucceededTokenFetchFailed encodes the shared assertion used
+// by both TestTLS_ClientConnectsOverTLS and TestTLS_ClientReconnectOverTLS
+// (GAGO-024 Dutch M3): the test server never replies to the token topic, so
+// both Connect and Reconnect are expected to fail at fetchAuthToken. What
+// each test wants to prove is that the failure is NOT a TLS handshake
+// failure: the dial path through TLS completed and STOMP CONNECTED was
+// processed, on both the first dial (Connect) and any subsequent dial
+// (Reconnect).
+func assertTLSDialSucceededTokenFetchFailed(t *testing.T, op string, err error) {
+	t.Helper()
 	if err == nil {
 		// If a future implementation surfaces fetchAuthToken differently,
 		// a nil error is also acceptable, but log it: a silent early
-		// return here would otherwise hide the fact that Connect
-		// succeeded (which the test's own doc comment says it does not
+		// return here would otherwise hide the fact that the call
+		// succeeded (which the caller's doc comment says it does not
 		// expect) from -v output (GAGO-022 Dutch L1).
-		t.Logf("Connect over TLS returned nil error (fetchAuthToken unexpectedly succeeded or was bypassed)")
+		t.Logf("%s over TLS returned nil error (fetchAuthToken unexpectedly succeeded or was bypassed)", op)
 		return
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "tcp dial") {
-		t.Fatalf("Connect with TLS unexpectedly failed at TCP dial: %v", err)
+	if strings.Contains(msg, "tcp dial") || strings.Contains(msg, "tls dial") {
+		t.Fatalf("%s with TLS unexpectedly failed at TCP/TLS dial: %v", op, err)
 	}
 	if strings.Contains(msg, "tls:") && !strings.Contains(msg, "fetch auth token") {
-		t.Fatalf("Connect with TLS failed at TLS layer: %v", err)
+		t.Fatalf("%s with TLS failed at TLS layer: %v", op, err)
 	}
 	if !strings.Contains(msg, "fetch auth token") &&
 		!errors.Is(err, context.DeadlineExceeded) &&
 		!errors.Is(err, ErrRequestTimeout) {
-		t.Fatalf("Connect with TLS failed in an unexpected way: %v", err)
+		t.Fatalf("%s with TLS failed in an unexpected way: %v", op, err)
 	}
+}
+
+// TestTLS_ClientReconnectOverTLS closes the GAGO-024 Dutch M3 gap: none of
+// the existing TLS tests exercise Client.Reconnect. This proves Reconnect
+// re-dials through the same TLS path Connect used (a second TLS handshake
+// against the same tlsTestServer, which its serve() Accept loop already
+// supports for multiple sequential connections), rather than Reconnect's
+// TLS handling only ever having been exercised transitively via Connect.
+//
+// The test does not require Connect to fully succeed first: Reconnect only
+// requires the Client be not-yet-Closed (see Reconnect's doc comment), and
+// exercising it after a Connect that itself only got as far as
+// fetchAuthToken (same token-bootstrap limitation every other test in this
+// file works around) still proves the TLS re-dial path.
+func TestTLS_ClientReconnectOverTLS(t *testing.T) {
+	srv := startTLSTestServer(t, true)
+	defer srv.Stop()
+
+	c := NewClient(STOMPConfig{
+		Address:  srv.Addr(),
+		User:     "system",
+		Password: "manager",
+		TLS:      srv.ClientTLSConfig(),
+	})
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	err := c.Connect(ctx)
+	assertTLSDialSucceededTokenFetchFailed(t, "Connect", err)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel2()
+	err2 := c.Reconnect(ctx2)
+	assertTLSDialSucceededTokenFetchFailed(t, "Reconnect", err2)
 }
 
 // TestTLS_ClientPlainTCPAgainstTLSServerFails proves the negative path:
