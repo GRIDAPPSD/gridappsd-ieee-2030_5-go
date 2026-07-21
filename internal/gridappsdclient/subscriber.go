@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/GRIDAPPSD/gridappsd-go/fieldbus"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
@@ -14,6 +15,10 @@ import (
 // (internal/cimstomp/subscribe.go: make(chan Message, 16)), so the two
 // transports present the same backpressure behavior to sim.Pump.
 const subscriptionMsgBuf = 16
+
+// unsubscribeTimeout bounds relay's shutdown call to bus.Unsubscribe. An
+// unresponsive broker must not stall teardown past SIGINT: see GAGO-041.
+const unsubscribeTimeout = 5 * time.Second
 
 // subscription adapts gridappsd-go's callback-based
 // fieldbus.MessageBus.Subscribe onto sim.Subscription. It is constructed
@@ -135,7 +140,17 @@ func (s *Subscriber) relay(ctx context.Context, dest string, tok fieldbus.Token,
 	defer close(sub.msgs)
 
 	shutdown := func() {
-		_ = s.bus.Unsubscribe(context.Background(), dest, tok)
+		unsubCtx, cancel := context.WithTimeout(context.Background(), unsubscribeTimeout)
+		defer cancel()
+		if err := s.bus.Unsubscribe(unsubCtx, dest, tok); err != nil {
+			// An unresponsive or erroring broker must not stall
+			// teardown past SIGINT (GAGO-041). Record the failure so
+			// it is observable via sub.Err() rather than swallowed;
+			// setErr only keeps the first error, so this wins over
+			// ctx.Err() below when the bus call is what actually
+			// failed.
+			sub.setErr(fmt.Errorf("gridappsdclient.Subscriber: unsubscribe %s: %w", dest, err))
+		}
 		sub.setErr(ctx.Err())
 	}
 
