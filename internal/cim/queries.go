@@ -181,8 +181,9 @@ const (
 	// query's row set when it is missing one of those attributes
 	// (Cyrus's finding); this count exists to surface that gap, so it
 	// cannot itself depend on the attributes whose absence it is meant
-	// to detect. See queryDiscoverVsProjectCounts in cmd/bridge/main.go
-	// for how the discovered-vs-projected comparison uses this count.
+	// to detect. See bootstrapRegistry and pecCountLogLine in
+	// cmd/bridge/main.go for how the discovered-vs-projected comparison
+	// uses this count.
 	sparqlQueryPECCount = `# GAGO-051 discovery count
     PREFIX c:  <http://iec.ch/TC57/CIM100#>
     SELECT (COUNT(DISTINCT ?pec) as ?count) WHERE {

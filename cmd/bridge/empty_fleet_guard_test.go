@@ -324,6 +324,23 @@ func TestPECCountLogLine(t *testing.T) {
 			wantSubs:     []string{"could not determine", "3"},
 			rejectSubs:   []string{"0 dropped"},
 		},
+		{
+			// Dutch's review finding: discovered < projected cannot be a
+			// real drop (the enumeration queries cannot project more
+			// devices than truly exist), so it must be treated as the
+			// no-drops path rather than surfaced as a nonsensical negative
+			// drop count. This is a dataset-changed-mid-query artifact
+			// (QueryPECCount and the enumeration queries share qctx's
+			// queryTimeout budget but still run as separate requests), not
+			// evidence of an INNER-join drop.
+			name:         "discovered-less-than-projected-clamped",
+			discovered:   2,
+			discoveredOK: true,
+			projected:    3,
+			wantWarn:     false,
+			wantSubs:     []string{"2", "3", "no drops"},
+			rejectSubs:   []string{"-1 dropped", "dropped for missing"},
+		},
 	}
 
 	for _, tc := range cases {

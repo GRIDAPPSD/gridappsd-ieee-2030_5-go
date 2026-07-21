@@ -450,9 +450,16 @@ func parsePECCount(res *cim.QueryDataResult) (int, bool) {
 // projected. It returns the message text and whether the caller should
 // log it at WARNING level.
 //
-//   - discoveredOK && discovered == projected: happy path, no drops;
-//     INFO-level, no "WARNING" text.
-//   - discoveredOK && discovered != projected: some PECs were silently
+//   - discoveredOK && discovered <= projected: counts-match path; INFO-level,
+//     no "WARNING" text. discovered < projected is not a valid drop
+//     (the enumeration queries cannot project more devices than truly
+//     exist), so it is treated the same as an exact match rather than
+//     surfaced as a nonsensical negative drop count: the two queries
+//     ran against a moving CIM dataset (queryTimeout apart, see
+//     bootstrapRegistry), so a discovered count that lags the projected
+//     count is a dataset-changed-mid-query artifact, not evidence of a
+//     drop.
+//   - discoveredOK && discovered > projected: some PECs were silently
 //     dropped by the enumeration queries' mandatory attribute joins;
 //     WARNING-level, states both counts and the drop count.
 //   - !discoveredOK: the true discovered count could not be determined
@@ -466,7 +473,7 @@ func pecCountLogLine(feederMRID string, discovered int, discoveredOK bool, proje
 				"projected %d device(s) from the enumeration queries, but cannot confirm whether any were dropped by their mandatory attribute joins",
 			feederMRID, projected), true
 	}
-	if discovered == projected {
+	if discovered <= projected {
 		return fmt.Sprintf(
 			"feeder %s: discovered %d PowerElectronicsConnection object(s), projected %d device(s); no drops",
 			feederMRID, discovered, projected), false
@@ -589,6 +596,13 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 	// whole bootstrap: the enumeration queries above already succeeded
 	// and produced a non-empty, usable fleet, so a problem with this
 	// purely-diagnostic second query should not block boot.
+	//
+	// QueryPECCount shares qctx (and its remaining queryTimeout budget)
+	// with the three enumeration queries above rather than getting its
+	// own fresh timeout window; a slow broker can leave this fourth,
+	// purely-diagnostic query starved of time. Accepted as-is: a
+	// dedicated budget would need its own constant and context, which
+	// is more machinery than a diagnostic-only query warrants.
 	pecCountRes, pecCountErr := c.QueryPECCount(qctx, feederMRID)
 	discovered, discoveredOK := parsePECCount(pecCountRes)
 	if pecCountErr != nil {
