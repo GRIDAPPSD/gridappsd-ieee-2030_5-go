@@ -6,12 +6,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 )
+
+// randReader is the entropy source newUUIDv4 reads from. It is a
+// package-level var (not a Builder field) purely as a test injection
+// seam: production code never reassigns it. Tests swap it out (and
+// restore it via t.Cleanup) to exercise the read-failure path that
+// crypto/rand.Reader cannot be made to take in a normal test run. See
+// newUUIDv4's doc comment for why the failure is threaded through as an
+// error rather than left as a panic.
+var randReader io.Reader = rand.Reader
 
 // ErrInvalidDifference is returned by AddDifference when Object or
 // Attribute is empty.
 var ErrInvalidDifference = errors.New("diff: invalid difference: object and attribute must be non-empty")
+
+// ErrRandFailure is returned by Message and MessageNow when the
+// underlying crypto/rand read needed to mint a fresh difference_mrid
+// fails. See newUUIDv4's doc comment for why this is threaded through as
+// an error instead of a panic (GAGO-020).
+var ErrRandFailure = errors.New("diff: crypto/rand failed")
 
 // Difference is one forward-or-reverse change to a CIM object's
 // attribute. Value is held as any so callers can pass strings, numbers,
@@ -116,13 +132,23 @@ func (b *Builder) Len() int {
 // internal slices for the diff arrays; do not mutate the builder
 // concurrently with consumers of the returned Message. For independent
 // copies, marshal to JSON via Bytes.
-func (b *Builder) Message(epoch int64) *Message {
+//
+// Message returns an error, wrapping ErrRandFailure, when the
+// crypto/rand read behind the fresh difference_mrid fails (GAGO-020).
+// This is the caller-visible half of newUUIDv4's fail-closed contract:
+// see that function's doc comment for why a panic is no longer the
+// right failure mode here.
+func (b *Builder) Message(epoch int64) (*Message, error) {
+	mrid, err := newUUIDv4()
+	if err != nil {
+		return nil, fmt.Errorf("diff.Message: %w", err)
+	}
 	msg := &Message{
 		Command: "update",
 		Input: Input{
 			Message: MessagePayload{
 				Timestamp:          epoch,
-				DifferenceMRID:     newUUIDv4(),
+				DifferenceMRID:     mrid,
 				ReverseDifferences: b.reverse,
 				ForwardDifferences: b.forward,
 			},
@@ -132,18 +158,24 @@ func (b *Builder) Message(epoch int64) *Message {
 		s := b.simulationID
 		msg.Input.SimulationID = &s
 	}
-	return msg
+	return msg, nil
 }
 
 // MessageNow is Message with the current Unix epoch (UTC seconds).
-func (b *Builder) MessageNow() *Message {
+func (b *Builder) MessageNow() (*Message, error) {
 	return b.Message(time.Now().UTC().Unix())
 }
 
 // Bytes returns the JSON-encoded wire envelope at the supplied epoch.
-// Each call generates a fresh difference_mrid.
+// Each call generates a fresh difference_mrid. The error return now
+// also covers Message's own failure mode (a crypto/rand read failure
+// wrapping ErrRandFailure), not just json.Marshal's.
 func (b *Builder) Bytes(epoch int64) ([]byte, error) {
-	out, err := json.Marshal(b.Message(epoch))
+	msg, err := b.Message(epoch)
+	if err != nil {
+		return nil, fmt.Errorf("diff.Bytes: %w", err)
+	}
+	out, err := json.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("diff.Bytes: %w", err)
 	}
@@ -160,15 +192,24 @@ func (b *Builder) BytesNow() ([]byte, error) {
 //
 // Layout (RFC 4122 section 4.4): 16 random bytes with two fixed bits in
 // byte 6 (version=4) and byte 8 (variant=10).
-func newUUIDv4() string {
+//
+// GAGO-020: a crypto/rand read failure is threaded through as an error
+// (wrapping ErrRandFailure) rather than a panic. crypto/rand.Read on
+// Linux is documented as effectively never failing in practice
+// (urandom backed), but "effectively never" is not "never": a fresh
+// difference_mrid feeds a message this bridge publishes to the
+// GridAPPS-D simulation input topic, and a panic there would crash the
+// whole bridge process over what is, at worst, a transient entropy-
+// source hiccup. The caller (PublishDERStatus, via Bytes) already has a
+// well-defined non-crashing path for a failed publish: log and skip
+// this one telemetry relay, exactly as it does for any other envelope-
+// build or send failure. Fail closed on the value (no envelope is sent
+// without a real fresh UUID; nothing is silently defaulted), not on the
+// process.
+func newUUIDv4() (string, error) {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand.Read on Linux is documented as never failing in
-		// practice (urandom backed). Surfacing the error here would
-		// require AddDifference and Message to return errors, which
-		// pollutes the API for an impossible case. Panic is the
-		// pragmatic choice; fall-through behavior is undefined anyway.
-		panic(fmt.Errorf("diff: crypto/rand failed: %w", err))
+	if _, err := io.ReadFull(randReader, b[:]); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrRandFailure, err)
 	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
@@ -182,5 +223,5 @@ func newUUIDv4() string {
 	hex.Encode(dst[19:23], b[8:10])
 	dst[23] = '-'
 	hex.Encode(dst[24:36], b[10:16])
-	return string(dst)
+	return string(dst), nil
 }
