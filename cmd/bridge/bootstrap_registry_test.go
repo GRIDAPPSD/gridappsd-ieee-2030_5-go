@@ -98,7 +98,7 @@ func TestBootstrapRegistryDerivesRealCertBackedIdentities(t *testing.T) {
 	requester := &mockCIMRequester{resp: threeDeviceEnvelope(t)}
 	client := cim.NewClient(requester)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_FEEDER123", certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestBootstrapRegistryPreprovisionedMissingCertFailsClosed(t *testing.T) {
 	requester := &mockCIMRequester{resp: threeDeviceEnvelope(t)}
 	client := cim.NewClient(requester)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_FEEDER123", certDir, sep2embed.DeviceCertModePreprovisioned)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModePreprovisioned)
 	if err == nil {
 		t.Fatal("bootstrapRegistry in Preprovisioned mode with no preprovisioned certs: want error, got nil")
 	}
@@ -219,7 +219,7 @@ func TestQueryDevicesParsesOptionalMaxQ(t *testing.T) {
 		}, nil
 	}
 
-	devices, err := queryDevices(context.Background(), "inverter", fakeQuery, "_FEEDER123")
+	devices, err := queryDevices(context.Background(), "inverter", fakeQuery, "_DEADBEEF-0000-0000-0000-000000000123")
 	if err != nil {
 		t.Fatalf("queryDevices: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestQueryDevicesRejectsMalformedMaxQ(t *testing.T) {
 		}, nil
 	}
 
-	_, err := queryDevices(context.Background(), "inverter", fakeQuery, "_FEEDER123")
+	_, err := queryDevices(context.Background(), "inverter", fakeQuery, "_DEADBEEF-0000-0000-0000-000000000123")
 	if err == nil {
 		t.Fatal("queryDevices with a malformed maxQ binding: want error, got nil")
 	}
@@ -302,7 +302,7 @@ func TestBootstrapRegistryThreadsMaxQIntoRegistryEntry(t *testing.T) {
 	requester := &mockCIMRequester{resp: b}
 	client := cim.NewClient(requester)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_FEEDER123", certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}

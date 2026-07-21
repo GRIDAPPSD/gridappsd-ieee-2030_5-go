@@ -22,7 +22,7 @@ func TestQueryPECCountRendersMinimalTemplate(t *testing.T) {
 	mr := &mockRequester{resp: []byte(`{"data":{"head":{"vars":["count"]},"results":{"bindings":[{"count":{"type":"literal","value":"14"}}]}},"responseComplete":true,"id":"x"}`)}
 	c := NewClient(mr)
 
-	res, err := c.QueryPECCount(context.Background(), "_FEEDER123")
+	res, err := c.QueryPECCount(context.Background(), "_DEADBEEF-0000-0000-0000-000000000123")
 	if err != nil {
 		t.Fatalf("QueryPECCount: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestQueryPECCountRendersMinimalTemplate(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`VALUES ?fdrid {"FEEDER123"}`,
+		`VALUES ?fdrid {"DEADBEEF-0000-0000-0000-000000000123"}`,
 		"COUNT(DISTINCT ?pec)",
 		"?pec a c:PowerElectronicsConnection.",
 		"?pec c:Equipment.EquipmentContainer ?fdr.",

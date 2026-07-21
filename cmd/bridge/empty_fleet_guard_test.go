@@ -111,7 +111,7 @@ func TestBootstrapRegistryEmptyFleetFailsLoud(t *testing.T) {
 	requester := &mockCIMRequester{resp: emptyEnvelope(t)}
 	client := cim.NewClient(requester)
 
-	const feederMRID = "_FEEDER-LOAD-MODELED-1"
+	const feederMRID = "_DEADBEEF-0000-0000-0000-000000000001"
 	reg, err := bootstrapRegistry(context.Background(), client, feederMRID, certDir, sep2embed.DeviceCertModeDevMint)
 	if err == nil {
 		t.Fatal("bootstrapRegistry with zero PowerElectronicsConnection rows: want error, got nil")
@@ -149,7 +149,7 @@ func TestBootstrapRegistryHappyPathNoSpuriousWarning(t *testing.T) {
 
 	buf := captureLog(t)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_FEEDER123", certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestBootstrapRegistryLogsDropWhenDiscoveredExceedsProjected(t *testing.T) {
 
 	buf := captureLog(t)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_FEEDER123", certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestPECCountLogLine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			msg, warn := pecCountLogLine("_FEEDER123", tc.discovered, tc.discoveredOK, tc.projected)
+			msg, warn := pecCountLogLine("_DEADBEEF-0000-0000-0000-000000000123", tc.discovered, tc.discoveredOK, tc.projected)
 			if warn != tc.wantWarn {
 				t.Errorf("pecCountLogLine(...): warn = %v, want %v (msg=%q)", warn, tc.wantWarn, msg)
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -225,22 +226,40 @@ const (
     `
 )
 
-// validateFeederID rejects empty IDs and IDs containing characters that
-// would break the SPARQL VALUES clause when interpolated. CIM mRIDs are
-// well-shaped (UUID-ish, optionally underscore-prefixed) at production
-// call sites, so this check is conservative; it exists to prevent a
-// misuse from silently producing a malformed query.
+// feederIDPattern is an ALLOWLIST for the shape of a CIM feeder mRID
+// (GAGO-018): an optional single leading underscore, followed by 8 or
+// more hex digits and/or dashes. This matches both forms real call
+// sites produce: a bare uppercase UUID as stored by gridappsd-docker's
+// c:IdentifiedObject.mRID ("E407CBB6-8C8D-9BC9-589C-AB83FBF0826D") and
+// an underscore-prefixed UUID as cmd/bridge's defaultFeederMRID uses
+// ("_C1C3E687-6FFD-C753-582B-632A27E28507"). Lowercase hex is accepted
+// too since neither form the codebase actually produces is
+// case-constrained, and rejecting a case CIM tooling elsewhere might
+// emit would be an arbitrary restriction with no security value: the
+// allowlist's job is excluding SPARQL-syntax-breaking characters
+// (quotes, angle brackets, newlines, backslashes) and control bytes,
+// not enforcing a specific hex case.
 //
-// Both forms of the feederID input are accepted: bare UUID
-// ("E407CBB6-...") and underscore-prefixed UUID ("_E407CBB6-..."). The
-// wrapper layer strips at most one leading underscore before
-// substitution into the SPARQL VALUES clause; see queryFeederTemplate.
+// This supersedes the prior denylist (Leon GAGO-010 M1: reject C0
+// control bytes; M2: reject the four SPARQL-syntax characters
+// explicitly). An allowlist subsumes both: every C0 control byte and
+// every one of "<>\n\r\ falls outside [0-9A-Fa-f-], so there is no
+// separate control-byte check to maintain.
+var feederIDPattern = regexp.MustCompile(`^_?[0-9A-Fa-f-]{8,}$`)
+
+// validateFeederID rejects any feederID that does not match
+// feederIDPattern: empty, too short, wrong shape, or containing any
+// character (including quotes, angle brackets, newlines, backslashes,
+// and C0 control bytes) that could break the SPARQL VALUES clause when
+// interpolated. CIM mRIDs are well-shaped (UUID-ish, optionally
+// underscore-prefixed) at every production and test call site; see
+// feederIDPattern's doc comment for the two accepted forms.
 func validateFeederID(feederID string) error {
 	if feederID == "" {
 		return fmt.Errorf("%w: empty", ErrInvalidFeederID)
 	}
-	if strings.ContainsAny(feederID, "\"<>\n\r\\") {
-		return fmt.Errorf("%w: contains forbidden character", ErrInvalidFeederID)
+	if !feederIDPattern.MatchString(feederID) {
+		return fmt.Errorf("%w: %q does not match the allowed feeder ID shape", ErrInvalidFeederID, feederID)
 	}
 	return nil
 }
@@ -250,9 +269,12 @@ func validateFeederID(feederID string) error {
 // c:IdentifiedObject.mRID as a bare uppercase UUID without the
 // underscore prefix the Python upstream's call sites use; stripping
 // here lets the bridge accept either form without the caller having to
-// know which the deployed dataset uses. A double-underscore input
-// ("__abc") strips to a single ("_abc"), preserving caller intent for
-// the unusual case where the underscore is data rather than prefix.
+// know which the deployed dataset uses. Callers only ever reach this
+// function after feederIDPattern has already accepted the input
+// (queryFeederTemplate validates first), and that pattern permits at
+// most one leading underscore, so there is no double-underscore case
+// left to reason about here: an input with a second leading underscore
+// is rejected by validateFeederID before normalizeFeederID ever runs.
 func normalizeFeederID(feederID string) string {
 	return strings.TrimPrefix(feederID, "_")
 }
