@@ -9,12 +9,22 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
-// mux registers the GAGO-059 read only JSON endpoints. Every handler
-// here is a pure reader over the sources injected into Server by New:
-// none of them ever writes to the registry, the embedded server, or the
-// control observation hook. requireGET (in the outer middleware chain
-// built by buildHandler) already rejects any non-GET method before a
-// handler here runs, so no handler needs its own method check.
+// mux registers the GAGO-059 read only JSON endpoints, plus the
+// GAGO-060 SPA handler on "/". Every /api/... handler here is a pure
+// reader over the sources injected into Server by New: none of them
+// ever writes to the registry, the embedded server, or the control
+// observation hook. requireGET (in the outer middleware chain built by
+// buildHandler) already rejects any non-GET method before a handler
+// here runs, so no handler needs its own method check; that includes
+// the SPA handler, which is equally GET only.
+//
+// "/" is registered last in this list purely for readability: Go's
+// http.ServeMux dispatches by longest-prefix match on the registered
+// patterns, not registration order, so each exact /api/... pattern
+// above always wins over the "/" catch-all regardless of where "/" sits
+// in this function. The SPA handler's own internal check (spa.go) is
+// the second, explicit line of defense against ever shadowing an
+// unmatched /api/... path with index.html.
 func (s *Server) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
@@ -23,6 +33,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("/api/served/edev", s.handleServedEndDevices)
 	mux.HandleFunc("/api/served/derprogram", s.handleServedDERPrograms)
 	mux.HandleFunc("/api/controlflow", s.handleControlFlow)
+	mux.Handle("/", s.spaHandler())
 	return mux
 }
 
