@@ -1,0 +1,44 @@
+version: 2
+updates:
+  # GitHub Actions version bumps: check for updates weekly.
+  # Schedule: Tuesday 06:00 UTC (off-peak, well ahead of Monday
+  # midnight thundering herd; Tuesday morning in US timezones).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    pull-request-branch-name:
+      separator: /
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+    # Allow and open PRs for workflow updates.
+    allow:
+      - dependency-type: "all"
+
+  # Go module dependency bumps: check for updates weekly.
+  # Note: the bridge imports github.com/GRIDAPPSD/ieee-2030_5-go,
+  # a private GRIDAPPSD module. Dependabot may not be able to resolve
+  # private modules without explicit credentials. If the private module
+  # cannot be fetched during an update check, the gomod ecosystem will
+  # skip or error gracefully. Private module bumps are handled manually
+  # or through CI-gated PR checks that have access to GITHUB_TOKEN with
+  # read:packages scope. For now, this entry updates all public deps.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    pull-request-branch-name:
+      separator: /
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+    # Allow all dependency types.
+    allow:
+      - dependency-type: "all"
