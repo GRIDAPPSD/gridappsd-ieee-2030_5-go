@@ -37,6 +37,7 @@ import (
 // the dial path through stomp.ConnectWithContext; full request/response is
 // covered by the bare-broker integration tests.
 type tlsTestServer struct {
+	t        *testing.T
 	listener net.Listener
 	addr     string
 
@@ -90,6 +91,7 @@ func startTLSTestServer(t *testing.T, requireClientCert bool) *tlsTestServer {
 	}
 
 	s := &tlsTestServer{
+		t:                 t,
 		listener:          ln,
 		addr:              ln.Addr().String(),
 		caPEM:             caPEM,
@@ -113,6 +115,12 @@ func (s *tlsTestServer) ServerCAPool() *x509.CertPool {
 	return pool
 }
 
+// Stop closes the listener and waits for serve/handleConn goroutines to
+// exit, then drains any accept/handshake errors that accumulated in
+// acceptErrs and logs them via t.Logf. The drain-and-log (rather than a
+// bare drop) makes an unexpected accept-loop failure visible in a test's
+// -v output instead of it silently vanishing when the buffered channel
+// is garbage collected (GAGO-022 Dutch M3 / Leon L4).
 func (s *tlsTestServer) Stop() {
 	s.stopMu.Lock()
 	if s.closed {
@@ -124,6 +132,17 @@ func (s *tlsTestServer) Stop() {
 	_ = s.listener.Close()
 	s.stopMu.Unlock()
 	s.wg.Wait()
+
+	for {
+		select {
+		case err := <-s.acceptErrs:
+			if s.t != nil {
+				s.t.Logf("tlsTestServer: accept/handshake error: %v", err)
+			}
+		default:
+			return
+		}
+	}
 }
 
 func (s *tlsTestServer) serve() {
@@ -217,8 +236,19 @@ func (s *tlsTestServer) handleConn(conn net.Conn) {
 	// We watch for a STOMP DISCONNECT frame and reply with a RECEIPT so
 	// the client's Close completes promptly instead of waiting for its
 	// own disconnect timeout (default ~15s in go-stomp).
+	//
+	// This reader goroutine is tracked on s.wg (not just the outer
+	// handleConn) so that Stop's wg.Wait() cannot return while this
+	// goroutine is still reading from conn: without the extra Add/Done,
+	// the outer select below can take the <-s.stop branch and return
+	// (releasing handleConn's own wg slot) while this inner goroutine is
+	// still blocked in br.ReadString on a conn Stop is about to close
+	// out from under it, which is exactly the kind of racy conn access
+	// -race is built to catch (GAGO-022 Leon L2).
 	done := make(chan struct{})
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		defer close(done)
 		for {
 			line, err := br.ReadString('\n')
@@ -271,7 +301,7 @@ func generateCA(t *testing.T, name string) (*x509.Certificate, *ecdsa.PrivateKey
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: name},
 		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(24 * time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -301,7 +331,7 @@ func generateLeafCert(t *testing.T, caCert *x509.Certificate, caKey *ecdsa.Priva
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject:      pkix.Name{CommonName: cn},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 	}
 	if isServer {
@@ -363,7 +393,11 @@ func TestTLS_ClientConnectsOverTLS(t *testing.T) {
 	// completed and STOMP CONNECTED was processed.
 	if err == nil {
 		// If a future implementation surfaces fetchAuthToken differently,
-		// a nil error is also acceptable.
+		// a nil error is also acceptable, but log it: a silent early
+		// return here would otherwise hide the fact that Connect
+		// succeeded (which the test's own doc comment says it does not
+		// expect) from -v output (GAGO-022 Dutch L1).
+		t.Logf("Connect over TLS returned nil error (fetchAuthToken unexpectedly succeeded or was bypassed)")
 		return
 	}
 	msg := err.Error()
@@ -403,6 +437,21 @@ func TestTLS_ClientPlainTCPAgainstTLSServerFails(t *testing.T) {
 	err := c.Connect(ctx)
 	if err == nil {
 		t.Fatal("Connect with TLS=nil against TLS-only server: expected error, got nil")
+	}
+	// Soft substring check (GAGO-022 Dutch M4): the plain-TCP client
+	// should fail either at the STOMP-frame layer (the server reads TLS
+	// record bytes as garbage and never sends CONNECTED) or via context
+	// deadline; a bare assertion of "any non-nil error" cannot tell a
+	// deliberate handshake mismatch apart from an unrelated flake, so we
+	// log when the message doesn't obviously implicate one of those,
+	// without failing the test over wording that can vary by Go version.
+	msg := strings.ToLower(err.Error())
+	if !errors.Is(err, context.DeadlineExceeded) &&
+		!strings.Contains(msg, "eof") &&
+		!strings.Contains(msg, "connect") &&
+		!strings.Contains(msg, "closed") &&
+		!strings.Contains(msg, "reset") {
+		t.Logf("error did not obviously identify a STOMP-handshake or timeout failure (acceptable): %v", err)
 	}
 }
 
@@ -481,7 +530,11 @@ func TestTLS_ClientMissingClientCertFails(t *testing.T) {
 }
 
 // TestTLS_PublisherConnectsOverTLS mirrors the Client positive path for
-// Publisher.Connect.
+// Publisher.Connect, and additionally exercises Publisher.Close on the
+// happy path: a successful TLS Connect followed by Close must complete
+// the STOMP DISCONNECT/RECEIPT round trip cleanly rather than only being
+// covered indirectly via a deferred cleanup call whose result nothing
+// checks (GAGO-022 Dutch M5).
 func TestTLS_PublisherConnectsOverTLS(t *testing.T) {
 	srv := startTLSTestServer(t, true)
 	defer srv.Stop()
@@ -492,7 +545,6 @@ func TestTLS_PublisherConnectsOverTLS(t *testing.T) {
 		Password: "manager",
 		TLS:      srv.ClientTLSConfig(),
 	})
-	defer p.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -501,6 +553,10 @@ func TestTLS_PublisherConnectsOverTLS(t *testing.T) {
 		// followed by STOMP CONNECT should yield a nil error. Any error
 		// here is a TLS/STOMP-layer failure and is fatal.
 		t.Fatalf("Publisher.Connect over TLS: %v", err)
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Publisher.Close after successful TLS Connect: %v", err)
 	}
 }
 
@@ -520,8 +576,19 @@ func TestTLS_PublisherPlainTCPAgainstTLSServerFails(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := p.Connect(ctx); err == nil {
+	err := p.Connect(ctx)
+	if err == nil {
 		t.Fatal("Publisher.Connect with TLS=nil against TLS-only server: expected error, got nil")
+	}
+	// Soft substring check mirroring the Client negative test above
+	// (GAGO-022 Dutch M4).
+	msg := strings.ToLower(err.Error())
+	if !errors.Is(err, context.DeadlineExceeded) &&
+		!strings.Contains(msg, "eof") &&
+		!strings.Contains(msg, "connect") &&
+		!strings.Contains(msg, "closed") &&
+		!strings.Contains(msg, "reset") {
+		t.Logf("error did not obviously identify a STOMP-handshake or timeout failure (acceptable): %v", err)
 	}
 }
 
