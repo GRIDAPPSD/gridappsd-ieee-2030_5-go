@@ -123,6 +123,12 @@ const (
 	deviceCertModePreprovisionedFlag = "preprovisioned"
 )
 
+// errVersionRequested is loadConfig's sentinel for "-version was
+// passed": main checks for it with errors.Is, the same pattern it
+// already uses for flag.ErrHelp, and prints the build version instead
+// of treating the return as a usage error.
+var errVersionRequested = errors.New("version requested")
+
 // envDefaults are the gridappsd-docker dev-stack defaults. They are
 // safe to bake into the binary because:
 //
@@ -234,8 +240,21 @@ func loadConfig(args []string) (config, error) {
 	var adminUIKeyFlag string
 	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
 
+	var versionFlag bool
+	fs.BoolVar(&versionFlag, "version", false, "print the build version and exit")
+
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("parse flags: %w", err)
+	}
+
+	// -version is a pure query flag: return before resolveCred's env
+	// scrub and before validate's required-field checks run, so passing
+	// -version alone (with none of the other flags/env set) always
+	// succeeds and never has any side effect beyond reporting the
+	// version. main checks for errVersionRequested with errors.Is, the
+	// same pattern it already uses for flag.ErrHelp.
+	if versionFlag {
+		return config{}, errVersionRequested
 	}
 
 	// Resolve credential precedence: flag wins if non-empty, else env,

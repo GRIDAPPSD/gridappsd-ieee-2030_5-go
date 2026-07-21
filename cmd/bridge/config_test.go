@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"net"
 	"os"
@@ -601,5 +602,26 @@ func TestLoadConfigSEP2AdminUIKeyNotRequiredByValidate(t *testing.T) {
 	}
 	if cfg.SEP2AdminUIKey != "" {
 		t.Errorf("SEP2AdminUIKey: got %q, want empty", cfg.SEP2AdminUIKey)
+	}
+}
+
+// TestLoadConfigVersionFlagReturnsBeforeValidate locks in -version as a
+// pure query flag (GAGO-036): loadConfig must return
+// errVersionRequested even when every other required field is left
+// unset (SEP2_STOMP_ADDR, SEP2_FEEDER_MRID, etc. all empty, which would
+// otherwise fail config.validate). If -version ever regressed to run
+// after validate, this test would fail with a different (required
+// field missing) error instead of errVersionRequested, catching the
+// regression: -version must exit clean regardless of what other config
+// is present.
+func TestLoadConfigVersionFlagReturnsBeforeValidate(t *testing.T) {
+	t.Setenv("SEP2_STOMP_ADDR", "")
+	t.Setenv("SEP2_FEEDER_MRID", "")
+	t.Setenv("SEP2_SERVER_ADDR", "")
+	t.Setenv("SEP2_SERVER_CERT_DIR", "")
+
+	_, err := loadConfig([]string{"-version"})
+	if !errors.Is(err, errVersionRequested) {
+		t.Fatalf("loadConfig([-version]): got err %v, want errVersionRequested", err)
 	}
 }
