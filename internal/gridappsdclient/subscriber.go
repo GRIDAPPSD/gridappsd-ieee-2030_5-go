@@ -113,7 +113,10 @@ func (s *Subscriber) Subscribe(ctx context.Context, destination string) (sim.Sub
 
 // relay is the sole owner and closer of sub.msgs. It forwards raw to
 // msgs with a blocking, ctx-guarded send until ctx is done, then
-// unsubscribes, records ctx.Err() on sub (once), and closes msgs.
+// unsubscribes (bounded by unsubscribeTimeout so an unresponsive
+// broker cannot stall teardown past SIGINT, see GAGO-041), records an
+// error on sub (once: the Unsubscribe failure if there was one,
+// otherwise ctx.Err()), and closes msgs.
 //
 // Backpressure: the send to sub.msgs blocks (guarded only by
 // ctx.Done()), so a slow sim.Pump consumer blocks relay, which blocks
@@ -132,8 +135,9 @@ func (s *Subscriber) Subscribe(ctx context.Context, destination string) (sim.Sub
 // There is currently no broker-teardown signal surfaced by
 // gridappsd-go's router.Router to fieldbus.MessageBus callers (readLoop
 // only reports to an internal errSink; see gridappsd-go GAG-009).
-// sub.Err() therefore only ever reports ctx.Err(), never a broker-side
-// drop, unlike cimstomp.Subscription which can also report a wrapped
+// sub.Err() therefore only ever reports ctx.Err() or a bounded
+// Unsubscribe failure at shutdown, never a broker-side drop mid-stream,
+// unlike cimstomp.Subscription which can also report a wrapped
 // ErrConnectionLost. Revisit this comment and Err's doc once GAG-009
 // exposes an Errors() channel upstream.
 func (s *Subscriber) relay(ctx context.Context, dest string, tok fieldbus.Token, raw <-chan cimstomp.Message, sub *subscription) {
