@@ -1,0 +1,182 @@
+name: Release
+
+# Tag-driven release for cmd/bridge. GitHub-hosted runners are
+# acceptable here per .claude/rules/devops.md's non-deploy-bearing
+# release-workflow carve-out: this job never SSHes to a deployment
+# target, never runs docker compose against a running environment, and
+# never pushes to a container registry. It only builds a Go binary and
+# publishes it as a GitHub release artifact, authenticated solely with
+# the ephemeral GITHUB_TOKEN.
+#
+# Dry-run-safe by default per .claude/rules/releasing.md Section 1: a
+# workflow_dispatch run with no input supplied defaults dry_run to
+# true, so an accidental manual trigger rehearses the full pipeline
+# (build, version stamp, canary smoke-test) without creating a
+# release. Only a real `v*` tag push, or an explicit dry_run=false
+# dispatch, publishes.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: rehearse the pipeline without publishing a release'
+        type: boolean
+        default: true
+
+# Least-privilege baseline: read-only at the workflow level. Only the
+# publish job elevates to contents: write, and only because it creates
+# a release and uploads a build artifact to it.
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    name: Build, stamp version, canary smoke-test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_dry_run: ${{ steps.mode.outputs.is_dry_run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # git describe needs the full tag history, not the default
+          # shallow clone, to resolve the pushed tag (or the nearest
+          # ancestor tag on a workflow_dispatch run off a branch).
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Determine release mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # A real tag push always means a real release attempt;
+            # workflow_dispatch is the only trigger that can be a
+            # rehearsal.
+            echo "is_dry_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine version
+        id: version
+        run: |
+          # Same derivation the Makefile's build target uses, so a
+          # CI-built binary and a locally-built binary of the same tag
+          # stamp identically. On a tag push, git describe resolves to
+          # the tag itself; on a workflow_dispatch rehearsal off a
+          # branch, it resolves to the nearest ancestor tag plus a
+          # commit-count/sha suffix (or "dev" on a repo with no tags
+          # at all).
+          version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
+
+      - name: Build cmd/bridge
+        env:
+          # Assigned via env: rather than interpolated directly into
+          # the shell body: the version string derives from
+          # git describe on a tag name, and git ref-name rules permit
+          # shell metacharacters, so a crafted tag pushed with
+          # contents:write could otherwise be expanded by the runner
+          # before execution. See .claude/rules/secure-coding.md
+          # "trust the boundary, not the caller".
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          go build \
+            -ldflags "-X github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo.Version=${VERSION}" \
+            -o bridge \
+            ./cmd/bridge
+
+      - name: Canary version smoke-test
+        env:
+          # Same env: rationale as the build step above: never
+          # interpolate ${{ }} directly into the shell body.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # This is the version-smoke-test gate from
+          # .claude/rules/releasing.md Section 4: unit tests never
+          # receive the -ldflags build-time injection, so a typo in
+          # the injection symbol path (the GAGO-036 failure mode)
+          # would ship a silently wrong version while every unit test
+          # stays green. Assert the built binary's -version output
+          # contains the exact resolved version string; fail closed
+          # on any mismatch.
+          expected="${VERSION}"
+          actual=$(./bridge -version)
+          echo "Expected version: $expected"
+          echo "Actual output:    $actual"
+          case "$actual" in
+            *"$expected"*)
+              echo "Canary smoke-test passed: stamped version matches the resolved tag."
+              ;;
+            *)
+              echo "Canary smoke-test FAILED: bridge -version output does not contain the expected version."
+              echo "This means the -ldflags injection path is broken; the artifact would ship with a wrong stamped version."
+              exit 1
+              ;;
+          esac
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bridge-${{ steps.version.outputs.version }}
+          path: bridge
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build-and-verify
+    # Publish only on a real tag push, or an explicit dry_run=false
+    # dispatch. A bare workflow_dispatch with no input (default
+    # dry_run=true) or any other trigger shape never reaches this job
+    # publishing anything: the job still runs so the dry-run branch
+    # below can print what it would have done, but the publish step
+    # inside it is itself gated on is_dry_run.
+    if: needs.build-and-verify.outputs.is_dry_run == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      # Elevated only in this job, only for the duration of the
+      # release-create step below.
+      contents: write
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: bridge-${{ needs.build-and-verify.outputs.version }}
+          path: dist
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build-and-verify.outputs.version }}
+          # Assigned via env: for the same reason as VERSION above:
+          # never interpolate ${{ }} directly into the shell body.
+          # github.ref_name is the pushed tag name, and git ref-name
+          # rules permit shell metacharacters.
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          chmod +x dist/bridge
+          mv dist/bridge "dist/bridge-${VERSION}-linux-amd64"
+          gh release create "${REF_NAME}" \
+            "dist/bridge-${VERSION}-linux-amd64" \
+            --title "${REF_NAME}" \
+            --generate-notes
+
+  dry-run-report:
+    name: Report dry-run result
+    needs: build-and-verify
+    if: needs.build-and-verify.outputs.is_dry_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print what would have published
+        run: |
+          echo "Dry run: no release was published."
+          echo "Resolved version: ${{ needs.build-and-verify.outputs.version }}"
+          echo "A real release requires either a pushed v* tag, or a workflow_dispatch run with dry_run set to false."
