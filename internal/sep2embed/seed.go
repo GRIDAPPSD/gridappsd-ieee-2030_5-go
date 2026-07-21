@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
@@ -163,7 +164,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 
 	dercap := sep2.DERCapability{
 		ModesSupported: modesSupported,
-		RTGMaxVar:      buildRTGMaxVar(e.MaxQ),
+		RTGMaxVar:      buildRTGMaxVar(e.MaxQ, id),
 	}
 	dercap.Href = dercapHref
 
@@ -191,8 +192,25 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 // matching the convention this codebase's other ReactivePower
 // constructions already use (see internal/sep2embed/control_test.go's
 // literal sep2.ReactivePower{Multiplier: 0, Value: ...} fixtures).
-func buildRTGMaxVar(maxQ *int64) *sep2.ReactivePower {
+//
+// deviceID names the entry this call is seeding (the store id, which is
+// the device's canonical LFDI); it is used only for the warning below,
+// never mixed into the returned value.
+//
+// A negative maxQ is malformed CIM data: maxQ is the positive
+// generation-side reactive rating (CIMHub's minQ carries the negative
+// absorption side), and the IEEE 2030.5 rtgMaxVar field expects the
+// delivered/positive rating. Rather than propagate a wrong-sign rating
+// or silently clamp it to a guessed magnitude, buildRTGMaxVar logs a
+// warning naming the device and returns nil, exactly as it does for an
+// absent maxQ: no capability advertised is safer than a wrong-sign one
+// (Cyrus, GAGO-049 review LOW finding; GAGO-068).
+func buildRTGMaxVar(maxQ *int64, deviceID string) *sep2.ReactivePower {
 	if maxQ == nil {
+		return nil
+	}
+	if *maxQ < 0 {
+		log.Printf("sep2embed: WARNING: device %q has negative CIM maxQ (%d); rtgMaxVar expects the positive delivered rating, dropping to nil instead of advertising a wrong-sign capability", deviceID, *maxQ)
 		return nil
 	}
 	return &sep2.ReactivePower{Multiplier: 0, Value: *maxQ}
