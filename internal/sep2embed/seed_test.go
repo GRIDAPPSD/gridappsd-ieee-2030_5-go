@@ -1,7 +1,9 @@
 package sep2embed
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"strings"
 	"testing"
 
@@ -342,6 +344,117 @@ func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 	}
 	if der.DERCapabilityLink.Href != dercap.Href {
 		t.Errorf("DER.DERCapabilityLink.Href = %q does not resolve to the seeded DERCapability's own Href %q", der.DERCapabilityLink.Href, dercap.Href)
+	}
+}
+
+// TestBuildRTGMaxVar is a table-driven test on buildRTGMaxVar directly,
+// asserting the returned struct's field values (not just non-nil), per
+// [[data-invariants]]. Covers: nil input (absent CIM binding), zero,
+// positive, and the GAGO-068 negative-maxQ guard (Cyrus's GAGO-049
+// review LOW finding).
+func TestBuildRTGMaxVar(t *testing.T) {
+	t.Parallel()
+
+	posMaxQ := int64(250000)
+	zeroMaxQ := int64(0)
+	negMaxQ := int64(-12345)
+
+	tests := []struct {
+		name     string
+		maxQ     *int64
+		wantNil  bool
+		wantVal  int64
+		wantMult int8
+	}{
+		{name: "nil maxQ stays nil (absent CIM binding)", maxQ: nil, wantNil: true},
+		{name: "zero maxQ passes through unchanged", maxQ: &zeroMaxQ, wantNil: false, wantVal: 0, wantMult: 0},
+		{name: "positive maxQ passes through unchanged", maxQ: &posMaxQ, wantNil: false, wantVal: posMaxQ, wantMult: 0},
+		{name: "negative maxQ is dropped to nil (GAGO-068 guard)", maxQ: &negMaxQ, wantNil: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildRTGMaxVar(tt.maxQ, "test-device-id")
+			if tt.wantNil {
+				if got != nil {
+					t.Fatalf("buildRTGMaxVar(%v) = %+v, want nil", tt.maxQ, got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("buildRTGMaxVar(%v) = nil, want &ReactivePower{Multiplier:%d, Value:%d}", tt.maxQ, tt.wantMult, tt.wantVal)
+			}
+			if got.Value != tt.wantVal {
+				t.Errorf("buildRTGMaxVar(%v).Value = %d, want %d", tt.maxQ, got.Value, tt.wantVal)
+			}
+			if got.Multiplier != tt.wantMult {
+				t.Errorf("buildRTGMaxVar(%v).Multiplier = %d, want %d", tt.maxQ, got.Multiplier, tt.wantMult)
+			}
+		})
+	}
+}
+
+// TestBuildRTGMaxVarLogsNegativeMaxQWithDeviceID confirms the negative
+// path is observable (logged), and that the log line names the device
+// id passed in, so an operator can trace the warning back to the
+// offending CIM record, per [[secure-coding]] ("errors are signals, not
+// noise").
+func TestBuildRTGMaxVarLogsNegativeMaxQWithDeviceID(t *testing.T) {
+	var buf bytes.Buffer
+	origOutput := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(origOutput)
+		log.SetFlags(origFlags)
+	}()
+
+	negMaxQ := int64(-500)
+	const deviceID = "DEADBEEF0000000000000000000000000000CAFE"
+
+	got := buildRTGMaxVar(&negMaxQ, deviceID)
+	if got != nil {
+		t.Fatalf("buildRTGMaxVar with negative maxQ = %+v, want nil", got)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, deviceID) {
+		t.Errorf("log output %q does not name the device id %q", logged, deviceID)
+	}
+	if !strings.Contains(logged, "-500") {
+		t.Errorf("log output %q does not include the offending maxQ value", logged)
+	}
+}
+
+// TestSeedStoresDropsNegativeMaxQToNilRTGMaxVar confirms the guard is
+// wired end-to-end through seedStores: a registry.Entry carrying a
+// negative MaxQ produces a seeded DERCapability with RTGMaxVar nil, the
+// same outcome as an absent MaxQ, rather than a wrong-sign rating
+// reaching the wire (GAGO-068).
+func TestSeedStoresDropsNegativeMaxQToNilRTGMaxVar(t *testing.T) {
+	t.Parallel()
+
+	var negMaxQ int64 = -75000
+
+	reg := registry.New()
+	entry := registry.Entry{MRID: "mrid-negmaxq-1", Name: "Inverter NegMaxQ", LFDI: "4444000000000000000000000000000000DDDD", MaxQ: &negMaxQ}
+	if err := reg.Add(entry); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	stores := newStores()
+	ctx := context.Background()
+	if err := seedStores(ctx, stores, reg, nil); err != nil {
+		t.Fatalf("seedStores: %v", err)
+	}
+
+	dercap, err := stores.DERCapabilities.Get(ctx, entry.LFDI+"/1", "default")
+	if err != nil {
+		t.Fatalf("DERCapabilities.Get(%q, %q): %v", entry.LFDI+"/1", "default", err)
+	}
+	if dercap.RTGMaxVar != nil {
+		t.Errorf("DERCapability.RTGMaxVar = %+v for a negative MaxQ, want nil (no wrong-sign capability advertised)", dercap.RTGMaxVar)
 	}
 }
 
