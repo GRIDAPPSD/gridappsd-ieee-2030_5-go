@@ -27,9 +27,9 @@ import (
 // across the embed_test.go scenarios below.
 func fixtureEntries() []registry.Entry {
 	return []registry.Entry{
-		{MRID: "mrid-inv-1", Name: "Inverter 1", LFDI: "1111111111111111111111111111111111AAAA", Placeholder: true},
-		{MRID: "mrid-bat-1", Name: "Battery 1", LFDI: "2222222222222222222222222222222222BBBB", Placeholder: true},
-		{MRID: "mrid-sol-1", Name: "Solar 1", LFDI: "3333333333333333333333333333333333CCCC", Placeholder: true},
+		{MRID: "mrid-inv-1", Name: "Inverter 1", LFDI: "111111111111111111111111111111111111AAAA", Placeholder: true},
+		{MRID: "mrid-bat-1", Name: "Battery 1", LFDI: "222222222222222222222222222222222222BBBB", Placeholder: true},
+		{MRID: "mrid-sol-1", Name: "Solar 1", LFDI: "333333333333333333333333333333333333CCCC", Placeholder: true},
 	}
 }
 

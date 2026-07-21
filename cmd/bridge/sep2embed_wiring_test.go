@@ -95,7 +95,7 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 	entry := registry.Entry{
 		MRID:        "mrid-wiring-test-1",
 		Name:        "Wiring Test Inverter",
-		LFDI:        "9999999999999999999999999999999999DEAD",
+		LFDI:        "999999999999999999999999999999999999DEAD",
 		Placeholder: true,
 	}
 	if err := reg.Add(entry); err != nil {
