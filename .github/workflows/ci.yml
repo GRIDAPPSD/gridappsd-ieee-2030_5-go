@@ -18,6 +18,13 @@ on:
     # See the push trigger comment above; the same rationale applies.
     paths-ignore: ['**/*.md', 'docs/**', 'CHANGELOG.md']
 
+# Least-privilege baseline: neither job writes anything (no release,
+# no PR comment, no package publish), so the default token scope is
+# read-only rather than inheriting the repo or org default, which can
+# be write-all.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: Build, vet, and test
