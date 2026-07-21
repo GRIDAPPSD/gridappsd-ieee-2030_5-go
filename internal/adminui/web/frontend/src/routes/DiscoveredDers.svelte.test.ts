@@ -1,18 +1,19 @@
-// DiscoveredDers.svelte.test.ts exercises GAGO-063: exact field-value
-// rendering for a populated DER list, and the empty state for a feeder
-// with no PowerElectronicsConnection. Mocked at the fetchJSON boundary.
+// DiscoveredDers.svelte.test.ts exercises GAGO-063/GAGO-077: exact
+// field-value rendering for a populated DER list including the now
+// available feederMrid column, and the empty state for a feeder with
+// no PowerElectronicsConnection. Mocked at the fetchJSON boundary.
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/svelte'
+import { render, screen } from '@testing-library/svelte'
 import DiscoveredDers from './DiscoveredDers.svelte'
 import * as api from '../lib/api'
 
 describe('DiscoveredDers', () => {
-  it('renders each DER field value alongside its owning EndDevice', async () => {
+  it('renders each DER field value, including feederMrid, alongside its owning EndDevice', async () => {
     vi.spyOn(api, 'fetchJSON').mockResolvedValue({
       ok: true,
       data: [
-        { edevId: 'edev-1', id: 'der-1', href: '/edev/edev-1/der/1' },
-        { edevId: 'edev-2', id: 'der-2', href: '/edev/edev-2/der/2' },
+        { edevId: 'edev-1', id: 'der-1', href: '/edev/edev-1/der/1', feederMrid: 'feeder-mrid-1' },
+        { edevId: 'edev-2', id: 'der-2', href: '/edev/edev-2/der/2', feederMrid: 'feeder-mrid-1' },
       ],
     })
 
@@ -25,6 +26,11 @@ describe('DiscoveredDers', () => {
     expect(table).toHaveTextContent('edev-2')
     expect(table).toHaveTextContent('der-2')
     expect(table).toHaveTextContent('/edev/edev-2/der/2')
+
+    const feederCells = screen.getAllByTestId('der-feeder-mrid-cell')
+    expect(feederCells).toHaveLength(2)
+    expect(feederCells[0]).toHaveTextContent('feeder-mrid-1')
+    expect(feederCells[1]).toHaveTextContent('feeder-mrid-1')
   })
 
   it('shows a clear empty state, not an error, for an empty fleet', async () => {

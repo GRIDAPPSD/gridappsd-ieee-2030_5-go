@@ -1,54 +1,83 @@
 <script lang="ts">
-  // Health is the admin UI's landing panel (GAGO-061). It polls two
-  // endpoints every POLL_INTERVAL_MS: /api/health for basic
-  // reachability, and /api/registry so the panel can derive a
-  // registry entry count and a placeholder-vs-certificate identity
-  // tally client side, since GET /api/health itself (handlers.go's
-  // handleHealth) returns only a fixed { status: "ok" } today and does
-  // not carry STOMP connection state, the mTLS listener address, the
-  // server's own SFDI/LFDI, the feeder mRID, the simulation ID, or an
-  // uptime value. Those fields are a known gap surfaced in this
-  // panel's own "known gaps" note rather than fabricated here: see
-  // this card's report for the backend follow-up.
+  // Health is the admin UI's landing panel (GAGO-061, enriched by
+  // GAGO-077). GET /api/health (handlers.go's handleHealth,
+  // healthResponse) now carries STOMP connection state, the mTLS
+  // listener address, this server's own SFDI/LFDI identity, the feeder
+  // mRID, the simulation ID, the registry/placeholder/certificate
+  // tally, uptime, and the optional server-of-record link. This panel
+  // renders those fields directly from /api/health; the registry tally
+  // is no longer derived client side from a separate /api/registry
+  // fetch, since the server now computes and serializes that tally
+  // itself (registryCount, placeholderCount, certificateCount).
   import { onDestroy, onMount } from 'svelte'
   import { fetchJSON } from '../lib/api'
 
   interface HealthResponse {
     status: string
-  }
-
-  interface RegistryEntryResponse {
-    mrid: string
-    name: string
-    lfdi: string
-    sfdi: string
-    placeholder: boolean
+    stompConnected: boolean
+    mtlsListener: string
+    serverSfdi: string
+    serverLfdi: string
+    feederMrid: string
+    simulationId: string
+    registryCount: number
+    placeholderCount: number
+    certificateCount: number
+    uptimeSeconds: number
+    sorLink: string
   }
 
   const POLL_INTERVAL_MS = 5000
 
+  // ALLOWED_SOR_SCHEMES is the GAGO-066 fail-closed allowlist: only
+  // http and https render as a link. Every other scheme (javascript:,
+  // data:, or anything the URL parser rejects outright) renders no
+  // link at all. Svelte's text interpolation auto-escapes rendered
+  // text, but that escaping does not protect an href attribute
+  // context: a javascript: URL is a script-execution sink regardless
+  // of how the surrounding text is escaped, so the scheme itself must
+  // be validated before sorLink ever reaches an href.
+  const ALLOWED_SOR_SCHEMES = new Set(['http:', 'https:'])
+
+  // safeSorLink parses rawLink with the URL API and returns it
+  // unchanged only when its scheme is in the allowlist above.
+  // Anything unparseable, or parseable but on a disallowed scheme,
+  // returns null so the caller renders no href.
+  function safeSorLink(rawLink: string): string | null {
+    if (!rawLink) return null
+    let parsed: URL
+    try {
+      parsed = new URL(rawLink)
+    } catch {
+      return null
+    }
+    return ALLOWED_SOR_SCHEMES.has(parsed.protocol) ? rawLink : null
+  }
+
   let reachable: 'loading' | 'ok' | 'disconnected' = $state('loading')
-  let registryCount: number | null = $state(null)
-  let placeholderCount: number | null = $state(null)
-  let registryError = $state('')
+  let health: HealthResponse | null = $state(null)
+  let healthError = $state('')
+  let sorHref: string | null = $state(null)
 
   async function poll(): Promise<void> {
-    const health = await fetchJSON<HealthResponse>('/api/health')
+    const result = await fetchJSON<HealthResponse>('/api/health')
     // A failed fetch or a non-"ok" status is treated identically as
     // "disconnected", never as an error state: a bridge with STOMP
     // down is an expected operating condition, not a fault in the
-    // admin UI itself.
-    reachable = health.ok && health.data.status === 'ok' ? 'ok' : 'disconnected'
-
-    const registry = await fetchJSON<RegistryEntryResponse[]>('/api/registry')
-    if (registry.ok) {
-      registryCount = registry.data.length
-      placeholderCount = registry.data.filter((entry) => entry.placeholder).length
-      registryError = ''
+    // admin UI itself. The enriched fields (and the SOR link) are only
+    // trusted when the health check itself succeeded with status ok;
+    // a disconnected/failed poll clears them rather than showing stale
+    // values from a prior successful poll.
+    if (result.ok && result.data.status === 'ok') {
+      reachable = 'ok'
+      health = result.data
+      healthError = ''
+      sorHref = safeSorLink(result.data.sorLink)
     } else {
-      registryCount = null
-      placeholderCount = null
-      registryError = registry.error
+      reachable = 'disconnected'
+      health = null
+      sorHref = null
+      healthError = result.ok ? '' : result.error
     }
   }
 
@@ -78,24 +107,42 @@
     {/if}
   </div>
 
-  <div class="registry-summary" data-testid="registry-summary">
-    {#if registryCount === null}
-      <p>Registry summary unavailable: {registryError || 'loading'}</p>
+  <div class="health-fields" data-testid="health-fields">
+    {#if health === null}
+      <p>Bridge health detail unavailable{healthError ? `: ${healthError}` : ''}.</p>
     {:else}
-      <p>
-        Registry entries: <strong>{registryCount}</strong>, placeholder identities:
-        <strong>{placeholderCount}</strong>, certificate derived:
-        <strong>{registryCount - (placeholderCount ?? 0)}</strong>
-      </p>
+      <dl>
+        <dt>STOMP connection</dt>
+        <dd data-testid="health-stomp">{health.stompConnected ? 'connected' : 'disconnected'}</dd>
+        <dt>mTLS listener</dt>
+        <dd data-testid="health-mtls">{health.mtlsListener}</dd>
+        <dt>Server SFDI</dt>
+        <dd data-testid="health-server-sfdi">{health.serverSfdi}</dd>
+        <dt>Server LFDI</dt>
+        <dd data-testid="health-server-lfdi">{health.serverLfdi}</dd>
+        <dt>Feeder mRID</dt>
+        <dd data-testid="health-feeder-mrid">{health.feederMrid}</dd>
+        <dt>Simulation ID</dt>
+        <dd data-testid="health-simulation-id">{health.simulationId}</dd>
+        <dt>Registry entries</dt>
+        <dd data-testid="health-registry-count">{health.registryCount}</dd>
+        <dt>Placeholder identities</dt>
+        <dd data-testid="health-placeholder-count">{health.placeholderCount}</dd>
+        <dt>Certificate derived identities</dt>
+        <dd data-testid="health-certificate-count">{health.certificateCount}</dd>
+        <dt>Uptime (seconds)</dt>
+        <dd data-testid="health-uptime">{health.uptimeSeconds}</dd>
+      </dl>
     {/if}
   </div>
 
-  <p class="note" data-testid="health-known-gaps">
-    STOMP connection state, the mTLS listener address, the server's own
-    SFDI/LFDI identity, the feeder mRID, the simulation ID, and uptime are
-    not yet exposed by GET /api/health; this panel reports connectivity and
-    the registry identity tally only until that endpoint is extended.
-  </p>
+  <div class="sor-link" data-testid="sor-link-container">
+    {#if sorHref !== null}
+      <a data-testid="sor-link" href={sorHref} target="_blank" rel="noopener noreferrer">
+        Server of record dashboard
+      </a>
+    {/if}
+  </div>
 </section>
 
 <style>
@@ -113,8 +160,27 @@
     color: #9a6700;
   }
 
-  .note {
-    color: var(--text);
+  dl {
+    display: grid;
+    grid-template-columns: max-content auto;
+    gap: 4px 16px;
     font-size: 0.9em;
+  }
+
+  dt {
+    color: var(--text);
+  }
+
+  dd {
+    margin: 0;
+    color: var(--text-h);
+  }
+
+  .sor-link {
+    margin-top: 20px;
+  }
+
+  .sor-link a {
+    color: var(--text-h);
   }
 </style>

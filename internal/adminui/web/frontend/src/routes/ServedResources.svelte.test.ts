@@ -1,9 +1,9 @@
-// ServedResources.svelte.test.ts exercises GAGO-064: exact field-value
-// rendering for served EndDevices+DERs and DERPrograms, plus the
-// DefaultDERControl column's honest "not exposed by API" state (see
-// this card's report: derProgramResponse omits DefaultDERControlLink
-// on the wire today, so this panel cannot render a true present/absent
-// distinction). Mocked at the fetchJSON boundary.
+// ServedResources.svelte.test.ts exercises GAGO-064/GAGO-077: exact
+// field-value rendering for served EndDevices+DERs and DERPrograms,
+// plus the DefaultDERControl column now rendering the real
+// defaultDerControlLink value (present shows the link, absent shows
+// "absent" explicitly, since the API now exposes real data rather
+// than an unknown gap). Mocked at the fetchJSON boundary.
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/svelte'
 import ServedResources from './ServedResources.svelte'
@@ -37,6 +37,7 @@ describe('ServedResources', () => {
             mrid: 'derp-mrid-1',
             description: 'default',
             primacy: 0,
+            defaultDerControlLink: '/edev/edev-1/fsa/1/derp/1/dderc',
           },
         ],
       }
@@ -54,9 +55,12 @@ describe('ServedResources', () => {
     expect(programsTable).toHaveTextContent('derp-mrid-1')
     expect(programsTable).toHaveTextContent('default')
     expect(programsTable).toHaveTextContent('0')
+    expect(screen.getByTestId('default-der-control-cell')).toHaveTextContent(
+      '/edev/edev-1/fsa/1/derp/1/dderc',
+    )
   })
 
-  it('shows the DefaultDERControl column as not exposed by API for a present program (known gap)', async () => {
+  it('shows the DefaultDERControl column with the real link value when present (GAGO-077)', async () => {
     vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
       if (path === '/api/served/edev') return { ok: true, data: [] }
       return {
@@ -69,6 +73,7 @@ describe('ServedResources', () => {
             mrid: 'derp-1',
             description: 'default',
             primacy: 0,
+            defaultDerControlLink: '/edev/edev-1/fsa/1/derp/1/dderc',
           },
         ],
       }
@@ -77,7 +82,32 @@ describe('ServedResources', () => {
     render(ServedResources)
 
     const cell = await screen.findByTestId('default-der-control-cell')
-    expect(cell).toHaveTextContent('not exposed by API')
+    expect(cell).toHaveTextContent('/edev/edev-1/fsa/1/derp/1/dderc')
+  })
+
+  it('shows the DefaultDERControl column as absent when defaultDerControlLink is empty (GAGO-077)', async () => {
+    vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
+      if (path === '/api/served/edev') return { ok: true, data: [] }
+      return {
+        ok: true,
+        data: [
+          {
+            edevId: 'edev-1',
+            id: '1',
+            href: '/h',
+            mrid: 'derp-1',
+            description: 'default',
+            primacy: 0,
+            defaultDerControlLink: '',
+          },
+        ],
+      }
+    })
+
+    render(ServedResources)
+
+    const cell = await screen.findByTestId('default-der-control-cell')
+    expect(cell).toHaveTextContent('absent')
   })
 
   it('shows an empty state, not an error, when no EndDevices or DERPrograms are served', async () => {

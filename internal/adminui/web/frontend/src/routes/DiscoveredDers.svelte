@@ -1,12 +1,12 @@
 <script lang="ts">
   // DiscoveredDers renders GAGO-063's discovered-DER list from
   // GET /api/ders (internal/adminui/handlers.go's handleDERs,
-  // derWithOwnerResponse). The handler's actual JSON shape today is
-  // { edevId, id, href } per DER: it does not carry a DER type
-  // (inverter/solar/battery) or a feeder mRID, so this panel renders
-  // exactly those three fields and surfaces the gap explicitly rather
-  // than inventing a type value. See this card's report for the
-  // backend follow-up needed to carry type + feeder context.
+  // derWithOwnerResponse). GAGO-074/077: the response now also carries
+  // feederMrid, the bridge's own configured feeder mRID stamped onto
+  // every entry, and this panel renders it as a column. DER type
+  // (inverter/solar/battery) is still NOT carried on the wire (GAGO-076
+  // pending, needs a CIM query change); the gap note below is kept for
+  // that field only, not fabricated here.
   import { onMount } from 'svelte'
   import { fetchJSON } from '../lib/api'
 
@@ -14,6 +14,7 @@
     edevId: string
     id: string
     href: string
+    feederMrid: string
   }
 
   let ders: DerWithOwnerResponse[] = $state([])
@@ -50,6 +51,7 @@
           <th>EndDevice</th>
           <th>DER ID</th>
           <th>Href</th>
+          <th>Feeder mRID</th>
         </tr>
       </thead>
       <tbody>
@@ -58,13 +60,14 @@
             <td>{der.edevId}</td>
             <td>{der.id}</td>
             <td>{der.href}</td>
+            <td data-testid="der-feeder-mrid-cell">{der.feederMrid}</td>
           </tr>
         {/each}
       </tbody>
     </table>
     <p class="note" data-testid="ders-known-gaps">
-      DER type (inverter/solar/battery) and feeder mRID context are not yet exposed by
-      GET /api/ders; this table shows the owning EndDevice, DER ID, and Href only.
+      DER type (inverter/solar/battery) is not yet exposed by GET /api/ders; this table
+      shows the owning EndDevice, DER ID, Href, and feeder mRID only.
     </p>
   {/if}
 </section>
