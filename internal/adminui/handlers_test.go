@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv"
+
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
@@ -13,20 +15,100 @@ import (
 
 const testKey = "test-admin-token"
 
-// TestHandleHealthReturnsOK asserts the exact fixed field value
-// /api/health returns.
-func TestHandleHealthReturnsOK(t *testing.T) {
+// TestHandleHealthReturnsAllEnrichedFieldValues is the GAGO-074
+// field-value test for /api/health: every enriched field must round
+// trip through JSON exactly, sourced from the injected registry,
+// identity, and STOMP fakes plus the Server's own Config, per
+// data-invariants (assert field values, not just non-crash).
+func TestHandleHealthReturnsAllEnrichedFieldValues(t *testing.T) {
 	t.Parallel()
 
-	s := newTestServer(t, testKey, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{})
+	reg := &fakeRegistry{entries: []registry.Entry{
+		{MRID: "mrid-1", Name: "inverter-1", LFDI: "LFDI1", SFDI: "SFDI1", Placeholder: false},
+		{MRID: "mrid-2", Name: "battery-1", LFDI: "", SFDI: "", Placeholder: true},
+		{MRID: "mrid-3", Name: "solar-1", LFDI: "LFDI3", SFDI: "SFDI3", Placeholder: false},
+	}}
+	identity := &fakeIdentity{
+		addr:     "127.0.0.1:8443",
+		identity: sep2srv.Identity{SFDI: "999888777", LFDI: "FEDCBA9876543210"},
+	}
+	stomp := &fakeStomp{connected: true}
+
+	s, err := New(Config{
+		Addr:         "127.0.0.1:0",
+		Key:          testKey,
+		FeederMRID:   "feeder-mrid-1",
+		SimulationID: "sim-1",
+		SORLink:      "https://sor.example/dashboard",
+	}, reg, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, identity, stomp)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.ln.Close() })
+
 	rec := doRequest(t, s.Handler(), "GET", "/api/health", "Bearer "+testKey, "localhost")
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	var got healthResponse
 	decodeJSON(t, rec.Body.Bytes(), &got)
+
 	if got.Status != "ok" {
 		t.Errorf("Status = %q, want %q", got.Status, "ok")
+	}
+	if !got.StompConnected {
+		t.Errorf("StompConnected = %v, want true", got.StompConnected)
+	}
+	if got.MTLSListener != "127.0.0.1:8443" {
+		t.Errorf("MTLSListener = %q, want %q", got.MTLSListener, "127.0.0.1:8443")
+	}
+	if got.ServerSFDI != "999888777" {
+		t.Errorf("ServerSFDI = %q, want %q", got.ServerSFDI, "999888777")
+	}
+	if got.ServerLFDI != "FEDCBA9876543210" {
+		t.Errorf("ServerLFDI = %q, want %q", got.ServerLFDI, "FEDCBA9876543210")
+	}
+	if got.FeederMRID != "feeder-mrid-1" {
+		t.Errorf("FeederMRID = %q, want %q", got.FeederMRID, "feeder-mrid-1")
+	}
+	if got.SimulationID != "sim-1" {
+		t.Errorf("SimulationID = %q, want %q", got.SimulationID, "sim-1")
+	}
+	if got.RegistryCount != 3 {
+		t.Errorf("RegistryCount = %d, want 3", got.RegistryCount)
+	}
+	if got.PlaceholderCount != 1 {
+		t.Errorf("PlaceholderCount = %d, want 1", got.PlaceholderCount)
+	}
+	if got.CertificateCount != 2 {
+		t.Errorf("CertificateCount = %d, want 2", got.CertificateCount)
+	}
+	if got.PlaceholderCount+got.CertificateCount != got.RegistryCount {
+		t.Errorf("PlaceholderCount(%d) + CertificateCount(%d) = %d, want RegistryCount %d",
+			got.PlaceholderCount, got.CertificateCount, got.PlaceholderCount+got.CertificateCount, got.RegistryCount)
+	}
+	if got.SORLink != "https://sor.example/dashboard" {
+		t.Errorf("SORLink = %q, want %q", got.SORLink, "https://sor.example/dashboard")
+	}
+	if got.UptimeSeconds < 0 {
+		t.Errorf("UptimeSeconds = %d, want a non-negative value", got.UptimeSeconds)
+	}
+}
+
+// TestHandleHealthSORLinkEmptyStringWhenUnset locks in the GAGO-075
+// serialization contract chosen for SORLink: the field is always
+// present in the JSON body, serialized as an empty string, never
+// omitted, when Config.SORLink is unset. This mirrors
+// TestHandleControlFlowOmitsLastWhenNil's literal string-contains
+// pattern for asserting a specific serialization shape.
+func TestHandleHealthSORLinkEmptyStringWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	s := newTestServer(t, testKey, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{})
+	rec := doRequest(t, s.Handler(), "GET", "/api/health", "Bearer "+testKey, "localhost")
+	body := rec.Body.String()
+	if !strings.Contains(body, `"sorLink":""`) {
+		t.Errorf("body = %s, want a literal \"sorLink\":\"\" field present even when unset", body)
 	}
 }
 
@@ -98,7 +180,13 @@ func TestHandleServedEndDevicesReturnsExactFieldValues(t *testing.T) {
 }
 
 // TestHandleDERsFlattensDERsWithOwningEndDeviceID asserts /api/ders
-// reports each DER's own field values alongside its owning device's ID.
+// reports each DER's own field values alongside its owning device's ID
+// and the bridge's own configured FeederMRID (GAGO-074), stamped onto
+// every entry. FeederMRID is set to a real, non-empty value here
+// (rather than the zero-value Config a plain newTestServer would give)
+// so this test actually proves the field passes through from
+// s.cfg.FeederMRID, not just that both sides default to the same empty
+// string.
 func TestHandleDERsFlattensDERsWithOwningEndDeviceID(t *testing.T) {
 	t.Parallel()
 
@@ -106,7 +194,12 @@ func TestHandleDERsFlattensDERsWithOwningEndDeviceID(t *testing.T) {
 		{ID: "edev-1", DERs: []sep2embed.DERSnapshot{{ID: "der-1", Href: "/h1"}, {ID: "der-2", Href: "/h2"}}},
 		{ID: "edev-2", DERs: []sep2embed.DERSnapshot{{ID: "der-3", Href: "/h3"}}},
 	}}
-	s := newTestServer(t, testKey, &fakeRegistry{}, devices, &fakePrograms{}, &fakeFlow{})
+	s, err := New(Config{Addr: "127.0.0.1:0", Key: testKey, FeederMRID: "feeder-mrid-1"},
+		&fakeRegistry{}, devices, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.ln.Close() })
 
 	rec := doRequest(t, s.Handler(), "GET", "/api/ders", "Bearer "+testKey, "localhost")
 	if rec.Code != 200 {
@@ -118,9 +211,9 @@ func TestHandleDERsFlattensDERsWithOwningEndDeviceID(t *testing.T) {
 		t.Fatalf("len(got) = %d, want 3", len(got))
 	}
 	want := []derWithOwnerResponse{
-		{EndDeviceID: "edev-1", ID: "der-1", Href: "/h1"},
-		{EndDeviceID: "edev-1", ID: "der-2", Href: "/h2"},
-		{EndDeviceID: "edev-2", ID: "der-3", Href: "/h3"},
+		{EndDeviceID: "edev-1", ID: "der-1", Href: "/h1", FeederMRID: "feeder-mrid-1"},
+		{EndDeviceID: "edev-1", ID: "der-2", Href: "/h2", FeederMRID: "feeder-mrid-1"},
+		{EndDeviceID: "edev-2", ID: "der-3", Href: "/h3", FeederMRID: "feeder-mrid-1"},
 	}
 	for i, w := range want {
 		if got[i] != w {
@@ -134,7 +227,10 @@ func TestHandleDERsFlattensDERsWithOwningEndDeviceID(t *testing.T) {
 // correctly, with the owning device's ID attached, and every
 // DERProgramSnapshot field preserved exactly, including Primacy (a
 // numeric field easy to accidentally drop or zero during a JSON
-// round trip).
+// round trip) and DefaultDERControlLink (GAGO-074's CSIP-critical
+// addition), seeded here to a distinct, non-empty value per device so
+// this test actually proves the field round trips rather than both
+// sides vacuously defaulting to empty.
 func TestHandleServedDERProgramsReturnsExactFieldValuesPerDevice(t *testing.T) {
 	t.Parallel()
 
@@ -143,8 +239,8 @@ func TestHandleServedDERProgramsReturnsExactFieldValuesPerDevice(t *testing.T) {
 		{ID: "edev-2"},
 	}}
 	programs := &fakePrograms{byEdevID: map[string][]sep2embed.DERProgramSnapshot{
-		"edev-1": {{ID: "1", Href: "/edev/edev-1/fsa/1/derp/1", MRID: "derp-mrid-1", Description: "default", Primacy: 0}},
-		"edev-2": {{ID: "1", Href: "/edev/edev-2/fsa/1/derp/1", MRID: "derp-mrid-2", Description: "critical peak", Primacy: 5}},
+		"edev-1": {{ID: "1", Href: "/edev/edev-1/fsa/1/derp/1", MRID: "derp-mrid-1", Description: "default", Primacy: 0, DefaultDERControlLink: "/edev/edev-1/fsa/1/derp/1/dderc"}},
+		"edev-2": {{ID: "1", Href: "/edev/edev-2/fsa/1/derp/1", MRID: "derp-mrid-2", Description: "critical peak", Primacy: 5, DefaultDERControlLink: "/edev/edev-2/fsa/1/derp/1/dderc"}},
 	}}
 	s := newTestServer(t, testKey, &fakeRegistry{}, devices, programs, &fakeFlow{})
 
@@ -157,11 +253,11 @@ func TestHandleServedDERProgramsReturnsExactFieldValuesPerDevice(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2", len(got))
 	}
-	want0 := derProgramResponse{EndDeviceID: "edev-1", ID: "1", Href: "/edev/edev-1/fsa/1/derp/1", MRID: "derp-mrid-1", Description: "default", Primacy: 0}
+	want0 := derProgramResponse{EndDeviceID: "edev-1", ID: "1", Href: "/edev/edev-1/fsa/1/derp/1", MRID: "derp-mrid-1", Description: "default", Primacy: 0, DefaultDERControlLink: "/edev/edev-1/fsa/1/derp/1/dderc"}
 	if got[0] != want0 {
 		t.Errorf("got[0] = %+v, want %+v", got[0], want0)
 	}
-	want1 := derProgramResponse{EndDeviceID: "edev-2", ID: "1", Href: "/edev/edev-2/fsa/1/derp/1", MRID: "derp-mrid-2", Description: "critical peak", Primacy: 5}
+	want1 := derProgramResponse{EndDeviceID: "edev-2", ID: "1", Href: "/edev/edev-2/fsa/1/derp/1", MRID: "derp-mrid-2", Description: "critical peak", Primacy: 5, DefaultDERControlLink: "/edev/edev-2/fsa/1/derp/1/dderc"}
 	if got[1] != want1 {
 		t.Errorf("got[1] = %+v, want %+v", got[1], want1)
 	}

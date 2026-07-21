@@ -14,7 +14,7 @@ import (
 func TestNewReturnsErrDisabledWhenKeyEmpty(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(Config{Addr: "127.0.0.1:0", Key: ""}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{})
+	_, err := New(Config{Addr: "127.0.0.1:0", Key: ""}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{})
 	if !errors.Is(err, ErrDisabled) {
 		t.Fatalf("New(empty Key) error = %v, want ErrDisabled", err)
 	}
@@ -25,7 +25,7 @@ func TestNewReturnsErrDisabledWhenKeyEmpty(t *testing.T) {
 func TestNewBindsLoopbackAddrByDefault(t *testing.T) {
 	t.Parallel()
 
-	s, err := New(Config{Addr: "127.0.0.1:0", Key: "secret"}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{})
+	s, err := New(Config{Addr: "127.0.0.1:0", Key: "secret"}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestNewBindsLoopbackAddrByDefault(t *testing.T) {
 func TestNewRejectsNonLoopbackWithoutOptIn(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(Config{Addr: "0.0.0.0:0", Key: "secret"}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{})
+	_, err := New(Config{Addr: "0.0.0.0:0", Key: "secret"}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{})
 	if err == nil {
 		t.Fatal("New(non-loopback Addr, AllowNonLoopback=false) error = nil, want a rejection")
 	}
@@ -53,7 +53,7 @@ func TestNewRejectsNonLoopbackWithoutOptIn(t *testing.T) {
 func TestNewAllowsNonLoopbackWithOptIn(t *testing.T) {
 	t.Parallel()
 
-	s, err := New(Config{Addr: "0.0.0.0:0", Key: "secret", AllowNonLoopback: true}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{})
+	s, err := New(Config{Addr: "0.0.0.0:0", Key: "secret", AllowNonLoopback: true}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{})
 	if err != nil {
 		t.Fatalf("New(non-loopback Addr, AllowNonLoopback=true): %v", err)
 	}
@@ -65,7 +65,7 @@ func TestNewAllowsNonLoopbackWithOptIn(t *testing.T) {
 func TestNewRejectsEmptyAddr(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(Config{Addr: "", Key: "secret"}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{})
+	_, err := New(Config{Addr: "", Key: "secret"}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{})
 	if err == nil {
 		t.Fatal("New(empty Addr) error = nil, want a rejection")
 	}
@@ -149,7 +149,7 @@ func TestHostAllowlistAcceptsDefaultsAndConfiguredHosts(t *testing.T) {
 	t.Parallel()
 
 	s, err := New(Config{Addr: "127.0.0.1:0", Key: "secret", AllowedHosts: []string{"admin.internal.example"}},
-		&fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{controlobs.Snapshot{}})
+		&fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{controlobs.Snapshot{}}, &fakeIdentity{}, &fakeStomp{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
@@ -37,15 +38,90 @@ func (s *Server) mux() *http.ServeMux {
 	return mux
 }
 
-// healthResponse is the fixed, no-secret payload /api/health returns:
-// just enough for a caller to confirm the admin UI is reachable and
-// authenticated, nothing about bridge internals.
+// healthResponse is GAGO-074's enriched /api/health payload. Every
+// field is sourced from state this Server already holds (the registry,
+// the injected identity/STOMP sources, and its own config/startedAt);
+// no field here is fabricated. Fields that are genuinely not reachable
+// from this Server's current dependencies are simply absent from this
+// struct rather than filled with an invented value; see the card
+// report for the one field (DER kind/type) that stays out of scope for
+// this reason.
 type healthResponse struct {
+	// Status is the fixed, pre-existing "ok" liveness value. Kept as
+	// the first field, unchanged, so an existing consumer that only
+	// reads Status keeps working unmodified (additive only).
 	Status string `json:"status"`
+
+	// StompConnected reports the GridAPPS-D message bus's current
+	// connection state, from the injected StompSource.
+	StompConnected bool `json:"stompConnected"`
+
+	// MTLSListener is the embedded IEEE 2030.5 server's bound listener
+	// address, from the injected IdentitySource.
+	MTLSListener string `json:"mtlsListener"`
+
+	// ServerSFDI, ServerLFDI are this bridge's own embedded server
+	// identity (spec sections 6.3.3 and 6.3.4 respectively), derived
+	// from its own leaf certificate. Distinct from any served device's
+	// SFDI/LFDI.
+	ServerSFDI string `json:"serverSfdi"`
+	ServerLFDI string `json:"serverLfdi"`
+
+	// FeederMRID, SimulationID are the bridge's own configured values
+	// (config.FeederMRID / config.SimulationID), passed straight
+	// through. Empty means unconfigured, not an error.
+	FeederMRID   string `json:"feederMrid"`
+	SimulationID string `json:"simulationId"`
+
+	// RegistryCount is the total number of entries in the mRID to LFDI
+	// registry. PlaceholderCount and CertificateCount partition that
+	// same total by registry.Entry.Placeholder, so
+	// PlaceholderCount + CertificateCount == RegistryCount always
+	// holds.
+	RegistryCount    int `json:"registryCount"`
+	PlaceholderCount int `json:"placeholderCount"`
+	CertificateCount int `json:"certificateCount"`
+
+	// UptimeSeconds is the whole number of seconds since this Server
+	// was constructed (New's startedAt), truncated, not rounded.
+	UptimeSeconds int64 `json:"uptimeSeconds"`
+
+	// SORLink is the optional server-of-record dashboard URL (GAGO-075,
+	// SEP2_ADMIN_UI_SOR_LINK). Serialized as an empty string, never
+	// omitted, when unset: a future frontend reads an always-present
+	// field rather than having to distinguish "absent" from "present
+	// but empty" for a value where those two states carry no different
+	// meaning (this is the explicit serialization-contract choice for
+	// this field: empty means unset, full stop).
+	SORLink string `json:"sorLink"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
+	entries := s.registry.Snapshot()
+	placeholderCount := 0
+	for _, e := range entries {
+		if e.Placeholder {
+			placeholderCount++
+		}
+	}
+	certificateCount := len(entries) - placeholderCount
+
+	identity := s.identity.Identity()
+
+	writeJSON(w, http.StatusOK, healthResponse{
+		Status:           "ok",
+		StompConnected:   s.stomp.IsConnected(),
+		MTLSListener:     s.identity.Addr(),
+		ServerSFDI:       identity.SFDI,
+		ServerLFDI:       identity.LFDI,
+		FeederMRID:       s.cfg.FeederMRID,
+		SimulationID:     s.cfg.SimulationID,
+		RegistryCount:    len(entries),
+		PlaceholderCount: placeholderCount,
+		CertificateCount: certificateCount,
+		UptimeSeconds:    int64(time.Since(s.startedAt).Seconds()),
+		SORLink:          s.cfg.SORLink,
+	})
 }
 
 // registryEntryResponse mirrors registry.Entry's exported fields
@@ -90,10 +166,19 @@ type derResponse struct {
 // into a single list. Each entry carries the owning EndDevice's ID
 // (edevId) alongside the DER's own ID and Href, since a DER's identity
 // is only meaningful relative to the device that serves it.
+//
+// FeederMRID (GAGO-074) is the bridge's own configured feeder mRID
+// (s.cfg.FeederMRID), stamped onto every entry: it is not a per-DER
+// value, since this bridge enumerates every DER from a single
+// configured feeder. A DER kind/type field (inverter, solar, battery)
+// was scoped for this endpoint too, but is not added here: see the
+// card report's Finding, it is not reachable from this Server's
+// current dependencies without a CIM query change.
 type derWithOwnerResponse struct {
 	EndDeviceID string `json:"edevId"`
 	ID          string `json:"id"`
 	Href        string `json:"href"`
+	FeederMRID  string `json:"feederMrid"`
 }
 
 func (s *Server) handleDERs(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +194,7 @@ func (s *Server) handleDERs(w http.ResponseWriter, r *http.Request) {
 				EndDeviceID: edev.ID,
 				ID:          der.ID,
 				Href:        der.Href,
+				FeederMRID:  s.cfg.FeederMRID,
 			})
 		}
 	}
@@ -159,13 +245,21 @@ func (s *Server) handleServedEndDevices(w http.ResponseWriter, r *http.Request) 
 // derProgramResponse mirrors sep2embed.DERProgramSnapshot's exported
 // fields, plus the owning EndDevice's ID, since a DERProgram is scoped
 // to the device serving it.
+//
+// DefaultDERControlLink (GAGO-074) is the CSIP-critical addition: the
+// href of this program's DefaultDERControl singleton (spec section
+// CSIP profile requires every DERProgram to carry one). It is sourced
+// straight from sep2embed.DERProgramSnapshot.DefaultDERControlLink,
+// which core already populates in full; no snapshot.go change was
+// needed to add this field.
 type derProgramResponse struct {
-	EndDeviceID string `json:"edevId"`
-	ID          string `json:"id"`
-	Href        string `json:"href"`
-	MRID        string `json:"mrid"`
-	Description string `json:"description"`
-	Primacy     uint8  `json:"primacy"`
+	EndDeviceID           string `json:"edevId"`
+	ID                    string `json:"id"`
+	Href                  string `json:"href"`
+	MRID                  string `json:"mrid"`
+	Description           string `json:"description"`
+	Primacy               uint8  `json:"primacy"`
+	DefaultDERControlLink string `json:"defaultDerControlLink"`
 }
 
 // handleServedDERPrograms reports every DERProgram across every served
@@ -190,12 +284,13 @@ func (s *Server) handleServedDERPrograms(w http.ResponseWriter, r *http.Request)
 		}
 		for _, p := range programs {
 			out = append(out, derProgramResponse{
-				EndDeviceID: edev.ID,
-				ID:          p.ID,
-				Href:        p.Href,
-				MRID:        p.MRID,
-				Description: p.Description,
-				Primacy:     p.Primacy,
+				EndDeviceID:           edev.ID,
+				ID:                    p.ID,
+				Href:                  p.Href,
+				MRID:                  p.MRID,
+				Description:           p.Description,
+				Primacy:               p.Primacy,
+				DefaultDERControlLink: p.DefaultDERControlLink,
 			})
 		}
 	}

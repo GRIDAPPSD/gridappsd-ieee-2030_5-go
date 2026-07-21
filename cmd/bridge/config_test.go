@@ -411,6 +411,7 @@ func TestLoadConfigSEP2AdminUIDisabledByDefault(t *testing.T) {
 	t.Setenv("SEP2_ADMIN_UI_ADDR", "")
 	t.Setenv("SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK", "")
 	t.Setenv("SEP2_ADMIN_UI_ALLOWED_HOSTS", "")
+	t.Setenv("SEP2_ADMIN_UI_SOR_LINK", "")
 
 	cfg, err := loadConfig(nil)
 	if err != nil {
@@ -435,6 +436,27 @@ func TestLoadConfigSEP2AdminUIDisabledByDefault(t *testing.T) {
 	}
 	if cfg.SEP2AdminUIAllowedHosts != nil {
 		t.Errorf("SEP2AdminUIAllowedHosts: got %v, want nil", cfg.SEP2AdminUIAllowedHosts)
+	}
+	if cfg.SEP2AdminUISORLink != "" {
+		t.Errorf("SEP2AdminUISORLink: got %q, want empty (unset by default)", cfg.SEP2AdminUISORLink)
+	}
+}
+
+// TestLoadConfigSEP2AdminUISORLinkReadsThrough is the GAGO-075 positive
+// value acceptance test at the config layer: an operator supplied
+// SEP2_ADMIN_UI_SOR_LINK value passes through loadConfig unchanged, with
+// no transformation and no validation error, mirroring
+// TestLoadConfigSEP2AdminUIAllowedHostsParsesCommaSeparatedList's shape
+// for the sibling admin UI config field.
+func TestLoadConfigSEP2AdminUISORLinkReadsThrough(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_SOR_LINK", "https://sor.example/dashboard")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2AdminUISORLink != "https://sor.example/dashboard" {
+		t.Errorf("SEP2AdminUISORLink: got %q, want %q", cfg.SEP2AdminUISORLink, "https://sor.example/dashboard")
 	}
 }
 

@@ -168,6 +168,9 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 		SEP2AdminUIAllowNonLoopback: true,
 		SEP2AdminUIKey:              "secret-token",
 		SEP2AdminUIAllowedHosts:     []string{"admin.internal.example"},
+		FeederMRID:                  "feeder-mrid-1",
+		SimulationID:                "sim-1",
+		SEP2AdminUISORLink:          "https://sor.example/dashboard",
 	}
 
 	got := adminUIConfig(cfg)
@@ -182,6 +185,15 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 	}
 	if len(got.AllowedHosts) != 1 || got.AllowedHosts[0] != "admin.internal.example" {
 		t.Errorf("AllowedHosts: got %v, want [admin.internal.example]", got.AllowedHosts)
+	}
+	if got.FeederMRID != cfg.FeederMRID {
+		t.Errorf("FeederMRID: got %q, want %q", got.FeederMRID, cfg.FeederMRID)
+	}
+	if got.SimulationID != cfg.SimulationID {
+		t.Errorf("SimulationID: got %q, want %q", got.SimulationID, cfg.SimulationID)
+	}
+	if got.SORLink != cfg.SEP2AdminUISORLink {
+		t.Errorf("SORLink: got %q, want %q", got.SORLink, cfg.SEP2AdminUISORLink)
 	}
 }
 
@@ -201,6 +213,9 @@ func TestAdminUIConfigZeroValueMapsToDisabledShape(t *testing.T) {
 	}
 	if got.AllowedHosts != nil {
 		t.Errorf("AllowedHosts: got %v, want nil for a zero-value config", got.AllowedHosts)
+	}
+	if got.SORLink != "" {
+		t.Errorf("SORLink: got %q, want empty for a zero-value config", got.SORLink)
 	}
 }
 
