@@ -26,20 +26,29 @@ type unsubscribeCall struct {
 // idempotent-under-double-cancel behavior.
 //
 // unsubscribeBlock, when non-nil, is read by Unsubscribe before
-// returning. A test can use this to simulate an unresponsive broker: it
-// hands Unsubscribe a channel that never receives, so Unsubscribe blocks
-// until its ctx argument is done, then returns ctx.Err(). This is the
-// only way a fake fieldbus.MessageBus can model a hung broker, since the
-// real GridAPPSDMessageBus.Unsubscribe delegates to a ctx-respecting
-// router call.
+// returning. A test can use this to simulate an unresponsive broker
+// whose Unsubscribe DOES respect ctx: it hands Unsubscribe a channel
+// that never receives, so Unsubscribe blocks until its ctx argument is
+// done, then returns ctx.Err().
+//
+// unsubscribeIgnoreCtx models the real-world case instead:
+// fieldbus.GridAPPSDMessageBus.Unsubscribe discards its ctx parameter
+// and delegates to go-stomp's Subscription.Unsubscribe, which has no
+// ctx parameter at all and blocks on go-stomp's own
+// UnsubscribeReceiptTimeout. When true, Unsubscribe blocks on
+// unsubscribeBlock WITHOUT selecting on ctx.Done() at all, so a caller
+// that only bounds the call by cancelling ctx observes no effect
+// whatsoever; the call returns only when unsubscribeBlock closes (or
+// never, for the duration of a test).
 type fakeSubscribeBus struct {
-	mu               sync.Mutex
-	subscribeErr     error
-	tokenToReturn    fieldbus.Token
-	gotDestination   string
-	handler          fieldbus.Handler
-	unsubscribeCalls []unsubscribeCall
-	unsubscribeBlock <-chan struct{}
+	mu                   sync.Mutex
+	subscribeErr         error
+	tokenToReturn        fieldbus.Token
+	gotDestination       string
+	handler              fieldbus.Handler
+	unsubscribeCalls     []unsubscribeCall
+	unsubscribeBlock     <-chan struct{}
+	unsubscribeIgnoreCtx bool
 }
 
 func (f *fakeSubscribeBus) Connect(ctx context.Context) error { return nil }
@@ -61,9 +70,16 @@ func (f *fakeSubscribeBus) Unsubscribe(ctx context.Context, destination string, 
 	f.mu.Lock()
 	f.unsubscribeCalls = append(f.unsubscribeCalls, unsubscribeCall{ctx: ctx, destination: destination, tok: tok})
 	block := f.unsubscribeBlock
+	ignoreCtx := f.unsubscribeIgnoreCtx
 	f.mu.Unlock()
 
 	if block == nil {
+		return nil
+	}
+	if ignoreCtx {
+		// Models the real GridAPPSDMessageBus: blocks on the underlying
+		// transport call only, never observing ctx at all.
+		<-block
 		return nil
 	}
 	select {
@@ -526,17 +542,24 @@ func TestSubscriber_ShutdownBoundsUnresponsiveUnsubscribe(t *testing.T) {
 	start := time.Now()
 	cancel()
 
+	// The outer wait allows for unsubscribeTimeout (the bound
+	// shutdown() applies internally) plus slack; the assertion below is
+	// what actually proves the bound was respected, not this margin.
+	const testWaitBound = unsubscribeTimeout + 5*time.Second
 	select {
 	case <-sub.Messages():
 		// expected: relay's shutdown gave up on the hung Unsubscribe and
 		// closed msgs instead of blocking forever.
-	case <-time.After(2 * time.Second):
-		t.Fatal("shutdown blocked past its bound; relay never closed Messages() with an unresponsive broker")
+	case <-time.After(testWaitBound):
+		t.Fatalf("shutdown blocked past %v; relay never closed Messages() with an unresponsive broker", testWaitBound)
 	}
 	elapsed := time.Since(start)
 
-	if elapsed >= 2*time.Second {
-		t.Fatalf("shutdown took %v, want well under the 2s test bound (unsubscribeTimeout should be a few seconds at most)", elapsed)
+	// Prove shutdown actually respected unsubscribeTimeout rather than
+	// merely finishing eventually: it must not run meaningfully longer
+	// than the bound itself.
+	if elapsed >= unsubscribeTimeout+2*time.Second {
+		t.Fatalf("shutdown took %v, want close to unsubscribeTimeout (%v)", elapsed, unsubscribeTimeout)
 	}
 
 	// The Unsubscribe call was made (attempted), even though it never
@@ -554,6 +577,73 @@ func TestSubscriber_ShutdownBoundsUnresponsiveUnsubscribe(t *testing.T) {
 	}
 	if !errors.Is(gotErr, context.DeadlineExceeded) {
 		t.Errorf("Err() = %v, want an error wrapping context.DeadlineExceeded (the bounded Unsubscribe call's own ctx expired)", gotErr)
+	}
+}
+
+// TestSubscriber_ShutdownBoundsUnsubscribeThatIgnoresCtxEntirely covers
+// GAGO-041 CRITICAL 2 (Pike's review of the first fix): the real
+// fieldbus.GridAPPSDMessageBus.Unsubscribe discards the ctx argument it
+// is given (gridappsd-go internal/router.Router.Unsubscribe(_
+// context.Context, ...)) and delegates to go-stomp's
+// Subscription.Unsubscribe, which has no ctx parameter at all. A fix
+// that only wraps the call in context.WithTimeout and waits on the call
+// directly has ZERO effect on this real path: cancelling unsubCtx does
+// not make a ctx-blind callee return. This test's fake models exactly
+// that (unsubscribeIgnoreCtx: true, mirroring fakeSubscribeBus.Unsubscribe's
+// ctx-blind branch above), so only a fix that runs the call in its own
+// goroutine and races it against unsubCtx.Done() (rather than awaiting
+// the call itself) can pass it. relay.shutdown must still return within
+// unsubscribeTimeout, record the timeout as the observable error, and
+// close sub.msgs, even though the abandoned goroutine keeps running in
+// the background (it exits once the test's unsubscribeBlock channel is
+// closed at cleanup, modeling go-stomp's own eventual internal timeout).
+func TestSubscriber_ShutdownBoundsUnsubscribeThatIgnoresCtxEntirely(t *testing.T) {
+	t.Parallel()
+
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) }) // let the abandoned goroutine's Unsubscribe call finally return
+
+	bus := &fakeSubscribeBus{
+		tokenToReturn:        7,
+		unsubscribeBlock:     block,
+		unsubscribeIgnoreCtx: true,
+	}
+	s := NewSubscriber(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	const dest = "dest"
+	sub, err := s.Subscribe(ctx, dest)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	start := time.Now()
+	cancel()
+
+	const testWaitBound = unsubscribeTimeout + 5*time.Second
+	select {
+	case <-sub.Messages():
+		// expected: shutdown gave up waiting on the ctx-blind Unsubscribe
+		// call and closed msgs anyway.
+	case <-time.After(testWaitBound):
+		t.Fatalf("shutdown blocked past %v against a ctx-ignoring Unsubscribe; want it bounded by unsubscribeTimeout regardless of whether the callee looks at ctx", testWaitBound)
+	}
+	elapsed := time.Since(start)
+
+	if elapsed >= unsubscribeTimeout+2*time.Second {
+		t.Fatalf("shutdown took %v against a ctx-ignoring Unsubscribe, want close to unsubscribeTimeout (%v)", elapsed, unsubscribeTimeout)
+	}
+
+	if got := bus.unsubscribeCallCount(); got != 1 {
+		t.Fatalf("Unsubscribe called %d times, want exactly 1", got)
+	}
+
+	gotErr := sub.Err()
+	if gotErr == nil {
+		t.Fatal("Err() = nil after a ctx-ignoring Unsubscribe never returned; want the timeout recorded, not silently dropped")
+	}
+	if !errors.Is(gotErr, context.DeadlineExceeded) {
+		t.Errorf("Err() = %v, want an error wrapping context.DeadlineExceeded (unsubCtx's own deadline expired while the callee kept running)", gotErr)
 	}
 }
 

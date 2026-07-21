@@ -3,6 +3,7 @@ package gridappsdclient
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -144,17 +145,61 @@ func (s *Subscriber) relay(ctx context.Context, dest string, tok fieldbus.Token,
 	defer close(sub.msgs)
 
 	shutdown := func() {
+		// unsubCtx is derived from context.Background(), not ctx: ctx is
+		// already Done at this point (that is why shutdown is running),
+		// so deriving the timeout from it would produce an
+		// already-expired deadline instead of a fresh unsubscribeTimeout
+		// window.
 		unsubCtx, cancel := context.WithTimeout(context.Background(), unsubscribeTimeout)
 		defer cancel()
-		if err := s.bus.Unsubscribe(unsubCtx, dest, tok); err != nil {
-			// An unresponsive or erroring broker must not stall
-			// teardown past SIGINT (GAGO-041). Record the failure so
-			// it is observable via sub.Err() rather than swallowed;
-			// setErr only keeps the first error, so this wins over
-			// ctx.Err() below when the bus call is what actually
-			// failed.
-			sub.setErr(fmt.Errorf("gridappsdclient.Subscriber: unsubscribe %s: %w", dest, err))
+
+		// The production fieldbus.MessageBus (gridappsd-go's
+		// Router.Unsubscribe) discards its ctx argument entirely and
+		// delegates to go-stomp's Subscription.Unsubscribe, which takes
+		// no ctx at all and blocks on go-stomp's own
+		// UnsubscribeReceiptTimeout (30s default; cimstomp's dial never
+		// overrides it). Passing unsubCtx to s.bus.Unsubscribe therefore
+		// does NOT bound the real call: an unresponsive broker can still
+		// stall a synchronous call for up to 30s regardless of
+		// unsubscribeTimeout. To bound shutdown regardless of whether
+		// the callee ever looks at ctx, run the call in its own
+		// goroutine and race it against unsubCtx.Done() instead of
+		// waiting on the call directly. resultCh is buffered so the
+		// goroutine's send never blocks even after we've stopped
+		// waiting on it (GAGO-041 CRITICAL 2).
+		resultCh := make(chan error, 1)
+		go func() {
+			resultCh <- s.bus.Unsubscribe(unsubCtx, dest, tok)
+		}()
+
+		select {
+		case err := <-resultCh:
+			if err != nil {
+				// An erroring broker must not be swallowed. Record it so
+				// it is observable via sub.Err(); setErr only keeps the
+				// first error, so this wins over ctx.Err() below when
+				// the bus call is what actually failed.
+				sub.setErr(fmt.Errorf("gridappsdclient.Subscriber: unsubscribe %s: %w", dest, err))
+			}
+		case <-unsubCtx.Done():
+			// The Unsubscribe call has not returned within
+			// unsubscribeTimeout, either because it is legitimately slow
+			// or because (the real-world case) it ignores unsubCtx
+			// entirely. Abandon the wait, not the goroutine: it keeps
+			// running until go-stomp's own internal timeout eventually
+			// unblocks it, and we log whatever it returns then rather
+			// than dropping it silently. The process is already
+			// shutting down (ctx fired before shutdown was even called),
+			// so a single lingering goroutine bounded by go-stomp's own
+			// timeout is an acceptable cost for a bounded teardown.
+			sub.setErr(fmt.Errorf("gridappsdclient.Subscriber: unsubscribe %s: %w", dest, unsubCtx.Err()))
+			go func() {
+				if err := <-resultCh; err != nil {
+					log.Printf("gridappsdclient.Subscriber: abandoned unsubscribe %s completed after the shutdown bound: %v", dest, err)
+				}
+			}()
 		}
+
 		sub.setErr(ctx.Err())
 	}
 
