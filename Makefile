@@ -23,24 +23,35 @@ ui-build:
 	go build ./...
 
 # ui-check rebuilds the frontend into internal/adminui/web/dist/ and
-# then diffs that directory against what is committed, so a frontend
-# source change landed WITHOUT a matching `make ui-build` (a stale
-# embedded bundle) fails loudly instead of shipping silently. `go
-# build ./...` alone cannot catch this: it succeeds against whatever
-# dist/ content is on disk, committed or not.
+# then checks that directory for any difference against what is
+# committed, so a frontend source change landed WITHOUT a matching
+# `make ui-build` (a stale embedded bundle) fails loudly instead of
+# shipping silently. `go build ./...` alone cannot catch this: it
+# succeeds against whatever dist/ content is on disk, committed or
+# not.
 #
-# The diff is scoped to internal/adminui/web/dist/ only, so an
+# The check uses `git status --porcelain`, not `git diff`, because
+# Vite content-hashes asset filenames: a source change produces a
+# NEW hashed file under dist/assets/ rather than a modified line in
+# an existing tracked file. `git diff` only reports changes to
+# already-tracked paths, so a new hashed asset is invisible to it and
+# the guard would fail open. `git status --porcelain` reports both
+# modified tracked files and new untracked files, so it catches the
+# case that actually happens in practice.
+#
+# The check is scoped to internal/adminui/web/dist/ only, so an
 # unrelated dirty file elsewhere in the working tree does not produce
 # a false positive here. This target is meant to run against a clean
 # checkout (CI's default); running it locally on a dirty tree may
 # report drift caused by unrelated uncommitted changes under dist/.
 ui-check:
 	cd internal/adminui/web/frontend && npm ci && npm run build
-	@if ! git diff --exit-code -- internal/adminui/web/dist/; then \
+	@if [ -n "$$(git status --porcelain -- internal/adminui/web/dist/)" ]; then \
 	  echo "ui-check: internal/adminui/web/dist/ is stale."; \
 	  echo "The committed build output does not match what the frontend source in"; \
 	  echo "internal/adminui/web/frontend/ currently builds. Run 'make ui-build'"; \
 	  echo "and commit the updated dist/ directory."; \
+	  git status --porcelain -- internal/adminui/web/dist/; \
 	  exit 1; \
 	fi
 
