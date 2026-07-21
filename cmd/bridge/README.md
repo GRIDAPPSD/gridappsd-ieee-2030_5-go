@@ -83,6 +83,25 @@ make bridge-e2e \
   SEP2_SIMULATION_ID=1234567890
 ```
 
+**Do not put `SEP2_STOMP_PASSWORD=...` directly on the `make` command
+line** as shown in some examples above with the default dev password:
+a credential passed as `VAR=value` on a shell command line lands in
+that shell's history file and is visible to any other local user via
+`ps` while the command runs. Prefer exporting it first, so it never
+appears in the argv the `make`/`go run` process line shows:
+
+```bash
+export SEP2_STOMP_PASSWORD=manager
+make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
+```
+
+The same caution applies to the `-stomp-password=...` flag form: flag
+values are visible in `/proc/<pid>/cmdline` to any local user who can
+read that process's `/proc` entry, for as long as the process runs.
+The `SEP2_STOMP_PASSWORD` env var is the canonical way to supply this
+credential; `-stomp-password` exists for quick one-off dev runs only
+and should not be used with a real (non-dev-default) password.
+
 The bridge logs to stderr and stays running until Ctrl-C. CIM-query
 failures are fatal at startup (no useful work without a feeder); the
 subscribe loop logs frame errors and continues.

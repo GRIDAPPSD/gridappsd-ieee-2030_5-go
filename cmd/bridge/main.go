@@ -33,6 +33,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -42,6 +43,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -73,7 +75,7 @@ func main() {
 	cfg, err := loadConfig(os.Args[1:])
 	if err != nil {
 		// -version and -h / -help both return before validate ever
-		// runs, so neither reaches log.Fatalf below and neither has
+		// runs, so neither reaches safeFatal below and neither has
 		// any side effect (no ctx, no listener, no CIM query, no
 		// bus connect): handleVersionFlag prints the version and
 		// exits 0 first; flag.ErrHelp's usage banner is already
@@ -85,7 +87,7 @@ func main() {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
 		}
-		log.Fatalf("bridge: %v", err)
+		safeFatal(cfg, "bridge: %v", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -93,9 +95,53 @@ func main() {
 
 	log.Printf("bridge %s starting", buildinfo.Version)
 	if err := run(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
-		log.Fatalf("bridge: %v", err)
+		safeFatal(cfg, "bridge: %v", err)
 	}
 	log.Printf("bridge: shutdown complete")
+}
+
+// safeFatal formats msg the same as log.Fatalf, then strips any
+// credential-shaped substring before logging it and exiting (GAGO-028
+// Leon L3). Neither cfg.STOMPPassword nor cfg.SEP2AdminUIKey is
+// expected to appear in a formatted error today (connectClient's own
+// wrap at "connect %s: %w" only interpolates cfg.STOMPAddr, never the
+// credential fields), but nothing upstream guarantees that stays true
+// as new error wraps are added, and an accidentally-interpolated
+// credential landing in a log line is exactly the kind of silent,
+// hard-to-notice leak this defense-in-depth check exists to catch
+// before it reaches stderr. cfg is passed by value (its zero-cost
+// struct copy), so this call never mutates the caller's config.
+func safeFatal(cfg config, format string, args ...any) {
+	log.Fatal(redactCreds(cfg, fmt.Sprintf(format, args...)))
+}
+
+// redactCreds replaces any occurrence of cfg's credential-shaped fields
+// in msg with a fixed placeholder: the raw STOMPPassword and
+// SEP2AdminUIKey values, and also the base64(STOMPUser:STOMPPassword)
+// blob the GOSS auth-token bootstrap sends over the wire (see
+// internal/cimstomp's fetchAuthToken and gridappsd-go's internal/auth),
+// since that encoded form shares no substring with the raw password and
+// would otherwise slip past the two checks above undetected (GAGO-028
+// follow-up). This is still not exhaustive: any credential-shaped value
+// that is not cfg.STOMPPassword, cfg.SEP2AdminUIKey, or their base64
+// pairing is out of scope, so this remains a defense-in-depth catch, not
+// a guarantee that no credential can ever appear in a log line. Split
+// out from safeFatal so a test can assert the exact redacted output
+// without going through log.Fatal's os.Exit. An empty credential field
+// is never redacted against (an empty STOMPPassword would otherwise
+// match, and replace, every empty substring in msg).
+func redactCreds(cfg config, msg string) string {
+	if cfg.STOMPPassword != "" {
+		msg = strings.ReplaceAll(msg, cfg.STOMPPassword, "[REDACTED]")
+	}
+	if cfg.SEP2AdminUIKey != "" {
+		msg = strings.ReplaceAll(msg, cfg.SEP2AdminUIKey, "[REDACTED]")
+	}
+	if cfg.STOMPUser != "" && cfg.STOMPPassword != "" {
+		authBlob := base64.StdEncoding.EncodeToString([]byte(cfg.STOMPUser + ":" + cfg.STOMPPassword))
+		msg = strings.ReplaceAll(msg, authBlob, "[REDACTED]")
+	}
+	return msg
 }
 
 // handleVersionFlag reports whether err is loadConfig's
@@ -561,8 +607,8 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 	// QueryInverter (open filter) and QuerySolar; the registry must
 	// only carry one entry per mRID.
 	seen := make(map[string]struct{})
-	var devices []device
-	for _, src := range [][]device{inverters, solar, battery} {
+	var devices []cimDevice
+	for _, src := range [][]cimDevice{inverters, solar, battery} {
 		for _, d := range src {
 			if d.MRID == "" {
 				continue
@@ -574,6 +620,18 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 			devices = append(devices, d)
 		}
 	}
+
+	// GAGO-028 Dutch M4: without this line, a reader sees the two log
+	// lines "N inverters / N solar / N battery" above and "registry
+	// populated: N entries" below and does the (wrong) math of summing
+	// the three counts, expecting 3N. The three queries use open
+	// filters, so the same PEC can legitimately appear in more than one
+	// list (e.g. a PhotovoltaicUnit satisfies both QueryInverter's and
+	// QuerySolar's filter); dedupe above collapses those overlaps down
+	// to one entry per unique mRID. Spell that out here so the two
+	// surrounding counts read as consistent rather than contradictory.
+	log.Printf("bridge: deduped by mRID across inverter/solar/battery queries (open filters can overlap); %d unique devices",
+		len(devices))
 
 	// GAGO-051: the empty-fleet fail-loud guard. Model-only device
 	// discovery (queryDevices above) finds devices exclusively via
@@ -682,21 +740,21 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 	return reg, nil
 }
 
-// device is the slim projection of a SPARQL binding row this bridge
+// cimDevice is the slim projection of a SPARQL binding row this bridge
 // needs at Stage 1: identity, name, and now MaxQ (GAGO-049 follow-up),
 // the one PowerElectronicsConnection rated-maximum value that has a
 // model-correct target in the vendored core library's DERCapability
 // type (RTGMaxVar). Other richer attributes (ratedS, ratedU, phases)
 // stay in the raw QueryDataResult and can be lifted into typed structs
 // when downstream code consumes them.
-type device struct {
+type cimDevice struct {
 	MRID string
 	Name string
 	MaxQ *int64 // CIM PowerElectronicsConnection.maxQ, base VAr; nil when the binding is absent
 }
 
 // queryDevices runs one of the cim.Client Query* wrappers, projects
-// each binding row down to a device, and skips rows whose ?id binding
+// each binding row down to a cimDevice, and skips rows whose ?id binding
 // is missing or empty. The kind argument is only used for log
 // readability. The query argument is the bound method on *cim.Client;
 // passing it as a value lets the three call sites share this projection
@@ -705,7 +763,7 @@ type device struct {
 // The ?maxQ binding is OPTIONAL in every PEC-rooted SPARQL template
 // (internal/cim/queries.go), so a row can legitimately carry an empty
 // Binding.Value for it: that is treated as "absent", not "zero", and
-// leaves device.MaxQ nil. A present binding that fails to parse as a
+// leaves cimDevice.MaxQ nil. A present binding that fails to parse as a
 // base-10 integer is a hard error rather than a silently-dropped value,
 // matching the no-fabricated-fallback discipline internal/sep2embed's
 // decodeMultiplierValue already applies to the wire-side ReactivePower
@@ -715,7 +773,7 @@ func queryDevices(
 	kind string,
 	query func(context.Context, string) (*cim.QueryDataResult, error),
 	feederMRID string,
-) ([]device, error) {
+) ([]cimDevice, error) {
 	res, err := query(ctx, feederMRID)
 	if err != nil {
 		return nil, fmt.Errorf("query %s: %w", kind, err)
@@ -723,13 +781,13 @@ func queryDevices(
 	if res == nil {
 		return nil, nil
 	}
-	out := make([]device, 0, len(res.Results.Bindings))
+	out := make([]cimDevice, 0, len(res.Results.Bindings))
 	for _, row := range res.Results.Bindings {
 		mrid := row["id"].Value
 		if mrid == "" {
 			continue
 		}
-		d := device{
+		d := cimDevice{
 			MRID: mrid,
 			Name: row["name"].Value,
 		}
@@ -769,6 +827,19 @@ func runPump(ctx context.Context, bus fieldbus.MessageBus, reg *registry.Registr
 	// reprint the same line every timestep. Plain map plus mutex; the
 	// pump handler is invoked serially so the mutex is cheap insurance
 	// against a future parallel-handler change rather than current need.
+	//
+	// maxSeenMRIDs bounds the map (GAGO-028 Dutch L1). Without a bound,
+	// seen grows for the lifetime of the simulation: at Stage 1 the
+	// measurement mRIDs are a stable per-point set from the platform's
+	// fixed device fleet, so in the common case this never approaches
+	// the cap, but nothing upstream guarantees that mRID set is finite
+	// or stable across a long-running simulation. Once the cap is hit,
+	// seen is cleared: the tradeoff is a handful of duplicate log lines
+	// immediately after the reset, which is the same class of log noise
+	// this map exists to reduce, not a correctness issue (the LFDI
+	// lookup itself is unaffected, only whether a still-registered mRID
+	// is logged again).
+	const maxSeenMRIDs = 10000
 	var (
 		seenMu sync.Mutex
 		seen   = make(map[string]struct{})
@@ -781,6 +852,9 @@ func runPump(ctx context.Context, bus fieldbus.MessageBus, reg *registry.Registr
 			seenMu.Lock()
 			_, dup := seen[mrid]
 			if !dup {
+				if len(seen) >= maxSeenMRIDs {
+					seen = make(map[string]struct{})
+				}
 				seen[mrid] = struct{}{}
 			}
 			seenMu.Unlock()
