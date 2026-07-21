@@ -12,8 +12,8 @@
     status: string
   }
 
-  let status: 'loading' | 'ok' | 'error' = 'loading'
-  let errorMessage = ''
+  let status: 'loading' | 'ok' | 'error' = $state('loading')
+  let errorMessage = $state('')
 
   onMount(async () => {
     const result = await fetchJSON<HealthResponse>('/api/health')
