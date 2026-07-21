@@ -117,8 +117,7 @@ func TestGridAPPSD_SubscribePublishRoundTrip(t *testing.T) {
 		t.Fatal("timeout waiting for frame from gridappsd-docker broker")
 	}
 
-	if dest[:7] != "/topic/" {
+	if !strings.HasPrefix(dest, "/topic/") {
 		t.Errorf("dest %q does not start with /topic/", dest)
 	}
-	_ = strings.HasPrefix
 }

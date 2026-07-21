@@ -1,8 +1,11 @@
 package sim
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -182,6 +185,161 @@ func TestPump_RunSubscribeError(t *testing.T) {
 	}
 	if got := called.Load(); got != 0 {
 		t.Errorf("handler called %d times, want 0 on Subscribe failure", got)
+	}
+}
+
+// TestPump_RunOnHandlerErrorStopsWhenPolicyReturnsFalse verifies that
+// WithOnHandlerError lets a caller stop Run on a handler error, in
+// contrast to the default log-and-continue behavior covered by
+// TestPump_RunHandlerErrorContinuesLoop (GAGO-023 Dutch M4).
+func TestPump_RunOnHandlerErrorStopsWhenPolicyReturnsFalse(t *testing.T) {
+	frames := [][]byte{
+		[]byte(`{"simulation_id":"x","message":{"timestamp":1,"measurements":{}}}`),
+		[]byte(`{"simulation_id":"x","message":{"timestamp":2,"measurements":{}}}`),
+		[]byte(`{"simulation_id":"x","message":{"timestamp":3,"measurements":{}}}`),
+	}
+	fake := &fakeSubscribeClient{frames: frames, closeAfterFrames: true}
+
+	wantErr := errors.New("handler said stop")
+	pump := NewPump(fake, "x", WithOnHandlerError(func(err error) bool {
+		return false // stop on the first handler error
+	}))
+
+	var seen atomic.Int32
+	handler := func(m MeasurementFrame) error {
+		seen.Add(1)
+		if m.Message.Timestamp == 2 {
+			return wantErr
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := pump.Run(ctx, handler)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run error = %v, want wrapping %v", err, wantErr)
+	}
+	if got := seen.Load(); got != 2 {
+		t.Errorf("handler invocations = %d, want 2 (Run must stop after the OnHandlerError policy returns false, before dispatching frame 3)", got)
+	}
+}
+
+// TestPump_RunOnHandlerErrorContinuesWhenPolicyReturnsTrue verifies the
+// other half of WithOnHandlerError: a policy that returns true keeps Run
+// going past a handler error, same as the nil-policy default.
+func TestPump_RunOnHandlerErrorContinuesWhenPolicyReturnsTrue(t *testing.T) {
+	frames := [][]byte{
+		[]byte(`{"simulation_id":"x","message":{"timestamp":1,"measurements":{}}}`),
+		[]byte(`{"simulation_id":"x","message":{"timestamp":2,"measurements":{}}}`),
+		[]byte(`{"simulation_id":"x","message":{"timestamp":3,"measurements":{}}}`),
+	}
+	fake := &fakeSubscribeClient{frames: frames, closeAfterFrames: true}
+
+	var policyCalls atomic.Int32
+	pump := NewPump(fake, "x", WithOnHandlerError(func(err error) bool {
+		policyCalls.Add(1)
+		return true
+	}))
+
+	var seen atomic.Int32
+	handler := func(m MeasurementFrame) error {
+		seen.Add(1)
+		if m.Message.Timestamp == 2 {
+			return errors.New("handler said no")
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pump.Run(ctx, handler); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := seen.Load(); got != 3 {
+		t.Errorf("handler invocations = %d, want 3", got)
+	}
+	if got := policyCalls.Load(); got != 1 {
+		t.Errorf("OnHandlerError calls = %d, want 1", got)
+	}
+}
+
+// TestPump_RunCtxCancelDuringDispatchStopsPromptly is a regression test
+// for the Run-level ctx.Done() select arm added for GAGO-023 Dutch M3.
+// The fake never closes its subscription on its own (closeAfterFrames:
+// false with an empty frame list means it just blocks on ctx.Done()), so
+// this proves Run's own ctx-aware select, not the subscription's closing,
+// is what unblocks Run.
+func TestPump_RunCtxCancelDuringDispatchStopsPromptly(t *testing.T) {
+	fake := &fakeSubscribeClient{frames: nil, closeAfterFrames: false}
+	pump := NewPump(fake, "x")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- pump.Run(ctx, func(m MeasurementFrame) error { return nil })
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return promptly after ctx cancel")
+	}
+}
+
+// TestPump_RunRateLimitsMalformedFrameLogging pins the GAGO-023 Leon L1
+// rate limit: with malformedFrameLogEvery+5 consecutive malformed frames,
+// only the first frame and the malformedFrameLogEvery-th frame log a
+// line, not all of them. This proves the counter-with-periodic-log
+// mechanism, not just that it compiles.
+func TestPump_RunRateLimitsMalformedFrameLogging(t *testing.T) {
+	frames := make([][]byte, malformedFrameLogEvery+5)
+	for i := range frames {
+		frames[i] = []byte(`not-json`)
+	}
+	fake := &fakeSubscribeClient{frames: frames, closeAfterFrames: true}
+	pump := NewPump(fake, "x")
+
+	var buf bytes.Buffer
+	prevOutput := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(prevOutput)
+		log.SetFlags(prevFlags)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := pump.Run(ctx, func(m MeasurementFrame) error { return nil }); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	got := 0
+	for _, l := range lines {
+		if strings.Contains(l, "skip malformed frame") {
+			got++
+		}
+	}
+	// Expect exactly 2 log lines: count=1 (first frame) and
+	// count=malformedFrameLogEvery. The remaining malformedFrameLogEvery+5-2
+	// frames must NOT each produce their own log line.
+	if got != 2 {
+		t.Errorf("malformed-frame log lines = %d, want 2 (count=1 and count=%d), got lines:\n%s", got, malformedFrameLogEvery, buf.String())
+	}
+	if !strings.Contains(buf.String(), "count=1") {
+		t.Errorf("expected a log line for count=1, got:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "count=100") {
+		t.Errorf("expected a log line for count=%d, got:\n%s", malformedFrameLogEvery, buf.String())
 	}
 }
 
