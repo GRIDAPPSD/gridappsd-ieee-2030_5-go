@@ -19,6 +19,12 @@
 // fresh on every Message or Bytes call (the bridge correlates by
 // message identity, not builder identity), matching the Python upstream.
 //
+// Message, MessageNow, Bytes, and BytesNow all return an error
+// (wrapping ErrRandFailure on the entropy-read path) instead of
+// panicking on a crypto/rand failure (GAGO-020). A failed publish is
+// the caller's normal not-crash-the-bridge failure mode; see
+// newUUIDv4's doc comment in diff.go for the full rationale.
+//
 // Out of scope: STOMP publishing, CIM attribute schema validation, and
 // persistence.
 //

@@ -66,7 +66,10 @@ func TestNewBuilder_EmptyState(t *testing.T) {
 	if got := b.Len(); got != 0 {
 		t.Errorf("Len = %d, want 0", got)
 	}
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	if msg.Input.Message.ForwardDifferences == nil {
 		t.Error("forward_differences should be empty slice, not nil")
 	}
@@ -95,7 +98,10 @@ func TestAddDifference_AppendsBoth(t *testing.T) {
 	if got := b.Len(); got != 2 {
 		t.Errorf("Len = %d, want 2", got)
 	}
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	if len(msg.Input.Message.ForwardDifferences) != 2 || len(msg.Input.Message.ReverseDifferences) != 2 {
 		t.Fatalf("expected 2 forward and 2 reverse, got %d / %d",
 			len(msg.Input.Message.ForwardDifferences),
@@ -148,7 +154,10 @@ func TestReset_ClearsDiffsKeepsSimulationID(t *testing.T) {
 	if b.Len() != 0 {
 		t.Errorf("after Reset Len = %d, want 0", b.Len())
 	}
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	if msg.Input.SimulationID == nil {
 		t.Error("simulation_id should survive Reset")
 	}
@@ -159,7 +168,10 @@ func TestReset_ClearsDiffsKeepsSimulationID(t *testing.T) {
 
 func TestEmptySimulationID_OmitsField(t *testing.T) {
 	b := NewBuilder("")
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	if msg.Input.SimulationID != nil {
 		t.Errorf("simulation_id = %v, want omitted (nil)", msg.Input.SimulationID)
 	}
@@ -200,9 +212,67 @@ func TestWithDifference_PanicsOnInvalid(t *testing.T) {
 	_ = NewBuilder("sim-1").WithDifference("", "attr", 1, 0)
 }
 
+// failingReader is a test-only io.Reader that always fails, used to
+// exercise Message's crypto/rand failure path (GAGO-020) without
+// depending on crypto/rand.Reader itself ever actually failing.
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, errors.New("failingReader: simulated crypto/rand failure")
+}
+
+func TestMessage_RandFailureSurfacesError_NoPanic(t *testing.T) {
+	orig := randReader
+	randReader = failingReader{}
+	t.Cleanup(func() { randReader = orig })
+
+	b := NewBuilder("sim-1")
+	msg, err := b.Message(fixedEpoch)
+	if msg != nil {
+		t.Errorf("Message returned non-nil Message on rand failure: %+v", msg)
+	}
+	if !errors.Is(err, ErrRandFailure) {
+		t.Errorf("Message error = %v, want wrapping ErrRandFailure", err)
+	}
+}
+
+func TestMessageNow_RandFailureSurfacesError_NoPanic(t *testing.T) {
+	orig := randReader
+	randReader = failingReader{}
+	t.Cleanup(func() { randReader = orig })
+
+	b := NewBuilder("sim-1")
+	msg, err := b.MessageNow()
+	if msg != nil {
+		t.Errorf("MessageNow returned non-nil Message on rand failure: %+v", msg)
+	}
+	if !errors.Is(err, ErrRandFailure) {
+		t.Errorf("MessageNow error = %v, want wrapping ErrRandFailure", err)
+	}
+}
+
+func TestBytes_RandFailureSurfacesError_NoPanic(t *testing.T) {
+	orig := randReader
+	randReader = failingReader{}
+	t.Cleanup(func() { randReader = orig })
+
+	b := NewBuilder("sim-1")
+	_ = b.AddDifference("obj", "attr", 1, 0)
+	raw, err := b.Bytes(fixedEpoch)
+	if raw != nil {
+		t.Errorf("Bytes returned non-nil bytes on rand failure: %s", raw)
+	}
+	if !errors.Is(err, ErrRandFailure) {
+		t.Errorf("Bytes error = %v, want wrapping ErrRandFailure", err)
+	}
+}
+
 func TestMessage_GeneratesUUIDv4(t *testing.T) {
 	b := NewBuilder("sim-1")
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	mrid := msg.Input.Message.DifferenceMRID
 	if mrid == "" {
 		t.Fatal("difference_mrid is empty")
@@ -220,8 +290,14 @@ func TestMessage_FreshMRIDPerCall(t *testing.T) {
 	// builder identity.
 	b := NewBuilder("sim-1")
 	_ = b.AddDifference("obj", "attr", 1, 0)
-	m1 := b.Message(fixedEpoch)
-	m2 := b.Message(fixedEpoch)
+	m1, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
+	m2, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	if m1.Input.Message.DifferenceMRID == m2.Input.Message.DifferenceMRID {
 		t.Errorf("expected fresh mRID per Message call; got identical %q",
 			m1.Input.Message.DifferenceMRID)
@@ -259,7 +335,10 @@ func TestMessage_GoldenCase1(t *testing.T) {
 		map[string]any{"multiplier": 1, "value": 1},
 	)
 	_ = b.AddDifference("_OTHER", "DERControl.description", "new value", "old value")
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	// Pin the mRID for golden comparison.
 	msg.Input.Message.DifferenceMRID = fixedMRID
 	raw, err := json.Marshal(msg)
@@ -275,7 +354,10 @@ func TestMessage_GoldenCase1(t *testing.T) {
 
 func TestMessage_GoldenCase2_NoSimNoDiffs(t *testing.T) {
 	b := NewBuilder("")
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	msg.Input.Message.DifferenceMRID = fixedMRID
 	raw, err := json.Marshal(msg)
 	if err != nil {
@@ -290,7 +372,10 @@ func TestMessage_GoldenCase2_NoSimNoDiffs(t *testing.T) {
 
 func TestMessage_TimestampSet(t *testing.T) {
 	b := NewBuilder("sim-1")
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	if msg.Input.Message.Timestamp != fixedEpoch {
 		t.Errorf("timestamp = %d, want %d", msg.Input.Message.Timestamp, fixedEpoch)
 	}
@@ -298,7 +383,10 @@ func TestMessage_TimestampSet(t *testing.T) {
 
 func TestMessageNow_UsesCurrentEpoch(t *testing.T) {
 	b := NewBuilder("sim-1")
-	msg := b.MessageNow()
+	msg, err := b.MessageNow()
+	if err != nil {
+		t.Fatalf("MessageNow: %v", err)
+	}
 	if msg.Input.Message.Timestamp <= 0 {
 		t.Errorf("MessageNow timestamp = %d, want positive", msg.Input.Message.Timestamp)
 	}
@@ -334,7 +422,10 @@ func TestMessage_GoldenCase3_IntegerSimIDAsString(t *testing.T) {
 	// shape independently.
 	b := NewBuilder("42")
 	_ = b.AddDifference("obj-x", "attr-y", 99, 100)
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	msg.Input.Message.DifferenceMRID = fixedMRID
 	if msg.Input.SimulationID == nil || *msg.Input.SimulationID != "42" {
 		t.Errorf("sim id = %v, want \"42\"", msg.Input.SimulationID)
@@ -363,7 +454,10 @@ func TestForwardDifferencesIndependent(t *testing.T) {
 	b := NewBuilder("sim-1")
 	_ = b.AddDifference("obj", "attr", val, val)
 	val["k"] = 2
-	msg := b.Message(fixedEpoch)
+	msg, err := b.Message(fixedEpoch)
+	if err != nil {
+		t.Fatalf("Message: %v", err)
+	}
 	got := msg.Input.Message.ForwardDifferences[0].Value.(map[string]any)["k"]
 	if got != 2 {
 		t.Errorf("documented passthrough behavior changed: got %v, want 2", got)

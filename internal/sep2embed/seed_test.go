@@ -18,9 +18,9 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 
 	reg := registry.New()
 	entries := []registry.Entry{
-		{MRID: "mrid-inv-1", Name: "Inverter 1", LFDI: "AAAA000000000000000000000000000000AAAA", Placeholder: true},
-		{MRID: "mrid-bat-1", Name: "Battery 1", LFDI: "BBBB000000000000000000000000000000BBBB", Placeholder: true},
-		{MRID: "mrid-sol-1", Name: "Solar 1", LFDI: "CCCC000000000000000000000000000000CCCC", Placeholder: true},
+		{MRID: "mrid-inv-1", Name: "Inverter 1", LFDI: "AAAA00000000000000000000000000000000AAAA", Placeholder: true},
+		{MRID: "mrid-bat-1", Name: "Battery 1", LFDI: "BBBB00000000000000000000000000000000BBBB", Placeholder: true},
+		{MRID: "mrid-sol-1", Name: "Solar 1", LFDI: "CCCC00000000000000000000000000000000CCCC", Placeholder: true},
 	}
 	if err := reg.AddBatch(entries); err != nil {
 		t.Fatalf("AddBatch: %v", err)
@@ -173,7 +173,7 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 	// never hand seedStores two entries sharing a store key), the
 	// underlying Create call fails and seedStores must surface that,
 	// wrapped with the failing entry's mRID, not swallow it.
-	const lfdi = "9999999999999999999999999999999999DDDD"
+	const lfdi = "999999999999999999999999999999999999DDDD"
 	entry := registry.Entry{MRID: "mrid-a", LFDI: lfdi}
 
 	ctx := context.Background()
@@ -216,8 +216,8 @@ func TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil(t *testing.T) {
 
 	reg := registry.New()
 	entries := []registry.Entry{
-		{MRID: "mrid-inv-2", Name: "Inverter 2", LFDI: "EEEE000000000000000000000000000000EEEE", Placeholder: true},
-		{MRID: "mrid-bat-2", Name: "Battery 2", LFDI: "FFFF000000000000000000000000000000FFFF", Placeholder: true},
+		{MRID: "mrid-inv-2", Name: "Inverter 2", LFDI: "EEEE00000000000000000000000000000000EEEE", Placeholder: true},
+		{MRID: "mrid-bat-2", Name: "Battery 2", LFDI: "FFFF00000000000000000000000000000000FFFF", Placeholder: true},
 	}
 	if err := reg.AddBatch(entries); err != nil {
 		t.Fatalf("AddBatch: %v", err)
@@ -269,8 +269,8 @@ func TestSeedStoresStampsRTGMaxVarFromEntryMaxQ(t *testing.T) {
 
 	reg := registry.New()
 	entries := []registry.Entry{
-		{MRID: "mrid-maxq-1", Name: "Inverter MaxQ", LFDI: "1111000000000000000000000000000000AAAA", MaxQ: &wantMaxQ},
-		{MRID: "mrid-nomaxq-1", Name: "Inverter NoMaxQ", LFDI: "2222000000000000000000000000000000BBBB"},
+		{MRID: "mrid-maxq-1", Name: "Inverter MaxQ", LFDI: "111100000000000000000000000000000000AAAA", MaxQ: &wantMaxQ},
+		{MRID: "mrid-nomaxq-1", Name: "Inverter NoMaxQ", LFDI: "222200000000000000000000000000000000BBBB"},
 	}
 	if err := reg.AddBatch(entries); err != nil {
 		t.Fatalf("AddBatch: %v", err)
@@ -314,7 +314,7 @@ func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 	t.Parallel()
 
 	reg := registry.New()
-	entry := registry.Entry{MRID: "mrid-link-1", Name: "Inverter Link", LFDI: "3333000000000000000000000000000000CCCC"}
+	entry := registry.Entry{MRID: "mrid-link-1", Name: "Inverter Link", LFDI: "333300000000000000000000000000000000CCCC"}
 	if err := reg.Add(entry); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestSeedStoresDropsNegativeMaxQToNilRTGMaxVar(t *testing.T) {
 	var negMaxQ int64 = -75000
 
 	reg := registry.New()
-	entry := registry.Entry{MRID: "mrid-negmaxq-1", Name: "Inverter NegMaxQ", LFDI: "4444000000000000000000000000000000DDDD", MaxQ: &negMaxQ}
+	entry := registry.Entry{MRID: "mrid-negmaxq-1", Name: "Inverter NegMaxQ", LFDI: "444400000000000000000000000000000000DDDD", MaxQ: &negMaxQ}
 	if err := reg.Add(entry); err != nil {
 		t.Fatalf("Add: %v", err)
 	}

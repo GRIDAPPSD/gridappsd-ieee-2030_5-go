@@ -21,9 +21,9 @@ func queryCases() []queryCase {
 	// Substrings asserted against each rendered template. Two invariants
 	// worth flagging:
 	//
-	//   1. The leading underscore on the input feederID "_FEEDER123" is
+	//   1. The leading underscore on the input feederID "_DEADBEEF-0000-0000-0000-000000000123" is
 	//      stripped before substitution into the SPARQL VALUES clause,
-	//      so the on-wire form is "FEEDER123". This matches the
+	//      so the on-wire form is "DEADBEEF-0000-0000-0000-000000000123". This matches the
 	//      gridappsd-docker:develop dataset shape, which stores
 	//      c:IdentifiedObject.mRID as a bare uppercase UUID without
 	//      the underscore prefix the Python upstream's call sites use.
@@ -40,7 +40,7 @@ func queryCases() []queryCase {
 			call: (*Client).QuerySolar,
 			wantSubstrings: []string{
 				"# Solar - DistSolar",
-				`VALUES ?fdrid {"FEEDER123"}`,
+				`VALUES ?fdrid {"DEADBEEF-0000-0000-0000-000000000123"}`,
 				"OPTIONAL {",
 				"c:PowerElectronicsConnection.PowerElectronicsUnit",
 				"c:PhotovoltaicUnit",
@@ -53,7 +53,7 @@ func queryCases() []queryCase {
 			call: (*Client).QueryBattery,
 			wantSubstrings: []string{
 				"# Storage - DistStorage",
-				`VALUES ?fdrid {"FEEDER123"}`,
+				`VALUES ?fdrid {"DEADBEEF-0000-0000-0000-000000000123"}`,
 				"OPTIONAL {",
 				"c:BatteryUnit",
 				"c:BatteryUnit.ratedE",
@@ -67,7 +67,7 @@ func queryCases() []queryCase {
 			name: "QueryInverter",
 			call: (*Client).QueryInverter,
 			wantSubstrings: []string{
-				`VALUES ?fdrid {"FEEDER123"}`,
+				`VALUES ?fdrid {"DEADBEEF-0000-0000-0000-000000000123"}`,
 				"?pec a c:PowerElectronicsConnection.",
 				"?pec c:IdentifiedObject.mRID ?pecid",
 				"c:PowerElectronicsConnection.ratedS",
@@ -82,7 +82,7 @@ func queryCases() []queryCase {
 			call: (*Client).QueryAllDERGroups,
 			wantSubstrings: []string{
 				"#get all EndDeviceGroup",
-				`VALUES ?fdrid {"FEEDER123"}`,
+				`VALUES ?fdrid {"DEADBEEF-0000-0000-0000-000000000123"}`,
 				"?q1 a c:EndDeviceGroup",
 				"c:EndDeviceGroup.EndDevice",
 				"c:DERFunction",
@@ -105,7 +105,7 @@ func TestSPARQLQueriesEnvelope(t *testing.T) {
 			mr := &mockRequester{resp: []byte(okEnvelope)}
 			c := NewClient(mr)
 
-			if _, err := tc.call(c, context.Background(), "_FEEDER123"); err != nil {
+			if _, err := tc.call(c, context.Background(), "_DEADBEEF-0000-0000-0000-000000000123"); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
 			}
 
@@ -157,7 +157,7 @@ func TestSPARQLQueriesParseRoundTrip(t *testing.T) {
 			mr := &mockRequester{resp: []byte(payload)}
 			c := NewClient(mr)
 
-			res, err := tc.call(c, context.Background(), "_FEEDER123")
+			res, err := tc.call(c, context.Background(), "_DEADBEEF-0000-0000-0000-000000000123")
 			if err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
 			}
@@ -191,6 +191,9 @@ func TestSPARQLQueriesInvalidFeederID(t *testing.T) {
 		{"newline", "bad\nid"},
 		{"carriage-return", "bad\rid"},
 		{"backslash", `bad\id`},
+		{"too-short", "abc123"},
+		{"double-underscore-prefix", "__E407CBB6-8C8D-9BC9-589C-AB83FBF0826D"},
+		{"non-hex-characters", "not-a-hex-feeder-id!"},
 	}
 
 	for _, b := range bad {
@@ -229,7 +232,7 @@ func TestSPARQLQueriesContextCancelled(t *testing.T) {
 			mr := &mockRequester{err: context.Canceled}
 			c := NewClient(mr)
 
-			_, err := tc.call(c, ctx, "_FEEDER123")
+			_, err := tc.call(c, ctx, "_DEADBEEF-0000-0000-0000-000000000123")
 			if !errors.Is(err, context.Canceled) {
 				t.Errorf("err = %v, want context.Canceled", err)
 			}
@@ -249,7 +252,7 @@ func TestSPARQLQueriesRequesterError(t *testing.T) {
 			mr := &mockRequester{err: want}
 			c := NewClient(mr)
 
-			_, err := tc.call(c, context.Background(), "_FEEDER123")
+			_, err := tc.call(c, context.Background(), "_DEADBEEF-0000-0000-0000-000000000123")
 			if !errors.Is(err, want) {
 				t.Errorf("err = %v, want wrapping %v", err, want)
 			}
@@ -268,7 +271,7 @@ func TestSPARQLQueriesIncompleteResponse(t *testing.T) {
 			mr := &mockRequester{resp: []byte(`{"data":{"head":{"vars":[]},"results":{"bindings":[]}},"responseComplete":false}`)}
 			c := NewClient(mr)
 
-			_, err := tc.call(c, context.Background(), "_FEEDER123")
+			_, err := tc.call(c, context.Background(), "_DEADBEEF-0000-0000-0000-000000000123")
 			if !errors.Is(err, ErrIncompleteResponse) {
 				t.Errorf("err = %v, want ErrIncompleteResponse", err)
 			}
@@ -301,11 +304,6 @@ func TestSPARQLQueriesFeederIDUnderscoreStripping(t *testing.T) {
 			name:     "bare-uuid-passes-through",
 			input:    "E407CBB6-8C8D-9BC9-589C-AB83FBF0826D",
 			wantSubs: []string{`VALUES ?fdrid {"E407CBB6-8C8D-9BC9-589C-AB83FBF0826D"}`},
-		},
-		{
-			name:     "no-double-strip-on-double-underscore",
-			input:    "__abc",
-			wantSubs: []string{`VALUES ?fdrid {"_abc"}`},
 		},
 	}
 
@@ -413,7 +411,7 @@ func TestSPARQLQueriesSchemaVariantParse(t *testing.T) {
 				mr := &mockRequester{resp: []byte(s.payload)}
 				cl := NewClient(mr)
 
-				res, err := tc.call(cl, context.Background(), "_FEEDER123")
+				res, err := tc.call(cl, context.Background(), "_DEADBEEF-0000-0000-0000-000000000123")
 				if err != nil {
 					t.Fatalf("%s: %v", tc.name, err)
 				}

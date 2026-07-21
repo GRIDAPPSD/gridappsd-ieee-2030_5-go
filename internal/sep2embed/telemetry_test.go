@@ -257,7 +257,7 @@ func TestTelemetryMiddlewareRelaysSuccessfulPUT(t *testing.T) {
 	t.Parallel()
 
 	reg := registry.New()
-	if err := reg.Add(registry.Entry{MRID: "mrid-a", LFDI: "LFDIAAA"}); err != nil {
+	if err := reg.Add(registry.Entry{MRID: "mrid-a", LFDI: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}); err != nil {
 		t.Fatalf("registry.Add: %v", err)
 	}
 	pub := &fakeBusPublisher{}
@@ -275,7 +275,7 @@ func TestTelemetryMiddlewareRelaysSuccessfulPUT(t *testing.T) {
 		t.Fatalf("marshal DERStatus: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPut, "/edev/LFDIAAA/der/1/ders", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/edev/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/der/1/ders", bytes.NewReader(body))
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
@@ -326,8 +326,8 @@ func TestTelemetryMiddlewareSkipsNonMatchingRequests(t *testing.T) {
 	handler := telemetryMiddleware(cfg)(inner)
 
 	for _, req := range []*http.Request{
-		httptest.NewRequest(http.MethodGet, "/edev/LFDIAAA/der/1/ders", nil),
-		httptest.NewRequest(http.MethodPut, "/edev/LFDIAAA/der/1/dercap", nil),
+		httptest.NewRequest(http.MethodGet, "/edev/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/der/1/ders", nil),
+		httptest.NewRequest(http.MethodPut, "/edev/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/der/1/dercap", nil),
 	} {
 		rw := httptest.NewRecorder()
 		handler.ServeHTTP(rw, req)
@@ -348,7 +348,7 @@ func TestTelemetryMiddlewareSkipsRejectedPUT(t *testing.T) {
 	t.Parallel()
 
 	reg := registry.New()
-	if err := reg.Add(registry.Entry{MRID: "mrid-a", LFDI: "LFDIAAA"}); err != nil {
+	if err := reg.Add(registry.Entry{MRID: "mrid-a", LFDI: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}); err != nil {
 		t.Fatalf("registry.Add: %v", err)
 	}
 	pub := &fakeBusPublisher{}
@@ -363,7 +363,7 @@ func TestTelemetryMiddlewareSkipsRejectedPUT(t *testing.T) {
 	status := sep2.DERStatus{GenConnectStatus: &conn}
 	body, _ := xml.Marshal(&status)
 
-	req := httptest.NewRequest(http.MethodPut, "/edev/LFDIAAA/der/1/ders", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/edev/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/der/1/ders", bytes.NewReader(body))
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
@@ -392,7 +392,7 @@ func TestTelemetryMiddlewareDisabledIsPassthrough(t *testing.T) {
 	status := sep2.DERStatus{GenConnectStatus: &conn}
 	body, _ := xml.Marshal(&status)
 
-	req := httptest.NewRequest(http.MethodPut, "/edev/LFDIAAA/der/1/ders", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/edev/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/der/1/ders", bytes.NewReader(body))
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
