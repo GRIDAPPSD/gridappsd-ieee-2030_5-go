@@ -24,6 +24,14 @@ type unsubscribeCall struct {
 // can invoke it directly to simulate the router delivering messages.
 // Unsubscribe calls are recorded so tests can assert exactly-once /
 // idempotent-under-double-cancel behavior.
+//
+// unsubscribeBlock, when non-nil, is read by Unsubscribe before
+// returning. A test can use this to simulate an unresponsive broker: it
+// hands Unsubscribe a channel that never receives, so Unsubscribe blocks
+// until its ctx argument is done, then returns ctx.Err(). This is the
+// only way a fake fieldbus.MessageBus can model a hung broker, since the
+// real GridAPPSDMessageBus.Unsubscribe delegates to a ctx-respecting
+// router call.
 type fakeSubscribeBus struct {
 	mu               sync.Mutex
 	subscribeErr     error
@@ -31,6 +39,7 @@ type fakeSubscribeBus struct {
 	gotDestination   string
 	handler          fieldbus.Handler
 	unsubscribeCalls []unsubscribeCall
+	unsubscribeBlock <-chan struct{}
 }
 
 func (f *fakeSubscribeBus) Connect(ctx context.Context) error { return nil }
@@ -51,8 +60,18 @@ func (f *fakeSubscribeBus) Subscribe(ctx context.Context, destination string, h 
 func (f *fakeSubscribeBus) Unsubscribe(ctx context.Context, destination string, tok fieldbus.Token) error {
 	f.mu.Lock()
 	f.unsubscribeCalls = append(f.unsubscribeCalls, unsubscribeCall{ctx: ctx, destination: destination, tok: tok})
+	block := f.unsubscribeBlock
 	f.mu.Unlock()
-	return nil
+
+	if block == nil {
+		return nil
+	}
+	select {
+	case <-block:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (f *fakeSubscribeBus) Send(ctx context.Context, destination, contentType string, body []byte) error {
@@ -480,6 +499,93 @@ func TestSubscriber_CtxCancelWhileRelayBlockedOnFullBuffer(t *testing.T) {
 	}
 	if call.tok != fieldbus.Token(55) {
 		t.Errorf("Unsubscribe token = %v, want %v", call.tok, fieldbus.Token(55))
+	}
+}
+
+// TestSubscriber_ShutdownBoundsUnresponsiveUnsubscribe covers GAGO-041:
+// relay's shutdown must not block indefinitely when the broker never
+// answers Unsubscribe. It must return within a small bound, record the
+// resulting error via sub.setErr so it is observable (not swallowed),
+// and still close sub.msgs so callers waiting on Messages() unblock.
+func TestSubscriber_ShutdownBoundsUnresponsiveUnsubscribe(t *testing.T) {
+	t.Parallel()
+
+	bus := &fakeSubscribeBus{
+		tokenToReturn:    42,
+		unsubscribeBlock: make(chan struct{}), // never closed: Unsubscribe never returns on its own
+	}
+	s := NewSubscriber(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	const dest = "dest"
+	sub, err := s.Subscribe(ctx, dest)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	start := time.Now()
+	cancel()
+
+	select {
+	case <-sub.Messages():
+		// expected: relay's shutdown gave up on the hung Unsubscribe and
+		// closed msgs instead of blocking forever.
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown blocked past its bound; relay never closed Messages() with an unresponsive broker")
+	}
+	elapsed := time.Since(start)
+
+	if elapsed >= 2*time.Second {
+		t.Fatalf("shutdown took %v, want well under the 2s test bound (unsubscribeTimeout should be a few seconds at most)", elapsed)
+	}
+
+	// The Unsubscribe call was made (attempted), even though it never
+	// returned on its own.
+	if got := bus.unsubscribeCallCount(); got != 1 {
+		t.Fatalf("Unsubscribe called %d times, want exactly 1", got)
+	}
+
+	// The timeout must be observable: sub.Err() must NOT be a bare
+	// context.Canceled from the outer ctx. It must report (wrap) the
+	// Unsubscribe-side failure, proving the error was not swallowed.
+	gotErr := sub.Err()
+	if gotErr == nil {
+		t.Fatal("Err() = nil after an unresponsive Unsubscribe; want the timeout/deadline error recorded, not silently dropped")
+	}
+	if !errors.Is(gotErr, context.DeadlineExceeded) {
+		t.Errorf("Err() = %v, want an error wrapping context.DeadlineExceeded (the bounded Unsubscribe call's own ctx expired)", gotErr)
+	}
+}
+
+// TestSubscriber_ShutdownHappyPathRecordsNoSpuriousError covers the
+// non-regression case: when Unsubscribe returns promptly (broker
+// responsive), shutdown must still record ctx.Err() (context.Canceled)
+// exactly as before, with no wrapped timeout noise from the new bound.
+func TestSubscriber_ShutdownHappyPathRecordsNoSpuriousError(t *testing.T) {
+	t.Parallel()
+
+	bus := &fakeSubscribeBus{tokenToReturn: 7} // unsubscribeBlock is nil: returns immediately
+	s := NewSubscriber(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sub, err := s.Subscribe(ctx, "dest")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	cancel()
+
+	select {
+	case <-sub.Messages():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for shutdown on the happy path")
+	}
+
+	if !errors.Is(sub.Err(), context.Canceled) {
+		t.Errorf("Err() = %v, want context.Canceled (unchanged happy-path behavior)", sub.Err())
+	}
+	if bus.unsubscribeCallCount() != 1 {
+		t.Fatalf("Unsubscribe called %d times, want exactly 1", bus.unsubscribeCallCount())
 	}
 }
 
