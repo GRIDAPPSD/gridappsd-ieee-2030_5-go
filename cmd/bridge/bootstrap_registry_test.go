@@ -194,10 +194,10 @@ func TestBootstrapRegistryPreprovisionedMissingCertFailsClosed(t *testing.T) {
 
 // TestQueryDevicesParsesOptionalMaxQ is the data-invariants required
 // VALUE assertion at the queryDevices layer: a row carrying a maxQ
-// literal binding must project to device.MaxQ with the exact parsed
+// literal binding must project to cimDevice.MaxQ with the exact parsed
 // int64 magnitude, and a row with the OPTIONAL binding absent (as
 // documented on the PEC SPARQL templates in internal/cim/queries.go)
-// must project to a nil device.MaxQ, not a fabricated zero.
+// must project to a nil cimDevice.MaxQ, not a fabricated zero.
 func TestQueryDevicesParsesOptionalMaxQ(t *testing.T) {
 	t.Parallel()
 

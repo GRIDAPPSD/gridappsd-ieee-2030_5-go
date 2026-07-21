@@ -79,9 +79,17 @@ func (p *Publisher) Connect(ctx context.Context) error {
 //
 // Errors:
 //   - ErrNotConnected if Connect has not run.
-//   - Wrapped ErrConnectionLost if the broker dropped the connection;
-//     callers can errors.Is and reconstruct the Publisher (Publisher
-//     does not own a Reconnect primitive in v0; see GAGO-012).
+//   - Wrapped ErrConnectionLost if the broker dropped the connection.
+//
+// Publisher has NO Reconnect primitive (unlike Client), and none is
+// planned for v0 (GAGO-012; reaffirmed GAGO-024 Leon L2). On
+// ErrConnectionLost, the recovery path is: call Close on the old
+// Publisher, then construct a fresh Publisher via New and Connect it.
+// Publisher's smaller lifecycle (no mutex, no atomics, no in-flight
+// request bookkeeping) is the reason a mirror of Client.Reconnect was
+// judged not worth the added complexity here; reconstructing is cheap
+// because Publisher carries no session-scoped state beyond the single
+// *stomp.Conn.
 func (p *Publisher) Publish(msg *PointMessage) error {
 	if p.conn == nil {
 		return ErrNotConnected
@@ -114,6 +122,15 @@ func (p *Publisher) Close() error {
 // logDisconnectErr logs a Disconnect error during cleanup. We do not fail
 // the operation on this; the connection is being torn down anyway. But a
 // silent swallow can mask broker-side state leaks (Leon H2).
+//
+// The logged err can carry a broker-controlled string (an ERROR frame's
+// body, surfaced through go-stomp's error chain) verbatim into
+// log.Printf (GAGO-024 Leon L1, note-only: no operator-facing log
+// infrastructure exists yet for this bridge, so there is nothing to
+// sanitize against today). If the bridge later gains a structured or
+// forwarded logging path (a log aggregator, an operator-facing
+// dashboard, anything a broker operator could feed crafted content
+// into), sanitize or bound this string before it reaches that sink.
 func logDisconnectErr(err error, where string) {
 	if err != nil {
 		log.Printf("cimstomp: disconnect error during %s: %v", where, err)

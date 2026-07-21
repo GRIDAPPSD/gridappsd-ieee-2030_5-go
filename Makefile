@@ -150,12 +150,13 @@ test-gridappsd:
 # lives in the Makefile, not the binary, so a production invocation of
 # `bridge` still has to opt in explicitly.
 #
-# The probe tolerates `nc` being absent: if no nc on PATH the target
-# warns and proceeds to `go run`, letting the bridge produce its own
-# connect-failure diagnostic. nc is the cleaner gate when present (it
-# prints a sharp message and exits non-zero before spinning up Go),
-# but on stripped containers /dev/tcp is also unavailable. Letting the
-# bridge fail naturally is acceptable; it is what `go run` does anyway.
+# The probe hard-fails when `nc` is missing, matching test-gridappsd's
+# behavior above (GAGO-028 Dutch M2): the two targets previously
+# diverged (test-gridappsd failed on missing nc, bridge-e2e warned and
+# proceeded to `go run` anyway), which let a developer run this target
+# without a working port probe and get a confusing bridge-side connect
+# failure instead of the sharp, actionable message below. Pick the
+# stricter behavior for both.
 SEP2_STOMP_ADDR ?= 127.0.0.1:61613
 SEP2_STOMP_USER ?= system
 SEP2_STOMP_PASSWORD ?= manager
@@ -165,18 +166,21 @@ SEP2_STOMP_ALLOW_PLAINTEXT ?= true
 
 bridge-e2e:
 	@set -e; \
+	if ! command -v nc >/dev/null 2>&1; then \
+	  echo "bridge-e2e requires nc (netcat) for the port probe."; \
+	  echo "Install with one of:"; \
+	  echo "  apt install netcat-openbsd     # Debian/Ubuntu"; \
+	  echo "  dnf install nmap-ncat          # RHEL/Fedora"; \
+	  exit 1; \
+	fi; \
 	host=$$(echo $(SEP2_STOMP_ADDR) | cut -d: -f1); \
 	port=$$(echo $(SEP2_STOMP_ADDR) | cut -d: -f2); \
-	if command -v nc >/dev/null 2>&1; then \
-	  if ! nc -z -w 2 $$host $$port 2>/dev/null; then \
-	    echo "bridge-e2e: STOMP $$host:$$port not reachable."; \
-	    echo "Bring the broker up first, e.g.:"; \
-	    echo "  docker compose up -d                                       # bare ActiveMQ in this repo"; \
-	    echo "  cd ~/repos/sentient_gridappsd_integration/gridappsd-docker && docker compose up -d"; \
-	    exit 1; \
-	  fi; \
-	else \
-	  echo "bridge-e2e: nc not on PATH; skipping probe and letting the bridge connect attempt fail naturally on its own."; \
+	if ! nc -z -w 2 $$host $$port 2>/dev/null; then \
+	  echo "bridge-e2e: STOMP $$host:$$port not reachable."; \
+	  echo "Bring the broker up first, e.g.:"; \
+	  echo "  docker compose up -d                                       # bare ActiveMQ in this repo"; \
+	  echo "  cd ~/repos/sentient_gridappsd_integration/gridappsd-docker && docker compose up -d"; \
+	  exit 1; \
 	fi; \
 	SEP2_STOMP_ADDR=$(SEP2_STOMP_ADDR) \
 	SEP2_STOMP_USER=$(SEP2_STOMP_USER) \

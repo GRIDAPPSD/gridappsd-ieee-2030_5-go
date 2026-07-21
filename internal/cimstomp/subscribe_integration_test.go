@@ -262,6 +262,59 @@ func TestIntegration_SubscribeNoGoroutineLeak(t *testing.T) {
 	}
 }
 
+// TestIntegration_SubscribeDropsOversizedFrame proves the GAGO-023
+// Leon M1 cap end to end over a live broker: a frame over the configured
+// cap is dropped (never delivered on Messages), while a frame under the
+// cap on the same subscription is delivered normally afterward. This
+// closes the gap the unit test TestIsOversizedFrame_DropsAboveCapKeepsAtOrBelow
+// leaves open: that the decision function is wired into the real
+// runSubscription loop rather than only unit-tested in isolation.
+func TestIntegration_SubscribeDropsOversizedFrame(t *testing.T) {
+	requireBroker(t)
+	fs := startFakeServer(t, "tok-oversize", "/queue/never-replied", []byte("{}"))
+	defer fs.Stop()
+
+	c := NewClient(STOMPConfig{Address: testBrokerAddr, User: testUser, Password: testPassword})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Close()
+
+	dest := fmt.Sprintf("/topic/test.cimstomp.oversize.%d", time.Now().UnixNano())
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	sub, err := c.Subscribe(subCtx, dest, WithMaxFrameBodyBytes(16))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	oversized := []byte(`{"this body is well over sixteen bytes"}`)
+	small := []byte(`ok`)
+
+	if err := sendRaw(dest, oversized); err != nil {
+		t.Fatalf("sendRaw oversized: %v", err)
+	}
+	if err := sendRaw(dest, small); err != nil {
+		t.Fatalf("sendRaw small: %v", err)
+	}
+
+	select {
+	case msg, ok := <-sub.Messages():
+		if !ok {
+			t.Fatalf("subscription closed before the small frame arrived")
+		}
+		if string(msg.Body) != string(small) {
+			t.Errorf("delivered frame body = %q, want %q (oversized frame should have been dropped, not delivered)", msg.Body, small)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the small frame; oversized frame may have wedged the subscription")
+	}
+}
+
 // TestIntegration_SubscribeAfterCloseFailsCleanly ensures Subscribe on a
 // closed Client surfaces ErrNotConnected (not a panic).
 func TestIntegration_SubscribeAfterCloseFailsCleanly(t *testing.T) {

@@ -1,0 +1,34 @@
+
+    PREFIX r: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX c: <http://iec.ch/TC57/CIM100#>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+    SELECT ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?maxQ ?fdrid ?id ?pecid (group_concat(distinct ?phs;separator="\n") as ?phases)  WHERE {
+    VALUES ?fdrid {"DEADBEEF-0000-0000-0000-000000000123"}
+    ?pec a c:PowerElectronicsConnection.
+    ?pec c:IdentifiedObject.name ?pecName.
+    ?pec c:IdentifiedObject.mRID ?pecid.
+    ?pec c:Equipment.EquipmentContainer ?fdr.
+    ?fdr c:IdentifiedObject.mRID ?fdrid.
+    ?pec c:PowerElectronicsConnection.ratedS ?ratedS.
+    ?pec c:PowerElectronicsConnection.ratedU ?ratedU.
+    ?pec c:PowerElectronicsConnection.maxIFault ?ipu.
+    ?pec c:PowerElectronicsConnection.p ?p.
+    ?pec c:PowerElectronicsConnection.q ?q.
+    OPTIONAL { ?pec c:PowerElectronicsConnection.maxQ ?maxQ. }
+    OPTIONAL {
+      ?pec c:PowerElectronicsConnection.PowerElectronicsUnit ?s.
+      ?s c:IdentifiedObject.name ?unitName.
+      ?s c:IdentifiedObject.mRID ?unitID.
+    }
+    BIND(COALESCE(?unitName, ?pecName) AS ?name)
+    BIND(COALESCE(?unitID, ?pecid) AS ?id)
+    OPTIONAL {?pecp c:PowerElectronicsConnectionPhase.PowerElectronicsConnection ?pec.
+      ?pecp c:PowerElectronicsConnectionPhase.phase ?phsraw.
+      bind(strafter(str(?phsraw),"SinglePhaseKind.") as ?phs) }
+    ?t c:Terminal.ConductingEquipment ?pec.
+    ?t c:Terminal.ConnectivityNode ?cn.
+    ?cn c:IdentifiedObject.name ?bus
+    }
+    GROUP by ?name ?bus ?ratedS ?ratedU ?ipu ?p ?q ?maxQ ?fdrid ?id ?pecid
+    ORDER by ?name
+    

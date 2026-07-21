@@ -11,6 +11,14 @@ import (
 )
 
 func TestLoadConfigDefaults(t *testing.T) {
+	// t.Setenv(key, "") clears each override for this test (GAGO-028
+	// Dutch L3), not because t.Setenv treats an empty value specially,
+	// but because loadConfig itself reads os.Getenv and branches on
+	// `== ""` to decide "not set" (see e.g. getenvList in config.go):
+	// there is no distinction in this codebase between "unset" and "set
+	// to the empty string". Setting to "" here is equivalent to
+	// t.Setenv-and-Unsetenv, and is used instead because t.Cleanup-based
+	// unset is what t.Setenv already gives us for free.
 	t.Setenv("SEP2_STOMP_ADDR", "")
 	t.Setenv("SEP2_STOMP_USER", "")
 	t.Setenv("SEP2_STOMP_PASSWORD", "")

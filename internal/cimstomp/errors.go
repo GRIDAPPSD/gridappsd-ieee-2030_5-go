@@ -57,6 +57,17 @@ var (
 // Adding a new entry here is a deliberate widening; do not add
 // stomp.Error frame errors (those are application-layer broker
 // rejections, not transport drops).
+//
+// ErrAlreadyClosed's inclusion here is deliberate, not loose (GAGO-024
+// Dutch M4). It reads like a pure programmer-error sentinel ("you called
+// Send after Close"), but go-stomp's *Conn also sets its internal
+// closed flag, and therefore returns ErrAlreadyClosed, when the read
+// loop observes a broker ERROR frame or a concurrent goroutine calls
+// Disconnect: both are broker-drop-shaped events, not caller mistakes.
+// A caller cannot tell those two origins apart from the error alone, and
+// the correct remedial action (Reconnect) is identical either way, so
+// ErrAlreadyClosed is wrapped into ErrConnectionLost alongside
+// ErrClosedUnexpectedly rather than singled out as programmer error.
 func wrapTransportErr(prefix string, err error) error {
 	if err == nil {
 		return nil

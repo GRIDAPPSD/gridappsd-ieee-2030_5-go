@@ -151,20 +151,34 @@ func (c *Client) Connect(ctx context.Context) error {
 // On any failure, all partial state (TCP socket, STOMP conn) is torn
 // down before return, so the caller does not need to clean up on the
 // error path.
+//
+// c.cfg is snapshotted (a full struct copy) into a local under c.mu
+// before any lock-free work begins, and every subsequent use in this
+// function reads the local, not c.cfg. Close zeroes c.cfg.Password
+// under c.mu (GAGO-015); without this snapshot, the lock-free dial
+// section below would race that write every time a Connect or
+// Reconnect overlaps a Close, because a bare `c.cfg` reference (even
+// one only used to pass the struct by value to another function)
+// touches every field, Password included (GAGO-015 follow-up,
+// Leon/Dutch race finding on the polish sweep).
 func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, error) {
+	c.mu.Lock()
+	cfg := c.cfg
+	c.mu.Unlock()
+
 	// go-stomp v3.1.5's DialWithContext calls net.Dial (not net.DialContext),
 	// so a ctx deadline is ignored at the TCP layer. Dial ourselves with
 	// net.DialContext to honor ctx, then hand the live conn to
 	// stomp.ConnectWithContext which observes ctx for the STOMP handshake.
 	// When cfg.TLS is non-nil, wrap the TCP connection with crypto/tls
 	// before handing it to stomp.ConnectWithContext (GAGO-014).
-	tcp, err := dialSTOMPTransport(ctx, c.cfg)
+	tcp, err := dialSTOMPTransport(ctx, cfg)
 	if err != nil {
 		return nil, "", err
 	}
 
 	conn, err := stomp.ConnectWithContext(ctx, tcp,
-		stomp.ConnOpt.Login(c.cfg.User, c.cfg.Password),
+		stomp.ConnOpt.Login(cfg.User, cfg.Password),
 		stomp.ConnOpt.HeartBeat(heartbeat, heartbeat),
 	)
 	if err != nil {
@@ -175,10 +189,10 @@ func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, err
 		if cerr := tcp.Close(); cerr != nil {
 			log.Printf("cimstomp: tcp close after failed STOMP connect: %v", cerr)
 		}
-		return nil, "", fmt.Errorf("cimstomp.Client: stomp connect %s: %w", c.cfg.Address, err)
+		return nil, "", fmt.Errorf("cimstomp.Client: stomp connect %s: %w", cfg.Address, err)
 	}
 
-	token, err := fetchAuthToken(ctx, conn, c.cfg.User, c.cfg.Password)
+	token, err := fetchAuthToken(ctx, conn, cfg.User, cfg.Password)
 	if err != nil {
 		// STOMP connection is up but token bootstrap failed; tear it down
 		// and log any Disconnect error rather than swallowing it (Leon H2).
@@ -214,6 +228,13 @@ func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, err
 //     frames. Pump-level orchestration of resubscribe-on-Reconnect is
 //     the caller's responsibility (deferred to a future ticket).
 //
+// Concurrent Reconnect calls are safe, not merely non-crashing: each
+// caller that dials a new conn either installs it or, if a sibling
+// Reconnect installed one first, Disconnects its own redundant conn
+// under the mutex (see the supersede loop below) so exactly one
+// broker session survives and no session leaks (GAGO-012 Dutch C1 /
+// Leon H1, reworded for GAGO-024 Dutch L1 once that fix had settled).
+//
 // Transport-level failures during the dial or token bootstrap are
 // wrapped so callers can errors.Is(err, ErrConnectionLost) and drive
 // retry policy. ErrClosed remains its own sentinel for the
@@ -235,9 +256,12 @@ func (c *Client) Reconnect(ctx context.Context) error {
 		return mapCtxErr(err)
 	}
 
-	// Tear down the existing connection under the mutex first, so that
-	// concurrent Request callers see ErrNotConnected during the dial
-	// rather than a closed go-stomp handle. Holding c.mu across the
+	// Swap out the existing connection fields under the mutex first, so
+	// that concurrent Request callers see ErrNotConnected during the
+	// dial rather than a closed go-stomp handle (GAGO-024 Dutch L3: the
+	// mutex covers only this field swap, not the Disconnect call below,
+	// which runs after c.mu.Unlock so the actual teardown round-trip
+	// with the broker does not hold the lock). Holding c.mu across the
 	// dial would also work, but the lock-free window during the dial
 	// keeps Request fast-fail-able under broker-drop conditions.
 	c.mu.Lock()
@@ -314,19 +338,22 @@ func (c *Client) Reconnect(ctx context.Context) error {
 	return nil
 }
 
-// Close disconnects the STOMP session and clears the cached auth token
-// field on the Client so further Request calls fail with ErrNotConnected
-// and the local Client struct no longer holds a live token reference.
-// It is idempotent: calling Close on a never-connected or already-closed
-// Client returns nil. Connect cannot be called after Close (returns
-// ErrClosed); construct a new Client to reuse.
+// Close disconnects the STOMP session and clears both the cached auth
+// token and the configured password from the Client so further Request
+// calls fail with ErrNotConnected and the local Client struct no longer
+// holds a live credential reference. It is idempotent: calling Close on
+// a never-connected or already-closed Client returns nil. Connect cannot
+// be called after Close (returns ErrClosed); construct a new Client to
+// reuse. Close is terminal, so zeroing c.cfg.Password here is safe: no
+// later Reconnect can need it.
 //
-// Token clearing is best-effort. Go strings are immutable, so the heap
-// allocation that backed c.token is unreachable from this Client but the
-// underlying bytes are not overwritten until garbage collected. Earlier
-// copies in the fetchAuthToken read path and the c.cfg.Password field
-// also live on. A memory dump of a long-lived process can still surface
-// credentials (Leon L1, L3).
+// Credential clearing is best-effort. Go strings are immutable, so the
+// heap allocation that backed c.token or c.cfg.Password is unreachable
+// from this Client but the underlying bytes are not overwritten until
+// garbage collected. Earlier copies in the fetchAuthToken read path and
+// in c.cfg.Password's original caller-supplied string also live on. A
+// memory dump of a long-lived process can still surface credentials
+// (Leon L1, L3).
 //
 // The Disconnect error, if any, is logged via logDisconnectErr and also
 // wrapped into the return value; the connection is being torn down
@@ -341,6 +368,7 @@ func (c *Client) Close() error {
 	conn := c.conn
 	c.conn = nil
 	c.token = ""
+	c.cfg.Password = ""
 	c.mu.Unlock()
 
 	if conn == nil {
@@ -517,9 +545,15 @@ func fetchAuthToken(ctx context.Context, conn *stomp.Conn, user, password string
 
 // drainStompChan empties any frames currently buffered on a
 // stomp.Subscription channel without blocking. Returns the number of
-// frames consumed. Used before Unsubscribe to reduce broker-side
-// queue accumulation on the token-bootstrap path: the channel is
-// drained, then Unsubscribe drops the consumer.
+// frames consumed. Used before Unsubscribe on the token-bootstrap
+// path: the channel is drained, then Unsubscribe drops the consumer.
+//
+// This is good client-side hygiene only (GAGO-024 Dutch L2): it does
+// NOT reduce broker-side queue accumulation. Unsubscribe drops the
+// consumer but ActiveMQ keeps the (now empty) temp.token_resp.<user>.*
+// queue; draining just avoids leaving unread frames orphaned in the
+// local channel. See fetchAuthToken's doc comment for the accurate
+// broker-side story and the operational mitigation (GAGO-012).
 //
 // drainStompChan does not close the channel and does not block. It is
 // safe to call on an empty channel (returns 0) and on a channel still
