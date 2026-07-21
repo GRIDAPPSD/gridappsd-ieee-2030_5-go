@@ -79,13 +79,26 @@ jobs:
           echo "Resolved version: $version"
 
       - name: Build cmd/bridge
+        env:
+          # Assigned via env: rather than interpolated directly into
+          # the shell body: the version string derives from
+          # git describe on a tag name, and git ref-name rules permit
+          # shell metacharacters, so a crafted tag pushed with
+          # contents:write could otherwise be expanded by the runner
+          # before execution. See .claude/rules/secure-coding.md
+          # "trust the boundary, not the caller".
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           go build \
-            -ldflags "-X github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo.Version=${{ steps.version.outputs.version }}" \
+            -ldflags "-X github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo.Version=${VERSION}" \
             -o bridge \
             ./cmd/bridge
 
       - name: Canary version smoke-test
+        env:
+          # Same env: rationale as the build step above: never
+          # interpolate ${{ }} directly into the shell body.
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           # This is the version-smoke-test gate from
           # .claude/rules/releasing.md Section 4: unit tests never
@@ -95,7 +108,7 @@ jobs:
           # stays green. Assert the built binary's -version output
           # contains the exact resolved version string; fail closed
           # on any mismatch.
-          expected="${{ steps.version.outputs.version }}"
+          expected="${VERSION}"
           actual=$(./bridge -version)
           echo "Expected version: $expected"
           echo "Actual output:    $actual"
@@ -133,11 +146,6 @@ jobs:
       # release-create step below.
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
       - name: Download build artifact
         uses: actions/download-artifact@v8
         with:
@@ -148,12 +156,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build-and-verify.outputs.version }}
+          # Assigned via env: for the same reason as VERSION above:
+          # never interpolate ${{ }} directly into the shell body.
+          # github.ref_name is the pushed tag name, and git ref-name
+          # rules permit shell metacharacters.
+          REF_NAME: ${{ github.ref_name }}
         run: |
           chmod +x dist/bridge
           mv dist/bridge "dist/bridge-${VERSION}-linux-amd64"
-          gh release create "${{ github.ref_name }}" \
+          gh release create "${REF_NAME}" \
             "dist/bridge-${VERSION}-linux-amd64" \
-            --title "${{ github.ref_name }}" \
+            --title "${REF_NAME}" \
             --generate-notes
 
   dry-run-report:
