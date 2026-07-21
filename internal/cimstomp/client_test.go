@@ -115,6 +115,21 @@ func TestClose_IdempotentBeforeConnect(t *testing.T) {
 	}
 }
 
+// TestClose_ZeroesCachedPassword locks in the GAGO-015 hardening: Close is
+// terminal (Connect/Reconnect cannot run afterward), so it is safe to zero
+// c.cfg.Password symmetrically with the existing c.token clearing. Both
+// zeroings are best-effort defense-in-depth per the Close doc comment, not
+// a live-exposure fix.
+func TestClose_ZeroesCachedPassword(t *testing.T) {
+	c := NewClient(STOMPConfig{Address: "tcp://127.0.0.1:1", User: "u", Password: "s3cr3t"})
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close on never-connected client: %v", err)
+	}
+	if c.cfg.Password != "" {
+		t.Errorf("Close: cfg.Password = %q, want empty after Close", c.cfg.Password)
+	}
+}
+
 func TestSentinelErrors_AreDistinct(t *testing.T) {
 	if errors.Is(ErrRequestTimeout, ErrNotConnected) {
 		t.Errorf("ErrRequestTimeout must not match ErrNotConnected")
