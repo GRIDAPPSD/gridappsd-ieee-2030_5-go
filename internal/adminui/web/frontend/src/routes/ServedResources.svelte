@@ -7,12 +7,12 @@
   // derProgramResponse). NO write controls: this panel has no form, no
   // button, no mutating fetch call.
   //
-  // Known gap (see this card's report): derProgramResponse does not
-  // serialize DefaultDERControlLink, even though the underlying
-  // sep2embed.DERProgramSnapshot carries that field. This panel cannot
-  // show a true present/absent DefaultDERControl state without that
-  // field on the wire, and does not fabricate one; the column instead
-  // reports "not exposed by API" until the backend adds the field.
+  // GAGO-077: derProgramResponse now serializes defaultDerControlLink
+  // (GAGO-074 added the field server side, sourced straight from
+  // sep2embed.DERProgramSnapshot.DefaultDERControlLink). This panel
+  // shows the real value: a non-empty link renders the href itself, an
+  // empty value renders "absent" explicitly, since the API now exposes
+  // this as real data rather than an unknown gap.
   import { onMount } from 'svelte'
   import { fetchJSON } from '../lib/api'
 
@@ -37,6 +37,7 @@
     mrid: string
     description: string
     primacy: number
+    defaultDerControlLink: string
   }
 
   let edevs: EndDeviceResponse[] = $state([])
@@ -122,16 +123,17 @@
               <td>{program.mrid}</td>
               <td>{program.description}</td>
               <td>{program.primacy}</td>
-              <td data-testid="default-der-control-cell">not exposed by API</td>
+              <td data-testid="default-der-control-cell">
+                {#if program.defaultDerControlLink}
+                  {program.defaultDerControlLink}
+                {:else}
+                  absent
+                {/if}
+              </td>
             </tr>
           {/each}
         </tbody>
       </table>
-      <p class="note" data-testid="served-known-gaps">
-        DefaultDERControl presence/absence is not yet exposed by
-        GET /api/served/derprogram; the underlying DERProgramSnapshot carries a
-        DefaultDERControlLink field that the current JSON response omits.
-      </p>
     {/if}
   {/if}
 </section>
@@ -159,10 +161,5 @@
 
   .error {
     color: #b91c1c;
-  }
-
-  .note {
-    color: var(--text);
-    font-size: 0.85em;
   }
 </style>
