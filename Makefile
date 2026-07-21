@@ -1,10 +1,26 @@
-.PHONY: build test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
+.PHONY: build test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage ui-build
 
 build:
 	go build ./...
 
 test:
 	go test ./...
+
+# ui-build builds the admin UI's Svelte frontend
+# (internal/adminui/web/frontend/) and writes the static assets into
+# internal/adminui/web/dist/, then rebuilds the Go binary so the
+# freshly built assets are embedded via internal/adminui/web/embed.go's
+# "//go:embed all:dist" directive.
+#
+# Node and npm are needed to RUN this target, but not to run the
+# resulting binary: the embedded bundle in dist/ is committed to the
+# repo, so `go build ./...` alone (with no Node toolchain at all)
+# already succeeds on a fresh checkout using whatever dist/ content is
+# currently committed. Run this target only when the frontend source
+# under frontend/ has changed and dist/ needs regenerating.
+ui-build:
+	cd internal/adminui/web/frontend && npm ci && npm run build
+	go build ./...
 
 test-race:
 	go test -race ./...
