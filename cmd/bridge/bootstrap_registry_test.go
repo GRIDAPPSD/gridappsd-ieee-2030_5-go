@@ -273,6 +273,89 @@ func TestQueryDevicesRejectsMalformedMaxQ(t *testing.T) {
 	}
 }
 
+// TestQueryDevicesParsesFloatMaxQ is the GAGO-082 regression: live
+// CIMHub CIM100 stores PowerElectronicsConnection.maxQ as a
+// float-lexical string ("125000.0", not "125000"), and this bridge
+// used to reject every such binding with strconv.ParseInt's "invalid
+// syntax", aborting the whole bootstrap before any device was seeded.
+// This is a table-driven data-invariants VALUE assertion per
+// [[data-invariants]]: a float-lexical binding must project to the
+// exact rounded int64 VAr magnitude (not merely "parses without
+// error"), an integer-lexical binding must keep working exactly as
+// before, an absent binding stays nil (not a fabricated zero), and a
+// genuinely malformed binding is still a hard error, not a silently
+// dropped value.
+func TestQueryDevicesParsesFloatMaxQ(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		raw     string
+		wantNil bool
+		want    int64
+		wantErr bool
+	}{
+		{name: "float-lexical maxQ (live CIMHub CIM100 shape)", raw: "125000.0", want: 125000},
+		{name: "float-lexical maxQ, sub-VAr fraction rounds", raw: "5000.6", want: 5001},
+		{name: "integer-lexical maxQ still parses", raw: "5000", want: 5000},
+		{name: "empty binding stays nil, not a fabricated zero", raw: "", wantNil: true},
+		{name: "malformed non-numeric binding is a hard error", raw: "abc", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			binding := map[string]cim.Binding{
+				"id":   {Value: "mrid-floatmaxq-1"},
+				"name": {Value: "Inverter FloatMaxQ"},
+			}
+			if tt.raw != "" {
+				binding["maxQ"] = cim.Binding{Value: tt.raw}
+			}
+
+			fakeQuery := func(_ context.Context, _ string) (*cim.QueryDataResult, error) {
+				return &cim.QueryDataResult{
+					Results: cim.SPARQLResults{
+						Bindings: []map[string]cim.Binding{binding},
+					},
+				}, nil
+			}
+
+			devices, err := queryDevices(context.Background(), "inverter", fakeQuery, "_DEADBEEF-0000-0000-0000-000000000123")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("queryDevices with maxQ %q: want error, got nil", tt.raw)
+				}
+				if !strings.Contains(err.Error(), "maxQ") {
+					t.Errorf("queryDevices error = %q, want it to mention maxQ", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("queryDevices with maxQ %q: %v", tt.raw, err)
+			}
+			if len(devices) != 1 {
+				t.Fatalf("queryDevices with maxQ %q returned %d devices, want 1", tt.raw, len(devices))
+			}
+
+			got := devices[0].MaxQ
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("devices[0].MaxQ = %d for an absent binding, want nil", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("devices[0].MaxQ is nil, want %d", tt.want)
+			}
+			if *got != tt.want {
+				t.Errorf("devices[0].MaxQ = %d, want %d", *got, tt.want)
+			}
+		})
+	}
+}
+
 // TestBootstrapRegistryThreadsMaxQIntoRegistryEntry confirms
 // bootstrapRegistry carries the CIM-sourced MaxQ value from the SPARQL
 // projection all the way into the registry.Entry the caller receives,
