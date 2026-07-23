@@ -258,14 +258,16 @@ func TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil(t *testing.T) {
 
 // TestSeedStoresStampsRTGMaxVarFromEntryMaxQ confirms seedOne builds
 // DERCapability.RTGMaxVar from registry.Entry.MaxQ (the CIM
-// PowerElectronicsConnection maxQ attribute) with the exact
-// value/multiplier magnitude, and leaves RTGMaxVar nil (not a
-// fabricated zero) for an entry whose MaxQ is nil, per
+// PowerElectronicsConnection maxQ attribute) via computePowerOfTen (GAGO-083:
+// Value is now int16, so a real fleet's unscaled maxQ needs the multiplier
+// computed, not hardcoded at 0), asserting the exact scaled value and
+// multiplier plus the reconstructed effective VAr, and leaves RTGMaxVar nil
+// (not a fabricated zero) for an entry whose MaxQ is nil, per
 // [[data-invariants]].
 func TestSeedStoresStampsRTGMaxVarFromEntryMaxQ(t *testing.T) {
 	t.Parallel()
 
-	var wantMaxQ int64 = 250000 // 250 kVAr in unscaled base VAr
+	var wantMaxQ int64 = 250000 // 250 kVAr in unscaled base VAr; does not fit int16 at multiplier 0
 
 	reg := registry.New()
 	entries := []registry.Entry{
@@ -289,11 +291,17 @@ func TestSeedStoresStampsRTGMaxVarFromEntryMaxQ(t *testing.T) {
 	if withMaxQ.RTGMaxVar == nil {
 		t.Fatalf("DERCapability.RTGMaxVar is nil for LFDI %q, want value+multiplier for maxQ=%d", entries[0].LFDI, wantMaxQ)
 	}
-	if withMaxQ.RTGMaxVar.Value != wantMaxQ {
-		t.Errorf("DERCapability.RTGMaxVar.Value = %d, want %d", withMaxQ.RTGMaxVar.Value, wantMaxQ)
+	const wantValue int16 = 25000
+	const wantMult int8 = 1
+	if withMaxQ.RTGMaxVar.Value != wantValue {
+		t.Errorf("DERCapability.RTGMaxVar.Value = %d, want %d", withMaxQ.RTGMaxVar.Value, wantValue)
 	}
-	if withMaxQ.RTGMaxVar.Multiplier != 0 {
-		t.Errorf("DERCapability.RTGMaxVar.Multiplier = %d, want 0 (unscaled base VAr)", withMaxQ.RTGMaxVar.Multiplier)
+	if withMaxQ.RTGMaxVar.Multiplier != wantMult {
+		t.Errorf("DERCapability.RTGMaxVar.Multiplier = %d, want %d (smallest multiplier that fits maxQ=%d into int16)", withMaxQ.RTGMaxVar.Multiplier, wantMult, wantMaxQ)
+	}
+	reconstructed := int64(withMaxQ.RTGMaxVar.Value) * 10
+	if reconstructed != wantMaxQ {
+		t.Errorf("reconstructed effective VAr = %d, want %d (Value %d * 10^Multiplier %d)", reconstructed, wantMaxQ, withMaxQ.RTGMaxVar.Value, withMaxQ.RTGMaxVar.Multiplier)
 	}
 
 	withoutMaxQ, err := stores.DERCapabilities.Get(ctx, entries[1].LFDI+"/1", "default")
@@ -348,33 +356,50 @@ func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 }
 
 // TestBuildRTGMaxVar is a table-driven test on buildRTGMaxVar directly,
-// asserting the returned struct's field values (not just non-nil), per
-// [[data-invariants]]. Covers: nil input (absent CIM binding), zero,
-// positive, and the GAGO-068 negative-maxQ guard (Cyrus's GAGO-049
-// review LOW finding).
+// asserting the returned struct's field values plus the reconstructed
+// effective VAr (not just non-nil), per [[data-invariants]]. Covers: nil
+// input (absent CIM binding), zero, a magnitude that fits int16 unscaled,
+// a realistic fleet magnitude that needs computePowerOfTen's scaling
+// (GAGO-083), the GAGO-068 negative-maxQ guard (Cyrus's GAGO-049 review
+// LOW finding), and the over-range refusal.
 func TestBuildRTGMaxVar(t *testing.T) {
 	t.Parallel()
 
-	posMaxQ := int64(250000)
+	fleetMaxQ := int64(250000) // 250 kVAr; does not fit int16 at multiplier 0
+	smallMaxQ := int64(5000)
 	zeroMaxQ := int64(0)
 	negMaxQ := int64(-12345)
+	overRangeMaxQ := int64(40000000000000) // even multiplier 9 does not fit int16
 
 	tests := []struct {
-		name     string
-		maxQ     *int64
-		wantNil  bool
-		wantVal  int64
-		wantMult int8
+		name      string
+		maxQ      *int64
+		wantNil   bool
+		wantErr   bool
+		wantVal   int16
+		wantMult  int8
+		wantRecon int64
 	}{
 		{name: "nil maxQ stays nil (absent CIM binding)", maxQ: nil, wantNil: true},
-		{name: "zero maxQ passes through unchanged", maxQ: &zeroMaxQ, wantNil: false, wantVal: 0, wantMult: 0},
-		{name: "positive maxQ passes through unchanged", maxQ: &posMaxQ, wantNil: false, wantVal: posMaxQ, wantMult: 0},
+		{name: "zero maxQ passes through unchanged", maxQ: &zeroMaxQ, wantVal: 0, wantMult: 0, wantRecon: 0},
+		{name: "small maxQ fits int16 without scaling", maxQ: &smallMaxQ, wantVal: 5000, wantMult: 0, wantRecon: 5000},
+		{name: "fleet maxQ needs computed multiplier (GAGO-083)", maxQ: &fleetMaxQ, wantVal: 25000, wantMult: 1, wantRecon: 250000},
 		{name: "negative maxQ is dropped to nil (GAGO-068 guard)", maxQ: &negMaxQ, wantNil: true},
+		{name: "over-range maxQ is refused, not truncated", maxQ: &overRangeMaxQ, wantErr: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildRTGMaxVar(tt.maxQ, "test-device-id")
+			got, err := buildRTGMaxVar(tt.maxQ, "test-device-id")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("buildRTGMaxVar(%v) = (%+v, nil), want error", tt.maxQ, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildRTGMaxVar(%v): unexpected error: %v", tt.maxQ, err)
+			}
 			if tt.wantNil {
 				if got != nil {
 					t.Fatalf("buildRTGMaxVar(%v) = %+v, want nil", tt.maxQ, got)
@@ -389,6 +414,10 @@ func TestBuildRTGMaxVar(t *testing.T) {
 			}
 			if got.Multiplier != tt.wantMult {
 				t.Errorf("buildRTGMaxVar(%v).Multiplier = %d, want %d", tt.maxQ, got.Multiplier, tt.wantMult)
+			}
+			recon := int64(got.Value) * pow10Int64(got.Multiplier)
+			if recon != tt.wantRecon {
+				t.Errorf("buildRTGMaxVar(%v) reconstructed %d * 10^%d = %d, want %d", tt.maxQ, got.Value, got.Multiplier, recon, tt.wantRecon)
 			}
 		})
 	}
@@ -413,7 +442,10 @@ func TestBuildRTGMaxVarLogsNegativeMaxQWithDeviceID(t *testing.T) {
 	negMaxQ := int64(-500)
 	const deviceID = "DEADBEEF0000000000000000000000000000CAFE"
 
-	got := buildRTGMaxVar(&negMaxQ, deviceID)
+	got, err := buildRTGMaxVar(&negMaxQ, deviceID)
+	if err != nil {
+		t.Fatalf("buildRTGMaxVar with negative maxQ: unexpected error: %v", err)
+	}
 	if got != nil {
 		t.Fatalf("buildRTGMaxVar with negative maxQ = %+v, want nil", got)
 	}
