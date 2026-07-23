@@ -300,6 +300,10 @@ func TestQueryDevicesParsesFloatMaxQ(t *testing.T) {
 		{name: "integer-lexical maxQ still parses", raw: "5000", want: 5000},
 		{name: "empty binding stays nil, not a fabricated zero", raw: "", wantNil: true},
 		{name: "malformed non-numeric binding is a hard error", raw: "abc", wantErr: true},
+		{name: "NaN is rejected, not silently coerced via int64(NaN)", raw: "NaN", wantErr: true},
+		{name: "+Inf is rejected, not silently coerced via int64(+Inf)", raw: "Inf", wantErr: true},
+		{name: "-Inf is rejected, not silently coerced via int64(-Inf)", raw: "-Inf", wantErr: true},
+		{name: "magnitude beyond int64 range is rejected, not silently overflowed", raw: "1e300", wantErr: true},
 	}
 
 	for _, tt := range tests {

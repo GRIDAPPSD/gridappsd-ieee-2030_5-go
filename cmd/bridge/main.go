@@ -821,7 +821,14 @@ func queryDevices(
 			if err != nil {
 				return nil, fmt.Errorf("query %s: mRID %q: parse maxQ %q: %w", kind, mrid, raw, err)
 			}
-			maxQ := int64(math.Round(maxQF))
+			if math.IsNaN(maxQF) || math.IsInf(maxQF, 0) {
+				return nil, fmt.Errorf("query %s: mRID %q: maxQ %q is not a finite reactive-power magnitude", kind, mrid, raw)
+			}
+			rounded := math.Round(maxQF)
+			if rounded < math.MinInt64 || rounded > math.MaxInt64 {
+				return nil, fmt.Errorf("query %s: mRID %q: maxQ %q rounds to %g, out of int64 range", kind, mrid, raw, rounded)
+			}
+			maxQ := int64(rounded)
 			d.MaxQ = &maxQ
 		}
 		out = append(out, d)
