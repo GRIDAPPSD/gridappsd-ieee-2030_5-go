@@ -390,7 +390,7 @@ func decodeActivePower(value any) (*sep2.ActivePower, error) {
 		}
 		val16, err := toInt16Checked(val)
 		if err != nil {
-			return nil, fmt.Errorf("ActivePower %w", err)
+			return nil, fmt.Errorf("ActivePower: %w", err)
 		}
 		return &sep2.ActivePower{Multiplier: mult, Value: val16}, nil
 	default:
@@ -417,7 +417,7 @@ func decodeReactivePower(value any) (*sep2.ReactivePower, error) {
 		}
 		val16, err := toInt16Checked(val)
 		if err != nil {
-			return nil, fmt.Errorf("ReactivePower %w", err)
+			return nil, fmt.Errorf("ReactivePower: %w", err)
 		}
 		return &sep2.ReactivePower{Multiplier: mult, Value: val16}, nil
 	default:
