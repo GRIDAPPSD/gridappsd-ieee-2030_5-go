@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -750,7 +751,7 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 type cimDevice struct {
 	MRID string
 	Name string
-	MaxQ *int64 // CIM PowerElectronicsConnection.maxQ, base VAr; nil when the binding is absent
+	MaxQ *int64 // CIM PowerElectronicsConnection.maxQ, base VAr, rounded from the CIM float; nil when the binding is absent
 }
 
 // queryDevices runs one of the cim.Client Query* wrappers, projects
@@ -763,11 +764,35 @@ type cimDevice struct {
 // The ?maxQ binding is OPTIONAL in every PEC-rooted SPARQL template
 // (internal/cim/queries.go), so a row can legitimately carry an empty
 // Binding.Value for it: that is treated as "absent", not "zero", and
-// leaves cimDevice.MaxQ nil. A present binding that fails to parse as a
-// base-10 integer is a hard error rather than a silently-dropped value,
-// matching the no-fabricated-fallback discipline internal/sep2embed's
+// leaves cimDevice.MaxQ nil. Live CIMHub CIM100 stores
+// PowerElectronicsConnection.maxQ as CIM ReactivePower (xsd:float), so
+// a present binding is lexically "125000.0", not "125000" (GAGO-082);
+// the same is true of the SPARQL-adjacent PEC attributes ratedS,
+// ratedU, p, and q, which are also xsd:float in the CIM100 profile
+// (those stay unparsed in the raw QueryDataResult today, per this
+// function's own doc comment above, but confirm maxQ is not an
+// isolated case: the float-lexical shape is the CIM norm for this
+// class of attribute, not an anomaly). maxQ is parsed here with
+// strconv.ParseFloat and then rounded to the nearest whole base VAr for
+// cimDevice.MaxQ's int64 storage (see the rounding note below). A
+// present binding that fails to parse as a float at all is a hard
+// error rather than a silently-dropped value, matching the
+// no-fabricated-fallback discipline internal/sep2embed's
 // decodeMultiplierValue already applies to the wire-side ReactivePower
 // shape.
+//
+// Rounding: cimDevice.MaxQ (and registry.Entry.MaxQ, and
+// sep2.ReactivePower.Value downstream in buildRTGMaxVar) is int64
+// because the vendored core sep2.ReactivePower wire type stores its
+// Value as an integer scaled by an int8 Multiplier, and this bridge
+// always writes Multiplier 0 (base units, see buildRTGMaxVar's doc
+// comment), so there is no scaling step left to absorb a fractional
+// remainder. math.Round to the nearest whole VAr before the int64
+// conversion is therefore the correct (and only) place to resolve the
+// float-to-int64 boundary: a sub-VAr fraction is below the resolution
+// IEEE 2030.5 RTGMaxVar can represent at this multiplier, so rounding
+// (rather than truncating, which would silently discard up to 1 VAr in
+// the low direction every time) is the least lossy choice.
 func queryDevices(
 	ctx context.Context,
 	kind string,
@@ -792,10 +817,11 @@ func queryDevices(
 			Name: row["name"].Value,
 		}
 		if raw := row["maxQ"].Value; raw != "" {
-			maxQ, err := strconv.ParseInt(raw, 10, 64)
+			maxQF, err := strconv.ParseFloat(raw, 64)
 			if err != nil {
 				return nil, fmt.Errorf("query %s: mRID %q: parse maxQ %q: %w", kind, mrid, raw, err)
 			}
+			maxQ := int64(math.Round(maxQF))
 			d.MaxQ = &maxQ
 		}
 		out = append(out, d)
