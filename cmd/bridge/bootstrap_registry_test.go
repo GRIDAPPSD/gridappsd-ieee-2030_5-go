@@ -304,6 +304,7 @@ func TestQueryDevicesParsesFloatMaxQ(t *testing.T) {
 		{name: "+Inf is rejected, not silently coerced via int64(+Inf)", raw: "Inf", wantErr: true},
 		{name: "-Inf is rejected, not silently coerced via int64(-Inf)", raw: "-Inf", wantErr: true},
 		{name: "magnitude beyond int64 range is rejected, not silently overflowed", raw: "1e300", wantErr: true},
+		{name: "exact 2^63 boundary is rejected, not silently wrapped to MinInt64 via int64 overflow", raw: "9223372036854775807", wantErr: true},
 	}
 
 	for _, tt := range tests {

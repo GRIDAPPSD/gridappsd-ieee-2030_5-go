@@ -806,7 +806,16 @@ func queryDevices(
 				return nil, fmt.Errorf("query %s: mRID %q: maxQ %q is not a finite reactive-power magnitude", kind, mrid, raw)
 			}
 			rounded := math.Round(maxQF)
-			if rounded < math.MinInt64 || rounded > math.MaxInt64 {
+			// math.MinInt64 (-2^63) is exactly representable in float64, so
+			// the lower bound below is safe as written. math.MaxInt64
+			// (2^63-1) is NOT exactly representable: converting it to
+			// float64 rounds UP to 2^63, so a naive "rounded > MaxInt64"
+			// comparison lets rounded == 2^63 through, and int64(2^63)
+			// overflows (implementation-defined; wraps to MinInt64 on
+			// amd64). Compare against 2^63 with >= instead, so the int64
+			// conversion below can never see an out-of-range value.
+			const maxInt64Boundary = float64(1 << 63) // == 2^63, exactly representable
+			if rounded < math.MinInt64 || rounded >= maxInt64Boundary {
 				return nil, fmt.Errorf("query %s: mRID %q: maxQ %q rounds to %g, out of int64 range", kind, mrid, raw, rounded)
 			}
 			maxQ := int64(rounded)
