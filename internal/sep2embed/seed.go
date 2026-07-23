@@ -162,9 +162,14 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 		return fmt.Errorf("create DER: %w", err)
 	}
 
+	rtgMaxVar, err := buildRTGMaxVar(e.MaxQ, id)
+	if err != nil {
+		return fmt.Errorf("build RTGMaxVar: %w", err)
+	}
+
 	dercap := sep2.DERCapability{
 		ModesSupported: modesSupported,
-		RTGMaxVar:      buildRTGMaxVar(e.MaxQ, id),
+		RTGMaxVar:      rtgMaxVar,
 	}
 	dercap.Href = dercapHref
 
@@ -187,14 +192,20 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 // CIM100 instance data (ieee9500_2025 fixtures carry raw integers such
 // as 250000 for a 250 kVAr rating). registry.Entry.MaxQ is populated
 // straight from the SPARQL binding in that same unscaled form (see
-// cmd/bridge/main.go's queryDevices), so no additional scaling is
-// needed here: Multiplier: 0 means "Value is already in base units",
-// matching the convention this codebase's other ReactivePower
-// constructions already use (see internal/sep2embed/control_test.go's
-// literal sep2.ReactivePower{Multiplier: 0, Value: ...} fixtures).
+// cmd/bridge/main.go's queryDevices).
+//
+// IEEECORE-014 narrowed sep2.ReactivePower.Value to int16 (per the
+// PowerOfTenMultiplierType-scaled wire encoding IEEE 2030.5 actually
+// uses), so a real fleet's unscaled maxQ (hundreds of thousands of VAr
+// is a realistic rated magnitude) no longer fits Value directly at
+// Multiplier 0: GAGO-083 replaces the old hardcoded Multiplier: 0 with
+// computePowerOfTen, which picks the smallest multiplier that lets maxQ's
+// magnitude fit int16, preserving as many significant digits as int16
+// allows. See computePowerOfTen's own doc comment for the scaling and
+// rounding rules.
 //
 // deviceID names the entry this call is seeding (the store id, which is
-// the device's canonical LFDI); it is used only for the warning below,
+// the device's canonical LFDI); it is used only for the warnings below,
 // never mixed into the returned value.
 //
 // A negative maxQ is malformed CIM data: maxQ is the positive
@@ -205,15 +216,25 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 // warning naming the device and returns nil, exactly as it does for an
 // absent maxQ: no capability advertised is safer than a wrong-sign one
 // (Cyrus, GAGO-049 review LOW finding; GAGO-068).
-func buildRTGMaxVar(maxQ *int64, deviceID string) *sep2.ReactivePower {
+//
+// If maxQ's magnitude is so large that computePowerOfTen cannot fit it
+// into int16 even at the maximum multiplier, buildRTGMaxVar returns that
+// error to its caller rather than fabricating or truncating a value: per
+// [[data-invariants]] Rule 2, a value that cannot be represented validly
+// must be refused, not silently corrupted.
+func buildRTGMaxVar(maxQ *int64, deviceID string) (*sep2.ReactivePower, error) {
 	if maxQ == nil {
-		return nil
+		return nil, nil
 	}
 	if *maxQ < 0 {
 		log.Printf("sep2embed: WARNING: device %q has negative CIM maxQ (%d); rtgMaxVar expects the positive delivered rating, dropping to nil instead of advertising a wrong-sign capability", deviceID, *maxQ)
-		return nil
+		return nil, nil
 	}
-	return &sep2.ReactivePower{Multiplier: 0, Value: *maxQ}
+	value, mult, err := computePowerOfTen(*maxQ)
+	if err != nil {
+		return nil, fmt.Errorf("device %q: %w", deviceID, err)
+	}
+	return &sep2.ReactivePower{Multiplier: mult, Value: value}, nil
 }
 
 // derivePlaceholderSFDI returns a syntactically valid (spec 6.3.3 shaped,

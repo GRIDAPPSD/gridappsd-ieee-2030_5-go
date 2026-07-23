@@ -39,7 +39,7 @@ import (
 // gago044WattsOf collapses a sep2 multiplier plus value pair to plain
 // watts (or vars), so the sign and magnitude are directly comparable to
 // the commanded intent. value times 10^multiplier.
-func gago044PowerToFloat(multiplier int8, value int64) float64 {
+func gago044PowerToFloat(multiplier int8, value int16) float64 {
 	return float64(value) * math.Pow10(int(multiplier))
 }
 

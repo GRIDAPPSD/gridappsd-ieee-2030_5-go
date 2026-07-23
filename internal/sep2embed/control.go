@@ -388,7 +388,11 @@ func decodeActivePower(value any) (*sep2.ActivePower, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &sep2.ActivePower{Multiplier: mult, Value: val}, nil
+		val16, err := toInt16Checked(val)
+		if err != nil {
+			return nil, fmt.Errorf("ActivePower: %w", err)
+		}
+		return &sep2.ActivePower{Multiplier: mult, Value: val16}, nil
 	default:
 		return nil, fmt.Errorf("unsupported ActivePower value type %T", value)
 	}
@@ -411,7 +415,11 @@ func decodeReactivePower(value any) (*sep2.ReactivePower, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &sep2.ReactivePower{Multiplier: mult, Value: val}, nil
+		val16, err := toInt16Checked(val)
+		if err != nil {
+			return nil, fmt.Errorf("ReactivePower: %w", err)
+		}
+		return &sep2.ReactivePower{Multiplier: mult, Value: val16}, nil
 	default:
 		return nil, fmt.Errorf("unsupported ReactivePower value type %T", value)
 	}
