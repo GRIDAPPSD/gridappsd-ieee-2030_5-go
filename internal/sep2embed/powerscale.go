@@ -1,6 +1,9 @@
 package sep2embed
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // maxPowerOfTenMultiplier is the largest PowerOfTenMultiplierType exponent
 // computePowerOfTen will try (IEEE 2030.5 PowerOfTenMultiplierType is an
@@ -39,7 +42,20 @@ const maxPowerOfTenMultiplier = 9
 // represented validly must be refused, not silently corrupted. A raw VAr
 // magnitude in that range is not a plausible physical rating, so refusing
 // it surfaces a data problem instead of advertising a wrong capability.
+//
+// math.MinInt64 is refused explicitly, before the sign/magnitude split
+// below: two's-complement negation of MinInt64 overflows back to
+// MinInt64 itself, so a naive "negate to get the magnitude" step would
+// leave magnitude negative. That negative magnitude would pass the
+// "scaled <= 32767" fits check immediately at m=0 (a negative number is
+// always <= 32767), and the final int16 narrowing would then return a
+// garbage value with err == nil, which is exactly the silent-corruption
+// case [[data-invariants]] Rule 2 forbids.
 func computePowerOfTen(vAr int64) (value int16, mult int8, err error) {
+	if vAr == math.MinInt64 {
+		return 0, 0, fmt.Errorf("computePowerOfTen: %d has no representable magnitude (int64 minimum has no positive two's complement negation)", vAr)
+	}
+
 	sign := int64(1)
 	magnitude := vAr
 	if magnitude < 0 {

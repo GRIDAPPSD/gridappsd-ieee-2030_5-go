@@ -1,6 +1,9 @@
 package sep2embed
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // TestComputePowerOfTen is a table-driven test on computePowerOfTen,
 // asserting the returned Value/Multiplier fields directly and the
@@ -103,6 +106,11 @@ func TestComputePowerOfTen(t *testing.T) {
 		{
 			name:    "negative over range is also refused",
 			vAr:     -40000000000000,
+			wantErr: true,
+		},
+		{
+			name:    "int64 MinInt64 is refused, not silently corrupted (negation overflow)",
+			vAr:     math.MinInt64,
 			wantErr: true,
 		},
 	}
