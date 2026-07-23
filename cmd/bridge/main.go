@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -750,24 +751,29 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 type cimDevice struct {
 	MRID string
 	Name string
-	MaxQ *int64 // CIM PowerElectronicsConnection.maxQ, base VAr; nil when the binding is absent
+	MaxQ *int64 // CIM PowerElectronicsConnection.maxQ, base VAr, rounded from the CIM float; nil when the binding is absent
 }
 
-// queryDevices runs one of the cim.Client Query* wrappers, projects
-// each binding row down to a cimDevice, and skips rows whose ?id binding
-// is missing or empty. The kind argument is only used for log
-// readability. The query argument is the bound method on *cim.Client;
-// passing it as a value lets the three call sites share this projection
-// without a type switch.
+// queryDevices runs one of the cim.Client Query* wrappers, projects each
+// binding row down to a cimDevice, and skips rows whose ?id binding is
+// missing or empty. kind is used only for log/error readability; query
+// is the bound *cim.Client method, passed as a value so the three call
+// sites share this projection without a type switch.
 //
-// The ?maxQ binding is OPTIONAL in every PEC-rooted SPARQL template
-// (internal/cim/queries.go), so a row can legitimately carry an empty
-// Binding.Value for it: that is treated as "absent", not "zero", and
-// leaves cimDevice.MaxQ nil. A present binding that fails to parse as a
-// base-10 integer is a hard error rather than a silently-dropped value,
-// matching the no-fabricated-fallback discipline internal/sep2embed's
-// decodeMultiplierValue already applies to the wire-side ReactivePower
-// shape.
+// ?maxQ is OPTIONAL: an empty Binding.Value means "absent" and leaves
+// cimDevice.MaxQ nil, never a fabricated zero. Live CIMHub CIM100 stores
+// PowerElectronicsConnection.maxQ as CIM ReactivePower (xsd:float), so a
+// present binding is lexically "125000.0", not "125000" (GAGO-082); other
+// PEC attributes (ratedS, ratedU, p, q) share that float-lexical shape
+// but stay unparsed in the raw QueryDataResult today.
+//
+// maxQ is parsed with strconv.ParseFloat, rejected outright if NaN,
+// +/-Inf, or out of int64 range, then rounded to the nearest whole base
+// VAr: cimDevice.MaxQ (and its downstream sep2.ReactivePower.Value) is
+// int64 because this bridge always writes Multiplier 0, leaving no
+// scaling step to absorb a fractional remainder. Any parse or range
+// failure is a hard error, never a silently-dropped or coerced value,
+// matching internal/sep2embed's decodeMultiplierValue discipline.
 func queryDevices(
 	ctx context.Context,
 	kind string,
@@ -792,10 +798,27 @@ func queryDevices(
 			Name: row["name"].Value,
 		}
 		if raw := row["maxQ"].Value; raw != "" {
-			maxQ, err := strconv.ParseInt(raw, 10, 64)
+			maxQF, err := strconv.ParseFloat(raw, 64)
 			if err != nil {
 				return nil, fmt.Errorf("query %s: mRID %q: parse maxQ %q: %w", kind, mrid, raw, err)
 			}
+			if math.IsNaN(maxQF) || math.IsInf(maxQF, 0) {
+				return nil, fmt.Errorf("query %s: mRID %q: maxQ %q is not a finite reactive-power magnitude", kind, mrid, raw)
+			}
+			rounded := math.Round(maxQF)
+			// math.MinInt64 (-2^63) is exactly representable in float64, so
+			// the lower bound below is safe as written. math.MaxInt64
+			// (2^63-1) is NOT exactly representable: converting it to
+			// float64 rounds UP to 2^63, so a naive "rounded > MaxInt64"
+			// comparison lets rounded == 2^63 through, and int64(2^63)
+			// overflows (implementation-defined; wraps to MinInt64 on
+			// amd64). Compare against 2^63 with >= instead, so the int64
+			// conversion below can never see an out-of-range value.
+			const maxInt64Boundary = float64(1 << 63) // == 2^63, exactly representable
+			if rounded < math.MinInt64 || rounded >= maxInt64Boundary {
+				return nil, fmt.Errorf("query %s: mRID %q: maxQ %q rounds to %g, out of int64 range", kind, mrid, raw, rounded)
+			}
+			maxQ := int64(rounded)
 			d.MaxQ = &maxQ
 		}
 		out = append(out, d)
