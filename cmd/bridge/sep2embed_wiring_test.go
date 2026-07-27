@@ -109,7 +109,7 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	embed, err := newSEP2Embed(ctx, cfg, reg, nil, sep2config.DefaultPolicy())
+	embed, err := newSEP2Embed(ctx, cfg, reg, nil, sep2config.DefaultPolicy(), nil)
 	if err != nil {
 		t.Fatalf("newSEP2Embed: %v", err)
 	}

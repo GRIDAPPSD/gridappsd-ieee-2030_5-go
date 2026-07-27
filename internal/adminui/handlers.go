@@ -10,6 +10,12 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
+// timeFormat is the fixed RFC 3339 (millisecond precision, UTC offset
+// preserved) layout every timestamp field in this package's JSON
+// responses uses, matching the format handleControlFlow's AppliedAt
+// field already established.
+const timeFormat = "2006-01-02T15:04:05.000Z07:00"
+
 // mux registers the GAGO-059 read only JSON endpoints, plus the
 // GAGO-060 SPA handler on "/". Every /api/... handler here is a pure
 // reader over the sources injected into Server by New: none of them
@@ -34,6 +40,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("/api/served/edev", s.handleServedEndDevices)
 	mux.HandleFunc("/api/served/derprogram", s.handleServedDERPrograms)
 	mux.HandleFunc("/api/controlflow", s.handleControlFlow)
+	mux.HandleFunc("/api/clients", s.handleClients)
 	mux.Handle("/", s.spaHandler())
 	return mux
 }
@@ -330,10 +337,73 @@ func (s *Server) handleControlFlow(w http.ResponseWriter, r *http.Request) {
 			Object:    snap.Last.Object,
 			Attribute: snap.Last.Attribute,
 			Value:     snap.Last.Value,
-			AppliedAt: snap.Last.AppliedAt.Format("2006-01-02T15:04:05.000Z07:00"),
+			AppliedAt: snap.Last.AppliedAt.Format(timeFormat),
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// clientSnapshotResponse mirrors connobs.ClientSnapshot's exported
+// fields. A distinct type, per this package's established
+// explicit-shape rationale (see registryEntryResponse): connobs is free
+// to add an internal-only field later without it silently appearing
+// here.
+type clientSnapshotResponse struct {
+	LFDI         string   `json:"lfdi"`
+	LastSeen     string   `json:"lastSeen"`
+	RequestCount uint64   `json:"requestCount"`
+	Paths        []string `json:"paths"`
+}
+
+// handshakeAttemptResponse mirrors connobs.HandshakeAttempt's exported
+// fields.
+type handshakeAttemptResponse struct {
+	LFDI       string `json:"lfdi"`
+	RemoteAddr string `json:"remoteAddr"`
+	Accepted   bool   `json:"accepted"`
+	Reason     string `json:"reason"`
+	Known      bool   `json:"known"`
+	At         string `json:"at"`
+}
+
+// clientsResponse mirrors connobs.Snapshot's exported fields.
+type clientsResponse struct {
+	Clients    []clientSnapshotResponse   `json:"clients"`
+	Handshakes []handshakeAttemptResponse `json:"handshakes"`
+}
+
+// handleClients reports the GAGO-090 per-LFDI connection observer's
+// current state: which LFDIs have issued requests (and what they
+// touched), plus the recent mTLS handshake attempt log, accepted and
+// rejected alike. Every field traces to the connobs.Hook's own recorded
+// state; this handler never fabricates or defaults a value the hook did
+// not itself record.
+func (s *Server) handleClients(w http.ResponseWriter, r *http.Request) {
+	snap := s.clients.Snapshot()
+
+	clients := make([]clientSnapshotResponse, 0, len(snap.Clients))
+	for _, c := range snap.Clients {
+		clients = append(clients, clientSnapshotResponse{
+			LFDI:         c.LFDI,
+			LastSeen:     c.LastSeen.Format(timeFormat),
+			RequestCount: c.RequestCount,
+			Paths:        c.Paths,
+		})
+	}
+
+	handshakes := make([]handshakeAttemptResponse, 0, len(snap.Handshakes))
+	for _, h := range snap.Handshakes {
+		handshakes = append(handshakes, handshakeAttemptResponse{
+			LFDI:       h.LFDI,
+			RemoteAddr: h.RemoteAddr,
+			Accepted:   h.Accepted,
+			Reason:     h.Reason,
+			Known:      h.Known,
+			At:         h.At.Format(timeFormat),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, clientsResponse{Clients: clients, Handshakes: handshakes})
 }
 
 // writeJSON encodes v as the response body with the given status code

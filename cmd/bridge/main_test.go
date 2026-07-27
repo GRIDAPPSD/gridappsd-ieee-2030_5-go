@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 )
 
@@ -97,9 +98,13 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 	}
 
 	policy := sep2config.DefaultPolicy()
-	got := sep2EmbedConfig(cfg, nil, policy)
+	var connHook connobs.Hook
+	got := sep2EmbedConfig(cfg, nil, policy, &connHook)
 	if got.Addr != cfg.SEP2ServerAddr {
 		t.Errorf("Addr: got %q, want %q", got.Addr, cfg.SEP2ServerAddr)
+	}
+	if got.Observer != &connHook {
+		t.Errorf("Observer: got %p, want the passed-in connHook %p (GAGO-090/091 wiring)", got.Observer, &connHook)
 	}
 	if got.CertDir != cfg.SEP2ServerCertDir {
 		t.Errorf("CertDir: got %q, want %q", got.CertDir, cfg.SEP2ServerCertDir)
@@ -141,7 +146,7 @@ func TestSEP2EmbedConfigWiresTelemetryWhenSimulationIDSet(t *testing.T) {
 	}
 
 	fakeBus := fakeBusPublisherForTest{}
-	got := sep2EmbedConfig(cfg, fakeBus, sep2config.DefaultPolicy())
+	got := sep2EmbedConfig(cfg, fakeBus, sep2config.DefaultPolicy(), nil)
 
 	wantDest := sim.InputTopic("sim-123")
 	if got.TelemetryDestination != wantDest {

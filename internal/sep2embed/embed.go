@@ -21,6 +21,7 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
 	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
@@ -111,6 +112,23 @@ type Config struct {
 	// sep2config.SEP2Policy.ModesSupported rather than fabricating a
 	// bitmap here.
 	ModesSupported *uint32
+
+	// Observer is the GAGO-090/GAGO-091 per-LFDI connection observer.
+	// Nil (the zero value) disables observation entirely: New falls back
+	// to delegating listener construction to sep2srv.New exactly as
+	// before, and buildHandler wires a nil-safe pass-through in place of
+	// the request-observation middleware. When non-nil, every
+	// authenticated request is recorded via Observer.RecordRequest, and
+	// (GCM/default listener only; see errObserverRequiresGCM) every mTLS
+	// connection attempt that reaches certificate verification (i.e. the
+	// client presented a certificate and chain-building ran), accepted
+	// or rejected, is recorded via Observer.RecordHandshake; a connection
+	// that fails before that point (no certificate presented, TLS
+	// negotiation failure) is not recorded, per connobs's own package
+	// doc comment. The caller (cmd/bridge) owns the Hook's lifetime and
+	// reads it back via internal/adminui's /api/clients endpoint; this
+	// package only ever writes to it.
+	Observer *connobs.Hook
 }
 
 // protocolServer is the minimal surface Run needs from the embedded mTLS
@@ -178,6 +196,52 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 	notifier := coresub.NewManager(stores.Subscriptions, workers, queueSize)
 
+	telemetry := telemetryConfig{
+		bus:   cfg.Bus,
+		reg:   reg,
+		dest:  cfg.TelemetryDestination,
+		simID: cfg.TelemetrySimulationID,
+	}
+
+	// Observer wired: build the mTLS listener ourselves, with the
+	// additive handshake-observation wrapper (see mtls.go's doc comment
+	// for why core's sep2srv.New cannot be used for this path). Observer
+	// unset (the common case today: cmd/bridge only wires it once
+	// GAGO-091 lands): fall through unchanged to the pre-GAGO-090
+	// sep2srv.New path below.
+	if cfg.Observer != nil {
+		if cfg.EnableCCM {
+			return nil, errObserverRequiresGCM
+		}
+
+		listener, identity, err := newObservedMTLSListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, cfg.Observer, reg)
+		if err != nil {
+			return nil, err
+		}
+
+		handler := buildHandler(cfg.Router, stores, reg, identity, notifier, telemetry, cfg.Observer)
+
+		shutdownTimeout := cfg.ShutdownTimeout
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = sep2srv.DefaultShutdownTimeout
+		}
+
+		srv := &observedMTLSServer{
+			identity: identity,
+			listener: listener,
+			httpSrv: &http.Server{
+				Handler:           handler,
+				ReadHeaderTimeout: sep2srv.DefaultReadHeaderTimeout,
+				ReadTimeout:       sep2srv.DefaultReadTimeout,
+				WriteTimeout:      sep2srv.DefaultWriteTimeout,
+				IdleTimeout:       sep2srv.DefaultIdleTimeout,
+			},
+			shutdownTimeout: shutdownTimeout,
+		}
+
+		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, defaultControl: cfg.DefaultControl}, nil
+	}
+
 	opts := sep2srv.Options{
 		Addr:            cfg.Addr,
 		CertFile:        certFile,
@@ -188,15 +252,8 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		ShutdownTimeout: cfg.ShutdownTimeout,
 	}
 
-	telemetry := telemetryConfig{
-		bus:   cfg.Bus,
-		reg:   reg,
-		dest:  cfg.TelemetryDestination,
-		simID: cfg.TelemetrySimulationID,
-	}
-
 	build := func(identity sep2srv.Identity) http.Handler {
-		return buildHandler(cfg.Router, stores, reg, identity, notifier, telemetry)
+		return buildHandler(cfg.Router, stores, reg, identity, notifier, telemetry, cfg.Observer)
 	}
 
 	srv, err := sep2srv.New(opts, build)

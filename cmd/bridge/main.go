@@ -56,6 +56,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -210,9 +211,20 @@ func run(ctx context.Context, cfg config) error {
 		log.Printf("bridge: -publish-on-start requested; DifferenceBuilder envelope publish is filed as Stage 2 follow-up; skipping")
 	}
 
+	// connHook is the GAGO-090/GAGO-091 read-only observation point over
+	// the embedded mTLS listener's connection surface: every
+	// authenticated request's LFDI (sep2embed's connObserveMiddleware)
+	// and every mTLS handshake attempt, accepted or rejected
+	// (sep2embed's additive VerifyPeerCertificate wrapper), is recorded
+	// here. Must be constructed before newSEP2Embed below, since
+	// sep2EmbedConfig threads its address into sep2embed.Config.Observer
+	// for New to wire into the listener it builds. The future admin UI
+	// /api/clients endpoint (GAGO-091) is its only reader.
+	var connHook connobs.Hook
+
 	// The embed seeds its EndDevice/DER stores from reg, so it must be
 	// built after bootstrapRegistry above, not before.
-	embed, err := newSEP2Embed(ctx, cfg, reg, bus, policy)
+	embed, err := newSEP2Embed(ctx, cfg, reg, bus, policy, &connHook)
 	if err != nil {
 		return fmt.Errorf("sep2 embed: %w", err)
 	}
@@ -258,7 +270,7 @@ func run(ctx context.Context, cfg config) error {
 	// a non-loopback Addr without the explicit opt-in) is a genuine
 	// startup failure, not the disabled state.
 	var adminUIRun func(context.Context) error
-	adminSrv, err := adminui.New(adminUIConfig(cfg), reg, embed, embed, &controlHook, embed, bus)
+	adminSrv, err := adminui.New(adminUIConfig(cfg), reg, embed, embed, &controlHook, embed, bus, &connHook)
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
 		log.Printf("bridge: admin UI disabled, SEP2_ADMIN_UI_KEY unset")
@@ -400,7 +412,15 @@ func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(c
 // device's DERCapability is sourced from policy, never hardcoded here;
 // DefaultPolicy leaves it nil, so seeding is nil-safe until a real
 // policy value is configured.
-func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.SEP2Policy) sep2embed.Config {
+//
+// connHook is threaded through as sep2embed.Config.Observer
+// (GAGO-090/GAGO-091): a non-nil connHook opts this bridge into the
+// additive request- and handshake-observation path sep2embed.New
+// builds when Config.Observer is set. cmd/bridge always passes a
+// non-nil *connobs.Hook (its own connHook), so observation is always
+// on for this bridge; a nil value here is only ever exercised by
+// sep2embed's own tests that leave Config.Observer unset.
+func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.SEP2Policy, connHook *connobs.Hook) sep2embed.Config {
 	dest := ""
 	if cfg.SimulationID != "" {
 		dest = sim.InputTopic(cfg.SimulationID)
@@ -413,6 +433,7 @@ func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.S
 		TelemetrySimulationID: cfg.SimulationID,
 		DefaultControl:        policy.DefaultControl,
 		ModesSupported:        policy.ModesSupported,
+		Observer:              connHook,
 	}
 }
 
@@ -434,8 +455,8 @@ func adminUIConfig(cfg config) adminui.Config {
 // newSEP2Embed builds, seeds, and binds the in-process IEEE 2030.5
 // protocol server from the bridge's registry. It does not start
 // serving; the caller starts embed.Run once this returns successfully.
-func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, bus sep2embed.BusPublisher, policy sep2config.SEP2Policy) (*sep2embed.Embed, error) {
-	return sep2embed.New(ctx, sep2EmbedConfig(cfg, bus, policy), reg)
+func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, bus sep2embed.BusPublisher, policy sep2config.SEP2Policy, connHook *connobs.Hook) (*sep2embed.Embed, error) {
+	return sep2embed.New(ctx, sep2EmbedConfig(cfg, bus, policy, connHook), reg)
 }
 
 // busConfig projects the bridge's config onto gridappsd-go's connection

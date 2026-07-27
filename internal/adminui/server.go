@@ -28,6 +28,7 @@ import (
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
@@ -146,6 +147,13 @@ type StompSource interface {
 	IsConnected() bool
 }
 
+// ClientObserverSource is the minimal read surface Server needs from
+// *connobs.Hook for the GAGO-091 /api/clients endpoint: the per-LFDI
+// connection activity and mTLS handshake log GAGO-090 records.
+type ClientObserverSource interface {
+	Snapshot() connobs.Snapshot
+}
+
 // Server is the admin UI's HTTP server: a bound, not yet serving
 // listener, plus the read only handler chain built from the injected
 // sources above. Construct with New; start serving with Run.
@@ -157,6 +165,7 @@ type Server struct {
 	flow     ControlFlowSource
 	identity IdentitySource
 	stomp    StompSource
+	clients  ClientObserverSource
 
 	startedAt time.Time
 
@@ -175,15 +184,15 @@ type Server struct {
 // A non-loopback cfg.Addr without cfg.AllowNonLoopback is rejected here,
 // before any socket is opened: fail closed on the loopback posture
 // check, exactly as fail closed applies to the missing-token case.
-func New(cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource) (*Server, error) {
+func New(cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource, clients ClientObserverSource) (*Server, error) {
 	if cfg.Key == "" {
 		return nil, ErrDisabled
 	}
 	if cfg.Addr == "" {
 		return nil, errors.New("adminui: Config.Addr is required")
 	}
-	if reg == nil || devices == nil || programs == nil || flow == nil || identity == nil || stomp == nil {
-		return nil, errors.New("adminui: registry, devices, programs, flow, identity, and stomp sources are all required")
+	if reg == nil || devices == nil || programs == nil || flow == nil || identity == nil || stomp == nil || clients == nil {
+		return nil, errors.New("adminui: registry, devices, programs, flow, identity, stomp, and clients sources are all required")
 	}
 
 	loopback, err := isLoopbackHost(cfg.Addr)
@@ -210,6 +219,7 @@ func New(cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERPr
 		flow:      flow,
 		identity:  identity,
 		stomp:     stomp,
+		clients:   clients,
 		startedAt: time.Now(),
 		ln:        ln,
 	}

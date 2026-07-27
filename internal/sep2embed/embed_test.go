@@ -19,6 +19,7 @@ import (
 	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
@@ -279,6 +280,37 @@ func TestEmbedRejectsMissingRequiredConfig(t *testing.T) {
 	}
 	if _, err := New(ctx, Config{Addr: "127.0.0.1:0", CertDir: t.TempDir()}, nil); err == nil {
 		t.Error("New with nil registry: want error, got nil")
+	}
+}
+
+// TestNewFailsClosedWhenObserverSetWithCCMEnabled proves the
+// errObserverRequiresGCM fail-closed guard actually fires: New with
+// both Config.Observer non-nil and Config.EnableCCM true must return an
+// error satisfying errors.Is(err, errObserverRequiresGCM), rather than
+// silently building a CCM listener with no handshake observation (the
+// invisible-gap outcome mtls.go's doc comment on errObserverRequiresGCM
+// explicitly rejects).
+func TestNewFailsClosedWhenObserverSetWithCCMEnabled(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.New()
+	if err := reg.AddBatch(fixtureEntries()); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+
+	var hook connobs.Hook
+	_, err := New(context.Background(), Config{
+		Addr:      "127.0.0.1:0",
+		CertDir:   t.TempDir(),
+		EnableCCM: true,
+		Observer:  &hook,
+	}, reg)
+
+	if err == nil {
+		t.Fatal("New with Observer set and EnableCCM true: want error, got nil")
+	}
+	if !errors.Is(err, errObserverRequiresGCM) {
+		t.Errorf("New error = %v, want errors.Is(err, errObserverRequiresGCM)", err)
 	}
 }
 

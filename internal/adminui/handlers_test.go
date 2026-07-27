@@ -8,6 +8,7 @@ import (
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
@@ -40,7 +41,7 @@ func TestHandleHealthReturnsAllEnrichedFieldValues(t *testing.T) {
 		FeederMRID:   "feeder-mrid-1",
 		SimulationID: "sim-1",
 		SORLink:      "https://sor.example/dashboard",
-	}, reg, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, identity, stomp)
+	}, reg, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, identity, stomp, &fakeClientObserver{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestHandleDERsFlattensDERsWithOwningEndDeviceID(t *testing.T) {
 		{ID: "edev-2", DERs: []sep2embed.DERSnapshot{{ID: "der-3", Href: "/h3"}}},
 	}}
 	s, err := New(Config{Addr: "127.0.0.1:0", Key: testKey, FeederMRID: "feeder-mrid-1"},
-		&fakeRegistry{}, devices, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{})
+		&fakeRegistry{}, devices, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -343,6 +344,109 @@ func TestHandleControlFlowOmitsLastWhenNil(t *testing.T) {
 	}
 }
 
+// TestHandleClientsReturnsExactSnapshotFieldValues is the GAGO-091
+// field-value test for /api/clients: every field on both the clients
+// array and the handshakes array must round trip through JSON exactly,
+// sourced from the injected connobs.Snapshot, per data-invariants
+// (assert field values, not just non-crash).
+func TestHandleClientsReturnsExactSnapshotFieldValues(t *testing.T) {
+	t.Parallel()
+
+	lastSeen := time.Date(2026, 7, 27, 9, 15, 30, 0, time.UTC)
+	handshakeAt := time.Date(2026, 7, 27, 9, 14, 0, 0, time.UTC)
+	clients := &fakeClientObserver{snap: connobs.Snapshot{
+		Clients: []connobs.ClientSnapshot{
+			{
+				LFDI:         "AAAABBBBCCCCDDDDEEEEFFFFAAAABBBBCCCCDDDD",
+				LastSeen:     lastSeen,
+				RequestCount: 7,
+				Paths:        []string{"/dcap", "/edev"},
+			},
+		},
+		Handshakes: []connobs.HandshakeAttempt{
+			{
+				LFDI:       "1111222233334444555566667777888899990000",
+				RemoteAddr: "10.0.0.5:54321",
+				Accepted:   false,
+				Reason:     "x509: certificate signed by unknown authority",
+				Known:      false,
+				At:         handshakeAt,
+			},
+		},
+	}}
+	s := newTestServerWithSources(t, testKey, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, clients)
+
+	rec := doRequest(t, s.Handler(), "GET", "/api/clients", "Bearer "+testKey, "localhost")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got clientsResponse
+	decodeJSON(t, rec.Body.Bytes(), &got)
+
+	if len(got.Clients) != 1 {
+		t.Fatalf("Clients has %d entries, want 1", len(got.Clients))
+	}
+	gotClient := got.Clients[0]
+	if gotClient.LFDI != "AAAABBBBCCCCDDDDEEEEFFFFAAAABBBBCCCCDDDD" {
+		t.Errorf("Clients[0].LFDI = %q, want %q", gotClient.LFDI, "AAAABBBBCCCCDDDDEEEEFFFFAAAABBBBCCCCDDDD")
+	}
+	if gotClient.LastSeen != "2026-07-27T09:15:30.000Z" {
+		t.Errorf("Clients[0].LastSeen = %q, want %q", gotClient.LastSeen, "2026-07-27T09:15:30.000Z")
+	}
+	if gotClient.RequestCount != 7 {
+		t.Errorf("Clients[0].RequestCount = %d, want 7", gotClient.RequestCount)
+	}
+	if len(gotClient.Paths) != 2 || gotClient.Paths[0] != "/dcap" || gotClient.Paths[1] != "/edev" {
+		t.Errorf("Clients[0].Paths = %v, want [/dcap /edev]", gotClient.Paths)
+	}
+
+	if len(got.Handshakes) != 1 {
+		t.Fatalf("Handshakes has %d entries, want 1", len(got.Handshakes))
+	}
+	gotHandshake := got.Handshakes[0]
+	if gotHandshake.LFDI != "1111222233334444555566667777888899990000" {
+		t.Errorf("Handshakes[0].LFDI = %q, want %q", gotHandshake.LFDI, "1111222233334444555566667777888899990000")
+	}
+	if gotHandshake.RemoteAddr != "10.0.0.5:54321" {
+		t.Errorf("Handshakes[0].RemoteAddr = %q, want %q", gotHandshake.RemoteAddr, "10.0.0.5:54321")
+	}
+	if gotHandshake.Accepted {
+		t.Errorf("Handshakes[0].Accepted = %v, want false", gotHandshake.Accepted)
+	}
+	if gotHandshake.Reason != "x509: certificate signed by unknown authority" {
+		t.Errorf("Handshakes[0].Reason = %q, want %q", gotHandshake.Reason, "x509: certificate signed by unknown authority")
+	}
+	if gotHandshake.Known {
+		t.Errorf("Handshakes[0].Known = %v, want false", gotHandshake.Known)
+	}
+	if gotHandshake.At != "2026-07-27T09:14:00.000Z" {
+		t.Errorf("Handshakes[0].At = %q, want %q", gotHandshake.At, "2026-07-27T09:14:00.000Z")
+	}
+}
+
+// TestHandleClientsReturnsEmptyArraysNotNullWhenNoState confirms a
+// zero-value observer's Snapshot (no clients, no handshakes ever
+// recorded) serializes as empty JSON arrays, not null, matching this
+// handler's writeJSON contract for other list-shaped fields (see
+// registryEntryResponse and derProgramResponse's own empty-slice
+// handling) rather than letting a nil Go slice leak through as a wire
+// "absent" signal where the contract is "empty".
+func TestHandleClientsReturnsEmptyArraysNotNullWhenNoState(t *testing.T) {
+	t.Parallel()
+
+	clients := &fakeClientObserver{snap: connobs.Snapshot{}}
+	s := newTestServerWithSources(t, testKey, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, clients)
+
+	rec := doRequest(t, s.Handler(), "GET", "/api/clients", "Bearer "+testKey, "localhost")
+	body := rec.Body.String()
+	if !strings.Contains(body, `"clients":[]`) {
+		t.Errorf("body = %s, want a literal \"clients\":[] field", body)
+	}
+	if !strings.Contains(body, `"handshakes":[]`) {
+		t.Errorf("body = %s, want a literal \"handshakes\":[] field", body)
+	}
+}
+
 // TestNoResponseBodyEverContainsTheAdminToken is the CRITICAL GAGO-059
 // no-secret acceptance test: it drives every registered endpoint with a
 // realistic, populated set of fakes, then asserts the admin Bearer
@@ -375,7 +479,7 @@ func TestNoResponseBodyEverContainsTheAdminToken(t *testing.T) {
 	}}
 	s := newTestServer(t, secretToken, reg, devices, programs, flow)
 
-	routes := []string{"/api/health", "/api/registry", "/api/ders", "/api/served/edev", "/api/served/derprogram", "/api/controlflow"}
+	routes := []string{"/api/health", "/api/registry", "/api/ders", "/api/served/edev", "/api/served/derprogram", "/api/controlflow", "/api/clients"}
 	for _, route := range routes {
 		route := route
 		t.Run(route, func(t *testing.T) {

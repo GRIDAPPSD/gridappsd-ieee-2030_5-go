@@ -9,6 +9,7 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
@@ -44,14 +45,26 @@ import (
 // telemetryConfig (the zero value) makes telemetryMiddleware a
 // pass-through, so this composition is a no-op when the relay isn't
 // configured.
-func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, reg *registry.Registry, identity sep2srv.Identity, notifier assembly.ResourceNotifier, telemetry telemetryConfig) http.Handler {
+//
+// observe (GAGO-090) is composed OUTSIDE acl, immediately after
+// identityMiddleware: it records every request from a cert-verified
+// caller into hook, regardless of whether the ACL goes on to permit or
+// deny that specific request. This is deliberate: the "served !=
+// connected" question this hook answers is "did this LFDI actually
+// reach the listener and authenticate", not "was this specific request
+// authorized". A nil hook (the zero value of Config.Observer) makes
+// connObserveMiddleware a pass-through, so this composition is a no-op
+// wherever no observer is wired, e.g. every existing test that calls
+// buildHandler with hook == nil.
+func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, reg *registry.Registry, identity sep2srv.Identity, notifier assembly.ResourceNotifier, telemetry telemetryConfig, hook *connobs.Hook) http.Handler {
 	resolver := newStoreOwnerResolver(stores.EndDevices)
 	acl := aclMiddleware(resolver)
 	relay := telemetryMiddleware(telemetry)
+	observe := connObserveMiddleware(hook)
 
 	authPolicy := assembly.AuthPolicy{
 		Wrap: func(next http.Handler) http.Handler {
-			return identityMiddleware(acl(relay(next)))
+			return identityMiddleware(observe(acl(relay(next))))
 		},
 		Identity:   identityFromContext,
 		SFDIPrefix: sfdiPrefix,
@@ -111,6 +124,32 @@ func identityFromContext(ctx context.Context) (lfdi, sfdi string, ok bool) {
 		return "", "", false
 	}
 	return id.lfdi, id.sfdi, true
+}
+
+// connObserveMiddleware records every authenticated request's caller
+// LFDI and request path into hook (see internal/connobs), feeding the
+// GAGO-091 admin /api/clients endpoint. Must run AFTER identityMiddleware
+// in the Wrap chain, since it reads the identity identityMiddleware
+// already extracted into the request context; a request with no
+// extracted identity (the fail-closed no-cert path identityMiddleware's
+// own doc comment describes) is not recorded, since there is no LFDI to
+// key by.
+//
+// hook == nil makes this a pass-through: every call site that does not
+// wire an observer (every pre-GAGO-090 test, and any future caller of
+// buildHandler that leaves Config.Observer unset) is unaffected.
+func connObserveMiddleware(hook *connobs.Hook) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if hook == nil {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if lfdi, _, ok := identityFromContext(r.Context()); ok {
+				hook.RecordRequest(lfdi, r.URL.Path)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // sfdiPrefixLen is the id-prefix length HandleCreateEndDevice derives
