@@ -107,7 +107,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 		bootstrapEmbed, err := newSEP2Embed(bootstrapCtx, config{
 			SEP2ServerAddr:    "127.0.0.1:0",
 			SEP2ServerCertDir: certDir,
-		}, registry.New(), nil, sep2config.DefaultPolicy())
+		}, registry.New(), nil, sep2config.DefaultPolicy(), nil)
 		if err != nil {
 			bootstrapCancel()
 			t.Fatalf("newSEP2Embed (CA bootstrap): %v", err)
@@ -170,7 +170,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	embed, err := newSEP2Embed(ctx, config{
 		SEP2ServerAddr:    "127.0.0.1:0",
 		SEP2ServerCertDir: certDir,
-	}, reg, nil, sep2config.DefaultPolicy())
+	}, reg, nil, sep2config.DefaultPolicy(), nil)
 	if err != nil {
 		t.Fatalf("newSEP2Embed: %v", err)
 	}

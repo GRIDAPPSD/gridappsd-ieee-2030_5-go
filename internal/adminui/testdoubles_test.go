@@ -8,6 +8,7 @@ import (
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
@@ -69,24 +70,34 @@ type fakeStomp struct {
 
 func (f *fakeStomp) IsConnected() bool { return f.connected }
 
-// newTestServer builds a Server wired to the four pre-existing fakes,
-// plus a zero-value fakeIdentity/fakeStomp pair, bound to an ephemeral
-// loopback port, for tests that only need s.Handler() via httptest and
-// never call Run. Most existing tests do not care about identity/STOMP
-// state, so this keeps their call sites unchanged (additive only, per
-// GAGO-074's hard rules); tests that DO need to control those two
-// sources use newTestServerWithSources below instead.
+// fakeClientObserver is a minimal ClientObserverSource test double
+// (GAGO-091).
+type fakeClientObserver struct {
+	snap connobs.Snapshot
+}
+
+func (f *fakeClientObserver) Snapshot() connobs.Snapshot { return f.snap }
+
+// newTestServer builds a Server wired to the pre-existing fakes, plus a
+// zero-value fakeIdentity/fakeStomp/fakeClientObserver set, bound to an
+// ephemeral loopback port, for tests that only need s.Handler() via
+// httptest and never call Run. Most existing tests do not care about
+// identity/STOMP/client-observer state, so this keeps their call sites
+// unchanged (additive only, per GAGO-074's and GAGO-091's hard rules);
+// tests that DO need to control those sources use
+// newTestServerWithSources below instead.
 func newTestServer(t *testing.T, key string, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource) *Server {
 	t.Helper()
-	return newTestServerWithSources(t, key, reg, devices, programs, flow, &fakeIdentity{}, &fakeStomp{})
+	return newTestServerWithSources(t, key, reg, devices, programs, flow, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
 }
 
 // newTestServerWithSources is newTestServer plus explicit control over
-// the IdentitySource and StompSource fakes, for tests that assert on
-// /api/health's GAGO-074 fields.
-func newTestServerWithSources(t *testing.T, key string, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource) *Server {
+// the IdentitySource, StompSource, and ClientObserverSource fakes, for
+// tests that assert on /api/health's GAGO-074 fields or /api/clients'
+// GAGO-091 fields.
+func newTestServerWithSources(t *testing.T, key string, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource, clients ClientObserverSource) *Server {
 	t.Helper()
-	s, err := New(Config{Addr: "127.0.0.1:0", Key: key}, reg, devices, programs, flow, identity, stomp)
+	s, err := New(Config{Addr: "127.0.0.1:0", Key: key}, reg, devices, programs, flow, identity, stomp, clients)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
