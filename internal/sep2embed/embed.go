@@ -120,10 +120,14 @@ type Config struct {
 	// the request-observation middleware. When non-nil, every
 	// authenticated request is recorded via Observer.RecordRequest, and
 	// (GCM/default listener only; see errObserverRequiresGCM) every mTLS
-	// connection attempt, accepted or rejected, is recorded via
-	// Observer.RecordHandshake. The caller (cmd/bridge) owns the Hook's
-	// lifetime and reads it back via internal/adminui's /api/clients
-	// endpoint; this package only ever writes to it.
+	// connection attempt that reaches certificate verification (i.e. the
+	// client presented a certificate and chain-building ran), accepted
+	// or rejected, is recorded via Observer.RecordHandshake; a connection
+	// that fails before that point (no certificate presented, TLS
+	// negotiation failure) is not recorded, per connobs's own package
+	// doc comment. The caller (cmd/bridge) owns the Hook's lifetime and
+	// reads it back via internal/adminui's /api/clients endpoint; this
+	// package only ever writes to it.
 	Observer *connobs.Hook
 }
 
