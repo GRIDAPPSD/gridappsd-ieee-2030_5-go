@@ -3,6 +3,7 @@ package sep2embed
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -63,6 +64,34 @@ func dialWithClientCert(t *testing.T, addr string, certPEM, keyPEM, trustedCACer
 	}
 	defer conn.Close()
 	return nil
+}
+
+// dialWithClientCertLocalAddr is dialWithClientCert's twin, kept
+// separate rather than adding an output parameter to the existing
+// helper (its two current call sites only care about the error): this
+// one keeps the connection open long enough to read back
+// conn.LocalAddr(), the client-side address the server's RemoteAddr
+// must match, before closing.
+func dialWithClientCertLocalAddr(t *testing.T, addr string, certPEM, keyPEM, trustedCACertPEM []byte) (localAddr string, dialErr error) {
+	t.Helper()
+
+	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(certPEM, keyPEM, trustedCACertPEM)
+	if err != nil {
+		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
+	}
+	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped, same posture as embed_test.go's mintTestDeviceClient
+	clientCert := tlsCfg.Certificates[0]
+	tlsCfg.Certificates = nil
+	tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		return &clientCert, nil
+	}
+
+	conn, dialErr := tls.Dial("tcp", addr, tlsCfg)
+	if dialErr != nil {
+		return "", dialErr
+	}
+	defer conn.Close()
+	return conn.LocalAddr().String(), nil
 }
 
 // waitForHandshake polls hook.Snapshot() until at least want handshake
@@ -243,5 +272,171 @@ func TestNewObservedMTLSListenerRecordsRejectedHandshakeWithRealReason(t *testin
 	}
 	if attempt.Known {
 		t.Error("Handshakes[0].Known = true, want false: the rogue LFDI was never added to the registry")
+	}
+}
+
+// TestNewRecordingVerifierNilRegistryAlwaysReportsKnownFalse drives
+// newRecordingVerifier directly with reg == nil and a PRESENTED,
+// parseable certificate whose LFDI would match a real registry entry if
+// one existed, and asserts Known is false purely because no registry
+// was consulted. This is distinct from "known LFDI not present in a
+// non-nil registry" (covered by
+// TestNewObservedMTLSListenerRecordsRejectedHandshakeWithRealReason's
+// rogue-LFDI case): here the certificate itself is fine, LFDI is
+// non-empty, and Accepted can be true; only Known is forced false by the
+// nil reg guard in newRecordingVerifier.
+func TestNewRecordingVerifierNilRegistryAlwaysReportsKnownFalse(t *testing.T) {
+	t.Parallel()
+
+	caCert, caKey, _ := genTestCA(t, "nil-registry-test-ca")
+	devCertPEM, _, err := sep2cert.GenerateDeviceCert(caCert, caKey, sep2cert.DeviceCertOptions{
+		DeviceType:  sep2cert.DeviceTypeGeneric,
+		HWSerialNum: "test-serial-nil-registry",
+		IsTestCert:  true,
+	})
+	if err != nil {
+		t.Fatalf("GenerateDeviceCert: %v", err)
+	}
+	devLeaf, err := sep2cert.ParseCertificatePEM(devCertPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificatePEM: %v", err)
+	}
+	devDER, err := sep2cert.CertificateDER(devCertPEM)
+	if err != nil {
+		t.Fatalf("CertificateDER: %v", err)
+	}
+	wantLFDI := sepTLS.LFDI(devLeaf)
+
+	innerVerify := func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		return nil // this test only cares about the Known/reg wiring, not the real chain-verification outcome
+	}
+
+	var hook connobs.Hook
+	verify := newRecordingVerifier(innerVerify, &hook, nil, "10.0.0.7:5555")
+	if err := verify([][]byte{devDER}, nil); err != nil {
+		t.Fatalf("newRecordingVerifier-produced verify: %v", err)
+	}
+
+	attempt := waitForHandshake(t, &hook, 1)
+	if attempt.LFDI != wantLFDI {
+		t.Errorf("Handshakes[0].LFDI = %q, want %q", attempt.LFDI, wantLFDI)
+	}
+	if !attempt.Accepted {
+		t.Error("Handshakes[0].Accepted = false, want true (innerVerify returned nil)")
+	}
+	if attempt.Known {
+		t.Error("Handshakes[0].Known = true, want false: reg is nil, so Known must always be false regardless of the presented LFDI")
+	}
+}
+
+// TestNewRecordingVerifierUnparseableLeafLeavesLFDIEmpty drives
+// newRecordingVerifier with rawCerts[0] set to bytes that are NOT a
+// valid DER certificate (as opposed to len(rawCerts) == 0, the
+// no-certificate-presented case already covered by the doc comment on
+// newObservedMTLSListener), and asserts the recorded attempt's LFDI is
+// empty and Known is false, since there is no parseable identity to
+// derive either from.
+func TestNewRecordingVerifierUnparseableLeafLeavesLFDIEmpty(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("verify peer cert: x509: malformed certificate")
+	innerVerify := func([][]byte, [][]*x509.Certificate) error {
+		// A real innerVerify (x509.ParseCertificate under the hood) would
+		// itself fail to parse the same malformed bytes and return a
+		// real chain-verification error; this fake reproduces that
+		// contract without depending on the exact wording core's verifier
+		// would produce.
+		return wantErr
+	}
+
+	var hook connobs.Hook
+	verify := newRecordingVerifier(innerVerify, &hook, registry.New(), "10.0.0.8:6666")
+
+	garbage := []byte("this is not a DER certificate")
+	gotErr := verify([][]byte{garbage}, nil)
+	if !errors.Is(gotErr, wantErr) {
+		t.Fatalf("verify() error = %v, want %v (unchanged from innerVerify)", gotErr, wantErr)
+	}
+
+	attempt := waitForHandshake(t, &hook, 1)
+	if attempt.LFDI != "" {
+		t.Errorf("Handshakes[0].LFDI = %q, want empty (leaf did not parse)", attempt.LFDI)
+	}
+	if attempt.Known {
+		t.Error("Handshakes[0].Known = true, want false: an unparseable leaf can never be known")
+	}
+	if attempt.Accepted {
+		t.Error("Handshakes[0].Accepted = true, want false: innerVerify returned an error")
+	}
+	if attempt.Reason != wantErr.Error() {
+		t.Errorf("Handshakes[0].Reason = %q, want %q", attempt.Reason, wantErr.Error())
+	}
+}
+
+// TestNewObservedMTLSListenerRecordsRealRemoteAddr drives one real dial
+// (not a hand-set HandshakeAttempt field) and asserts the recorded
+// RemoteAddr is non-empty and matches the client's own observed local
+// address, per data-invariants Rule 1: the field must be asserted from
+// the real production code path (the GetConfigForClient seam
+// newObservedMTLSListener wires), not a value the test constructs
+// itself. A server that never wired RemoteAddr at all (the pre-fix
+// state) would leave this field empty; a server that recorded some
+// other connection's address would fail the exact-match comparison.
+func TestNewObservedMTLSListenerRecordsRealRemoteAddr(t *testing.T) {
+	t.Parallel()
+
+	certDir := t.TempDir()
+	certFile, keyFile, caFile, err := ensureServerIdentity(certDir)
+	if err != nil {
+		t.Fatalf("ensureServerIdentity: %v", err)
+	}
+
+	caCertPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		t.Fatalf("read ca.pem: %v", err)
+	}
+	caKeyPEM, err := os.ReadFile(filepath.Join(certDir, caKeyFileName))
+	if err != nil {
+		t.Fatalf("read ca-key.pem: %v", err)
+	}
+	caCert, caKey, err := parseCAPair(caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("parseCAPair: %v", err)
+	}
+
+	devCertPEM, devKeyPEM, err := sep2cert.GenerateDeviceCert(caCert, caKey, sep2cert.DeviceCertOptions{
+		DeviceType:  sep2cert.DeviceTypeGeneric,
+		HWSerialNum: "test-serial-remoteaddr-001",
+		IsTestCert:  true,
+	})
+	if err != nil {
+		t.Fatalf("GenerateDeviceCert: %v", err)
+	}
+
+	reg := registry.New()
+
+	var hook connobs.Hook
+	listener, _, err := newObservedMTLSListener("127.0.0.1:0", certFile, keyFile, caFile, nil, &hook, reg)
+	if err != nil {
+		t.Fatalf("newObservedMTLSListener: %v", err)
+	}
+	defer listener.Close()
+	go serveOneRequest(listener)
+
+	localAddr, dialErr := dialWithClientCertLocalAddr(t, listener.Addr().String(), devCertPEM, devKeyPEM, caCertPEM)
+	if dialErr != nil {
+		t.Fatalf("dialWithClientCertLocalAddr: %v", dialErr)
+	}
+	if localAddr == "" {
+		t.Fatal("dialWithClientCertLocalAddr returned an empty local address; test setup is broken")
+	}
+
+	attempt := waitForHandshake(t, &hook, 1)
+
+	if attempt.RemoteAddr == "" {
+		t.Error("Handshakes[0].RemoteAddr is empty, want the real TCP peer address")
+	}
+	if attempt.RemoteAddr != localAddr {
+		t.Errorf("Handshakes[0].RemoteAddr = %q, want %q (the client's own observed local address, as seen by the server)", attempt.RemoteAddr, localAddr)
 	}
 }

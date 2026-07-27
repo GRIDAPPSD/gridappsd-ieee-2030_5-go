@@ -79,14 +79,69 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 	if innerVerify == nil {
 		return nil, sep2srv.Identity{}, errors.New("sep2embed: TLS config has no VerifyPeerCertificate to wrap (core API changed?)")
 	}
-	tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		// Record-then-return-the-real-verdict: innerVerify runs first and
-		// its result is both what we record AND what this function
-		// returns. Nothing below this line can change accept to reject
-		// or reject to accept.
+
+	// GetConfigForClient is the only seam crypto/tls exposes with access
+	// to the underlying net.Conn before certificate verification runs:
+	// VerifyPeerCertificate itself receives only the raw certificate
+	// bytes, never the connection, so there is no way to read
+	// conn.RemoteAddr() from inside it directly. GetConfigForClient is
+	// called once per incoming connection, after the ClientHello, and
+	// its ClientHelloInfo carries .Conn; returning a per-connection
+	// clone of tlsCfg whose VerifyPeerCertificate closure
+	// (newRecordingVerifier below) has this connection's remote address
+	// baked in is the standard way to thread that address through to the
+	// verifier without altering verification itself: newRecordingVerifier
+	// still calls innerVerify FIRST, unconditionally, and returns exactly
+	// what it returns.
+	tlsCfg.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+		var remoteAddr string
+		if chi.Conn != nil {
+			remoteAddr = chi.Conn.RemoteAddr().String()
+		}
+		perConn := tlsCfg.Clone()
+		perConn.GetConfigForClient = nil // must not recurse
+		perConn.VerifyPeerCertificate = newRecordingVerifier(innerVerify, hook, reg, remoteAddr)
+		return perConn, nil
+	}
+
+	if len(tlsCfg.Certificates) == 0 {
+		return nil, sep2srv.Identity{}, errors.New("sep2embed: TLS config has no server certificate")
+	}
+	identity, err := deriveServerIdentity(tlsCfg.Certificates[0].Certificate)
+	if err != nil {
+		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: derive server identity: %w", err)
+	}
+
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: listen: %w", err)
+	}
+
+	return tls.NewListener(listener, tlsCfg), identity, nil
+}
+
+// newRecordingVerifier builds the additive VerifyPeerCertificate closure
+// for exactly one connection attempt: it calls innerVerify FIRST,
+// unconditionally, and returns exactly what innerVerify returns; nothing
+// in this function can change accept to reject or reject to accept.
+// remoteAddr is baked in via closure capture (the caller derives it from
+// that one connection's ClientHelloInfo.Conn; see
+// newObservedMTLSListener's GetConfigForClient wiring) so every attempt
+// this closure records carries the real peer address.
+//
+// reg is consulted (LFDI lookup only, never mutated) to populate the
+// recorded attempt's Known field. reg may be nil, in which case Known is
+// always false: this is DISTINCT from a presented certificate whose LFDI
+// is simply absent from a non-nil registry (Known false there means "not
+// this device", Known false here means "no registry was even
+// consulted"); both surface as Known == false on the recorded attempt,
+// but the caller can tell them apart because reg == nil is a config
+// choice, not a lookup result.
+func newRecordingVerifier(innerVerify func([][]byte, [][]*x509.Certificate) error, hook *connobs.Hook, reg *registry.Registry, remoteAddr string) func([][]byte, [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		verifyErr := innerVerify(rawCerts, verifiedChains)
 
-		attempt := connobs.HandshakeAttempt{Accepted: verifyErr == nil}
+		attempt := connobs.HandshakeAttempt{Accepted: verifyErr == nil, RemoteAddr: remoteAddr}
 		if verifyErr != nil {
 			attempt.Reason = verifyErr.Error()
 		}
@@ -107,21 +162,6 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 
 		return verifyErr
 	}
-
-	if len(tlsCfg.Certificates) == 0 {
-		return nil, sep2srv.Identity{}, errors.New("sep2embed: TLS config has no server certificate")
-	}
-	identity, err := deriveServerIdentity(tlsCfg.Certificates[0].Certificate)
-	if err != nil {
-		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: derive server identity: %w", err)
-	}
-
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: listen: %w", err)
-	}
-
-	return tls.NewListener(listener, tlsCfg), identity, nil
 }
 
 // deriveServerIdentity parses the leaf certificate from a raw DER chain
@@ -150,9 +190,18 @@ func (s *observedMTLSServer) Addr() string {
 }
 
 // Run implements protocolServer. It mirrors sep2srv.Server.Run's
-// ctx-driven shutdown contract exactly: a clean ctx-triggered shutdown
-// returns nil, and the listener goroutine always exits before Run
-// returns on every path.
+// shutdown contract exactly, on both of its two exit paths: a clean
+// ctx-triggered shutdown (the ctx.Done branch below) returns nil, and
+// the listener goroutine always exits before Run returns on every path.
+// The OTHER exit path, Serve returning on its own via errCh (e.g.
+// something outside this Run call closed the listener or called
+// s.httpSrv.Close/Shutdown without ctx ever being cancelled), returns
+// that error UNCHANGED, including a bare http.ErrServerClosed: this is
+// not "shutdown failed", it is Run faithfully reporting that Serve
+// exited via that path rather than the ctx-driven one, exactly as
+// sep2srv.Server.Run's own errCh branch does. Callers that only ever
+// drive shutdown via ctx cancellation (the only path this package
+// itself uses) will never observe this branch's return value at all.
 func (s *observedMTLSServer) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.httpSrv.Serve(s.listener) }()
