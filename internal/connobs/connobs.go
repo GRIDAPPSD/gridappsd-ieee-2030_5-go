@@ -14,11 +14,19 @@
 //     wall-clock time, a cumulative request count, and the set of
 //     resource paths that LFDI has touched.
 //   - RecordHandshake is called from the mTLS listener's certificate
-//     verification hook, once per connection attempt, whether the chain
-//     was accepted or rejected. A rejected handshake never reaches
-//     RecordRequest (the connection is closed before any HTTP request is
-//     read), so this is the only way a rejected connection attempt
-//     becomes observable at all.
+//     verification hook, once for each connection attempt that reaches
+//     certificate verification, i.e. one where a client presented a
+//     certificate and chain-building ran, whether that chain was
+//     ultimately accepted or rejected. This is NOT every connection
+//     attempt: crypto/tls only calls VerifyPeerCertificate after a
+//     client certificate has been presented, so a client that presents
+//     no certificate at all, or a connection that fails TLS negotiation
+//     before any certificate is exchanged (protocol version mismatch, no
+//     shared cipher suite, and so on), aborts before this hook ever runs
+//     and is therefore not recorded here. A rejected handshake that DOES
+//     reach this hook never reaches RecordRequest (the connection is
+//     closed before any HTTP request is read), so for that subset of
+//     rejections, this is the only way they become observable at all.
 //
 // Both writers are additive observation only: this package makes no
 // accept/reject decision and never mutates bridge state; it mirrors
@@ -32,11 +40,31 @@ import (
 	"time"
 )
 
-// maxHandshakeLog bounds the handshake attempt ring buffer so a
-// long-running bridge under repeated failed-handshake probing (or a
-// misconfigured client retrying rapidly) cannot grow this log without
-// bound. Oldest entries are dropped first once the log is full.
-const maxHandshakeLog = 200
+const (
+	// maxHandshakeLog bounds the handshake attempt ring buffer so a
+	// long-running bridge under repeated failed-handshake probing (or a
+	// misconfigured client retrying rapidly) cannot grow this log without
+	// bound. Oldest entries are dropped first once the log is full.
+	maxHandshakeLog = 200
+
+	// maxTrackedClients bounds the number of distinct LFDIs RecordRequest
+	// will track at once. connObserveMiddleware runs outside sep2embed's
+	// ACL (see auth.go's doc comment on why: it answers "did this LFDI
+	// reach the listener", not "was this request authorized"), so a
+	// valid-cert device that presents a distinct certificate on every
+	// connection would otherwise grow this map without bound. Once the
+	// cap is reached, RecordRequest evicts the least-recently-seen
+	// tracked client to make room for a new one.
+	maxTrackedClients = 500
+
+	// maxPathsPerClient bounds the number of distinct resource paths
+	// recorded per tracked client. The same unauthenticated-probing
+	// concern that motivates maxTrackedClients applies per path: a single
+	// LFDI probing many distinct paths must not grow its own paths set
+	// without bound. Paths beyond the cap are simply not added (the
+	// already-recorded set and the request count are unaffected).
+	maxPathsPerClient = 50
+)
 
 // ClientSnapshot is a read only copy of one connected client's recorded
 // state.
@@ -108,10 +136,16 @@ type Snapshot struct {
 
 // clientState is the mutable, internal-only per-LFDI record. The paths
 // set is a map for O(1) recording; Snapshot renders it to a sorted slice.
+// seen is a monotonically increasing per-Hook sequence number stamped at
+// every RecordRequest for this client, used only to pick the
+// least-recently-seen client on eviction: it breaks ties that lastSeen's
+// wall-clock resolution could otherwise leave ambiguous between two
+// requests recorded in rapid succession.
 type clientState struct {
 	lastSeen     time.Time
 	requestCount uint64
 	paths        map[string]struct{}
+	seen         uint64
 }
 
 // Hook is the mutex-guarded observation point. The zero value is ready to
@@ -120,14 +154,21 @@ type Hook struct {
 	mu         sync.Mutex
 	clients    map[string]*clientState
 	handshakes []HandshakeAttempt
+	seenSeq    uint64
 }
 
 // RecordRequest records one request from lfdi against path: increments
 // that LFDI's cumulative request count, updates its last-seen time to
 // now, and adds path to its recorded path set (a no-op if path was
-// already recorded for this LFDI). lfdi must be non-empty; callers with
-// no verified identity (see sep2embed's identityMiddleware fail-closed
-// path) must not call this, since there is nothing to key the record by.
+// already recorded for this LFDI, or if that LFDI's path set is already
+// at maxPathsPerClient). lfdi must be non-empty; callers with no
+// verified identity (see sep2embed's identityMiddleware fail-closed
+// path) must not call this, since there is nothing to key the record
+// by.
+//
+// Tracking a never-seen-before lfdi when the client map is already at
+// maxTrackedClients evicts the least-recently-seen tracked client first,
+// per this package's doc comment on maxTrackedClients.
 func (h *Hook) RecordRequest(lfdi, path string) {
 	if lfdi == "" {
 		return
@@ -139,12 +180,40 @@ func (h *Hook) RecordRequest(lfdi, path string) {
 	}
 	c, ok := h.clients[lfdi]
 	if !ok {
+		if len(h.clients) >= maxTrackedClients {
+			h.evictOldestLocked()
+		}
 		c = &clientState{paths: make(map[string]struct{})}
 		h.clients[lfdi] = c
 	}
 	c.requestCount++
 	c.lastSeen = time.Now().UTC()
-	c.paths[path] = struct{}{}
+	h.seenSeq++
+	c.seen = h.seenSeq
+	if _, seen := c.paths[path]; !seen && len(c.paths) < maxPathsPerClient {
+		c.paths[path] = struct{}{}
+	}
+}
+
+// evictOldestLocked removes the tracked client with the smallest seen
+// sequence number (i.e. the least-recently-seen client) from h.clients,
+// making room for one more tracked client under maxTrackedClients.
+// Callers must hold h.mu. A no-op on an empty h.clients (defensive only:
+// RecordRequest never calls this unless len(h.clients) >=
+// maxTrackedClients, which is never true when h.clients is empty).
+func (h *Hook) evictOldestLocked() {
+	var oldestLFDI string
+	var oldestSeen uint64
+	found := false
+	for lfdi, c := range h.clients {
+		if !found || c.seen < oldestSeen {
+			oldestLFDI, oldestSeen = lfdi, c.seen
+			found = true
+		}
+	}
+	if found {
+		delete(h.clients, oldestLFDI)
+	}
 }
 
 // RecordHandshake appends attempt to the handshake log, stamping At with

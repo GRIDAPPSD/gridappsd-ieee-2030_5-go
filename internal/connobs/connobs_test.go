@@ -228,6 +228,78 @@ func TestRecordHandshakeCapsLogAtMaxHandshakeLog(t *testing.T) {
 	}
 }
 
+// TestRecordRequestCapsPathsPerClient confirms a single LFDI's recorded
+// path set stops growing once it reaches maxPathsPerClient: RequestCount
+// keeps incrementing (the request itself still happened), but distinct
+// paths beyond the cap are not added.
+func TestRecordRequestCapsPathsPerClient(t *testing.T) {
+	t.Parallel()
+
+	var h Hook
+	const lfdi = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+
+	for i := 0; i < maxPathsPerClient+10; i++ {
+		h.RecordRequest(lfdi, fmt.Sprintf("/edev/%d", i))
+	}
+
+	snap := h.Snapshot()
+	if len(snap.Clients) != 1 {
+		t.Fatalf("Snapshot().Clients len = %d, want 1", len(snap.Clients))
+	}
+	c := snap.Clients[0]
+	if len(c.Paths) != maxPathsPerClient {
+		t.Fatalf("Clients[0].Paths len = %d, want %d (capped)", len(c.Paths), maxPathsPerClient)
+	}
+	if want := uint64(maxPathsPerClient + 10); c.RequestCount != want {
+		t.Errorf("Clients[0].RequestCount = %d, want %d (every request still counted, even once paths cap is hit)", c.RequestCount, want)
+	}
+}
+
+// TestRecordRequestEvictsLeastRecentlySeenClientAtCap confirms tracked
+// clients are capped at maxTrackedClients: once the cap is reached, the
+// least-recently-seen client is evicted to make room for a new one,
+// rather than the map growing without bound.
+func TestRecordRequestEvictsLeastRecentlySeenClientAtCap(t *testing.T) {
+	t.Parallel()
+
+	var h Hook
+
+	// Fill to exactly the cap, each with a distinct, strictly increasing
+	// LastSeen (sequential RecordRequest calls under the Hook's own
+	// mutex already guarantee strictly increasing wall-clock stamps
+	// across distinct calls; no synthetic Sleep is needed for ordering).
+	for i := 0; i < maxTrackedClients; i++ {
+		h.RecordRequest(fmt.Sprintf("LFDI-%04d", i), "/edev/0")
+	}
+	if got := len(h.Snapshot().Clients); got != maxTrackedClients {
+		t.Fatalf("after filling to cap: Snapshot().Clients len = %d, want %d", got, maxTrackedClients)
+	}
+
+	// LFDI-0000 is the least-recently-seen tracked client at this point
+	// (it was recorded first and never touched again). One more distinct
+	// LFDI must evict it, not grow the map past the cap.
+	h.RecordRequest("LFDI-NEW", "/edev/0")
+
+	snap := h.Snapshot()
+	if len(snap.Clients) != maxTrackedClients {
+		t.Fatalf("Snapshot().Clients len = %d, want %d (capped, not grown)", len(snap.Clients), maxTrackedClients)
+	}
+	for _, c := range snap.Clients {
+		if c.LFDI == "LFDI-0000" {
+			t.Fatalf("LFDI-0000 (least-recently-seen) is still tracked; want it evicted to make room for LFDI-NEW")
+		}
+	}
+	found := false
+	for _, c := range snap.Clients {
+		if c.LFDI == "LFDI-NEW" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("LFDI-NEW is not tracked; want it recorded after evicting the least-recently-seen client")
+	}
+}
+
 // TestSnapshotReturnsIndependentCopies confirms mutating the returned
 // Snapshot's slices does not affect the Hook's own state, matching
 // controlobs.Snapshot's independent-copy contract.
