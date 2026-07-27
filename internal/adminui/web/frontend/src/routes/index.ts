@@ -17,6 +17,7 @@ import Registry from './Registry.svelte'
 import DiscoveredDers from './DiscoveredDers.svelte'
 import ServedResources from './ServedResources.svelte'
 import ControlFlow from './ControlFlow.svelte'
+import ConnectedClients from './ConnectedClients.svelte'
 
 // routeList is the ordered nav: App.svelte renders one link per entry,
 // in this order, with Health first as the landing panel.
@@ -25,6 +26,7 @@ export const routeList: Route[] = [
   { path: '/registry', label: 'Registry' },
   { path: '/ders', label: 'Discovered DERs' },
   { path: '/served', label: 'Served resources' },
+  { path: '/clients', label: 'Connected clients' },
   { path: '/controlflow', label: 'Control flow' },
 ]
 
@@ -33,6 +35,7 @@ export const routes: Record<string, Component> = {
   '/registry': Registry,
   '/ders': DiscoveredDers,
   '/served': ServedResources,
+  '/clients': ConnectedClients,
   '/controlflow': ControlFlow,
 }
 
