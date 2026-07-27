@@ -225,10 +225,10 @@
           </tr>
         </thead>
         <tbody>
-          {#each handshakes as handshake, index (handshake.lfdi + ':' + handshake.at + ':' + index)}
+          {#each handshakes as handshake (handshake.lfdi + ':' + handshake.at)}
             <tr>
               <td>{handshake.lfdi}</td>
-              <td>{handshake.remoteAddr}</td>
+              <td>{handshake.remoteAddr || '-'}</td>
               <td>
                 {#if handshake.accepted}
                   <span class="badge accepted" data-testid="handshake-result">accepted</span>
@@ -239,9 +239,9 @@
               <td>{handshake.reason || '-'}</td>
               <td>
                 {#if handshake.known}
-                  <span class="badge known">known</span>
+                  <span class="badge known" data-testid="handshake-known">known</span>
                 {:else}
-                  <span class="badge unknown">unknown</span>
+                  <span class="badge unknown" data-testid="handshake-known">unknown</span>
                 {/if}
               </td>
               <td><time datetime={handshake.at}>{humanizeAge(handshake.at)}</time></td>

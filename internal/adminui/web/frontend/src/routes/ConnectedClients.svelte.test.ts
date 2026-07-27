@@ -41,6 +41,14 @@ describe('ConnectedClients', () => {
                 known: false,
                 at: '2026-07-27T09:14:00.000Z',
               },
+              {
+                lfdi: 'LFDI-NO-REMOTE-ADDR',
+                remoteAddr: '',
+                accepted: false,
+                reason: 'connection closed before handshake',
+                known: false,
+                at: '2026-07-27T09:13:00.000Z',
+              },
             ],
           },
         }
@@ -77,13 +85,40 @@ describe('ConnectedClients', () => {
     expect(clientsTable).toHaveTextContent('/dcap, /edev')
 
     const handshakeResults = screen.getAllByTestId('handshake-result')
-    expect(handshakeResults).toHaveLength(2)
+    expect(handshakeResults).toHaveLength(3)
     expect(handshakeResults[0]).toHaveTextContent('accepted')
     expect(handshakeResults[1]).toHaveTextContent('rejected')
+    expect(handshakeResults[2]).toHaveTextContent('rejected')
 
     const handshakesTable = screen.getByTestId('handshakes-table')
     expect(handshakesTable).toHaveTextContent('x509: certificate signed by unknown authority')
     expect(handshakesTable).toHaveTextContent('LFDI-UNKNOWN')
+
+    // known/unknown badge: rendered from the contract's known field for
+    // each row, in handshake order (known, unknown, unknown).
+    const knownBadges = screen.getAllByTestId('handshake-known')
+    expect(knownBadges).toHaveLength(3)
+    expect(knownBadges[0]).toHaveTextContent('known')
+    expect(knownBadges[1]).toHaveTextContent('unknown')
+    expect(knownBadges[2]).toHaveTextContent('unknown')
+
+    // remoteAddr fallback: populated value renders as-is; empty
+    // remoteAddr (LFDI-NO-REMOTE-ADDR) renders '-', consistent with the
+    // reason column's existing '-' fallback, rather than a blank cell
+    // that is indistinguishable from a rendering bug.
+    const handshakeRows = Array.from(handshakesTable.querySelectorAll('tbody tr'))
+    const noRemoteAddrRow = handshakeRows.find((row) =>
+      row.textContent?.includes('LFDI-NO-REMOTE-ADDR'),
+    )
+    expect(noRemoteAddrRow).toBeDefined()
+    expect(noRemoteAddrRow).toHaveTextContent('LFDI-NO-REMOTE-ADDR')
+    const remoteAddrCell = noRemoteAddrRow?.querySelectorAll('td')[1]
+    expect(remoteAddrCell).toHaveTextContent('-')
+    expect(remoteAddrCell?.textContent).toBe('-')
+
+    const connectedRow = handshakeRows.find((row) => row.textContent?.includes('LFDI-CONNECTED'))
+    const connectedRemoteAddrCell = connectedRow?.querySelectorAll('td')[1]
+    expect(connectedRemoteAddrCell?.textContent).toBe('10.0.0.4:54000')
 
     // served-vs-connected cross-reference: LFDI-CONNECTED shows
     // "connected", LFDI-NEVER-CONNECTED (served but never in
