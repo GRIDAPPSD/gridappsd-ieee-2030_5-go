@@ -33,7 +33,7 @@ never appears in `clients`.
 | A1 | valid cert handshake recorded `accepted=true` |
 | A2 | valid client present in `clients` with `requestCount > 0` |
 | A3 | observer-reported LFDI byte-exact with `openssl`-derived LFDI |
-| A4 | bad-chain recorded `accepted=false` with an x509 chain/authority reason |
+| A4 | bad-chain recorded `accepted=false` with an authority-specific chain-verification failure reason (not any x509 error) |
 | A5 | bad-chain LFDI absent from `clients` |
 
 ## Invariants
@@ -59,13 +59,15 @@ harness/mtls-conformance/run_conformance.sh
 
 The script builds the bridge, starts it with a fresh dev-minted cert dir and
 the admin UI enabled, drives the two client legs, polls `/api/clients`, and
-writes a conformance matrix plus transcripts to the knowledge workspace
-outputs directory (`gago-093-*`). Exit 0 = PASS, 1 = one or more assertions
-FAILED, 2 = BLOCKED (platform not reachable, or a port already in use).
+writes a conformance matrix plus transcripts to `OUT_DIR` (`gago-093-*`),
+which defaults to `artifacts/outputs/` at the repo root (repo-relative, so
+the harness is portable to any checkout). Exit 0 = PASS, 1 = one or more
+assertions FAILED, 2 = BLOCKED (platform not reachable, or a port already
+in use).
 
 Environment overrides (`STOMP_ADDR`, `FEEDER_MRID`, `SEP2_ADDR`,
 `ADMIN_ADDR`, `OUT_DIR`, `CERT_DIR`) are documented at the top of the script;
-the defaults target the live Southern dev stack.
+the defaults (other than `OUT_DIR`) target the live Southern dev stack.
 
 ## Cert material and secrets
 

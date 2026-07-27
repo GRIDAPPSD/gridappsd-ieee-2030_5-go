@@ -43,7 +43,7 @@
 #   FEEDER_MRID        CIM feeder mRID (default: Southern reduced feeder)
 #   SEP2_ADDR          bridge mTLS listener host:port (default 127.0.0.1:8443)
 #   ADMIN_ADDR         bridge admin UI host:port (default 127.0.0.1:8444)
-#   OUT_DIR            artifact output directory (default: knowledge outputs)
+#   OUT_DIR            artifact output directory (default: <repo>/artifacts/outputs)
 #   CERT_DIR           bridge cert material dir (default: fresh mktemp dir)
 #
 set -euo pipefail
@@ -56,7 +56,7 @@ STOMP_ADDR="${STOMP_ADDR:-127.0.0.1:61613}"
 FEEDER_MRID="${FEEDER_MRID:-510950FB-0686-4956-8A2A-636C049FAB3F}"
 SEP2_ADDR="${SEP2_ADDR:-127.0.0.1:8443}"
 ADMIN_ADDR="${ADMIN_ADDR:-127.0.0.1:8444}"
-OUT_DIR="${OUT_DIR:-/home/debian/knowledge/projects/gridappsd-ieee-2030_5-go/artifacts/outputs}"
+OUT_DIR="${OUT_DIR:-${SCRIPT_DIR}/../../artifacts/outputs}"
 
 # Cert material dir. A fresh dir forces the bridge to dev-mint a CA plus a
 # device cert per discovered device: exactly the "generated" material this
@@ -105,7 +105,7 @@ cleanup() {
 	# Cert material and private keys are secret; never leave them behind.
 	rm -rf "${CERT_DIR}" "${WORK_DIR}" 2>/dev/null || true
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 die() {
 	printf 'BLOCKED: %s\n' "$1" >&2
@@ -199,9 +199,17 @@ drive_valid_client() {
 	# The bridge dev-minted one device cert per discovered device under
 	# CERT_DIR/devices as raw DER (.x509) plus a sibling PEM key (.pem).
 	local x509 key
-	x509="$(find "${CERT_DIR}/devices" -maxdepth 1 -name '*.x509' | sort | head -1)"
-	if [ -z "${x509}" ]; then
+	local -a x509_candidates=()
+	while IFS= read -r -d '' f; do
+		x509_candidates+=("${f}")
+	done < <(find "${CERT_DIR}/devices" -maxdepth 1 -name '*.x509' -print0 | sort -z)
+	if [ "${#x509_candidates[@]}" -eq 0 ]; then
 		die "no device .x509 cert found under ${CERT_DIR}/devices; device-cert emission (GAGO-052) did not run"
+	fi
+	x509="${x509_candidates[0]}"
+	if [ "${#x509_candidates[@]}" -gt 1 ]; then
+		printf '  NOTE: %s device certs found under %s; using %s (first by sort order): %s\n' \
+			"${#x509_candidates[@]}" "${CERT_DIR}/devices" "${x509}" "${x509_candidates[*]}" >&2
 	fi
 	key="${x509%.x509}.pem"
 	[ -f "${key}" ] || die "device key ${key} missing beside ${x509}"
@@ -354,7 +362,7 @@ assert_observer() {
 	reason="$(printf '%s' "${clients_json}" \
 		| jq -r '[.handshakes[] | select(.accepted==false)][0].reason // ""')"
 	BAD_REASON="${reason}"
-	if printf '%s' "${reason}" | grep -qiE 'unknown authority|signed by unknown|x509'; then
+	if printf '%s' "${reason}" | grep -qiE 'unknown authority|signed by unknown authority'; then
 		record A4 PASS "bad-chain recorded accepted=false with x509 chain failure" "reason=${reason}"
 	else
 		record A4 FAIL "no accepted=false handshake with a chain/authority reason" "reason=${reason:-none}"
