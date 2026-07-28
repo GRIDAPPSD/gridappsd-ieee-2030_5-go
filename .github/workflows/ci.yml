@@ -111,6 +111,44 @@ jobs:
             url."https://x-access-token:${APP_TOKEN}@github.com/GRIDAPPSD/".insteadOf \
             "https://github.com/GRIDAPPSD/"
 
+      - name: Disable git background maintenance
+        # GAGO-079: prevents "fatal: shallow file has changed since we
+        # read it", which failed the Build step of run 30384382776 once
+        # per import site of the private core-go module.
+        #
+        # Mechanism: with GOPRIVATE set, `go` fetches these modules
+        # direct-to-git rather than through a proxy. To resolve the
+        # pseudo-version pin on ieee-2030_5-core-go, `go` first tries a
+        # cheap `git fetch --depth=1`, which leaves a .git/shallow file
+        # in its VCS cache; because a shallow clone cannot prove that
+        # commit's ancestry relative to the v0.6.0 tag, `go` then runs
+        # `git fetch --unshallow` on the same cache entry. Since git
+        # 2.31 every `git fetch` ends by spawning `git maintenance run
+        # --auto` DETACHED, so that child (which repacks and prunes, and
+        # rewrites .git/shallow when it has work to do) outlives the
+        # first fetch and runs concurrently with the `--unshallow` right
+        # behind it. `--unshallow` re-stats .git/shallow before
+        # committing its new boundary, sees the concurrent write, and
+        # aborts.
+        #
+        # Go's own module-cache lock cannot prevent this: it serializes
+        # the git commands `go` itself issues and knows nothing about a
+        # process git forked off and disowned. The race is therefore
+        # inside a single `go build`, not between parallel ones, which
+        # is why only a cold runner that actually has to deepen the
+        # clone hits it, and why a warm local cache never reproduces it.
+        #
+        # Both knobs are set because they cover different git versions:
+        # maintenance.auto=false suppresses the spawn on git 2.31 and
+        # newer, gc.auto=0 neutralizes the older detached `git gc
+        # --auto` path. Neither weakens verification; background
+        # repacking is pure housekeeping on a runner that is destroyed
+        # minutes later. This step needs no credential, so unlike the
+        # step above it deliberately gets none.
+        run: |
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
