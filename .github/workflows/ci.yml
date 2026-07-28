@@ -1,11 +1,14 @@
 name: CI
 
-# GitHub-hosted runners are acceptable here: this is a public
-# GRIDAPPSD repo, both jobs are read-only verification (build, vet,
-# test, and a local frontend rebuild diffed against the committed
-# bundle), and neither job deploys, pushes to a registry, or touches
-# any secret. See .claude/rules/devops.md "GitHub Actions" in the
-# Knowledge workspace for the posture this exception follows.
+# GitHub-hosted runners are acceptable here: both jobs are read-only
+# verification (build, vet, test, and a local frontend rebuild diffed
+# against the committed bundle), and neither job deploys, pushes to a
+# registry, or writes anything. See .claude/rules/devops.md "GitHub
+# Actions" in the Knowledge workspace for the posture this exception
+# follows. The build-and-test job does read one secret pair (the CI
+# GitHub App credentials) purely to resolve private module
+# dependencies; it is not an infrastructure credential and grants no
+# deploy reach.
 
 on:
   push:
@@ -22,6 +25,12 @@ on:
 # no PR comment, no package publish), so the default token scope is
 # read-only rather than inheriting the repo or org default, which can
 # be write-all.
+#
+# The private-module fetch below deliberately does NOT widen this.
+# actions/create-github-app-token authenticates with the App private
+# key held in a secret, not with GITHUB_TOKEN, so minting the
+# installation token needs no workflow permission at all and no
+# job-level override is required.
 permissions:
   contents: read
 
@@ -29,9 +38,116 @@ jobs:
   build-and-test:
     name: Build, vet, and test
     runs-on: ubuntu-latest
+    env:
+      # GAGO-079: required so `go` resolves github.com/GRIDAPPSD/* over
+      # the token-authenticated git insteadOf rewrite configured below,
+      # instead of attempting an anonymous proxy.golang.org and
+      # sum.golang.org lookup that cannot see a private repo. GOPRIVATE
+      # implies GONOPROXY and GONOSUMDB, so those need no separate
+      # setting. Without this, `go build` fails with
+      # "fatal: could not read Username for 'https://github.com':
+      # terminal prompts disabled".
+      GOPRIVATE: github.com/GRIDAPPSD/*
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Mint GitHub App installation token
+        # GAGO-079: this repo depends on two PRIVATE modules,
+        # github.com/GRIDAPPSD/gridappsd-go and
+        # github.com/GRIDAPPSD/ieee-2030_5-core-go, which the default
+        # GITHUB_TOKEN cannot read (it is scoped to this repository
+        # only). Mint a short-lived installation token for the
+        # gridappsd-ieee-20305 CI App instead of using a static PAT:
+        # the token is created per run, is scoped by `repositories:`
+        # below to only the two dependency repos, carries only
+        # contents:read, and is revoked automatically when the job ends
+        # (skip-token-revoke defaults to false). No long-lived
+        # credential exists in the repo or in this file; the App ID and
+        # private key are Actions secrets referenced by name.
+        #
+        # Pinned to v3, the current stable major (v3.2.0, 2026-05-12).
+        # The same pattern is proven green on the sibling repo
+        # GRIDAPPSD/ieee-2030_5-server-go (PR #308, run 28902066660).
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GRIDAPPSD_CI_APP_ID }}
+          private-key: ${{ secrets.GRIDAPPSD_CI_APP_PRIVATE_KEY }}
+          owner: GRIDAPPSD
+          # Narrow the token to exactly the private modules go.mod
+          # requires. Omitting this would grant the token every repo in
+          # the App installation's selected set. This repo itself is
+          # deliberately NOT listed: checkout already ran above using
+          # GITHUB_TOKEN, and no later step fetches from origin.
+          repositories: |
+            gridappsd-go
+            ieee-2030_5-core-go
+          # Narrow the token's permission set to read-only contents.
+          # A permission request can only narrow what the installation
+          # already grants, never widen it, so this is a hard ceiling on
+          # what a leaked token could do: no write, no metadata beyond
+          # what a module fetch needs.
+          permission-contents: read
+
+      - name: Configure private module access
+        # Rewrites HTTPS fetches of github.com/GRIDAPPSD/* to carry the
+        # minted installation token, scoped to that org prefix only, so
+        # `go build` / `go vet` / `go test` below can resolve the private
+        # modules. Must run before the Go steps.
+        #
+        # The token is passed via `env:` rather than interpolated
+        # directly into the command text so the value never appears in
+        # the runner's echoed command line: the log shows the literal
+        # ${APP_TOKEN}. create-github-app-token also registers the token
+        # as a masked secret, so this is belt-and-braces. The token does
+        # land in the runner's ~/.gitconfig, which is unavoidable for an
+        # insteadOf rewrite and acceptable on an ephemeral runner whose
+        # disk is destroyed with the job.
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${APP_TOKEN}@github.com/GRIDAPPSD/".insteadOf \
+            "https://github.com/GRIDAPPSD/"
+
+      - name: Disable git background maintenance
+        # GAGO-079: prevents "fatal: shallow file has changed since we
+        # read it", which failed the Build step of run 30384382776 once
+        # per import site of the private core-go module.
+        #
+        # Mechanism: with GOPRIVATE set, `go` fetches these modules
+        # direct-to-git rather than through a proxy. To resolve the
+        # pseudo-version pin on ieee-2030_5-core-go, `go` first tries a
+        # cheap `git fetch --depth=1`, which leaves a .git/shallow file
+        # in its VCS cache; because a shallow clone cannot prove that
+        # commit's ancestry relative to the v0.6.0 tag, `go` then runs
+        # `git fetch --unshallow` on the same cache entry. Since git
+        # 2.31 every `git fetch` ends by spawning `git maintenance run
+        # --auto` DETACHED, so that child (which repacks and prunes, and
+        # rewrites .git/shallow when it has work to do) outlives the
+        # first fetch and runs concurrently with the `--unshallow` right
+        # behind it. `--unshallow` re-stats .git/shallow before
+        # committing its new boundary, sees the concurrent write, and
+        # aborts.
+        #
+        # Go's own module-cache lock cannot prevent this: it serializes
+        # the git commands `go` itself issues and knows nothing about a
+        # process git forked off and disowned. The race is therefore
+        # inside a single `go build`, not between parallel ones, which
+        # is why only a cold runner that actually has to deepen the
+        # clone hits it, and why a warm local cache never reproduces it.
+        #
+        # Both knobs are set because they cover different git versions:
+        # maintenance.auto=false suppresses the spawn on git 2.31 and
+        # newer, gc.auto=0 neutralizes the older detached `git gc
+        # --auto` path. Neither weakens verification; background
+        # repacking is pure housekeeping on a runner that is destroyed
+        # minutes later. This step needs no credential, so unlike the
+        # step above it deliberately gets none.
+        run: |
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -50,6 +166,9 @@ jobs:
   ui-drift-check:
     name: Admin UI dist drift check
     runs-on: ubuntu-latest
+    # No App token here on purpose: `make ui-check` runs npm and a local
+    # `git status`, and never resolves a Go module, so this job needs no
+    # private-repo credential at all.
     steps:
       - name: Checkout
         uses: actions/checkout@v7
