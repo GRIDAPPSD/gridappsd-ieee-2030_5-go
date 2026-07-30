@@ -163,11 +163,20 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	existing, err := controlStore.Get(ctx, activeControlID)
 	var base sep2.DERControlBase
 	isUpdate := false
+	// intervalStart is the DERControl's activation instant. On a fresh
+	// control it is now; on an update it is CARRIED OVER from the stored
+	// control rather than re-stamped. See the interval construction below
+	// for why re-stamping would be wrong.
+	now := time.Now().UTC().Unix()
+	intervalStart := now
 	switch {
 	case err == nil:
 		isUpdate = true
 		if existing.DERControlBase != nil {
 			base = existing.DERControlBase.Copy()
+		}
+		if existing.Interval != nil {
+			intervalStart = existing.Interval.Start
 		}
 	case errors.Is(err, store.ErrNotFound):
 		// Fresh control: base starts zero-valued.
@@ -184,8 +193,38 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	control.MRID = deriveResourceMRID(edevID, dercMRIDKind)
 	control.EventStatus = &sep2.EventStatus{
 		CurrentStatus: sep2.EventStatusActive,
-		DateTime:      time.Now().UTC().Unix(),
+		DateTime:      now,
 	}
+
+	// DERControl is an Event, and an Event's interval is not decoration:
+	// it is the only thing that tells a client's scheduler WHEN the
+	// control applies. A conformant scheduler computes the event's window
+	// from interval.start and interval.duration and discards a window that
+	// has already ended. Measured on the EPRI reference client:
+	// new_block sets eb->start = ev->interval.start and
+	// eb->end = eb->start + ev->interval.duration (schedule.c), then
+	// update_schedule drops any block whose eb->end <= now (schedule.c).
+	// With no interval both are zero, zero is always <= now, and the
+	// control is discarded before it can ever activate. EventStatus
+	// currentStatus=Active does NOT rescue it: the scheduler branches on
+	// the window, not on the status flag.
+	//
+	// start = the activation instant, already begun, so the window is
+	// current the moment a client reads it rather than pending. On an
+	// update the ORIGINAL start is preserved (carried above): this
+	// bridge's "active" control is one long-lived, repeatedly-superseded
+	// control per device, so re-stamping start on every delta would slide
+	// the window forward continuously and present each poll as a fresh
+	// event to a scheduler that keys blocks by mRID and start. Only the
+	// end moves, because duration is measured from the preserved start.
+	//
+	// duration = defaultControlDurationSeconds, so the window stays open
+	// well past a client's own polling interval; see that constant.
+	control.Interval = &sep2.DateTimeInterval{
+		Start:    intervalStart,
+		Duration: intervalDurationFrom(intervalStart, now),
+	}
+
 	control.DERControlBase = &base
 
 	if isUpdate {
@@ -349,6 +388,73 @@ func applyDERControlBaseField(base *sep2.DERControlBase, field string, value any
 	}
 	return nil
 }
+
+// defaultControlDurationSeconds is how long a DERControl this bridge
+// writes stays valid, measured from its interval start.
+//
+// Sizing: a client rediscovers the control by polling its DERControlList,
+// and the reference client's own active-list poll rate is 300 seconds
+// (EPRI's active_poll_rate). The window must therefore comfortably exceed
+// one poll interval, or a control could expire in the gap between two
+// polls and the device would revert to its DefaultDERControl even though
+// the bridge is still commanding it. 900 seconds is three of those
+// intervals, and also matches the reference client's DEFAULT_POLL_RATE for
+// the lists that carry no explicit rate, so a client polling at its own
+// slowest default still never sees an expired window.
+//
+// It is deliberately NOT unbounded. An event with an effectively infinite
+// duration is a control that never releases the device if this bridge
+// dies: the expiry is the fail-safe that hands the device back to its
+// DefaultDERControl. Every fresh delta re-extends the window (see
+// intervalDurationFrom), so a live bridge keeps the control continuously
+// valid and a dead one lets it lapse within 15 minutes.
+const defaultControlDurationSeconds uint32 = 900
+
+// intervalDurationFrom returns the DateTimeInterval duration that keeps a
+// control whose window opened at start valid for
+// defaultControlDurationSeconds beyond now.
+//
+// Duration is measured from interval.start, and start is preserved across
+// updates (see ApplyControlDelta), so a plain constant duration would mean
+// the window's END never moves: a control that has been superseded many
+// times over 20 minutes would already have expired despite the bridge
+// actively commanding it. Growing the duration by the elapsed time since
+// start keeps the END a fixed distance in the future on every write, which
+// is the property that matters to a scheduler, while leaving the start
+// stable so the event keeps its identity.
+//
+// Both ends of elapsed are clamped, because duration is a uint32 on the
+// wire and an unclamped conversion is a correctness bug, not a
+// theoretical one:
+//
+//   - A start in the FUTURE (which this package never produces, but which
+//     a stored record could carry if the host clock stepped backward)
+//     would make elapsed negative, and a negative int64 converted to
+//     uint32 wraps to an enormous duration. Clamped to zero, yielding
+//     exactly defaultControlDurationSeconds.
+//   - An absurdly OLD start (a corrupted record, or a clock that stepped
+//     far forward) would overflow uint32 and wrap to a tiny duration,
+//     silently expiring a control the bridge is actively commanding.
+//     Clamped to maxIntervalElapsedSeconds.
+func intervalDurationFrom(start, now int64) uint32 {
+	elapsed := now - start
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if elapsed > maxIntervalElapsedSeconds {
+		elapsed = maxIntervalElapsedSeconds
+	}
+	return defaultControlDurationSeconds + uint32(elapsed)
+}
+
+// maxIntervalElapsedSeconds bounds the elapsed term intervalDurationFrom
+// adds, so the returned uint32 duration cannot wrap. One year is far
+// beyond any legitimate value (a real control's start is minutes to hours
+// old) while leaving the sum nowhere near the uint32 ceiling, so hitting
+// this clamp means the stored start or the host clock is wrong, and the
+// clamp keeps the control valid rather than letting a wrapped duration
+// expire it silently.
+const maxIntervalElapsedSeconds int64 = 365 * 24 * 60 * 60
 
 // flipActivePowerSign negates ap.Value in place (returning a copy) when
 // flip is true; a nil ap or flip=false returns ap unchanged. See
