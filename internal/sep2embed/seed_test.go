@@ -28,7 +28,7 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestSeedStoresEmptyRegistrySeedsEmptyStoresWithoutError(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores on empty registry: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 
 	ctx := context.Background()
 	stores := newStores()
-	if err := seedOne(ctx, stores, entry, nil); err != nil {
+	if err := seedOne(ctx, stores, entry, seedPolicy{}); err != nil {
 		t.Fatalf("pre-seed via seedOne: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	err := seedStores(ctx, stores, reg, nil)
+	err := seedStores(ctx, stores, reg, seedPolicy{})
 	if err == nil {
 		t.Fatal("seedStores against a store pre-populated with the same id: want error, got nil")
 	}
@@ -226,7 +226,7 @@ func TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 	modes := wantModes
-	if err := seedStores(ctx, stores, reg, &modes); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{ModesSupported: &modes}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -280,7 +280,7 @@ func TestSeedStoresStampsRTGMaxVarFromEntryMaxQ(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -329,7 +329,7 @@ func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -477,7 +477,7 @@ func TestSeedStoresDropsNegativeMaxQToNilRTGMaxVar(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 

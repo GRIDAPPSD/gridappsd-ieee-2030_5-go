@@ -22,15 +22,30 @@ import (
 // ApplyControlDelta. These tests assert GAGO-034 DOWN-path field mapping
 // and owner scoping, not the GAGO-050 seeding behavior itself (that is
 // snapshot_test.go's job), so the zero value is deliberate: a valid but
-// degenerate DefaultDERControl, sufficient for ensureDERProgram's lazy
-// DERProgram creation without asserting anything about its contents here.
+// degenerate DefaultDERControl, sufficient for ensureDERProgram's
+// get-or-create seam without asserting anything about its contents here.
 var testDefaultControl = sep2.DefaultDERControl{}
 
 // twoDeviceFixture seeds a Registry and a fully populated assembly.Stores
 // (via the package's own seedStores, not a parallel construction) with
 // two devices, A and B, so tests below can assert owner scoping between
-// them.
+// them. The seeded DefaultDERControl is the zero value; use
+// twoDeviceFixtureWithDefaultControl when a test asserts its contents.
 func twoDeviceFixture(t *testing.T) (reg *registry.Registry, st *assembly.Stores) {
+	t.Helper()
+	return twoDeviceFixtureWithDefaultControl(t, testDefaultControl)
+}
+
+// twoDeviceFixtureWithDefaultControl is twoDeviceFixture with an explicit
+// DefaultDERControl seed value.
+//
+// The value must be supplied HERE rather than to ApplyControlDelta, because
+// seedStores now creates each device's DERProgram and DefaultDERControl at
+// seed time (GAGO-094). ApplyControlDelta's own defaultControl argument
+// reaches ensureDERProgram's get-or-create, which finds the program already
+// present and returns without writing, so a value passed only there is
+// silently ignored for a seeded device.
+func twoDeviceFixtureWithDefaultControl(t *testing.T, defaultControl sep2.DefaultDERControl) (reg *registry.Registry, st *assembly.Stores) {
 	t.Helper()
 
 	reg = registry.New()
@@ -42,7 +57,7 @@ func twoDeviceFixture(t *testing.T) (reg *registry.Registry, st *assembly.Stores
 	}
 
 	st = newStores()
-	if err := seedStores(context.Background(), st, reg, nil); err != nil {
+	if err := seedStores(context.Background(), st, reg, seedPolicy{DefaultControl: defaultControl}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -249,18 +264,19 @@ func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
 }
 
 // TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram is the
-// GAGO-050 test: ensureDERProgram's lazy-creation seam must seed a
-// DefaultDERControl (sourced from the caller-supplied defaultControl,
-// never hardcoded) into stores.DefaultDERControls and point the new
-// DERProgram's DefaultDERControlLink at it, closing the CSIP-mandatory
-// hole Devi flagged (a client following DefaultDERControlLink from a
-// DERProgram must find a well-formed DefaultDERControl).
+// GAGO-050 test: every DERProgram must have a DefaultDERControl (sourced
+// from the caller-supplied defaultControl, never hardcoded) in
+// stores.DefaultDERControls with the program's DefaultDERControlLink
+// pointing at it, closing the CSIP-mandatory hole Devi flagged (a client
+// following DefaultDERControlLink from a DERProgram must find a well-formed
+// DefaultDERControl).
+//
+// The seed value is now supplied at seedStores time rather than to
+// ApplyControlDelta, because GAGO-094 moved DERProgram creation to seed
+// time; see twoDeviceFixtureWithDefaultControl. Applying a delta afterward
+// must leave both records intact, which is what this test drives.
 func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) {
 	t.Parallel()
-
-	reg, st := twoDeviceFixture(t)
-	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
-	ctx := context.Background()
 
 	connect := true
 	energize := true
@@ -270,6 +286,10 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 			OpModEnergize: &energize,
 		},
 	}
+
+	reg, st := twoDeviceFixtureWithDefaultControl(t, seed)
+	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
+	ctx := context.Background()
 
 	delta := diff.Difference{
 		Object:    "mrid-a",
@@ -332,11 +352,25 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 		t.Errorf("seeded DefaultDERControl.SetSoftGradW = %+v, want nil", dderc.SetSoftGradW)
 	}
 
-	// Owner scoping: device B never had ApplyControlDelta called for it,
-	// so it must have no DERProgram, and therefore no DefaultDERControl.
+	// Owner scoping. Device B IS seeded, so it legitimately has its own
+	// DERProgram and its own DefaultDERControl: every seeded device does
+	// (GAGO-094), and the DefaultDERControl is a standing policy rather than
+	// a command, so its presence commands nothing. What must NOT leak across
+	// devices is the COMMAND: device B never had a delta applied, so its
+	// DERControlList must be empty. That is the scoping property this test
+	// exists to pin, and it is asserted on B's own store scope, not inferred
+	// from the absence of a program.
 	lfdiB, _ := reg.LFDI("mrid-b")
-	if _, err := st.DERPrograms.ForParent(lfdiB).Get(ctx, controlDERProgramID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("DERPrograms.Get(B) = (%v), want store.ErrNotFound (program must not leak to device B)", err)
+	if _, err := st.DERPrograms.ForParent(lfdiB).Get(ctx, controlDERProgramID); err != nil {
+		t.Fatalf("DERPrograms.Get(B) = %v, want the seeded program (every seeded device gets one)", err)
+	}
+
+	scopeB := derControlScope(lfdiB, controlFSAID, controlDERProgramID)
+	if _, err := st.DefaultDERControls.Get(ctx, scopeB, singletonKey); err != nil {
+		t.Fatalf("DefaultDERControls.Get(B) = %v, want the seeded default (a client following B's link must find one)", err)
+	}
+	if _, err := st.DERControls.Get(ctx, scopeB, activeControlID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DERControls.Get(B) = %v, want store.ErrNotFound (device A's command must not reach device B)", err)
 	}
 }
 

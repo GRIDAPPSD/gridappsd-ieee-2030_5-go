@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
@@ -63,6 +64,52 @@ func TestBusConfigMapsFields(t *testing.T) {
 				t.Errorf("TLSConfig: got %v, want nil (bridge does not yet supply a custom TLS config)", got.TLSConfig)
 			}
 		})
+	}
+}
+
+// TestBusConfigSetsSurvivableHeartBeat pins the heartbeat interval
+// busConfig hands gridappsd-go, and pins the arithmetic that makes it the
+// right value, because the failure it prevents is invisible: with a bad
+// interval the bridge boots, subscribes, logs nothing wrong, and simply
+// stops receiving control deltas about 15 seconds later.
+//
+// The two measured quantities (see stompHeartBeat's doc comment for the
+// live-broker evidence):
+//
+//   - go-stomp tears the connection down at period + 5s, where 5s is
+//     stomp.DefaultHeartBeatError.
+//   - ActiveMQ 6.2.0 sends its first heartbeat on an idle connection at
+//     about 2*period.
+//
+// Survival needs the first beat to arrive before the deadline, so
+// 2*period < period + 5s, i.e. period < 5s. Asserting the inequality
+// rather than only the literal is what makes this a regression test: it
+// fails for gridappsd-go's 10s default, it fails for any "let's raise the
+// timeout" change (the usual instinct, and provably backwards here), and
+// it fails at exactly 5s where the margin vanishes.
+func TestBusConfigSetsSurvivableHeartBeat(t *testing.T) {
+	t.Parallel()
+
+	got := busConfig(config{STOMPAddr: "127.0.0.1:61613"})
+
+	if got.HeartBeat <= 0 {
+		t.Fatalf("HeartBeat: got %v, want a positive interval; zero lets gridappsd-go apply its 10s default, which kills every idle subscription in ~15s", got.HeartBeat)
+	}
+
+	// stomp.DefaultHeartBeatError, restated rather than imported: this
+	// asserts the relationship the bridge depends on, so it must keep
+	// failing if go-stomp's default changes underneath us.
+	const heartBeatError = 5 * time.Second
+	deadline := got.HeartBeat + heartBeatError
+	firstBeat := 2 * got.HeartBeat
+
+	if firstBeat >= deadline {
+		t.Errorf("HeartBeat %v: broker's first beat lands at %v but go-stomp's read deadline is %v; the idle subscription dies at %v",
+			got.HeartBeat, firstBeat, deadline, deadline)
+	}
+
+	if got.HeartBeat != stompHeartBeat {
+		t.Errorf("HeartBeat: got %v, want stompHeartBeat (%v)", got.HeartBeat, stompHeartBeat)
 	}
 }
 

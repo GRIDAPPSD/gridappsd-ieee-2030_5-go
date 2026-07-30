@@ -89,6 +89,13 @@ type DefaultDERControlSnapshot struct {
 // not exposed to avoid leaking a pointer into the mutable store item it
 // was copied from.
 type DERControlSnapshot struct {
+	// ID is the control's STORE KEY, not a wire identifier: this bridge
+	// keeps its single control under activeControlID and store.ListResult
+	// does not carry per-item keys (see derIDFor for the same limitation on
+	// DERs). A caller that needs the control's wire identity reads Href or
+	// MRID, both of which change with every generation (GAGO-094); ID does
+	// not, and two snapshots taken across a control replacement will share
+	// it while describing different events.
 	ID            string
 	Href          string
 	MRID          string
@@ -212,8 +219,8 @@ func (e *Embed) DefaultDERControl(ctx context.Context, edevID, fsaID, derpID str
 }
 
 // DERControls returns a read only snapshot of every DERControl scoped to
-// (edevID, fsaID, derpID). This bridge's own control.go writes at most
-// one, keyed activeControlID ("active"); this method still lists rather
+// (edevID, fsaID, derpID). This bridge's own control.go keeps at most one
+// stored at a time (under activeControlID); this method still lists rather
 // than Get-by-key so it reflects whatever is actually stored, including
 // a future multi control bridge.
 func (e *Embed) DERControls(ctx context.Context, edevID, fsaID, derpID string) ([]DERControlSnapshot, error) {

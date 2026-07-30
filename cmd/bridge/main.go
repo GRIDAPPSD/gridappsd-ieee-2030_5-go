@@ -196,8 +196,17 @@ func run(ctx context.Context, cfg config) error {
 	// DERCapability GAGO-049 seeds is still nil-safe until a real policy
 	// value is configured.
 	policy := sep2config.DefaultPolicy()
-	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s",
-		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
+	// GAGO-094: the Registration pIN is the one policy field an operator
+	// must supply for a registration-requiring client to get past
+	// discovery, so it comes from config (env) rather than the compiled-in
+	// defaults. Nil stays nil: no Registration is seeded.
+	policy.RegistrationPIN = cfg.SEP2RegistrationPIN
+	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s registrationPIN=%s",
+		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate),
+		fmtU32Set(policy.RegistrationPIN))
+	if policy.RegistrationPIN == nil {
+		log.Printf("bridge: WARNING: no SEP2_REGISTRATION_PIN set; no Registration resource and no EndDevice RegistrationLink will be seeded, so a client that requires registration will stop at discovery and never see this server's DERControls")
+	}
 
 	if cfg.PublishOnStart {
 		// The publish smoke test wants to send a DifferenceBuilder
@@ -413,6 +422,16 @@ func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(c
 // DefaultPolicy leaves it nil, so seeding is nil-safe until a real
 // policy value is configured.
 //
+// policy.RegistrationPIN and policy.DefaultPollRate are threaded through
+// the same way (GAGO-094) as Config.RegistrationPIN and
+// Config.RegistrationPollRate: the Registration resource each device
+// advertises is seeded from policy, never from a value invented at this
+// layer. DefaultPolicy leaves RegistrationPIN nil, and the consequence is
+// deliberate rather than nil-safe-and-harmless: with no pIN, no
+// Registration and no RegistrationLink are seeded, so a client that
+// requires registration stops there. Set SEP2_REGISTRATION_PIN to
+// provision it.
+//
 // connHook is threaded through as sep2embed.Config.Observer
 // (GAGO-090/GAGO-091): a non-nil connHook opts this bridge into the
 // additive request- and handshake-observation path sep2embed.New
@@ -433,6 +452,8 @@ func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.S
 		TelemetrySimulationID: cfg.SimulationID,
 		DefaultControl:        policy.DefaultControl,
 		ModesSupported:        policy.ModesSupported,
+		RegistrationPIN:       policy.RegistrationPIN,
+		RegistrationPollRate:  policy.DefaultPollRate,
 		Observer:              connHook,
 	}
 }
@@ -459,16 +480,74 @@ func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, bus s
 	return sep2embed.New(ctx, sep2EmbedConfig(cfg, bus, policy, connHook), reg)
 }
 
+// stompHeartBeat is the symmetric STOMP heartbeat interval the bridge
+// offers the broker, and it is a correctness value, not a tuning knob.
+// gridappsd-go's default (internal/stomp.DefaultHeartBeat, 10s) makes
+// every idle subscription die in about 15 seconds, so a bridge that is
+// only waiting for a control delta loses its subscription before the
+// first delta ever arrives.
+//
+// The mechanism, measured against the live ActiveMQ 6.2.0 broker rather
+// than reasoned about. Two independent timings decide whether an idle
+// connection survives:
+//
+//   - go-stomp declares "read timeout" and tears down the connection
+//     after period + HeartBeatError, where HeartBeatError defaults to 5s
+//     (stomp.DefaultHeartBeatError). At the 10s default that deadline is
+//     15s.
+//   - ActiveMQ does not emit its first heartbeat at one period. Measured
+//     first-beat arrival: period=4s -> 8s, 10s -> 20s, 20s -> 30s,
+//     30s -> 40s. It sends nothing on an idle connection until roughly
+//     2*period (short periods) or period+10s (long periods), whichever
+//     is later.
+//
+// Survival therefore requires first_beat < period + 5s. At period=10s
+// that is 20s < 15s, which is false, so the connection always dies. The
+// arithmetic is why RAISING the period cannot help: the deadline grows by
+// one second per second while the first beat grows just as fast.
+// Confirmed by measurement, period=20s died at 25.0s and period=30s died
+// at 35.0s, both exactly period+5s.
+//
+// Going the other way does work, because below about 5s the first beat
+// lands at 2*period and 2*period < period + 5s holds whenever
+// period < 5s. Measured over a 95s idle subscription on the real broker:
+// 2s, 3s, 4s and 5s all SURVIVED, while 6s died at 11.0s, 8s at 13.0s and
+// 10s at 15.0s, each again at period+5s.
+//
+// 4s is chosen over 5s deliberately: 5s is the exact boundary where
+// first_beat (10s) equals the deadline (10s), so it survives only by
+// scheduling luck and any broker-side jitter would push it over. 4s gives
+// an 8s first beat against a 9s deadline, a full second of margin, at a
+// cost of one 6-byte newline every 4 seconds per connection.
+//
+// This value belongs to the bridge because the defect is in the
+// interaction between go-stomp's deadline and this specific broker's beat
+// timing, and gridappsd-go's Config.HeartBeat is the supported lever for
+// exactly that. See the HIGH-3 finding for the two upstream fixes that
+// would make this unnecessary.
+const stompHeartBeat = 4 * time.Second
+
+// controlDeltaSilenceWarnAfter is how long the control subscriber waits
+// without receiving a delta before logging a liveness warning. See
+// runControlSubscriber for why the warning exists: a dead subscription and
+// an idle one are otherwise indistinguishable on this path.
+//
+// 60 seconds is comfortably longer than the ~15s death this replaces (so
+// the warning cannot be mistaken for the bug it detects) while still
+// firing well within a short interop run.
+const controlDeltaSilenceWarnAfter = 60 * time.Second
+
 // busConfig projects the bridge's config onto gridappsd-go's connection
 // config. Split out from connectClient so the mapping, in particular
-// the plaintext opt-in, can be asserted by a unit test without dialing
-// a broker.
+// the plaintext opt-in and the heartbeat interval, can be asserted by a
+// unit test without dialing a broker.
 func busConfig(cfg config) gridappsd.Config {
 	return gridappsd.Config{
 		Address:        cfg.STOMPAddr,
 		User:           cfg.STOMPUser,
 		Password:       cfg.STOMPPassword,
 		AllowPlaintext: cfg.AllowPlaintext,
+		HeartBeat:      stompHeartBeat,
 	}
 }
 
@@ -512,6 +591,24 @@ func fmtU32Ptr(v *uint32) string {
 		return "unset"
 	}
 	return fmt.Sprintf("%d", *v)
+}
+
+// fmtU32Set renders only WHETHER a *uint32 is set, never its value.
+//
+// Used for the Registration pIN. The pIN is a shared secret in the
+// registration handshake, conveyed to a device owner out of band, so the
+// boot log must not echo it: logs are shipped, aggregated, and read by
+// people who have no business knowing a device's registration pIN. What
+// an operator actually needs from the boot log is whether registration is
+// provisioned at all, since that is what decides whether a client gets
+// past discovery, and "set" answers that completely. Use this, not
+// fmtU32Ptr, for any policy value that is secret rather than merely
+// configuration.
+func fmtU32Set(v *uint32) string {
+	if v == nil {
+		return "unset"
+	}
+	return "set"
 }
 
 // parsePECCount extracts the single "count" binding QueryPECCount's
@@ -1025,7 +1122,44 @@ func runControlSubscriber(ctx context.Context, bus fieldbus.MessageBus, embed *s
 		return fmt.Errorf("control subscriber: subscribe %s: %w", dest, err)
 	}
 
+	// A broker-side subscription death is INVISIBLE on this path, so it is
+	// logged from here rather than left to be inferred from silence.
+	//
+	// gridappsd-go's router.readLoop does see the terminal "read timeout"
+	// ERROR frame, but it pushes the error onto an internal errSink that
+	// nothing in the module ever reads (upstream TODO GAG-009), and
+	// fieldbus's connected flag is only ever set by Connect and Close, so
+	// IsConnected keeps reporting true after the connection is gone. The
+	// subscription simply stops delivering. Nothing distinguishes "no
+	// operator has sent a control delta" from "this bridge stopped being
+	// able to receive one", which is exactly the silent-failure shape the
+	// heartbeat fix above is meant to prevent and which must stay
+	// observable if it ever recurs.
+	//
+	// controlDeltaSilenceWarnAfter is a liveness warning, not a timeout:
+	// it never tears anything down and never cancels ctx, because a
+	// genuinely quiet control channel is normal (an operator may send
+	// nothing for hours). It only makes the two cases tellable apart in
+	// the log. Every received frame resets the timer.
+	silence := time.NewTimer(controlDeltaSilenceWarnAfter)
+	defer silence.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-silence.C:
+				log.Printf("control subscriber: WARNING no control delta on %s for %s; "+
+					"if an operator IS publishing, the subscription is dead (see stompHeartBeat) "+
+					"and this bridge is no longer receiving deltas",
+					dest, controlDeltaSilenceWarnAfter)
+				silence.Reset(controlDeltaSilenceWarnAfter)
+			}
+		}
+	}()
+
 	for msg := range sub.Messages() {
+		silence.Reset(controlDeltaSilenceWarnAfter)
 		var envelope diff.Message
 		if derr := json.Unmarshal(msg.Body, &envelope); derr != nil {
 			log.Printf("control subscriber: skip malformed frame on %s: %v", dest, derr)
