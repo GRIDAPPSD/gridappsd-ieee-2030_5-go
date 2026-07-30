@@ -113,6 +113,29 @@ type Config struct {
 	// bitmap here.
 	ModesSupported *uint32
 
+	// RegistrationPIN is the pIN value New seeds onto every device's
+	// Registration resource (GAGO-094). Nil (the zero value) seeds NO
+	// Registration and NO EndDevice.RegistrationLink, which is the
+	// deliberate behavior rather than a degraded one: pIN is a required
+	// wire element with no default, so there is nothing valid to invent.
+	// Callers source this from sep2config.SEP2Policy.RegistrationPIN.
+	//
+	// Consequence worth stating plainly, because it is a discovery
+	// dead-end rather than a missing nicety: a client that requires
+	// registration (the EPRI reference client with its register test
+	// enabled, and any CSIP-conformant client) stops at the missing
+	// RegistrationLink and never reaches any function set. So leaving
+	// this nil means such a client will not see this server's DERControls
+	// at all.
+	RegistrationPIN *uint32
+
+	// RegistrationPollRate is the pollRate attribute, in seconds, stamped
+	// onto each seeded Registration. Nil leaves it unset, so a client
+	// applies its own default rather than this bridge asserting a rate
+	// policy never expressed. Sourced from
+	// sep2config.SEP2Policy.DefaultPollRate.
+	RegistrationPollRate *uint32
+
 	// Observer is the GAGO-090/GAGO-091 per-LFDI connection observer.
 	// Nil (the zero value) disables observation entirely: New falls back
 	// to delegating listener construction to sep2srv.New exactly as
@@ -182,7 +205,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	stores := newStores()
-	if err := seedStores(ctx, stores, reg, cfg.ModesSupported); err != nil {
+	if err := seedStores(ctx, stores, reg, cfg.ModesSupported, cfg.RegistrationPIN, cfg.RegistrationPollRate); err != nil {
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)
 	}
 

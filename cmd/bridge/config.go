@@ -123,6 +123,27 @@ type config struct {
 	// Empty means unset: no link, no error, no admin UI behavior
 	// change.
 	SEP2AdminUISORLink string
+
+	// SEP2RegistrationPIN is the pIN seeded onto every device's
+	// Registration resource, sourced into
+	// sep2config.SEP2Policy.RegistrationPIN. Nil (unset) means no
+	// Registration and no RegistrationLink are seeded at all, which is the
+	// deliberate default: pIN is a required wire element with no
+	// spec-defined default, so there is no value this bridge could invent
+	// that would be correct (see the policy field's doc comment).
+	//
+	// Consequence of leaving it unset, stated plainly because it is a
+	// discovery dead-end rather than a missing nicety: a client that
+	// requires registration stops at the absent RegistrationLink and never
+	// reaches any function set, so it will not see this server's
+	// DERControls.
+	//
+	// Not a credential in the SEP2AdminUIKey sense (it is conveyed to a
+	// device owner out of band and is not a bearer token), but it is a
+	// shared secret in the registration handshake, so it is read from the
+	// environment rather than registered as a flag whose value would
+	// appear in a process listing.
+	SEP2RegistrationPIN *uint32
 }
 
 // deviceCertMode* are the only two values config.validate accepts for
@@ -208,6 +229,16 @@ func loadConfig(args []string) (config, error) {
 		return config{}, err
 	}
 	cfg.PublishOnStart = pubFromEnv
+
+	// Env-only, no flag: see the field's doc comment. A malformed value is
+	// a hard config error rather than a silent fall back to unset, because
+	// unset means "seed no Registration" and an operator who set this
+	// clearly wanted one.
+	pinFromEnv, err := getenvU32Ptr("SEP2_REGISTRATION_PIN")
+	if err != nil {
+		return config{}, err
+	}
+	cfg.SEP2RegistrationPIN = pinFromEnv
 
 	// AllowPlaintext defaults false (fail-closed): see the field's doc
 	// comment on config. Only an explicit env or flag override flips
@@ -350,6 +381,32 @@ func getenvDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// getenvU32Ptr parses an optional unsigned 32-bit env var into a pointer.
+//
+// The pointer return is the point: unset and empty both yield (nil, nil),
+// which callers read as "policy expresses no value", distinct from a
+// deliberate zero. That distinction is load-bearing for the fields this
+// feeds (see sep2config.SEP2Policy.RegistrationPIN, where nil means "seed
+// no Registration at all" rather than "seed pIN 0").
+//
+// A present-but-unparseable value is an ERROR, not a silent fallback to
+// nil. An operator who sets SEP2_REGISTRATION_PIN=abc123 intends
+// registration to be provisioned; quietly treating the typo as "no pIN"
+// would boot a server whose clients all dead-end at a missing
+// RegistrationLink, with nothing in the logs tying it to the typo.
+func getenvU32Ptr(key string) (*uint32, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.ParseUint(strings.TrimSpace(v), 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("config: %s is not an unsigned 32-bit integer (%q): %w", key, v, err)
+	}
+	out := uint32(parsed)
+	return &out, nil
 }
 
 // getenvBool parses a boolean env var. Empty / unset returns fallback.

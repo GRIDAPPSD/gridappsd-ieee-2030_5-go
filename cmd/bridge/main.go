@@ -196,8 +196,17 @@ func run(ctx context.Context, cfg config) error {
 	// DERCapability GAGO-049 seeds is still nil-safe until a real policy
 	// value is configured.
 	policy := sep2config.DefaultPolicy()
-	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s",
-		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
+	// GAGO-094: the Registration pIN is the one policy field an operator
+	// must supply for a registration-requiring client to get past
+	// discovery, so it comes from config (env) rather than the compiled-in
+	// defaults. Nil stays nil: no Registration is seeded.
+	policy.RegistrationPIN = cfg.SEP2RegistrationPIN
+	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s registrationPIN=%s",
+		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate),
+		fmtU32Set(policy.RegistrationPIN))
+	if policy.RegistrationPIN == nil {
+		log.Printf("bridge: WARNING: no SEP2_REGISTRATION_PIN set; no Registration resource and no EndDevice RegistrationLink will be seeded, so a client that requires registration will stop at discovery and never see this server's DERControls")
+	}
 
 	if cfg.PublishOnStart {
 		// The publish smoke test wants to send a DifferenceBuilder
@@ -413,6 +422,16 @@ func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(c
 // DefaultPolicy leaves it nil, so seeding is nil-safe until a real
 // policy value is configured.
 //
+// policy.RegistrationPIN and policy.DefaultPollRate are threaded through
+// the same way (GAGO-094) as Config.RegistrationPIN and
+// Config.RegistrationPollRate: the Registration resource each device
+// advertises is seeded from policy, never from a value invented at this
+// layer. DefaultPolicy leaves RegistrationPIN nil, and the consequence is
+// deliberate rather than nil-safe-and-harmless: with no pIN, no
+// Registration and no RegistrationLink are seeded, so a client that
+// requires registration stops there. Set SEP2_REGISTRATION_PIN to
+// provision it.
+//
 // connHook is threaded through as sep2embed.Config.Observer
 // (GAGO-090/GAGO-091): a non-nil connHook opts this bridge into the
 // additive request- and handshake-observation path sep2embed.New
@@ -433,6 +452,8 @@ func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.S
 		TelemetrySimulationID: cfg.SimulationID,
 		DefaultControl:        policy.DefaultControl,
 		ModesSupported:        policy.ModesSupported,
+		RegistrationPIN:       policy.RegistrationPIN,
+		RegistrationPollRate:  policy.DefaultPollRate,
 		Observer:              connHook,
 	}
 }
@@ -512,6 +533,24 @@ func fmtU32Ptr(v *uint32) string {
 		return "unset"
 	}
 	return fmt.Sprintf("%d", *v)
+}
+
+// fmtU32Set renders only WHETHER a *uint32 is set, never its value.
+//
+// Used for the Registration pIN. The pIN is a shared secret in the
+// registration handshake, conveyed to a device owner out of band, so the
+// boot log must not echo it: logs are shipped, aggregated, and read by
+// people who have no business knowing a device's registration pIN. What
+// an operator actually needs from the boot log is whether registration is
+// provisioned at all, since that is what decides whether a client gets
+// past discovery, and "set" answers that completely. Use this, not
+// fmtU32Ptr, for any policy value that is secret rather than merely
+// configuration.
+func fmtU32Set(v *uint32) string {
+	if v == nil {
+		return "unset"
+	}
+	return "set"
 }
 
 // parsePECCount extracts the single "count" binding QueryPECCount's

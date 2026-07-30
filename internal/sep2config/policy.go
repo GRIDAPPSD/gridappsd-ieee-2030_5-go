@@ -41,6 +41,30 @@ type SEP2Policy struct {
 	// spec's) default rate.
 	DefaultPollRate *uint32
 	DefaultPostRate *uint32
+
+	// RegistrationPIN is the pIN value seeded onto every device's
+	// Registration resource (IEEE 2030.5 section 10.6.4). It has no CIM
+	// analog whatsoever, which is exactly why it lives in policy: pIN is
+	// an out-of-band shared secret between the utility and the device
+	// owner, conveyed on a label or in commissioning paperwork, never
+	// derived from the model.
+	//
+	// Pointer-typed, and nil by default, for a stronger reason than the
+	// other fields here. pIN is a REQUIRED wire element with no
+	// spec-defined default, so there is no value this package could
+	// invent that would be correct. Seeding an invented pIN would be
+	// worse than seeding nothing: a client that validates pIN against
+	// what its owner was given would fail against a plausible-looking
+	// wrong number, whereas an absent Registration is an unambiguous
+	// "this server has not provisioned registration". So nil means the
+	// consumer seeds NO Registration and NO RegistrationLink, rather than
+	// defaulting (see sep2embed.seedStores).
+	//
+	// Deployment note: a real deployment supplies a per-device pIN. A
+	// single fleet-wide value, which is all this one field can express, is
+	// a development and interoperability-testing affordance, not a
+	// production credential scheme.
+	RegistrationPIN *uint32
 }
 
 // DefaultPolicy returns the compiled-in, spec-sane SEP2Policy defaults, so
@@ -62,6 +86,12 @@ type SEP2Policy struct {
 //
 // ModesSupported and the poll/post rates default to nil (unset); GAGO-049
 // and any future FSA-seeding card supply real values once they exist.
+//
+// RegistrationPIN also defaults to nil, and that is a correctness
+// requirement rather than a placeholder: see its field doc. A compiled-in
+// default pIN would be a fabricated required wire value, so the default
+// build seeds no Registration at all and a deployment that wants one
+// supplies the pIN explicitly.
 func DefaultPolicy() SEP2Policy {
 	connect := true
 	energize := true

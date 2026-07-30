@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
@@ -59,9 +60,39 @@ import (
 // nil means no policy value was supplied: seedOne leaves the seeded
 // DERCapability.ModesSupported nil rather than fabricating a bitmap
 // (GAGO-049; see [[data-invariants]] on not silently inventing values).
-func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, modesSupported *uint32) error {
+//
+// GAGO-094 adds the two resources a link-traversing client needs before
+// it will look at a DERControl at all, each with the same
+// no-policy-means-no-record discipline modesSupported already follows:
+//
+//   - A Registration per device (plus EndDevice.RegistrationLink), when
+//     registrationPIN is non-nil. A conformant client treats a missing
+//     RegistrationLink as a hard failure: the EPRI reference client calls
+//     test_fail("registration", "EndDevice does not contain
+//     RegistrationLink.") and stops, so with no link the walk ends before
+//     any function set is reached. pIN is a REQUIRED wire element with no
+//     spec-defined default, so when registrationPIN is nil seedOne
+//     creates neither the record nor the link: a link pointing at an
+//     absent resource, or a record carrying an invented pIN, would both
+//     be worse than the honest absence (see [[data-invariants]] Rule 2).
+//   - One FunctionSetAssignments per device (plus
+//     EndDevice.FunctionSetAssignmentsListLink), unconditionally. This is
+//     the only path from an EndDevice to a DERProgram: a client walks
+//     EndDevice -> FunctionSetAssignmentsList -> the FSA's own
+//     DERProgramListLink. With the FSA store empty the list served all=0
+//     and the walk dead-ended, so no control this bridge wrote was ever
+//     discoverable. The FSA is seeded at controlFSAID, the SAME id the
+//     DOWN path writes DERControls under, so the program a client
+//     discovers is the program the bridge actually populates.
+//
+// pollRate, when non-nil, is stamped as the Registration's pollRate
+// attribute (seconds). nil leaves it unset, which is meaningful on the
+// wire rather than merely absent: a client that finds no pollRate applies
+// its own default (the EPRI client's DEFAULT_POLL_RATE, 900s), which is
+// the correct fallback when policy expresses no opinion.
+func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, modesSupported, registrationPIN, pollRate *uint32) error {
 	for _, e := range reg.Snapshot() {
-		if err := seedOne(ctx, stores, e, modesSupported); err != nil {
+		if err := seedOne(ctx, stores, e, modesSupported, registrationPIN, pollRate); err != nil {
 			return fmt.Errorf("seed entry mRID=%q: %w", e.MRID, err)
 		}
 	}
@@ -131,7 +162,7 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 //     mapping"; "do NOT silently invent capability bits"). maxQ is the
 //     one exception: it is itself a rated maximum, not a live value, so
 //     RTGMaxVar is populated from it.
-func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, modesSupported *uint32) error {
+func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, modesSupported, registrationPIN, pollRate *uint32) error {
 	id := e.LFDI
 
 	sfdi := e.SFDI
@@ -148,8 +179,43 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 	dev.Href = "/edev/" + id
 	dev.DERListLink = &sep2.ListLink{Href: "/edev/" + id + "/der", All: 1}
 
+	// changedTime is a REQUIRED element on EndDevice with no default, and
+	// it is the resource's own last-modified timestamp in TimeType
+	// (seconds since the Unix epoch, spec section 10.1.4), so seeding
+	// time is the honest value: that is when this bridge created the
+	// record. Leaving the zero value would advertise 1970 to every
+	// client. It is stamped once here at seed time and not refreshed on
+	// telemetry updates, which is consistent with the rest of the seeded
+	// EndDevice (nothing else about the device record changes after
+	// seeding; the live values live on DERStatus, not here).
+	dev.ChangedTime = time.Now().UTC().Unix()
+
+	// The FSA list link is stamped before Create, so the stored EndDevice
+	// carries it: core serves the stored record verbatim, so a link added
+	// after the fact would never reach a client. all=1 matches the single
+	// FSA seeded below, and it is the count a client's list walk reads.
+	dev.FunctionSetAssignmentsListLink = &sep2.ListLink{Href: "/edev/" + id + "/fsa", All: 1}
+
+	// The registration link is stamped only when a real pIN exists to
+	// back it. See seedStores' doc comment: a link to an absent resource
+	// makes a client 404 partway through registration, which is a worse
+	// failure than the absent link it would be replacing.
+	if registrationPIN != nil {
+		dev.RegistrationLink = &sep2.Link{Href: registrationHref(id)}
+	}
+
 	if err := stores.EndDevices.Create(ctx, id, dev); err != nil {
 		return fmt.Errorf("create EndDevice: %w", err)
+	}
+
+	if registrationPIN != nil {
+		if err := seedRegistration(ctx, stores, id, *registrationPIN, pollRate); err != nil {
+			return err
+		}
+	}
+
+	if err := seedFSA(ctx, stores, id); err != nil {
+		return err
 	}
 
 	dercapHref := "/edev/" + id + "/der/1/dercap"
@@ -177,6 +243,107 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 		return fmt.Errorf("create DERCapability: %w", err)
 	}
 
+	return nil
+}
+
+// registrationHref returns the canonical Registration path for the device
+// stored under id. Both the EndDevice.RegistrationLink and the
+// Registration record's own Href use this one function, so the link a
+// client follows and the resource it lands on cannot drift apart. The
+// shape matches the route core mounts for the Registration function set
+// (/edev/{id}/rg).
+func registrationHref(id string) string { return "/edev/" + id + "/rg" }
+
+// fsaHref returns the canonical path for the single FunctionSetAssignments
+// resource seeded under the device stored under id, at controlFSAID: the
+// same FSA id the DOWN path writes its DERControls under (see control.go).
+// That coupling is the point: an FSA seeded at any other id would be
+// perfectly discoverable and lead to an empty program, silently stranding
+// every control this bridge applies.
+func fsaHref(id string) string { return "/edev/" + id + "/fsa/" + controlFSAID }
+
+// fsaDescription is the FunctionSetAssignments description this bridge
+// advertises. Kept at or under maxDescriptionChars: the String32 bound is
+// enforced by a client on the simple value, and exceeding it makes the
+// client reject the entire FSA rather than truncate one field, which
+// would take the whole DERProgram walk down with it. There is a test
+// asserting the length for exactly that reason.
+const fsaDescription = "GridAPPS-D DER assignment"
+
+// seedRegistration writes the Registration resource that
+// EndDevice.RegistrationLink points at, for the device stored under id.
+//
+// The store key is id, the device's own canonical LFDI, because that is
+// what core's Registration handler looks up: it resolves the {id} path
+// segment against the EndDevice store, rejects a mismatch against the
+// TLS-presented LFDI, and then reads the Registration under that same
+// id. Keying by anything else (a counter, a snapshot position) would
+// produce a record that resolves for no device, which is the
+// index-confusion failure [[data-invariants]] Rule 2 forbids.
+//
+// Both wire fields are REQUIRED elements, so both are set to real values:
+//
+//   - pIN comes from policy and is passed through unchanged. It is not
+//     defaulted here; the caller decides whether a pIN exists at all
+//     (see seedStores).
+//   - dateTimeRegistered is the seeding instant in TimeType (seconds since
+//     the Unix epoch). This is the semantically correct value rather than
+//     a filler: the bridge really did establish this registration at
+//     seed time, since the device is pre-provisioned from the CIM model
+//     rather than self-registering over HTTP. A zero here would advertise
+//     a 1970 registration.
+//
+// pollRate is an optional attribute; nil leaves it unset so the client
+// applies its own default, rather than this bridge asserting a rate that
+// policy never expressed.
+func seedRegistration(ctx context.Context, stores *assembly.Stores, id string, pin uint32, pollRate *uint32) error {
+	rec := sep2.Registration{
+		DateTimeRegistered: time.Now().UTC().Unix(),
+		PIN:                pin,
+	}
+	rec.Href = registrationHref(id)
+	if pollRate != nil {
+		rec.PollRate = *pollRate
+	}
+
+	if err := stores.Registrations.Create(ctx, id, rec); err != nil {
+		return fmt.Errorf("create Registration: %w", err)
+	}
+	return nil
+}
+
+// seedFSA writes the single FunctionSetAssignments resource that carries
+// the device's DERProgramListLink, for the device stored under id.
+//
+// This is the hop a client cannot skip: there is no other route from an
+// EndDevice to a DERProgram. The record is scoped (parent = the device's
+// store id, id = controlFSAID) so it is served by both the list route
+// (/edev/{id}/fsa) and the single-resource route
+// (/edev/{id}/fsa/{fsaId}).
+//
+// DERProgramListLink points at derProgramListHref(id, controlFSAID), the
+// exact list the DOWN path's ensureDERProgram creates its program in, so
+// discovery and control converge on one program rather than two.
+//
+// The mRID is derived rather than composed. mRIDType is hexBinary capped
+// at 16 octets, and a client rejects the entire FSA on a malformed value,
+// so an LFDI-composed identifier here would make the FSA unparseable and
+// re-break the very walk this function exists to open. See
+// deriveResourceMRID.
+func seedFSA(ctx context.Context, stores *assembly.Stores, id string) error {
+	fsa := sep2.FunctionSetAssignments{
+		DERProgramListLink: &sep2.ListLink{
+			Href: derProgramListHref(id, controlFSAID),
+			All:  1,
+		},
+		MRID:        deriveResourceMRID(id, fsaMRIDKind),
+		Description: fsaDescription,
+	}
+	fsa.Href = fsaHref(id)
+
+	if err := stores.FSAs.Create(ctx, id, controlFSAID, fsa); err != nil {
+		return fmt.Errorf("create FunctionSetAssignments: %w", err)
+	}
 	return nil
 }
 
