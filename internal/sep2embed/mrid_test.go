@@ -115,3 +115,100 @@ func TestDeriveResourceMRIDDependsOnTheWholeLFDI(t *testing.T) {
 		t.Errorf("two LFDIs differing only in the last character produced the same mRID %q", a)
 	}
 }
+
+// TestDeriveControlMRIDVariesPerGenerationAndStaysWireLegal covers the two
+// properties a per-generation DERControl mRID must hold simultaneously
+// (GAGO-094).
+//
+// Distinctness is why the generation is an input at all: mRID is the event's
+// identity to a client scheduler, and a repeated mRID means a repeated
+// command is silently ignored.
+//
+// Format stability is why the generation is HASHED rather than appended.
+// Appending the number would grow the string as the counter grows, past the
+// 16-octet mRIDType ceiling, and would introduce a separator that is not a
+// hex digit. A generation of 0 and a generation near the uint64 ceiling must
+// produce the same shape, so both ends of the range are exercised rather
+// than a few small values.
+func TestDeriveControlMRIDVariesPerGenerationAndStaysWireLegal(t *testing.T) {
+	t.Parallel()
+
+	const lfdi = "AAAA00000000000000000000000000000000AAAA"
+	generations := []uint64{0, 1, 2, 3, 42, 1000, 4294967296, 18446744073709551615}
+
+	seen := make(map[string]uint64, len(generations))
+	for _, gen := range generations {
+		got := deriveControlMRID(lfdi, dercMRIDKind, gen)
+
+		if len(got) != mridHexChars {
+			t.Errorf("deriveControlMRID(gen=%d) = %q, length %d, want exactly %d hex characters",
+				gen, got, len(got), mridHexChars)
+		}
+		if !isMRIDLegal(got) {
+			t.Errorf("deriveControlMRID(gen=%d) = %q, which is not a legal mRIDType", gen, got)
+		}
+		if got != strings.ToUpper(got) {
+			t.Errorf("deriveControlMRID(gen=%d) = %q, want uppercase hex", gen, got)
+		}
+		if prev, dup := seen[got]; dup {
+			t.Errorf("generations %d and %d both produced mRID %q; a repeated mRID is silently ignored by a client scheduler", prev, gen, got)
+		}
+		seen[got] = gen
+	}
+}
+
+// TestDeriveControlMRIDIsDeterministic pins reproducibility, which is the
+// reason a generation counter was chosen over a random value: a served-bytes
+// test can only assert an expected mRID if the same inputs always yield the
+// same output, and an operator can only correlate a log line to a stored
+// control for the same reason.
+func TestDeriveControlMRIDIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	const lfdi = "AAAA00000000000000000000000000000000AAAA"
+	first := deriveControlMRID(lfdi, dercMRIDKind, 7)
+	second := deriveControlMRID(lfdi, dercMRIDKind, 7)
+	if first != second {
+		t.Errorf("deriveControlMRID is not deterministic: %q then %q", first, second)
+	}
+}
+
+// TestDeriveControlMRIDIsPerDevice guards the cross-device collision case.
+// A client hashes event blocks by mRID, so two devices sharing an mRID at the
+// same generation would have one device's control displace the other's in
+// that hash.
+func TestDeriveControlMRIDIsPerDevice(t *testing.T) {
+	t.Parallel()
+
+	a := deriveControlMRID("AAAA00000000000000000000000000000000AAAA", dercMRIDKind, 3)
+	b := deriveControlMRID("BBBB00000000000000000000000000000000BBBB", dercMRIDKind, 3)
+	if a == b {
+		t.Errorf("two devices at generation 3 produced the same mRID %q", a)
+	}
+}
+
+// TestDeriveControlMRIDDoesNotCollideWithTheOtherResources confirms a
+// generation's control mRID never equals one of the device's stable resource
+// mRIDs. The kind discriminators exist to keep a device's own resources
+// distinct from each other; adding the generation suffix must not
+// accidentally land on one of them.
+func TestDeriveControlMRIDDoesNotCollideWithTheOtherResources(t *testing.T) {
+	t.Parallel()
+
+	const lfdi = "AAAA00000000000000000000000000000000AAAA"
+	stable := map[string]string{
+		fsaMRIDKind:   deriveResourceMRID(lfdi, fsaMRIDKind),
+		derpMRIDKind:  deriveResourceMRID(lfdi, derpMRIDKind),
+		ddercMRIDKind: deriveResourceMRID(lfdi, ddercMRIDKind),
+		dercMRIDKind:  deriveResourceMRID(lfdi, dercMRIDKind),
+	}
+
+	for gen := uint64(0); gen < 8; gen++ {
+		got := deriveControlMRID(lfdi, dercMRIDKind, gen)
+		for kind, want := range stable {
+			if got == want {
+				t.Errorf("generation %d's control mRID %q collides with the stable mRID for kind %q", gen, got, kind)
+			}
+		}
+	}
+}

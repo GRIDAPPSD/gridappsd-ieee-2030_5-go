@@ -119,14 +119,21 @@ func TestEndDevicesOnEmptyRegistryReturnsEmptyNotNilError(t *testing.T) {
 	}
 }
 
-// TestDefaultDERControlReturnsNilBeforeAnyDeltaApplied locks in the
-// not-found-is-not-an-error contract documented on DefaultDERControl:
-// core's own DefaultDERControlHandler serves a default value (HTTP 200)
-// on a missing singleton rather than 404, and this bridge never writes
-// a DefaultDERControl at all (only the "active" DERControl via
-// ApplyControlDelta), so the accessor must report "none written" as
-// (nil, nil), not as an error.
-func TestDefaultDERControlReturnsNilBeforeAnyDeltaApplied(t *testing.T) {
+// TestDefaultDERControlIsSeededBeforeAnyDeltaApplied asserts that a device
+// has its DefaultDERControl the moment it is seeded, with no control delta
+// required.
+//
+// This test previously asserted the opposite (nil before the first delta),
+// which was the GAGO-094 defect: the DERProgram and its DefaultDERControl
+// were created lazily on the first ApplyControlDelta, so a client that
+// walked the discovery chain before any delta arrived found an empty
+// DERProgramList and, honoring the pollRate="900" that list advertises,
+// did not re-walk for up to 15 minutes. See seedDERProgram.
+//
+// The (nil, nil) not-found contract this test used to cover still holds and
+// is still exercised: TestDERControlsScopedToUnknownDeviceReturnsEmpty
+// queries an unseeded FSA/DERProgram scope.
+func TestDefaultDERControlIsSeededBeforeAnyDeltaApplied(t *testing.T) {
 	t.Parallel()
 
 	e, _ := newTestEmbed(t)
@@ -137,8 +144,71 @@ func TestDefaultDERControlReturnsNilBeforeAnyDeltaApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultDERControl: %v", err)
 	}
-	if snap != nil {
-		t.Fatalf("DefaultDERControl before any write = %+v, want nil", snap)
+	if snap == nil {
+		t.Fatal("DefaultDERControl on a freshly seeded device = nil; a client following DefaultDERControlLink before any delta finds nothing")
+	}
+
+	wantHref := "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/dderc"
+	if snap.Href != wantHref {
+		t.Errorf("DefaultDERControl.Href = %q, want %q", snap.Href, wantHref)
+	}
+	if len(snap.MRID) != mridHexChars {
+		t.Errorf("DefaultDERControl.MRID = %q (%d chars), want %d hex chars", snap.MRID, len(snap.MRID), mridHexChars)
+	}
+
+	// The seeded value is the Embed's configured DefaultControl
+	// (testDefaultControlSnapshot), not an invented one: connect and
+	// energize true, and the two target fields left nil so the device's own
+	// autonomous behavior is not disabled.
+	if snap.Base == nil {
+		t.Fatal("DefaultDERControl.Base = nil, want the configured DERControlBase")
+	}
+	if snap.Base.OpModConnect == nil || !*snap.Base.OpModConnect {
+		t.Errorf("DefaultDERControl.Base.OpModConnect = %+v, want true", snap.Base.OpModConnect)
+	}
+	if snap.Base.OpModEnergize == nil || !*snap.Base.OpModEnergize {
+		t.Errorf("DefaultDERControl.Base.OpModEnergize = %+v, want true", snap.Base.OpModEnergize)
+	}
+	if snap.Base.OpModTargetW != nil {
+		t.Errorf("DefaultDERControl.Base.OpModTargetW = %+v, want nil (a stray value would curtail PV)", snap.Base.OpModTargetW)
+	}
+}
+
+// TestDERControlListIsEmptyBeforeAnyDeltaApplied asserts the other half of
+// the seeding split: seeding creates the DERProgram and its
+// DefaultDERControl, but NOT a DERControl.
+//
+// This is the boundary that makes seeding safe rather than a new hazard. A
+// seeded DERProgram with an empty DERControlList is schema-valid (sep.xsd
+// declares DERControlList's DERControl child minOccurs="0"
+// maxOccurs="unbounded") and semantically correct: it says "this program
+// exists and currently commands nothing", which is exactly true before any
+// delta. Fabricating a placeholder DERControl here would instead command
+// the device with a setpoint no operator ever issued.
+func TestDERControlListIsEmptyBeforeAnyDeltaApplied(t *testing.T) {
+	t.Parallel()
+
+	e, _ := newTestEmbed(t)
+	entries := fixtureEntries()
+	edevID := entries[0].LFDI
+
+	programs, err := e.DERPrograms(context.Background(), edevID)
+	if err != nil {
+		t.Fatalf("DERPrograms: %v", err)
+	}
+	if len(programs) != 1 {
+		t.Fatalf("DERPrograms on a freshly seeded device returned %d items, want 1 (seedDERProgram creates exactly one)", len(programs))
+	}
+	if programs[0].DefaultDERControlLink == "" {
+		t.Error("seeded DERProgram.DefaultDERControlLink is empty, want a populated href")
+	}
+
+	controls, err := e.DERControls(context.Background(), edevID, controlFSAID, controlDERProgramID)
+	if err != nil {
+		t.Fatalf("DERControls: %v", err)
+	}
+	if len(controls) != 0 {
+		t.Fatalf("DERControls on a freshly seeded device returned %d items, want 0 (no delta has been applied, so nothing is commanded)", len(controls))
 	}
 }
 
@@ -200,7 +270,11 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 	if got.ID != activeControlID {
 		t.Errorf("DERControls[0].ID = %q, want %q", got.ID, activeControlID)
 	}
-	wantControlHref := "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
+	// The href carries the generation suffix, and generation 0 is the first
+	// control written for a device (GAGO-094): successive deltas serve
+	// distinct hrefs so a client's list-member tracking retires the old
+	// event rather than holding two. See controlHref.
+	wantControlHref := "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID + "-0"
 	if got.Href != wantControlHref {
 		t.Errorf("DERControls[0].Href = %q, want %q", got.Href, wantControlHref)
 	}
@@ -226,13 +300,13 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 		t.Errorf("DERControls[0].Base.OpModTargetVar = %+v, want nil (delta never touched this field)", got.Base.OpModTargetVar)
 	}
 
-	// GAGO-050: ensureDERProgram seeds the DefaultDERControl singleton at
-	// the same moment it lazily creates the DERProgram itself (the first
-	// ApplyControlDelta for this device, above), from the Embed's own
-	// configured DefaultControl (testDefaultControlSnapshot, set in
-	// newTestEmbed). The accessor must now report that seeded value, not
-	// nil: the CSIP-mandatory hole Devi flagged is exactly a client
-	// following DefaultDERControlLink and finding nothing there.
+	// GAGO-050: the DefaultDERControl singleton is created at the same
+	// moment as the DERProgram itself, from the Embed's own configured
+	// DefaultControl (testDefaultControlSnapshot, set in newTestEmbed). Both
+	// exist from seed time (GAGO-094 moved the pair off the first
+	// ApplyControlDelta), and applying a delta must not disturb either: the
+	// CSIP-mandatory hole Devi flagged is exactly a client following
+	// DefaultDERControlLink and finding nothing there.
 	dderc, err := e.DefaultDERControl(context.Background(), edevID, controlFSAID, controlDERProgramID)
 	if err != nil {
 		t.Fatalf("DefaultDERControl after delta: %v", err)
@@ -272,30 +346,48 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 }
 
 // TestDERControlsScopedToUnknownDeviceReturnsEmpty confirms the
-// accessor does not error, and returns no items, for a scope that has
-// never had ensureDERProgram or ApplyControlDelta run against it: a
-// bare List against an unpopulated scope key is a valid empty result,
-// not a not-found error (unlike the Get-based DefaultDERControl path).
+// accessor does not error, and returns no items, for a scope belonging to
+// a device that was never seeded at all: a bare List against an
+// unpopulated scope key is a valid empty result, not a not-found error.
+//
+// The device id here must be one that is NOT in fixtureEntries. Every
+// seeded device now gets a DERProgram at seed time (GAGO-094), so a seeded
+// device is no longer an example of an unpopulated scope; using one would
+// make this test assert the defect. The DefaultDERControl leg covers the
+// Get-based path's (nil, nil) not-found contract, which the List-based
+// paths do not exercise.
 func TestDERControlsScopedToUnknownDeviceReturnsEmpty(t *testing.T) {
 	t.Parallel()
 
 	e, _ := newTestEmbed(t)
-	entries := fixtureEntries()
-	edevID := entries[1].LFDI // never had a delta applied
+	const unseededLFDI = "EEEE00000000000000000000000000000000EEEE"
+	for _, entry := range fixtureEntries() {
+		if entry.LFDI == unseededLFDI {
+			t.Fatalf("fixture entry %q collides with this test's deliberately unseeded LFDI", entry.LFDI)
+		}
+	}
 
-	controls, err := e.DERControls(context.Background(), edevID, controlFSAID, controlDERProgramID)
+	controls, err := e.DERControls(context.Background(), unseededLFDI, controlFSAID, controlDERProgramID)
 	if err != nil {
-		t.Fatalf("DERControls on untouched scope: %v", err)
+		t.Fatalf("DERControls on unseeded scope: %v", err)
 	}
 	if len(controls) != 0 {
-		t.Fatalf("DERControls on untouched scope returned %d items, want 0", len(controls))
+		t.Fatalf("DERControls on unseeded scope returned %d items, want 0", len(controls))
 	}
 
-	programs, err := e.DERPrograms(context.Background(), edevID)
+	programs, err := e.DERPrograms(context.Background(), unseededLFDI)
 	if err != nil {
-		t.Fatalf("DERPrograms on untouched device: %v", err)
+		t.Fatalf("DERPrograms on unseeded device: %v", err)
 	}
 	if len(programs) != 0 {
-		t.Fatalf("DERPrograms on untouched device returned %d items, want 0", len(programs))
+		t.Fatalf("DERPrograms on unseeded device returned %d items, want 0", len(programs))
+	}
+
+	dderc, err := e.DefaultDERControl(context.Background(), unseededLFDI, controlFSAID, controlDERProgramID)
+	if err != nil {
+		t.Fatalf("DefaultDERControl on unseeded scope: %v", err)
+	}
+	if dderc != nil {
+		t.Fatalf("DefaultDERControl on unseeded scope = %+v, want nil (not-found is not an error)", dderc)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,13 +50,21 @@ const (
 	controlDERProgramID = "1"
 )
 
-// activeControlID is the single "active" DERControl slot ApplyControlDelta
-// maintains per device. A second delta for the same device updates the
-// SAME DERControl (merging the new field into its existing
-// DERControlBase) rather than creating a second, competing control: see
-// ApplyControlDelta's doc comment for why this is the correct
-// supersede-shaped behavior for this bridge, not an accidental
-// singleton limitation.
+// activeControlID is the STORE KEY of the single DERControl slot
+// ApplyControlDelta maintains per device. Exactly one control per device
+// exists at any instant, so the served DERControlList always has exactly
+// one member: two simultaneously-active controls over the same interval is
+// a worse failure than a late one, and keeping the store to a single slot
+// makes "one active control" a structural property rather than one
+// contingent on a client evaluating supersession correctly.
+//
+// This is deliberately the store key ONLY, not the served href and not the
+// mRID: both of those vary per generation so a client sees each successive
+// command as a NEW event. See controlHref and ApplyControlDelta's
+// supersession section. Nothing on the wire carries this constant, because
+// core mounts no single-resource DERControl route (only the list at
+// .../derp/{derpId}/derc), so the store key never appears in a URL a client
+// requests.
 const activeControlID = "active"
 
 // ErrUnknownControlDevice is returned by ApplyControlDelta when the
@@ -111,16 +120,62 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // explicit, currently-no-op activeSignFlip / reactiveSignFlip seam (see
 // their doc comment): no other unit or sign conversion happens.
 //
-// Supersede semantics: a second delta for the same device does not
-// create a second DERControl. ApplyControlDelta reads the device's
-// existing "active" DERControl (if any), merges the new field into its
-// DERControlBase (previously-set fields on other attributes are
-// preserved), and writes it back with Update. This avoids the
-// duplicate-conflicting-controls failure mode data-invariants warns
-// about: DERControlBase is naturally a bag of independent op-mode
-// fields (opModTargetW and opModTargetVar can both be active
-// simultaneously), so "one active control per device, fields merged in"
-// is the correct model, not an arbitrary limitation.
+// Supersede semantics (GAGO-094, Devi's MEDIUM finding). A second delta
+// for the same device REPLACES the device's control with a new event
+// identity rather than mutating the existing one in place. Each delta
+// produces a fresh generation: a new mRID, a new href, a new creationTime,
+// and a fresh interval start, while the DERControlBase carries forward the
+// previously-set op-mode fields so a delta on opModTargetVar does not erase
+// an earlier opModTargetW (DERControlBase is a bag of independent fields,
+// and opModTargetW and opModTargetVar are legitimately active together).
+// Exactly one control exists per device at any instant, so the served list
+// never contains two overlapping controls.
+//
+// Why in-place mutation was wrong, measured on the EPRI reference client.
+// Rewriting the values under an unchanged mRID produces bytes a client
+// parses and stores and then does nothing with, because mRID is the event's
+// IDENTITY:
+//
+//   - schedule_event short-circuits on hash_get(s->blocks, ev->mRID): a
+//     known mRID creates no new EventBlock, it only refreshes primacy.
+//   - update_existing goes further: for an event whose mRID compares equal
+//     it copies ONLY the EventStatus off the incoming object and frees the
+//     rest, so a changed opModTargetW is discarded at parse time and never
+//     reaches the scheduler at all.
+//   - activate_block calls insert_event(eb, EVENT_START, 0), the hook that
+//     actually pushes the setpoint to the inverter, only when the block is
+//     not already Active.
+//
+// So a client that had already actuated the first command had no wire
+// signal to actuate the second. Observed directly: a run published 6137 W
+// while 4291 W was the commanded value, because a stale control was
+// indistinguishable from a fresh one.
+//
+// Why replacement rather than a superseded-marker pair. IEEE 2030.5 does
+// define server-marked supersession (EventStatus currentStatus 4), and a
+// server MAY keep the superseded event in its collection for the remainder
+// of its scheduled period. That is the right shape for a server publishing
+// a SCHEDULE of future events, where a client needs to see both the
+// replaced and the replacing event to reason about the timeline. This
+// bridge publishes a single live setpoint with no schedule: it has exactly
+// one control, always already active, always ending in the future. Serving
+// a superseded twin would put two overlapping DERControls in the list and
+// make correct behavior depend on the client resolving supersession, which
+// is a strictly larger failure surface for zero benefit here. Deleting the
+// prior control is the same outcome the standard's supersession is meant to
+// produce, reached without the overlap; the client's own removal path
+// handles it cleanly (dep_complete subtracts the vanished href and fires
+// RESOURCE_REMOVE, which frees the old block via delete_blocks).
+//
+// Why a fresh mRID is NOT sufficient on its own, and creationTime is
+// required with it. block_supersede breaks an equal-primacy tie by
+// x->creationTime > y->creationTime. Every control this bridge issues has
+// primacy 1, so with creationTime absent (or equal) both events parse as
+// the same creation instant, the incoming block LOSES, and insert_active
+// marks the NEW control Superseded and discards it. A fresh mRID without an
+// advancing creationTime would therefore trade a silently-ignored update
+// for a silently-rejected one. Each generation stamps CreationTime, and it
+// is guaranteed to advance: see nextControlCreationTime.
 //
 // defaultControl is GAGO-050's seed value for the DERProgram's
 // DefaultDERControl singleton, forwarded unchanged to ensureDERProgram.
@@ -162,24 +217,21 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 
 	existing, err := controlStore.Get(ctx, activeControlID)
 	var base sep2.DERControlBase
-	isUpdate := false
-	// intervalStart is the DERControl's activation instant. On a fresh
-	// control it is now; on an update it is CARRIED OVER from the stored
-	// control rather than re-stamped. See the interval construction below
-	// for why re-stamping would be wrong.
-	now := time.Now().UTC().Unix()
-	intervalStart := now
+	isReplacement := false
+	var priorGeneration uint64
+	var priorCreationTime int64
 	switch {
 	case err == nil:
-		isUpdate = true
+		isReplacement = true
+		// Op-mode fields already set by earlier deltas carry forward, so a
+		// delta naming one field does not silently clear another.
 		if existing.DERControlBase != nil {
 			base = existing.DERControlBase.Copy()
 		}
-		if existing.Interval != nil {
-			intervalStart = existing.Interval.Start
-		}
+		priorGeneration = controlGenerationOf(existing)
+		priorCreationTime = existing.CreationTime
 	case errors.Is(err, store.ErrNotFound):
-		// Fresh control: base starts zero-valued.
+		// Fresh control: base starts zero-valued, generation starts at 0.
 	default:
 		return fmt.Errorf("sep2embed: control delta: read existing control: %w", err)
 	}
@@ -188,9 +240,24 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		return fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 
+	now := time.Now().UTC().Unix()
+	generation := priorGeneration
+	creationTime := now
+	if isReplacement {
+		generation = priorGeneration + 1
+		creationTime = nextControlCreationTime(priorCreationTime, now)
+	}
+
 	control := sep2.DERControl{}
-	control.Href = "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
-	control.MRID = deriveResourceMRID(edevID, dercMRIDKind)
+	control.Href = controlHref(edevID, controlFSAID, controlDERProgramID, generation)
+	control.MRID = deriveControlMRID(edevID, dercMRIDKind, generation)
+
+	// CreationTime is what makes this generation WIN the client's
+	// equal-primacy supersession comparison against the generation it
+	// replaces; see ApplyControlDelta's doc comment and
+	// nextControlCreationTime. It is a required wire element regardless.
+	control.CreationTime = creationTime
+
 	control.EventStatus = &sep2.EventStatus{
 		CurrentStatus: sep2.EventStatusActive,
 		DateTime:      now,
@@ -209,25 +276,40 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// currentStatus=Active does NOT rescue it: the scheduler branches on
 	// the window, not on the status flag.
 	//
-	// start = the activation instant, already begun, so the window is
-	// current the moment a client reads it rather than pending. On an
-	// update the ORIGINAL start is preserved (carried above): this
-	// bridge's "active" control is one long-lived, repeatedly-superseded
-	// control per device, so re-stamping start on every delta would slide
-	// the window forward continuously and present each poll as a fresh
-	// event to a scheduler that keys blocks by mRID and start. Only the
-	// end moves, because duration is measured from the preserved start.
+	// start = now on EVERY generation, including a replacement. Each
+	// generation is a distinct event with its own identity, so it gets its
+	// own window opening at the instant it was issued; there is no earlier
+	// window to preserve, because the generation that had one no longer
+	// exists. start must not be in the future (a scheduler treats a future
+	// start as pending, not current) and must not be stale, both of which
+	// "now" satisfies by construction.
 	//
-	// duration = defaultControlDurationSeconds, so the window stays open
-	// well past a client's own polling interval; see that constant.
+	// duration = defaultControlDurationSeconds measured from that start, so
+	// the window stays open well past a client's own polling interval; see
+	// that constant. Because start is re-stamped per generation, duration is
+	// the plain constant: there is no elapsed time to compensate for.
 	control.Interval = &sep2.DateTimeInterval{
-		Start:    intervalStart,
-		Duration: intervalDurationFrom(intervalStart, now),
+		Start:    now,
+		Duration: defaultControlDurationSeconds,
 	}
 
 	control.DERControlBase = &base
 
-	if isUpdate {
+	// Retire-then-replace under the single per-device slot. Update rather
+	// than Delete+Create so the slot is never momentarily EMPTY: a client
+	// polling the list between the two calls would otherwise read all="0"
+	// and conclude the bridge had released the device, reverting it to its
+	// DefaultDERControl. Update is atomic with respect to a concurrent
+	// reader (core's memory.Store takes its write lock for the whole
+	// assignment), so a poll either sees the prior generation or the new
+	// one and never neither.
+	//
+	// The retirement is total: the prior generation's mRID and href are
+	// gone from the served list, which is exactly the signal a client acts
+	// on (its dep_complete subtracts the vanished href and fires
+	// RESOURCE_REMOVE, freeing the old event block by mRID). No superseded
+	// twin is left behind; see the doc comment for why.
+	if isReplacement {
 		err = controlStore.Update(ctx, activeControlID, control)
 	} else {
 		err = controlStore.Create(ctx, activeControlID, control)
@@ -243,6 +325,103 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	return nil
 }
 
+// controlHref returns the served href for one GENERATION of the DERControl
+// under (edev, fsa, derp). The generation is part of the path, so successive
+// commands occupy distinct URLs.
+//
+// A varying href is not cosmetic bookkeeping alongside the varying mRID: it
+// is what makes a client notice the replacement at all. A client tracks a
+// list's members by href (the EPRI reference client's list_object calls
+// get_stub(path) per member and dep_complete then computes
+// list_subtract(d->list, d->reqs) to find members that VANISHED, firing
+// RESOURCE_REMOVE for each). Reusing one href across generations would give
+// the client a member that never disappears, so the old event block would
+// never be freed by mRID, and the client would hold two blocks: the
+// still-hashed old mRID and the new one. Varying the href retires the old
+// generation on the same poll that delivers the new one.
+//
+// KNOWN LIMITATION, and it is not caused by varying the href: this path is
+// not fetchable. Core mounts only the list route
+// (GET /edev/{id}/fsa/{fsaId}/derp/{derpId}/derc) and no single-resource
+// DERControl route, so a GET of any DERControl href returns 404. That is
+// load-bearing for the client, not cosmetic: once a client activates an
+// event it arms a fast poll on the EVENT's own href (EPRI's activate_block
+// sets event->poll_rate = active_poll_rate and calls poll_resource), the
+// resulting GET 404s, process_http turns a non-200 into RETRIEVE_FAIL, and
+// der_client's RETRIEVE_FAIL arm calls remove_stub, tearing the event down.
+// The client then stops polling and never sees a later generation.
+//
+// Measured for GAGO-094: with the stable href this package used to emit, the
+// GET of .../derc/active 404s identically, and the same teardown happens.
+// So the 404 predates the generation suffix and is not a regression from it;
+// it caps sustained multi-delta operation regardless of href strategy. The
+// server side is correct either way (a later generation IS served, with a
+// distinct mRID and an advanced creationTime, verified live), so the
+// remaining gap is the missing core route, tracked as a finding rather than
+// fixed here.
+func controlHref(edevID, fsaID, derpID string, generation uint64) string {
+	return "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID +
+		"/derc/" + activeControlID + "-" + strconv.FormatUint(generation, 10)
+}
+
+// controlGenerationOf recovers the generation number encoded in a stored
+// DERControl's href, or 0 when the href does not carry one.
+//
+// The generation is read back off the stored record rather than kept in a
+// package-level counter on purpose. A counter would be process state that
+// the store does not have, so it would drift from the record it is supposed
+// to describe: two Embeds sharing a store, or a counter reset while a
+// control is still stored, would both re-issue a generation number that is
+// already live and hand a client an mRID it has already scheduled,
+// reproducing the exact defect the generation exists to prevent. Deriving it
+// from the record makes the stored control self-describing.
+//
+// A malformed or missing suffix returns 0 rather than an error. That is the
+// same value a fresh control uses, so the worst case is one generation
+// number reused; the creationTime advance (see nextControlCreationTime) is
+// what guarantees forward progress even then, and this function's caller
+// only ever adds to the returned value.
+func controlGenerationOf(control sep2.DERControl) uint64 {
+	_, suffix, ok := strings.Cut(control.Href, "/derc/"+activeControlID+"-")
+	if !ok {
+		return 0
+	}
+	generation, err := strconv.ParseUint(suffix, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return generation
+}
+
+// nextControlCreationTime returns a creationTime for a replacement control
+// that is strictly greater than the creationTime it replaces.
+//
+// Normally that is simply now: deltas arrive seconds or minutes apart and
+// the wall clock has advanced. The clamp matters when it has not:
+//
+//   - Two deltas inside the same wall-clock second (a burst from the
+//     platform, entirely normal) would otherwise carry EQUAL creationTimes.
+//     A client breaks an equal-primacy tie with a STRICT comparison
+//     (x->creationTime > y->creationTime), so equal means the replacement
+//     loses and is discarded as Superseded: the new setpoint would be
+//     silently dropped. TimeType is second-resolution on the wire, so there
+//     is no sub-second value to fall back on.
+//   - A host clock that stepped BACKWARD would produce a now that is less
+//     than the stored creationTime, with the same losing outcome and for
+//     longer.
+//
+// Advancing to prior+1 in both cases keeps supersession working. The cost is
+// a creationTime up to a few seconds ahead of the true instant during a
+// burst, which is the right trade: creationTime is only ever compared
+// between this server's own successive events, never used as a clock
+// reference, whereas a non-advancing value breaks control delivery outright.
+func nextControlCreationTime(prior, now int64) int64 {
+	if now > prior {
+		return now
+	}
+	return prior + 1
+}
+
 // ensureDERProgram get-or-creates a minimal, valid DERProgram at
 // (edevID, derpID) so a subsequent DERControl write satisfies the
 // server-of-record's own precondition (handleDERControlAdd: "Verify the
@@ -252,23 +431,24 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 // server-of-record's documented contract; it is core's existing
 // behavior, not something introduced here).
 //
-// GAGO-050: the same lazy-creation moment also seeds this program's
-// DefaultDERControl singleton (into stores.DefaultDERControls, keyed by
-// derControlScope + singletonKey, mirroring core's own
-// DefaultDERControlHandler parent-key derivation) and points the new
-// program's DefaultDERControlLink at it. This closes the CSIP-mandatory
-// hole Devi flagged: a client that GETs this DERProgram and follows
-// DefaultDERControlLink must find a well-formed DefaultDERControl, not
-// an absent one. defaultControl is the caller-supplied seed value
-// (sourced from SEP2Policy.DefaultControl, never hardcoded here); it is
-// written verbatim except for Href/MRID, which this function stamps to
-// match the program's own scope.
+// GAGO-050: the same call also seeds this program's DefaultDERControl
+// singleton (into stores.DefaultDERControls, keyed by derControlScope +
+// singletonKey, mirroring core's own DefaultDERControlHandler parent-key
+// derivation) and points the new program's DefaultDERControlLink at it. A
+// client that GETs this DERProgram and follows DefaultDERControlLink must
+// find a well-formed DefaultDERControl, not an absent one, so the two
+// records are created together and never separately. defaultControl is the
+// caller-supplied seed value (sourced from SEP2Policy.DefaultControl, never
+// hardcoded here); it is written verbatim except for Href/MRID, which this
+// function stamps to match the program's own scope.
 //
-// This does not modify seed.go: seed.go's EndDevice/DER seeding stays
-// untouched (per this card's hard rule); the DERProgram (and its
-// DefaultDERControl) this function creates is control-flow plumbing
-// local to the DOWN path, created lazily on first use rather than at
-// bulk seed time.
+// The normal caller is seed.go's seedDERProgram, at bulk seed time: see
+// that function for why creating the program before any control delta
+// arrives is a correctness requirement, not a convenience. This function
+// remains get-or-create, and ApplyControlDelta still calls it, because the
+// DOWN path must not depend on having been seeded by this process: a
+// delta for a device whose program is somehow absent creates it rather than
+// failing to write the control.
 func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, fsaID, derpID string, defaultControl sep2.DefaultDERControl) error {
 	inner := stores.DERPrograms.ForParent(edevID)
 	if _, err := inner.Get(ctx, derpID); err == nil {
@@ -282,7 +462,7 @@ func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, fsaI
 	dderc.MRID = deriveResourceMRID(edevID, ddercMRIDKind)
 
 	scope := derControlScope(edevID, fsaID, derpID)
-	if err := stores.DefaultDERControls.Create(ctx, scope, singletonKey, dderc); err != nil {
+	if err := stores.DefaultDERControls.Create(ctx, scope, singletonKey, dderc); err != nil && !errors.Is(err, store.ErrAlreadyExists) {
 		return fmt.Errorf("create default der control: %w", err)
 	}
 
@@ -405,56 +585,17 @@ func applyDERControlBaseField(base *sep2.DERControlBase, field string, value any
 // It is deliberately NOT unbounded. An event with an effectively infinite
 // duration is a control that never releases the device if this bridge
 // dies: the expiry is the fail-safe that hands the device back to its
-// DefaultDERControl. Every fresh delta re-extends the window (see
-// intervalDurationFrom), so a live bridge keeps the control continuously
-// valid and a dead one lets it lapse within 15 minutes.
+// DefaultDERControl. Every delta issues a new generation whose window opens
+// at that instant, so a live bridge keeps the device continuously commanded
+// and a dead one lets the last generation lapse within 15 minutes.
+//
+// It is a plain constant rather than a duration extended by the time already
+// elapsed. The elapsed-time compensation this used to carry existed because
+// interval.start was preserved across in-place updates, which made the
+// window's END stationary while the bridge kept commanding; each generation
+// now stamps its own start, so there is no accumulated elapsed time to
+// offset and no uint32 overflow surface in computing it.
 const defaultControlDurationSeconds uint32 = 900
-
-// intervalDurationFrom returns the DateTimeInterval duration that keeps a
-// control whose window opened at start valid for
-// defaultControlDurationSeconds beyond now.
-//
-// Duration is measured from interval.start, and start is preserved across
-// updates (see ApplyControlDelta), so a plain constant duration would mean
-// the window's END never moves: a control that has been superseded many
-// times over 20 minutes would already have expired despite the bridge
-// actively commanding it. Growing the duration by the elapsed time since
-// start keeps the END a fixed distance in the future on every write, which
-// is the property that matters to a scheduler, while leaving the start
-// stable so the event keeps its identity.
-//
-// Both ends of elapsed are clamped, because duration is a uint32 on the
-// wire and an unclamped conversion is a correctness bug, not a
-// theoretical one:
-//
-//   - A start in the FUTURE (which this package never produces, but which
-//     a stored record could carry if the host clock stepped backward)
-//     would make elapsed negative, and a negative int64 converted to
-//     uint32 wraps to an enormous duration. Clamped to zero, yielding
-//     exactly defaultControlDurationSeconds.
-//   - An absurdly OLD start (a corrupted record, or a clock that stepped
-//     far forward) would overflow uint32 and wrap to a tiny duration,
-//     silently expiring a control the bridge is actively commanding.
-//     Clamped to maxIntervalElapsedSeconds.
-func intervalDurationFrom(start, now int64) uint32 {
-	elapsed := now - start
-	if elapsed < 0 {
-		elapsed = 0
-	}
-	if elapsed > maxIntervalElapsedSeconds {
-		elapsed = maxIntervalElapsedSeconds
-	}
-	return defaultControlDurationSeconds + uint32(elapsed)
-}
-
-// maxIntervalElapsedSeconds bounds the elapsed term intervalDurationFrom
-// adds, so the returned uint32 duration cannot wrap. One year is far
-// beyond any legitimate value (a real control's start is minutes to hours
-// old) while leaving the sum nowhere near the uint32 ceiling, so hitting
-// this clamp means the stored start or the host clock is wrong, and the
-// clamp keeps the control valid rather than letting a wrapped duration
-// expire it silently.
-const maxIntervalElapsedSeconds int64 = 365 * 24 * 60 * 60
 
 // flipActivePowerSign negates ap.Value in place (returning a copy) when
 // flip is true; a nil ap or flip=false returns ap unchanged. See

@@ -45,7 +45,7 @@ func TestApplyControlDeltaSetsActivatableInterval(t *testing.T) {
 	ctx, reg, lfdi := intervalTestSetup(t)
 	stores := newStores()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestApplyControlDeltaIntervalXMLShape(t *testing.T) {
 	ctx, reg, lfdi := intervalTestSetup(t)
 	stores := newStores()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -149,19 +149,38 @@ func TestApplyControlDeltaIntervalXMLShape(t *testing.T) {
 	}
 }
 
-// TestApplyControlDeltaUpdatePreservesIntervalStart pins the supersede
-// path. A second delta for the same device merges into the SAME control;
-// re-stamping start to "now" on every update would slide the window
-// forward indefinitely and, worse, could momentarily place start after a
-// polling client's view. The original start is kept and only the end is
-// extended, so the control stays continuously active across updates.
-func TestApplyControlDeltaUpdatePreservesIntervalStart(t *testing.T) {
+// TestApplyControlDeltaReplacementStampsFreshIntervalStart pins the
+// supersede path as GAGO-094 redefined it.
+//
+// This test previously asserted the OPPOSITE: that a second delta merged
+// into the same control and PRESERVED the original interval start. That
+// behavior was the defect Devi found. Mutating a control in place under a
+// stable mRID gives a client no wire signal that a new command arrived
+// (EPRI's schedule_event short-circuits on the known mRID, update_existing
+// discards everything but EventStatus off an equal-mRID event, and
+// activate_block will not re-fire EVENT_START on an already-Active block),
+// so the second setpoint was silently dropped. Each delta now produces a
+// distinct event generation instead.
+//
+// A distinct event owns a distinct window: there is no earlier start to
+// preserve, because the generation that had one no longer exists. So the
+// assertion is that start is re-stamped to the replacement's own issue
+// instant, bracketed against locally observed wall-clock seconds, and that
+// the window is live. The old worry that re-stamping could place start
+// after a polling client's view does not arise: start is "now" at write
+// time, never a future instant.
+//
+// Carrying the DERControlBase fields forward across the replacement is
+// still required and still asserted: DERControlBase is a bag of
+// independent fields, so a delta naming opModTargetVar must not erase an
+// earlier opModTargetW.
+func TestApplyControlDeltaReplacementStampsFreshIntervalStart(t *testing.T) {
 	t.Parallel()
 
 	ctx, reg, lfdi := intervalTestSetup(t)
 	stores := newStores()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -182,8 +201,8 @@ func TestApplyControlDeltaUpdatePreservesIntervalStart(t *testing.T) {
 	if got1.Interval == nil {
 		t.Fatal("first control has nil Interval")
 	}
-	startAfterFirst := got1.Interval.Start
 
+	beforeSecond := time.Now().UTC().Unix()
 	second := ControlDelta{
 		Object:    "mrid-inv-1",
 		Attribute: "DERControl.DERControlBase.opModTargetVar",
@@ -192,6 +211,7 @@ func TestApplyControlDeltaUpdatePreservesIntervalStart(t *testing.T) {
 	if err := ApplyControlDelta(ctx, stores, nil, reg, sep2.DefaultDERControl{}, second); err != nil {
 		t.Fatalf("ApplyControlDelta second: %v", err)
 	}
+	afterSecond := time.Now().UTC().Unix()
 
 	got2, err := stores.DERControls.Get(ctx, scope, activeControlID)
 	if err != nil {
@@ -200,9 +220,13 @@ func TestApplyControlDeltaUpdatePreservesIntervalStart(t *testing.T) {
 	if got2.Interval == nil {
 		t.Fatal("second control has nil Interval")
 	}
-	if got2.Interval.Start != startAfterFirst {
-		t.Errorf("interval start moved from %d to %d across an update; the window must not slide",
-			startAfterFirst, got2.Interval.Start)
+	if got2.Interval.Start < beforeSecond || got2.Interval.Start > afterSecond {
+		t.Errorf("replacement interval start = %d, want within [%d, %d] (the replacement's own issue instant, in Unix epoch SECONDS)",
+			got2.Interval.Start, beforeSecond, afterSecond)
+	}
+	if got2.Interval.Duration != defaultControlDurationSeconds {
+		t.Errorf("replacement interval duration = %d, want the plain constant %d (start is re-stamped, so there is no elapsed time to compensate for)",
+			got2.Interval.Duration, defaultControlDurationSeconds)
 	}
 
 	// Both merged fields must survive, and the window must still be live.
@@ -221,16 +245,25 @@ func TestApplyControlDeltaUpdatePreservesIntervalStart(t *testing.T) {
 	}
 }
 
-// TestApplyControlDeltaExtendsIntervalOnUpdate asserts the end actually
-// moves out when a later delta arrives, so a long-running scenario does
-// not let the window lapse while controls are still being issued.
-func TestApplyControlDeltaExtendsIntervalOnUpdate(t *testing.T) {
+// TestApplyControlDeltaReplacementReopensAnExpiringWindow asserts the
+// served window moves OUT when a later delta arrives, so a long-running
+// scenario does not let the window lapse while controls are still being
+// issued.
+//
+// The stored generation's window is rewound close to expiry first, which
+// is the only interesting case: if a replacement inherited the old start it
+// would inherit the old end too, and a scenario issuing controls for longer
+// than defaultControlDurationSeconds would serve an already-expired event
+// (EPRI's update_schedule drops any block whose eb->end <= now). Because
+// each generation is stamped with its own start, the replacement's end is
+// measured from the moment it was issued, so the window reopens.
+func TestApplyControlDeltaReplacementReopensAnExpiringWindow(t *testing.T) {
 	t.Parallel()
 
 	ctx, reg, lfdi := intervalTestSetup(t)
 	stores := newStores()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -248,10 +281,10 @@ func TestApplyControlDeltaExtendsIntervalOnUpdate(t *testing.T) {
 		t.Fatalf("get first: %v", err)
 	}
 
-	// Rewind the stored start so the update has a measurably older
-	// window to extend, without sleeping in a unit test.
+	// Rewind the stored start so the stored window is nearly expired,
+	// without sleeping in a unit test.
 	rewound := got1.Copy()
-	rewound.Interval.Start -= 30
+	rewound.Interval.Start -= int64(defaultControlDurationSeconds) - 5
 	if err := stores.DERControls.ForParent(scope).Update(ctx, activeControlID, rewound); err != nil {
 		t.Fatalf("rewind update: %v", err)
 	}
@@ -268,9 +301,16 @@ func TestApplyControlDeltaExtendsIntervalOnUpdate(t *testing.T) {
 
 	newEnd := got2.Interval.Start + int64(got2.Interval.Duration)
 	if newEnd <= oldEnd {
-		t.Errorf("interval end did not extend on update: old=%d new=%d", oldEnd, newEnd)
+		t.Errorf("replacement window did not move out: old end=%d new end=%d", oldEnd, newEnd)
 	}
-	if got2.Interval.Start != rewound.Interval.Start {
-		t.Errorf("interval start = %d, want the preserved %d", got2.Interval.Start, rewound.Interval.Start)
+	if now := time.Now().UTC().Unix(); newEnd <= now {
+		t.Errorf("replacement window end %d <= now %d; the client drops an already-ended event", newEnd, now)
+	}
+	// The replaced setpoint is what the client must end up executing.
+	if got2.DERControlBase == nil || got2.DERControlBase.OpModTargetW == nil {
+		t.Fatalf("replacement lost OpModTargetW: base = %+v", got2.DERControlBase)
+	}
+	if got2.DERControlBase.OpModTargetW.Value != 6000 {
+		t.Errorf("OpModTargetW.Value = %d, want the replacing delta's 6000", got2.DERControlBase.OpModTargetW.Value)
 	}
 }

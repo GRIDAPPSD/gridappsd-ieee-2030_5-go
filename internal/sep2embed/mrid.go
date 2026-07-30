@@ -3,6 +3,7 @@ package sep2embed
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 )
 
@@ -61,6 +62,43 @@ func deriveResourceMRID(lfdi, kind string) string {
 	return strings.ToUpper(hex.EncodeToString(sum[:mridHexChars/2]))
 }
 
+// deriveControlMRID returns the mRID for one GENERATION of a device's
+// DERControl: 32 uppercase hex characters, derived from the device's LFDI,
+// the control kind, and a monotonically increasing generation number.
+//
+// Why a DERControl needs a varying mRID where every other resource wants a
+// stable one. mRID is an event's IDENTITY to a client scheduler, and a
+// client that has already accepted and actuated an event does not re-act on
+// the same identity. Measured on the EPRI reference client: schedule_event
+// short-circuits on hash_get(s->blocks, ev->mRID), so a document carrying an
+// already-known mRID creates no new EventBlock, and activate_block fires
+// EVENT_START (the callback that actually pushes the setpoint to the
+// inverter) only when the block's status is not already Active. So rewriting
+// opModTargetW under an unchanged mRID produces a document the client
+// parses, stores, and then does nothing with: the new setpoint is silently
+// dropped and the client keeps executing the old one. A new command must
+// therefore arrive as a new event identity.
+//
+// Why generation rather than a timestamp or a random value. Two deltas can
+// land inside the same wall-clock second, so a second-resolution timestamp
+// is not guaranteed to vary and would occasionally re-collide, reproducing
+// the very defect this exists to fix. A random value varies but is not
+// reproducible, which makes a served-bytes test unable to assert the
+// expected mRID and makes an operator unable to correlate a log line to a
+// stored control. A generation counter is both guaranteed-varying and
+// deterministic given its inputs.
+//
+// The truncation and the hex-only output are the same wire constraints
+// deriveResourceMRID documents: mRIDType is hexBinary capped at 16 octets,
+// and a schema-driven client rejects the entire resource on a malformed
+// value. Hashing rather than formatting the generation into the string is
+// what keeps that guarantee: the output is 32 hex characters for generation
+// 0 and for generation 4 billion alike, with no length or character-class
+// change as the counter grows.
+func deriveControlMRID(lfdi, kind string, generation uint64) string {
+	return deriveResourceMRID(lfdi, kind+"|gen/"+strconv.FormatUint(generation, 10))
+}
+
 // The kind discriminators passed to deriveResourceMRID. Each names one
 // resource within a device's own 2030.5 subtree, and they are declared
 // together here so a new resource cannot accidentally reuse an existing
@@ -71,7 +109,16 @@ const (
 	fsaMRIDKind   = "fsa/1"
 	derpMRIDKind  = "derp/1"
 	ddercMRIDKind = "dderc"
-	dercMRIDKind  = "derc/active"
+
+	// dercMRIDKind is passed to deriveControlMRID, not deriveResourceMRID:
+	// a DERControl's mRID varies per generation, so this is only the
+	// stable prefix and deriveControlMRID appends the generation
+	// discriminator. Every generation's mRID therefore differs from the
+	// single value the previous stable scheme emitted, which is the
+	// intended behavior change and not a compatibility concern: mRIDs are
+	// not persisted across bridge restarts (the stores are in-memory) and
+	// nothing outside a live client's own scheduler holds one.
+	dercMRIDKind = "derc/active"
 )
 
 // maxDescriptionChars is the effective ceiling, in characters, on any
