@@ -55,26 +55,24 @@ import (
 // An empty registry seeds empty stores without error: the /edev list
 // still serves (0 results), it is simply empty rather than absent.
 //
-// modesSupported is the DERControlType bitmap (sep2config.SEP2Policy's
-// own field of the same name) stamped onto every seeded DERCapability.
-// nil means no policy value was supplied: seedOne leaves the seeded
-// DERCapability.ModesSupported nil rather than fabricating a bitmap
-// (GAGO-049; see [[data-invariants]] on not silently inventing values).
+// policy carries the caller-supplied values stamped onto the seeded
+// resources; see seedPolicy's field comments for what each absence means on
+// the wire.
 //
-// GAGO-094 adds the two resources a link-traversing client needs before
-// it will look at a DERControl at all, each with the same
-// no-policy-means-no-record discipline modesSupported already follows:
+// Beyond the EndDevice and its DER, seedOne creates the resources a
+// link-traversing client must walk BEFORE it will look at a DERControl at
+// all. Each follows the same no-policy-means-no-record discipline:
 //
 //   - A Registration per device (plus EndDevice.RegistrationLink), when
-//     registrationPIN is non-nil. A conformant client treats a missing
-//     RegistrationLink as a hard failure: the EPRI reference client calls
-//     test_fail("registration", "EndDevice does not contain
+//     policy.RegistrationPIN is non-nil. A conformant client treats a
+//     missing RegistrationLink as a hard failure: the EPRI reference client
+//     calls test_fail("registration", "EndDevice does not contain
 //     RegistrationLink.") and stops, so with no link the walk ends before
 //     any function set is reached. pIN is a REQUIRED wire element with no
-//     spec-defined default, so when registrationPIN is nil seedOne
-//     creates neither the record nor the link: a link pointing at an
-//     absent resource, or a record carrying an invented pIN, would both
-//     be worse than the honest absence (see [[data-invariants]] Rule 2).
+//     spec-defined default, so when RegistrationPIN is nil seedOne creates
+//     neither the record nor the link: a link pointing at an absent
+//     resource, or a record carrying an invented pIN, would both be worse
+//     than the honest absence (see [[data-invariants]] Rule 2).
 //   - One FunctionSetAssignments per device (plus
 //     EndDevice.FunctionSetAssignmentsListLink), unconditionally. This is
 //     the only path from an EndDevice to a DERProgram: a client walks
@@ -84,19 +82,53 @@ import (
 //     discoverable. The FSA is seeded at controlFSAID, the SAME id the
 //     DOWN path writes DERControls under, so the program a client
 //     discovers is the program the bridge actually populates.
-//
-// pollRate, when non-nil, is stamped as the Registration's pollRate
-// attribute (seconds). nil leaves it unset, which is meaningful on the
-// wire rather than merely absent: a client that finds no pollRate applies
-// its own default (the EPRI client's DEFAULT_POLL_RATE, 900s), which is
-// the correct fallback when policy expresses no opinion.
-func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, modesSupported, registrationPIN, pollRate *uint32) error {
+//   - One DERProgram per device at controlDERProgramID, plus that program's
+//     DefaultDERControl singleton, unconditionally. See seedDERProgram for
+//     why this is seed-time work rather than the first-control-delta work
+//     it used to be.
+func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, policy seedPolicy) error {
 	for _, e := range reg.Snapshot() {
-		if err := seedOne(ctx, stores, e, modesSupported, registrationPIN, pollRate); err != nil {
+		if err := seedOne(ctx, stores, e, policy); err != nil {
 			return fmt.Errorf("seed entry mRID=%q: %w", e.MRID, err)
 		}
 	}
 	return nil
+}
+
+// seedPolicy carries the caller-supplied policy values seedStores stamps
+// onto the resources it creates. It is a struct rather than a growing
+// parameter list because the four values are unrelated to one another and
+// three of them are same-typed *uint32: positional arguments of the same
+// type are exactly the shape where a caller can silently transpose two and
+// still compile (a registration pIN stamped as a poll rate, for example).
+//
+// Every field is optional in the sense that its zero value is a valid,
+// meaningful configuration; see each field's own comment for what absence
+// means on the wire. No field is defaulted here: seedOne never invents a
+// value policy did not express (see [[data-invariants]] Rule 2).
+type seedPolicy struct {
+	// ModesSupported is the DERControlType bitmap stamped onto every
+	// seeded DERCapability. nil leaves it unset.
+	ModesSupported *uint32
+
+	// RegistrationPIN, when non-nil, causes a Registration record and the
+	// EndDevice.RegistrationLink that points at it to be created. nil
+	// creates neither: pIN is a required wire element with no
+	// spec-defined default, so an invented value or a dangling link would
+	// both be worse than the honest absence.
+	RegistrationPIN *uint32
+
+	// RegistrationPollRate, when non-nil, is stamped as the
+	// Registration's pollRate attribute (seconds). nil leaves it unset so
+	// the client applies its own default.
+	RegistrationPollRate *uint32
+
+	// DefaultControl is the DefaultDERControl seeded under every device's
+	// DERProgram, and pointed at by that program's DefaultDERControlLink.
+	// The zero value is valid but degenerate (a well-formed
+	// DefaultDERControl with every operating-mode field unset); callers
+	// source it from sep2config.SEP2Policy.DefaultControl.
+	DefaultControl sep2.DefaultDERControl
 }
 
 // seedOne writes the EndDevice and its single child DER for one registry
@@ -162,7 +194,7 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 //     mapping"; "do NOT silently invent capability bits"). maxQ is the
 //     one exception: it is itself a rated maximum, not a live value, so
 //     RTGMaxVar is populated from it.
-func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, modesSupported, registrationPIN, pollRate *uint32) error {
+func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, policy seedPolicy) error {
 	id := e.LFDI
 
 	sfdi := e.SFDI
@@ -200,7 +232,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 	// back it. See seedStores' doc comment: a link to an absent resource
 	// makes a client 404 partway through registration, which is a worse
 	// failure than the absent link it would be replacing.
-	if registrationPIN != nil {
+	if policy.RegistrationPIN != nil {
 		dev.RegistrationLink = &sep2.Link{Href: registrationHref(id)}
 	}
 
@@ -208,13 +240,17 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 		return fmt.Errorf("create EndDevice: %w", err)
 	}
 
-	if registrationPIN != nil {
-		if err := seedRegistration(ctx, stores, id, *registrationPIN, pollRate); err != nil {
+	if policy.RegistrationPIN != nil {
+		if err := seedRegistration(ctx, stores, id, *policy.RegistrationPIN, policy.RegistrationPollRate); err != nil {
 			return err
 		}
 	}
 
 	if err := seedFSA(ctx, stores, id); err != nil {
+		return err
+	}
+
+	if err := seedDERProgram(ctx, stores, id, policy.DefaultControl); err != nil {
 		return err
 	}
 
@@ -234,7 +270,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 	}
 
 	dercap := sep2.DERCapability{
-		ModesSupported: modesSupported,
+		ModesSupported: policy.ModesSupported,
 		RTGMaxVar:      rtgMaxVar,
 	}
 	dercap.Href = dercapHref
@@ -343,6 +379,56 @@ func seedFSA(ctx context.Context, stores *assembly.Stores, id string) error {
 
 	if err := stores.FSAs.Create(ctx, id, controlFSAID, fsa); err != nil {
 		return fmt.Errorf("create FunctionSetAssignments: %w", err)
+	}
+	return nil
+}
+
+// seedDERProgram writes the DERProgram (and its DefaultDERControl
+// singleton) that the FSA seeded just above advertises, for the device
+// stored under id.
+//
+// Why this is SEED-time work and not first-control-delta work (GAGO-094,
+// Devi's HIGH finding). It used to be created lazily by control.go's
+// ensureDERProgram on the first ApplyControlDelta for a device, which made
+// the discovery walk depend on message arrival ORDER. A client that walked
+// /edev/{lfdi}/fsa/1/derp before the first delta arrived got a
+// DERProgramList serving all="0", and the consequences compound rather than
+// merely delay:
+//
+//   - The list carries pollRate="900" (core's own value for that route), and
+//     a conformant client honors it. The EPRI reference client's poll_derpl
+//     pins the DERProgramList stub at that rate, so the client does not
+//     re-walk for up to 15 minutes: every control issued in that window is
+//     missed. Measured: two runs where the client started 25 seconds before
+//     the delta both read all="0" and never actuated.
+//   - Worse than a delay: the fast poll on the DERControlList is armed only
+//     from an EXISTING DERProgram resource (oeg_client.c calls der_program
+//     only for a parsed SE_DERProgram, and der_program is what sets the
+//     DERControlList's own active_poll_rate). With an empty program list
+//     that arming never happens at all, so the control list is not merely
+//     polled late, its fast poll is never established.
+//
+// Seeding unconditionally removes the ordering dependence: the walk finds a
+// real program whether or not any control has been issued yet.
+//
+// An empty program is legitimate, not a hollow shell. sep.xsd's DERProgram
+// requires exactly two children, mRID (via SubscribableIdentifiedObject)
+// and primacy; all four of its ListLinks are minOccurs="0". Both required
+// children are set below, so the served program satisfies a strict,
+// schema-driven parser (the EPRI client's parser does enforce minOccurs:
+// xml_parse.c fails the document when a required element is absent). Its
+// DERControlList in turn declares DERControl minOccurs="0"
+// maxOccurs="unbounded", so a program with no controls yet serves a valid
+// empty list rather than an invalid one.
+//
+// defaultControl is the caller's policy value, written verbatim except for
+// Href and MRID, which are stamped to match this program's own scope. A
+// client that follows DefaultDERControlLink must land on a well-formed
+// resource, so the singleton is created in the same call as the program
+// that links to it, never separately.
+func seedDERProgram(ctx context.Context, stores *assembly.Stores, id string, defaultControl sep2.DefaultDERControl) error {
+	if err := ensureDERProgram(ctx, stores, id, controlFSAID, controlDERProgramID, defaultControl); err != nil {
+		return fmt.Errorf("create DERProgram: %w", err)
 	}
 	return nil
 }

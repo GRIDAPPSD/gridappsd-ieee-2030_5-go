@@ -44,7 +44,7 @@ func TestSeedStoresCreatesRegistrationPerDevice(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestSeedStoresRegistrationXMLShape(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestSeedStoresCreatesFSAPerDevice(t *testing.T) {
 	ctx := context.Background()
 	pin := uint32(111115)
 	pollRate := uint32(300)
-	if err := seedStores(ctx, stores, reg, nil, &pin, &pollRate); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin, RegistrationPollRate: &pollRate}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -255,7 +255,7 @@ func TestSeedStoresFSAMatchesControlPathScope(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -288,7 +288,7 @@ func TestSeedStoresFSAXMLShape(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -342,7 +342,7 @@ func TestSeedStoresEndDeviceXMLCarriesBothLinks(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -391,7 +391,7 @@ func TestSeedStoresNoPINSeedsNoRegistration(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg, nil, nil, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -433,7 +433,7 @@ func TestSeedStoresFSADescriptionIsSet(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 	pin := uint32(111115)
-	if err := seedStores(ctx, stores, reg, nil, &pin, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 

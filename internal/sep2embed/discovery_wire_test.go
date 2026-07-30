@@ -47,7 +47,7 @@ func serveDiscoveryChain(t *testing.T) (func(t *testing.T, path string) (int, st
 	stores := newStores()
 	pin := uint32(111115)
 	pollRate := uint32(300)
-	if err := seedStores(ctx, stores, reg, nil, &pin, &pollRate); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{RegistrationPIN: &pin, RegistrationPollRate: &pollRate}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 

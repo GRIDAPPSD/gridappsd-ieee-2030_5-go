@@ -94,12 +94,13 @@ type Config struct {
 	// envelope's simulation_id field. Empty disables the relay.
 	TelemetrySimulationID string
 
-	// DefaultControl is the DefaultDERControl GAGO-050 seeds onto every
-	// DERProgram's DefaultDERControlLink, at the same lazy-creation
-	// moment ensureDERProgram creates the program itself (first
-	// ApplyControlDelta for a device, not at New/seedStores time). The
-	// zero value (every DERControlBase field nil, including
-	// OpModConnect/OpModEnergize) is a valid but degenerate
+	// DefaultControl is the DefaultDERControl seeded onto every
+	// DERProgram's DefaultDERControlLink, at New/seedStores time alongside
+	// the DERProgram itself (GAGO-094 moved both off the old
+	// first-ApplyControlDelta creation point; see seedDERProgram for why
+	// waiting for a control delta made the discovery walk depend on
+	// message ordering). The zero value (every DERControlBase field nil,
+	// including OpModConnect/OpModEnergize) is a valid but degenerate
 	// configuration: a CSIP client would find a well-formed but
 	// all-unset DefaultDERControl. Callers should source this from
 	// sep2config.SEP2Policy.DefaultControl rather than leaving it zero.
@@ -205,7 +206,12 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	stores := newStores()
-	if err := seedStores(ctx, stores, reg, cfg.ModesSupported, cfg.RegistrationPIN, cfg.RegistrationPollRate); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{
+		ModesSupported:       cfg.ModesSupported,
+		RegistrationPIN:      cfg.RegistrationPIN,
+		RegistrationPollRate: cfg.RegistrationPollRate,
+		DefaultControl:       cfg.DefaultControl,
+	}); err != nil {
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)
 	}
 
