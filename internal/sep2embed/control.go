@@ -181,7 +181,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 
 	control := sep2.DERControl{}
 	control.Href = "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
-	control.MRID = edevID + "-" + activeControlID
+	control.MRID = deriveResourceMRID(edevID, dercMRIDKind)
 	control.EventStatus = &sep2.EventStatus{
 		CurrentStatus: sep2.EventStatusActive,
 		DateTime:      time.Now().UTC().Unix(),
@@ -240,14 +240,21 @@ func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, fsaI
 
 	dderc := defaultControl.Copy()
 	dderc.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/dderc"
-	dderc.MRID = edevID + "-dderc"
+	dderc.MRID = deriveResourceMRID(edevID, ddercMRIDKind)
 
 	scope := derControlScope(edevID, fsaID, derpID)
 	if err := stores.DefaultDERControls.Create(ctx, scope, singletonKey, dderc); err != nil {
 		return fmt.Errorf("create default der control: %w", err)
 	}
 
-	program := sep2.DERProgram{Primacy: 1}
+	// mRID is a REQUIRED element on DERProgram (and on DefaultDERControl
+	// above), so it is set to a real, wire-legal, per-device value rather
+	// than left at the zero value. Previously the program carried no mRID
+	// at all, which a lenient parser tolerates but a strict one need not.
+	program := sep2.DERProgram{
+		Primacy: 1,
+		MRID:    deriveResourceMRID(edevID, derpMRIDKind),
+	}
 	program.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID
 	program.DERControlListLink = &sep2.ListLink{
 		Href: "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/derc",
