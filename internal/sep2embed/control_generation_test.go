@@ -340,11 +340,16 @@ func applyTargetW(t *testing.T, stores *assembly.Stores, reg *registry.Registry,
 //   - update_existing goes further: for an event whose mRID compares equal it
 //     copies ONLY the EventStatus off the incoming object and frees the rest,
 //     so the changed setpoint is discarded at parse time.
-//   - href is how a client tracks list MEMBERSHIP (list_object keys each
-//     member by href; dep_complete then subtracts the vanished hrefs and
-//     fires RESOURCE_REMOVE, which is what frees the retired event block). A
-//     reused href gives the client a member that never disappears, so the old
-//     block is never freed and the client holds two.
+//
+// The href is deliberately NOT part of the varying set, and asserting that it
+// STAYS PUT is part of this test. list_object keys each list member by href and
+// hands it to update_existing, whose different-mRID branch calls
+// replace_se_object and swaps the whole event, keeping the new setpoint. The
+// dep chain then re-runs schedule_event, whose hash_get on the new mRID misses,
+// so a fresh block is created and activate_block fires EVENT_START. None of
+// that needs the href to move, and moving it actively breaks delivery: an
+// activated event is fast-polled at its own href, so retiring that URL turns
+// the next poll into RETRIEVE_FAIL and remove_stub. See controlHref.
 //
 // creationTime carries the fourth requirement: a client breaks an
 // equal-primacy tie with the STRICT comparison
@@ -375,8 +380,9 @@ func TestSuccessiveDeltasServeDistinctEventIdentities(t *testing.T) {
 	if second.mRID == first.mRID {
 		t.Errorf("both generations served mRID %q; the client's scheduler short-circuits on a known mRID and never re-actuates", second.mRID)
 	}
-	if second.href == first.href {
-		t.Errorf("both generations served href %q; the client never sees the old list member vanish, so it holds two event blocks", second.href)
+	if second.href != first.href {
+		t.Errorf("href changed between generations: %q then %q; an activated event is fast-polled at its own href, so a moving href makes that poll 404 and the client tears the event down",
+			first.href, second.href)
 	}
 	if second.creationTime <= first.creationTime {
 		t.Errorf("creationTime did not advance: first=%d second=%d; a client breaks an equal-primacy tie with a STRICT comparison, so the replacement loses and is discarded as Superseded",
@@ -393,8 +399,8 @@ func TestSuccessiveDeltasServeDistinctEventIdentities(t *testing.T) {
 	if third.mRID == second.mRID || third.mRID == first.mRID {
 		t.Errorf("third generation reused an earlier mRID %q", third.mRID)
 	}
-	if third.href == second.href || third.href == first.href {
-		t.Errorf("third generation reused an earlier href %q", third.href)
+	if third.href != first.href {
+		t.Errorf("third generation served href %q, want the stable %q", third.href, first.href)
 	}
 	if third.creationTime <= second.creationTime {
 		t.Errorf("creationTime did not advance on the third generation: second=%d third=%d", second.creationTime, third.creationTime)
@@ -530,100 +536,56 @@ func TestServedControlGenerationMRIDsAreWireLegal(t *testing.T) {
 	}
 }
 
-// TestServedControlHrefEncodesAdvancingGeneration asserts the href's
-// generation suffix advances monotonically from 0.
+// TestServedControlHrefIsStableAndFetchableAcrossGenerations asserts the
+// corrected GAGO-094 invariant: successive deltas are served at ONE unchanging
+// href, and that href is the store key core's single-resource DERControl route
+// resolves.
 //
-// The generation is recovered from the STORED record's href rather than kept
-// in a package-level counter (see controlGenerationOf for why: a counter is
-// process state that can drift from the store and re-issue a live
-// generation), which makes the href the authoritative carrier of that
-// number. If the suffix ever failed to advance, the mRID derived from it
-// would repeat and Defect 2 would return silently, so the suffix itself is
-// pinned here.
-func TestServedControlHrefEncodesAdvancingGeneration(t *testing.T) {
+// This inverts what this file asserted first. A per-generation href
+// (".../derc/active-<n>") was self-defeating: activate_block arms a fast poll
+// on the EVENT's own href, so when the next delta retired that URL the armed
+// poll got a non-200, process_http raised RETRIEVE_FAIL, and remove_stub tore
+// down the very event the client had just actuated. It then stopped polling
+// and never saw a later generation, which capped delivery at one control per
+// client no matter what the server did afterwards.
+//
+// The href must therefore stop moving, and the store key must equal the last
+// path segment so the URL actually resolves. Identity still advances, via the
+// mRID and creationTime, which is what TestSuccessiveDeltasServeDistinctEventIdentities
+// covers.
+func TestServedControlHrefIsStableAndFetchableAcrossGenerations(t *testing.T) {
 	t.Parallel()
 
 	get, stores, reg := serveSeedOnly(t)
-	prefix := derProgramListHref(discoveryWireLFDI, controlFSAID) + "/" + controlDERProgramID + "/derc/" + activeControlID + "-"
+	wantHref := derProgramListHref(discoveryWireLFDI, controlFSAID) +
+		"/" + controlDERProgramID + "/derc/" + activeControlID
 
-	for want, watts := range []int16{6841, 2593, 9127} {
+	for _, watts := range []int16{6841, 2593, 9127} {
 		applyTargetW(t, stores, reg, watts)
 		got := readServedControl(t, get)
 
-		wantHref := prefix + strconv.Itoa(want)
 		if got.href != wantHref {
-			t.Errorf("generation %d served href %q, want %q", want, got.href, wantHref)
+			t.Errorf("delta for %d W served href %q, want the stable %q; a moving href breaks the client's post-activation fast poll",
+				watts, got.href, wantHref)
 		}
 	}
-}
 
-// controlWithHref returns a DERControl carrying only href, which is the sole
-// field controlGenerationOf reads. Href is set through the promoted embedded
-// field rather than a composite struct literal so this helper does not
-// hard-code the embedding chain (Resource -> ... -> RandomizableEvent) and
-// therefore does not need editing when core reshapes that hierarchy.
-func controlWithHref(href string) sep2.DERControl {
-	var ctrl sep2.DERControl
-	ctrl.Href = href
-	return ctrl
-}
-
-// TestControlGenerationOfRoundTripsControlHref pins the pairing between the
-// two halves of the generation scheme: controlHref writes the number into the
-// href, and controlGenerationOf reads it back. The generation lives in the
-// stored record rather than in a package-level counter (see
-// controlGenerationOf for why), so this round trip is load-bearing: if it
-// broke, every replacement would restart at generation 0 and re-issue an mRID
-// a client has already scheduled, silently reproducing Defect 2.
-func TestControlGenerationOfRoundTripsControlHref(t *testing.T) {
-	t.Parallel()
-
-	const lfdi = "AAAA00000000000000000000000000000000AAAA"
-	for _, want := range []uint64{0, 1, 2, 9, 10, 99, 1000, 18446744073709551615} {
-		href := controlHref(lfdi, controlFSAID, controlDERProgramID, want)
-		got := controlGenerationOf(controlWithHref(href))
-		if got != want {
-			t.Errorf("controlGenerationOf(controlHref(gen=%d)) = %d, want %d (href was %q)", want, got, want, href)
-		}
+	// The served href's last segment MUST be the store key, or core's
+	// single-resource route (GET .../derc/{dercId}) looks up an id the store
+	// does not have and 404s on a control that is really there. This is the
+	// exact mismatch that made the live probe fail: the store key was
+	// "active" while the href advertised "active-0".
+	scope := derControlScope(discoveryWireLFDI, controlFSAID, controlDERProgramID)
+	stored, err := stores.DERControls.Get(context.Background(), scope, activeControlID)
+	if err != nil {
+		t.Fatalf("stored control not found under the store key the href advertises: %v", err)
 	}
-}
-
-// TestControlGenerationOfFallsBackToZeroOnAMalformedHref documents the
-// fallback deliberately.
-//
-// Zero is the same value a brand-new control uses, so the worst case is one
-// generation number reused rather than a hard failure on a record this
-// process did not write. Forward progress does not depend on this function
-// alone: the creationTime advance (nextControlCreationTime) is what guarantees
-// a replacement still wins a client's equal-primacy comparison even when the
-// generation repeats. The cases below are the shapes a foreign or corrupted
-// record could actually take.
-func TestControlGenerationOfFallsBackToZeroOnAMalformedHref(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		href string
-	}{
-		{"empty href", ""},
-		{"no derc segment at all", "/edev/AAAA/fsa/1/derp/1"},
-		{"legacy href with no generation suffix", "/edev/AAAA/fsa/1/derp/1/derc/" + activeControlID},
-		{"non-numeric suffix", "/edev/AAAA/fsa/1/derp/1/derc/" + activeControlID + "-abc"},
-		{"empty suffix", "/edev/AAAA/fsa/1/derp/1/derc/" + activeControlID + "-"},
-		{"negative suffix", "/edev/AAAA/fsa/1/derp/1/derc/" + activeControlID + "--3"},
-		{"suffix overflows uint64", "/edev/AAAA/fsa/1/derp/1/derc/" + activeControlID + "-99999999999999999999999999"},
-		{"different store key", "/edev/AAAA/fsa/1/derp/1/derc/other-4"},
+	if stored.Href != wantHref {
+		t.Errorf("stored control href = %q, want %q", stored.Href, wantHref)
 	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := controlGenerationOf(controlWithHref(tc.href))
-			if got != 0 {
-				t.Errorf("controlGenerationOf(%q) = %d, want 0", tc.href, got)
-			}
-		})
+	if suffix := wantHref[strings.LastIndex(wantHref, "/")+1:]; suffix != activeControlID {
+		t.Errorf("href last segment = %q, want the store key %q; core resolves the single-resource route by that segment",
+			suffix, activeControlID)
 	}
 }
 

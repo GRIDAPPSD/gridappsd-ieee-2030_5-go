@@ -270,11 +270,12 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 	if got.ID != activeControlID {
 		t.Errorf("DERControls[0].ID = %q, want %q", got.ID, activeControlID)
 	}
-	// The href carries the generation suffix, and generation 0 is the first
-	// control written for a device (GAGO-094): successive deltas serve
-	// distinct hrefs so a client's list-member tracking retires the old
-	// event rather than holding two. See controlHref.
-	wantControlHref := "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID + "-0"
+	// The href's last segment is the store key, unchanged across generations
+	// (GAGO-094): an activated event's own href must stay fetchable, because a
+	// client fast-polls it after actuating and tears the event down on a
+	// non-200. Identity advances via mRID and creationTime instead. See
+	// controlHref.
+	wantControlHref := "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
 	if got.Href != wantControlHref {
 		t.Errorf("DERControls[0].Href = %q, want %q", got.Href, wantControlHref)
 	}

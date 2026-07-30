@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -58,13 +57,16 @@ const (
 // makes "one active control" a structural property rather than one
 // contingent on a client evaluating supersession correctly.
 //
-// This is deliberately the store key ONLY, not the served href and not the
-// mRID: both of those vary per generation so a client sees each successive
-// command as a NEW event. See controlHref and ApplyControlDelta's
-// supersession section. Nothing on the wire carries this constant, because
-// core mounts no single-resource DERControl route (only the list at
-// .../derp/{derpId}/derc), so the store key never appears in a URL a client
-// requests.
+// This constant IS on the wire: it is the last path segment of the served
+// href (see controlHref), and core mounts a single-resource route at
+// GET /edev/{id}/fsa/{fsaId}/derp/{derpId}/derc/{dercId} that resolves a
+// DERControl by exactly this store key. Store key and href segment are
+// deliberately the same string, because an activated event's href must stay
+// fetchable: see controlHref for why a per-generation href was wrong.
+//
+// The mRID, by contrast, DOES vary per generation, so a client still sees
+// each successive command as a new event. See ApplyControlDelta's
+// supersession section.
 const activeControlID = "active"
 
 // ErrUnknownControlDevice is returned by ApplyControlDelta when the
@@ -218,7 +220,6 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	existing, err := controlStore.Get(ctx, activeControlID)
 	var base sep2.DERControlBase
 	isReplacement := false
-	var priorGeneration uint64
 	var priorCreationTime int64
 	switch {
 	case err == nil:
@@ -228,10 +229,9 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		if existing.DERControlBase != nil {
 			base = existing.DERControlBase.Copy()
 		}
-		priorGeneration = controlGenerationOf(existing)
 		priorCreationTime = existing.CreationTime
 	case errors.Is(err, store.ErrNotFound):
-		// Fresh control: base starts zero-valued, generation starts at 0.
+		// Fresh control: base starts zero-valued.
 	default:
 		return fmt.Errorf("sep2embed: control delta: read existing control: %w", err)
 	}
@@ -241,22 +241,33 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	}
 
 	now := time.Now().UTC().Unix()
-	generation := priorGeneration
 	creationTime := now
 	if isReplacement {
-		generation = priorGeneration + 1
 		creationTime = nextControlCreationTime(priorCreationTime, now)
 	}
 
 	control := sep2.DERControl{}
-	control.Href = controlHref(edevID, controlFSAID, controlDERProgramID, generation)
-	control.MRID = deriveControlMRID(edevID, dercMRIDKind, generation)
+	control.Href = controlHref(edevID, controlFSAID, controlDERProgramID)
 
 	// CreationTime is what makes this generation WIN the client's
 	// equal-primacy supersession comparison against the generation it
 	// replaces; see ApplyControlDelta's doc comment and
 	// nextControlCreationTime. It is a required wire element regardless.
 	control.CreationTime = creationTime
+
+	// The mRID is derived FROM creationTime, so the event identity and the
+	// supersession discriminator advance together by construction and cannot
+	// disagree. creationTime is strictly increasing across generations
+	// (nextControlCreationTime guarantees it even within one wall-clock
+	// second), so successive controls always carry distinct mRIDs, which is
+	// what stops a client's schedule_event from short-circuiting on an
+	// already-hashed identity.
+	//
+	// It also keeps the stored record self-describing now that the href is
+	// stable: the discriminator is read back off the record's own
+	// creationTime, with no separate counter in the href and none in process
+	// memory that could drift from the store and re-issue a live identity.
+	control.MRID = deriveControlMRID(edevID, dercMRIDKind, creationTime)
 
 	control.EventStatus = &sep2.EventStatus{
 		CurrentStatus: sep2.EventStatusActive,
@@ -325,72 +336,61 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	return nil
 }
 
-// controlHref returns the served href for one GENERATION of the DERControl
-// under (edev, fsa, derp). The generation is part of the path, so successive
-// commands occupy distinct URLs.
+// controlHref returns the served href of the device's single DERControl slot
+// under (edev, fsa, derp). It is STABLE across generations: every successive
+// command is served at the same URL, and only the mRID and creationTime vary.
 //
-// A varying href is not cosmetic bookkeeping alongside the varying mRID: it
-// is what makes a client notice the replacement at all. A client tracks a
-// list's members by href (the EPRI reference client's list_object calls
-// get_stub(path) per member and dep_complete then computes
-// list_subtract(d->list, d->reqs) to find members that VANISHED, firing
-// RESOURCE_REMOVE for each). Reusing one href across generations would give
-// the client a member that never disappears, so the old event block would
-// never be freed by mRID, and the client would hold two blocks: the
-// still-hashed old mRID and the new one. Varying the href retires the old
-// generation on the same poll that delivers the new one.
+// This is the correction to GAGO-094's second defect, and it is the opposite
+// of what this function did first. A per-generation href
+// (".../derc/active-<n>") was self-defeating, because an href is not just a
+// list-membership key to a client: it is the URL the client POLLS. Traced
+// through the EPRI reference client:
 //
-// KNOWN LIMITATION, and it is not caused by varying the href: this path is
-// not fetchable. Core mounts only the list route
-// (GET /edev/{id}/fsa/{fsaId}/derp/{derpId}/derc) and no single-resource
-// DERControl route, so a GET of any DERControl href returns 404. That is
-// load-bearing for the client, not cosmetic: once a client activates an
-// event it arms a fast poll on the EVENT's own href (EPRI's activate_block
-// sets event->poll_rate = active_poll_rate and calls poll_resource), the
-// resulting GET 404s, process_http turns a non-200 into RETRIEVE_FAIL, and
-// der_client's RETRIEVE_FAIL arm calls remove_stub, tearing the event down.
-// The client then stops polling and never sees a later generation.
+//   - activate_block (schedule.c) sets event->poll_rate = active_poll_rate
+//     and calls poll_resource on the EVENT's own stub, so once a client
+//     actuates a control it begins fast-polling that control's own href.
+//   - When the next delta arrived, the old generation's URL stopped existing.
+//     That armed poll then GET a path the server no longer had.
+//   - process_http (retrieve.c) turns any non-200 on a GET into
+//     insert_event(s, RETRIEVE_FAIL, 0), and der_client's RETRIEVE_FAIL arm
+//     calls remove_stub, freeing the event outright.
 //
-// Measured for GAGO-094: with the stable href this package used to emit, the
-// GET of .../derc/active 404s identically, and the same teardown happens.
-// So the 404 predates the generation suffix and is not a regression from it;
-// it caps sustained multi-delta operation regardless of href strategy. The
-// server side is correct either way (a later generation IS served, with a
-// distinct mRID and an advanced creationTime, verified live), so the
-// remaining gap is the missing core route, tracked as a finding rather than
-// fixed here.
-func controlHref(edevID, fsaID, derpID string, generation uint64) string {
+// So the client tore down the very event it had just actuated, stopped
+// polling, and never observed any later generation. Mounting a
+// single-resource DERControl route in core does NOT fix that on its own: with
+// a varying href the URL is genuinely gone, so the fast poll 404s correctly.
+// The href has to stop moving.
+//
+// Why a stable href still delivers each new setpoint. The earlier rationale
+// for varying it (that a client tracks membership by href, so a reused href
+// would leave the retired event block un-freed and the client holding two)
+// does not survive reading update_existing (retrieve.c):
+//
+//   - list_object keys each member by href via get_stub(path), then calls
+//     update_existing for that member.
+//   - update_existing compares mRIDs. For an event whose mRID DIFFERS it
+//     calls replace_se_object, swapping the entire stored event for the
+//     incoming one: the new opModTargetW is kept, not discarded. (Only the
+//     equal-mRID branch copies EventStatus alone, which is the in-place
+//     mutation defect this package already fixed by varying the mRID.)
+//   - the dep chain then re-runs schedule_der -> schedule_event, whose
+//     hash_get(s->blocks, ev->mRID) MISSES on the new mRID, so a fresh
+//     EventBlock is created, insert_active runs, block_supersede wins on the
+//     advanced creationTime, and activate_block fires EVENT_START, the hook
+//     that pushes the setpoint to the inverter.
+//
+// There is also no un-freed block to worry about: the list has exactly one
+// member, so it never shrinks, list_subtract yields nothing, and there is
+// nothing for RESOURCE_REMOVE to free. replace_se_object already replaced the
+// event in place, and the old mRID's block is superseded by the new one
+// through insert_active rather than by list removal.
+//
+// So a new event identity (mRID) plus an advancing creationTime at a STABLE,
+// fetchable href satisfies every mechanism, and is the only combination that
+// also keeps the post-activation fast poll resolving.
+func controlHref(edevID, fsaID, derpID string) string {
 	return "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID +
-		"/derc/" + activeControlID + "-" + strconv.FormatUint(generation, 10)
-}
-
-// controlGenerationOf recovers the generation number encoded in a stored
-// DERControl's href, or 0 when the href does not carry one.
-//
-// The generation is read back off the stored record rather than kept in a
-// package-level counter on purpose. A counter would be process state that
-// the store does not have, so it would drift from the record it is supposed
-// to describe: two Embeds sharing a store, or a counter reset while a
-// control is still stored, would both re-issue a generation number that is
-// already live and hand a client an mRID it has already scheduled,
-// reproducing the exact defect the generation exists to prevent. Deriving it
-// from the record makes the stored control self-describing.
-//
-// A malformed or missing suffix returns 0 rather than an error. That is the
-// same value a fresh control uses, so the worst case is one generation
-// number reused; the creationTime advance (see nextControlCreationTime) is
-// what guarantees forward progress even then, and this function's caller
-// only ever adds to the returned value.
-func controlGenerationOf(control sep2.DERControl) uint64 {
-	_, suffix, ok := strings.Cut(control.Href, "/derc/"+activeControlID+"-")
-	if !ok {
-		return 0
-	}
-	generation, err := strconv.ParseUint(suffix, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return generation
+		"/derc/" + activeControlID
 }
 
 // nextControlCreationTime returns a creationTime for a replacement control

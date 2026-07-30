@@ -124,19 +124,22 @@ func TestDeriveResourceMRIDDependsOnTheWholeLFDI(t *testing.T) {
 // identity to a client scheduler, and a repeated mRID means a repeated
 // command is silently ignored.
 //
-// Format stability is why the generation is HASHED rather than appended.
-// Appending the number would grow the string as the counter grows, past the
+// Format stability is why the discriminator is HASHED rather than appended.
+// Appending the number would grow the string as the value grows, past the
 // 16-octet mRIDType ceiling, and would introduce a separator that is not a
-// hex digit. A generation of 0 and a generation near the uint64 ceiling must
+// hex digit. A creationTime of 0 and one far past the 2038 rollover must
 // produce the same shape, so both ends of the range are exercised rather
 // than a few small values.
 func TestDeriveControlMRIDVariesPerGenerationAndStaysWireLegal(t *testing.T) {
 	t.Parallel()
 
 	const lfdi = "AAAA00000000000000000000000000000000AAAA"
-	generations := []uint64{0, 1, 2, 3, 42, 1000, 4294967296, 18446744073709551615}
+	// creationTime values, which is what the discriminator now is: the epoch
+	// zero value, a realistic present instant, and values past 2038 and near
+	// the int64 ceiling.
+	generations := []int64{0, 1, 2, 3, 42, 1000, 1785431911, 4294967296, 9223372036854775807}
 
-	seen := make(map[string]uint64, len(generations))
+	seen := make(map[string]int64, len(generations))
 	for _, gen := range generations {
 		got := deriveControlMRID(lfdi, dercMRIDKind, gen)
 
@@ -158,10 +161,10 @@ func TestDeriveControlMRIDVariesPerGenerationAndStaysWireLegal(t *testing.T) {
 }
 
 // TestDeriveControlMRIDIsDeterministic pins reproducibility, which is the
-// reason a generation counter was chosen over a random value: a served-bytes
-// test can only assert an expected mRID if the same inputs always yield the
-// same output, and an operator can only correlate a log line to a stored
-// control for the same reason.
+// reason creationTime was chosen over a random value: a served-bytes test can
+// only assert an expected mRID if the same inputs always yield the same
+// output, and an operator can only correlate a log line to a stored control
+// for the same reason.
 func TestDeriveControlMRIDIsDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -203,7 +206,7 @@ func TestDeriveControlMRIDDoesNotCollideWithTheOtherResources(t *testing.T) {
 		dercMRIDKind:  deriveResourceMRID(lfdi, dercMRIDKind),
 	}
 
-	for gen := uint64(0); gen < 8; gen++ {
+	for gen := int64(0); gen < 8; gen++ {
 		got := deriveControlMRID(lfdi, dercMRIDKind, gen)
 		for kind, want := range stable {
 			if got == want {

@@ -64,7 +64,7 @@ func deriveResourceMRID(lfdi, kind string) string {
 
 // deriveControlMRID returns the mRID for one GENERATION of a device's
 // DERControl: 32 uppercase hex characters, derived from the device's LFDI,
-// the control kind, and a monotonically increasing generation number.
+// the control kind, and that generation's creationTime.
 //
 // Why a DERControl needs a varying mRID where every other resource wants a
 // stable one. mRID is an event's IDENTITY to a client scheduler, and a
@@ -73,30 +73,39 @@ func deriveResourceMRID(lfdi, kind string) string {
 // short-circuits on hash_get(s->blocks, ev->mRID), so a document carrying an
 // already-known mRID creates no new EventBlock, and activate_block fires
 // EVENT_START (the callback that actually pushes the setpoint to the
-// inverter) only when the block's status is not already Active. So rewriting
-// opModTargetW under an unchanged mRID produces a document the client
-// parses, stores, and then does nothing with: the new setpoint is silently
-// dropped and the client keeps executing the old one. A new command must
-// therefore arrive as a new event identity.
+// inverter) only when the block's status is not already Active. Worse,
+// update_existing's equal-mRID branch copies ONLY the incoming EventStatus
+// and frees the rest, so a changed opModTargetW is discarded at parse time.
+// A new command must therefore arrive as a new event identity.
 //
-// Why generation rather than a timestamp or a random value. Two deltas can
-// land inside the same wall-clock second, so a second-resolution timestamp
-// is not guaranteed to vary and would occasionally re-collide, reproducing
-// the very defect this exists to fix. A random value varies but is not
-// reproducible, which makes a served-bytes test unable to assert the
-// expected mRID and makes an operator unable to correlate a log line to a
-// stored control. A generation counter is both guaranteed-varying and
-// deterministic given its inputs.
+// Why creationTime is the discriminator. It is already the value a client
+// compares to resolve equal-primacy supersession
+// (block_supersede: x->creationTime > y->creationTime), and
+// nextControlCreationTime already guarantees it advances STRICTLY on every
+// replacement, including two deltas inside one wall-clock second and across a
+// backward clock step. Deriving the identity from it makes the identity and
+// the supersession discriminator advance together by construction: there is
+// no way to ship a fresh mRID with a stale creationTime (silently rejected as
+// Superseded) or a stale mRID with a fresh creationTime (silently ignored),
+// because both come from the same number.
+//
+// It also replaces a separate generation counter that used to be encoded in
+// the served href. That coupling is gone: the href is now stable so an
+// activated event stays fetchable (see controlHref), which left creationTime
+// as the one strictly-advancing value already stored on the record. Reading
+// the discriminator back off the record keeps the stored control
+// self-describing, with no process-memory counter that could drift from the
+// store and re-issue an identity a client has already scheduled.
 //
 // The truncation and the hex-only output are the same wire constraints
 // deriveResourceMRID documents: mRIDType is hexBinary capped at 16 octets,
 // and a schema-driven client rejects the entire resource on a malformed
-// value. Hashing rather than formatting the generation into the string is
-// what keeps that guarantee: the output is 32 hex characters for generation
-// 0 and for generation 4 billion alike, with no length or character-class
-// change as the counter grows.
-func deriveControlMRID(lfdi, kind string, generation uint64) string {
-	return deriveResourceMRID(lfdi, kind+"|gen/"+strconv.FormatUint(generation, 10))
+// value. Hashing rather than formatting the discriminator into the string is
+// what keeps that guarantee: the output is 32 hex characters for a
+// creationTime of 0 and for one far past 2038 alike, with no length or
+// character-class change as the number grows.
+func deriveControlMRID(lfdi, kind string, creationTime int64) string {
+	return deriveResourceMRID(lfdi, kind+"|ct/"+strconv.FormatInt(creationTime, 10))
 }
 
 // The kind discriminators passed to deriveResourceMRID. Each names one
