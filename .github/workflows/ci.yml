@@ -182,3 +182,34 @@ jobs:
 
       - name: Rebuild frontend and diff against committed dist/
         run: make ui-check
+
+  gofmt:
+    name: gofmt check
+    runs-on: ubuntu-latest
+    # No App token here either, for the same reason as ui-drift-check:
+    # gofmt -l only reads and parses the local tree, it never resolves
+    # a Go module or touches network.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          # This repo has no gofmt violations today (verified 2026-08-02),
+          # so the check is unconditionally blocking, unlike the core
+          # repo's single vendored-stub exclusion. If a future vendored
+          # or generated file needs a similar carve-out, add it here
+          # narrowly and comment why, matching the pattern in
+          # ieee-2030_5-core-go's ci.yml gofmt job.
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt check passed."
