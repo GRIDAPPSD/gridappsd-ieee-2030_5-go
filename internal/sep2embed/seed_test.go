@@ -651,8 +651,8 @@ func TestSeedStoresStampsRegistrationPolicyWhenNonNil(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 	if err := seedStores(ctx, stores, reg, seedPolicy{
-		resolvePIN: func(string) (uint32, bool) { return wantPIN, true },
-		pollRate:   &wantPollRate,
+		resolvePIN:      func(string) (uint32, bool) { return wantPIN, true },
+		resolvePollRate: func(string) (uint32, bool) { return wantPollRate, true },
 	}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}

@@ -128,12 +128,39 @@ type Config struct {
 	// value. Never logged.
 	ResolveRegistrationPIN func(lfdi string) (uint32, bool)
 
-	// RegistrationPollRate is stamped onto each seeded Registration's
-	// optional pollRate attribute. Nil (the zero value) omits the
+	// ResolveRegistrationPollRate returns the polling interval, in
+	// seconds, configured for the device with the given canonical LFDI,
+	// and whether one is configured. It is stamped onto that device's
+	// seeded Registration as the optional pollRate attribute
+	// (sep.xsd:190). Callers should pass
+	// sep2config.SEP2Policy.ResolvePollRate.
+	//
+	// Nil, or a resolver reporting false for a device, omits the
 	// attribute so a client applies sep.xsd's own 900-second default
-	// rather than a rate the bridge invented; callers should source this
-	// from sep2config.SEP2Policy.DefaultPollRate.
-	RegistrationPollRate *uint32
+	// rather than a rate the bridge invented. Unlike
+	// ResolveRegistrationPIN, an unresolved rate is NOT an error: pollRate
+	// is optional in the schema, while pIN is minOccurs=1.
+	//
+	// A resolver rather than a scalar because the rate is a per-device
+	// policy value whose per-device half is not wired yet; see
+	// sep2config.SEP2Policy.PollRates. Seeding already knows each device's
+	// LFDI, so passing it costs nothing today and means adding per-device
+	// rates never touches this package.
+	ResolveRegistrationPollRate func(lfdi string) (uint32, bool)
+
+	// ResolvePostRate returns the posting interval, in seconds, configured
+	// for the client with the given canonical LFDI, and whether one is
+	// configured. It is threaded to core as the
+	// metering.PostRateProvider behind POST /mup, where it is stamped onto
+	// each MirrorUsagePoint at creation. Callers should pass
+	// sep2config.SEP2Policy.ResolvePostRate.
+	//
+	// Nil, or a resolver reporting false, leaves the client's own postRate
+	// untouched. This is NOT part of store seeding: the bridge creates no
+	// MirrorUsagePoints at all (every one is created by a client via POST
+	// /mup), so the only moment a server-side rate can reach a mirror is
+	// at creation, inside core's handler.
+	ResolvePostRate func(lfdi string) (uint32, bool)
 
 	// Observer is the GAGO-090/GAGO-091 per-LFDI connection observer.
 	// Nil (the zero value) disables observation entirely: New falls back
@@ -205,9 +232,9 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 
 	stores := newStores()
 	seeding := seedPolicy{
-		modesSupported: cfg.ModesSupported,
-		resolvePIN:     cfg.ResolveRegistrationPIN,
-		pollRate:       cfg.RegistrationPollRate,
+		modesSupported:  cfg.ModesSupported,
+		resolvePIN:      cfg.ResolveRegistrationPIN,
+		resolvePollRate: cfg.ResolveRegistrationPollRate,
 	}
 	if err := seedStores(ctx, stores, reg, seeding); err != nil {
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)
@@ -229,6 +256,18 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		dest:  cfg.TelemetryDestination,
 		simID: cfg.TelemetrySimulationID,
 	}
+
+	// postRate reaches the wire through core's POST /mup handler, not
+	// through seeding: this bridge creates no MirrorUsagePoints, so
+	// creation-time stamping in core is the only point at which a
+	// server-side rate can attach to a mirror. RouterConfig is how core
+	// takes server-owned policy, so the resolver is projected onto it here
+	// rather than at every buildHandler call below. cfg is a value
+	// parameter, so this mutates only our copy.
+	//
+	// A nil ResolvePostRate leaves the field nil and core leaves every
+	// client's postRate untouched.
+	cfg.Router.PostRateProvider = cfg.ResolvePostRate
 
 	// Observer wired: build the mTLS listener ourselves, with the
 	// additive handshake-observation wrapper (see mtls.go's doc comment

@@ -119,11 +119,21 @@ type seedPolicy struct {
 	// seeding refuses rather than inventing a value. Never logged.
 	resolvePIN func(lfdi string) (uint32, bool)
 
-	// pollRate, when non-nil, is stamped onto each seeded Registration's
-	// optional pollRate attribute. nil leaves it zero, which marshals as
-	// absent (omitempty) so the client applies sep.xsd's own 900-second
-	// default rather than a value the bridge invented.
-	pollRate *uint32
+	// resolvePollRate returns the polling interval, in seconds, configured
+	// for the device with the given canonical LFDI, and whether one is
+	// configured at all. When it reports a rate, that rate is stamped onto
+	// the device's seeded Registration as the optional pollRate attribute
+	// (sep.xsd:190).
+	//
+	// A nil resolver, or one reporting false, leaves reg.PollRate zero,
+	// which marshals as absent (omitempty) so the client applies sep.xsd's
+	// own 900-second default rather than a value the bridge invented.
+	// Unlike resolvePIN this is never fatal: pollRate is an optional
+	// attribute, while pIN is minOccurs=1 in the Registration sequence.
+	//
+	// Keyed on LFDI so a per-device rate policy can be added without
+	// touching this file; see sep2config.SEP2Policy.PollRates.
+	resolvePollRate func(lfdi string) (uint32, bool)
 }
 
 // seedOne writes the EndDevice and its single child DER for one registry
@@ -268,8 +278,13 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 		PIN:                pin,
 	}
 	reg.Href = registrationHref
-	if policy.pollRate != nil {
-		reg.PollRate = *policy.pollRate
+	// Keyed by the canonical LFDI, exactly as resolvePIN above is, and for
+	// the same reason: the URL index is an addressing artifact that means
+	// nothing in an operator's config.
+	if policy.resolvePollRate != nil {
+		if rate, ok := policy.resolvePollRate(e.LFDI); ok {
+			reg.PollRate = rate
+		}
 	}
 
 	if err := stores.Registrations.Create(ctx, id, reg); err != nil {

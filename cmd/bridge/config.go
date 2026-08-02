@@ -150,6 +150,24 @@ type config struct {
 	// but empty PIN file is rejected outright by
 	// loadRegistrationPINFile rather than producing an empty map here.
 	SEP2RegistrationPINs map[string]uint32
+
+	// SEP2PollRate and SEP2PostRate are the optional fleet-wide IEEE
+	// 2030.5 poll and post intervals, in seconds, from -sep2-poll-rate and
+	// -sep2-post-rate (env SEP2_POLL_RATE / SEP2_POST_RATE). They become
+	// sep2config.SEP2Policy's DefaultPollRate and DefaultPostRate.
+	//
+	// Pointer-typed because nil (flag absent) is a distinct, load-bearing
+	// state and not merely an absent number: nil means the bridge
+	// advertises no rate at all, so a Registration omits its optional
+	// pollRate attribute and a MirrorUsagePoint keeps whatever postRate its
+	// creating client supplied. That is precisely today's behavior, which
+	// is why these carry no compiled-in default: adding one would start
+	// advertising a value to every existing deployment on upgrade.
+	//
+	// sep2config.RecommendedPollRate and RecommendedPostRate carry the
+	// values an operator should reach for, with the reasoning.
+	SEP2PollRate *uint32
+	SEP2PostRate *uint32
 }
 
 // deviceCertMode* are the only two values config.validate accepts for
@@ -291,6 +309,18 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&registrationPINFileFlag, "sep2-registration-pin-file", "",
 		"path to a JSON object mapping device LFDI to that device's IEEE 2030.5 registration PIN; unset means no per-device PINs are configured")
 
+	// sep2-poll-rate and sep2-post-rate register an empty-string default
+	// for the same reason the PIN flags above do: a numeric flag default
+	// cannot represent "unset", and unset is a distinct, load-bearing
+	// state here. Unset means the bridge advertises no rate at all, which
+	// is exactly today's behavior; a registered numeric default would
+	// silently start advertising a value to every existing deployment.
+	var pollRateFlag, postRateFlag string
+	fs.StringVar(&pollRateFlag, "sep2-poll-rate", "",
+		"fleet-wide Registration pollRate in seconds, advertised to every device; unset advertises nothing and clients apply the sep.xsd default of 900")
+	fs.StringVar(&postRateFlag, "sep2-post-rate", "",
+		"fleet-wide MirrorUsagePoint postRate in seconds, stamped on every mirror a client creates; unset advertises nothing and leaves the client's own value untouched")
+
 	var versionFlag bool
 	fs.BoolVar(&versionFlag, "version", false, "print the build version and exit")
 
@@ -344,10 +374,64 @@ func loadConfig(args []string) (config, error) {
 		cfg.SEP2RegistrationPINs = pins
 	}
 
+	// Rate flags resolve here alongside the PIN flags, and for the same
+	// reason: a malformed value must stop the bridge at config load,
+	// before any network I/O. Syntax only; the domain rule (a rate must
+	// be at least 1 second) lives in
+	// sep2config.SEP2Policy.ValidateRates, called from buildSEP2Policy,
+	// so it is stated once and applies equally to the per-device rates
+	// that config layer will carry later.
+	//
+	// The env fallbacks match the flag names' existing SEP2_ convention.
+	// Flags shadow envs, as everywhere else in this loader.
+	if pollRateFlag == "" {
+		pollRateFlag = os.Getenv("SEP2_POLL_RATE")
+	}
+	if postRateFlag == "" {
+		postRateFlag = os.Getenv("SEP2_POST_RATE")
+	}
+	if pollRateFlag != "" {
+		rate, err := parseRateFlag(pollRateFlag, "-sep2-poll-rate")
+		if err != nil {
+			return config{}, err
+		}
+		cfg.SEP2PollRate = &rate
+	}
+	if postRateFlag != "" {
+		rate, err := parseRateFlag(postRateFlag, "-sep2-post-rate")
+		if err != nil {
+			return config{}, err
+		}
+		cfg.SEP2PostRate = &rate
+	}
+
 	if err := cfg.validate(); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
+}
+
+// parseRateFlag parses a poll or post rate flag's raw string into a uint32,
+// rejecting anything that is not a base-10 non-negative integer fitting in
+// 32 bits. flagName is embedded in the error so an operator is told which
+// knob to fix rather than being handed a bare parse failure.
+//
+// Unlike parseRegistrationPINFlag, the offending value IS echoed: a rate is
+// operational configuration, not a shared secret, and seeing what was
+// actually parsed is what makes a typo obvious.
+//
+// The lower bound (a rate must be at least 1) is deliberately NOT enforced
+// here. It is a domain rule about what the rate MEANS, it applies identically
+// to per-device rates this flag does not carry, and duplicating it would
+// create a second place to update. sep2config.SEP2Policy.ValidateRates owns
+// it, and buildSEP2Policy runs that before the bridge dials anything.
+func parseRateFlag(raw, flagName string) (uint32, error) {
+	v, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"config: %s value %q must be a base-10, non-negative integer that fits in 32 bits", flagName, raw)
+	}
+	return uint32(v), nil
 }
 
 // parseRegistrationPINFlag parses -sep2-registration-pin's raw string
