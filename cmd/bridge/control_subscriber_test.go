@@ -19,6 +19,7 @@ import (
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
@@ -179,7 +180,13 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	bus := &fakeControlBus{}
 	subErr := make(chan error, 1)
 	var hook controlobs.Hook
-	go func() { subErr <- runControlSubscriber(ctx, bus, embed, reg, "sim-1", &hook) }()
+	// The unsupervised gridappsdclient.Subscriber is deliberate here:
+	// this test covers control-delta decode and apply, not subscription
+	// health. GAGO-107's supervision is covered by the Supervisor tests
+	// in internal/gridappsdclient.
+	go func() {
+		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "sim-1", &hook)
+	}()
 
 	waitFor(2*time.Second, func() bool {
 		bus.mu.Lock()
