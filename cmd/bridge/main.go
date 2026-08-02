@@ -196,6 +196,13 @@ func run(ctx context.Context, cfg config) error {
 	// DERCapability GAGO-049 seeds is still nil-safe until a real policy
 	// value is configured.
 	policy := sep2config.DefaultPolicy()
+	if err := policy.ValidateRegistrationPIN(); err != nil {
+		return err
+	}
+	// The registration PIN is deliberately absent from this line and must
+	// stay absent: it is a shared secret in the registration flow, and
+	// this log is written on every boot. Log whether it is configured, if
+	// that is ever needed, never what it is.
 	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s",
 		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
 
@@ -413,6 +420,15 @@ func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(c
 // DefaultPolicy leaves it nil, so seeding is nil-safe until a real
 // policy value is configured.
 //
+// policy.RegistrationPIN and policy.DefaultPollRate are threaded through
+// as RegistrationPIN and RegistrationPollRate, the two policy inputs to
+// the Registration resource seeded for every device. Both are nil under
+// DefaultPolicy: a nil PIN selects the stable per-device value derived
+// from that device's own LFDI (the production default), and a nil poll
+// rate omits the optional pollRate attribute so the client applies the
+// schema's own 900-second default. Neither is hardcoded at this layer,
+// and the PIN is never logged.
+//
 // connHook is threaded through as sep2embed.Config.Observer
 // (GAGO-090/GAGO-091): a non-nil connHook opts this bridge into the
 // additive request- and handshake-observation path sep2embed.New
@@ -433,6 +449,8 @@ func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.S
 		TelemetrySimulationID: cfg.SimulationID,
 		DefaultControl:        policy.DefaultControl,
 		ModesSupported:        policy.ModesSupported,
+		RegistrationPIN:       policy.RegistrationPIN,
+		RegistrationPollRate:  policy.DefaultPollRate,
 		Observer:              connHook,
 	}
 }

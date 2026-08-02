@@ -113,6 +113,21 @@ type Config struct {
 	// bitmap here.
 	ModesSupported *uint32
 
+	// RegistrationPIN overrides the registration PIN stamped onto the
+	// Registration New seeds for every registry entry. Nil (the zero
+	// value) selects the per-device value derived from that device's own
+	// LFDI, which is the production default; callers should source this
+	// from sep2config.SEP2Policy.RegistrationPIN. Never logged: see that
+	// field's doc comment and deriveRegistrationPIN.
+	RegistrationPIN *uint32
+
+	// RegistrationPollRate is stamped onto each seeded Registration's
+	// optional pollRate attribute. Nil (the zero value) omits the
+	// attribute so a client applies sep.xsd's own 900-second default
+	// rather than a rate the bridge invented; callers should source this
+	// from sep2config.SEP2Policy.DefaultPollRate.
+	RegistrationPollRate *uint32
+
 	// Observer is the GAGO-090/GAGO-091 per-LFDI connection observer.
 	// Nil (the zero value) disables observation entirely: New falls back
 	// to delegating listener construction to sep2srv.New exactly as
@@ -182,7 +197,12 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	stores := newStores()
-	if err := seedStores(ctx, stores, reg, cfg.ModesSupported); err != nil {
+	seeding := seedPolicy{
+		modesSupported:  cfg.ModesSupported,
+		registrationPIN: cfg.RegistrationPIN,
+		pollRate:        cfg.RegistrationPollRate,
+	}
+	if err := seedStores(ctx, stores, reg, seeding); err != nil {
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)
 	}
 
