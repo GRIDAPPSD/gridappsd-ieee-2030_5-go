@@ -91,9 +91,10 @@ func TestEmbedServesSeededDevicesOverMTLS(t *testing.T) {
 
 	certDir := t.TempDir()
 	cfg := Config{
-		Addr:            "127.0.0.1:0",
-		CertDir:         certDir,
-		ShutdownTimeout: time.Second,
+		Addr:                   "127.0.0.1:0",
+		CertDir:                certDir,
+		ResolveRegistrationPIN: testResolvePIN,
+		ShutdownTimeout:        time.Second,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -218,7 +219,7 @@ func TestEmbedIdentityMatchesServerLeafCertificate(t *testing.T) {
 
 	certDir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
-	e, err := New(ctx, Config{Addr: "127.0.0.1:0", CertDir: certDir, ShutdownTimeout: time.Second}, reg)
+	e, err := New(ctx, Config{Addr: "127.0.0.1:0", CertDir: certDir, ShutdownTimeout: time.Second, ResolveRegistrationPIN: testResolvePIN}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -300,10 +301,11 @@ func TestNewFailsClosedWhenObserverSetWithCCMEnabled(t *testing.T) {
 
 	var hook connobs.Hook
 	_, err := New(context.Background(), Config{
-		Addr:      "127.0.0.1:0",
-		CertDir:   t.TempDir(),
-		EnableCCM: true,
-		Observer:  &hook,
+		Addr:                   "127.0.0.1:0",
+		CertDir:                t.TempDir(),
+		ResolveRegistrationPIN: testResolvePIN,
+		EnableCCM:              true,
+		Observer:               &hook,
 	}, reg)
 
 	if err == nil {

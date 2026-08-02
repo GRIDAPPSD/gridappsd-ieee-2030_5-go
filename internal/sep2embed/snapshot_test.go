@@ -41,10 +41,11 @@ func newTestEmbed(t *testing.T) (*Embed, *registry.Registry) {
 	}
 
 	e, err := New(context.Background(), Config{
-		Addr:            "127.0.0.1:0",
-		CertDir:         t.TempDir(),
-		ShutdownTimeout: time.Second,
-		DefaultControl:  testDefaultControlSnapshot(),
+		Addr:                   "127.0.0.1:0",
+		CertDir:                t.TempDir(),
+		ResolveRegistrationPIN: testResolvePIN,
+		ShutdownTimeout:        time.Second,
+		DefaultControl:         testDefaultControlSnapshot(),
 	}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -105,7 +106,7 @@ func TestEndDevicesOnEmptyRegistryReturnsEmptyNotNilError(t *testing.T) {
 	t.Parallel()
 
 	reg := registry.New()
-	e, err := New(context.Background(), Config{Addr: "127.0.0.1:0", CertDir: t.TempDir(), ShutdownTimeout: time.Second}, reg)
+	e, err := New(context.Background(), Config{Addr: "127.0.0.1:0", CertDir: t.TempDir(), ShutdownTimeout: time.Second, ResolveRegistrationPIN: testResolvePIN}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -75,12 +75,11 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 // values, and three same-typed *uint32 positional arguments would be
 // trivially transposable at a call site.
 //
-// The zero value is valid and means "no policy supplied": nil
-// modesSupported leaves DERCapability.ModesSupported nil, nil
-// registrationPIN selects the per-device derived PIN (see
-// deriveRegistrationPIN), and nil pollRate omits the Registration's
-// optional pollRate attribute so the client falls back to the schema
-// default.
+// The zero value is NOT fully valid: nil modesSupported leaves
+// DERCapability.ModesSupported nil and nil pollRate omits the
+// Registration's optional pollRate attribute (both benign), but a nil
+// resolvePIN means no device has a configured registration PIN, and
+// seeding then fails closed rather than inventing one.
 type seedPolicy struct {
 	// modesSupported is the DERControlType bitmap (sep2config.SEP2Policy's
 	// own field of the same name) stamped onto every seeded
@@ -89,11 +88,16 @@ type seedPolicy struct {
 	// (GAGO-049).
 	modesSupported *uint32
 
-	// registrationPIN, when non-nil, overrides the per-device derived
-	// registration PIN on every seeded Registration. See
-	// sep2config.SEP2Policy.RegistrationPIN for why nil (per-device
-	// derivation) is the production default. Never logged.
-	registrationPIN *uint32
+	// resolvePIN returns the operator-supplied registration PIN for the
+	// device with the given canonical LFDI, and whether one is configured
+	// at all. It is the ONLY source of a PIN: there is deliberately no
+	// derived fallback, because the PIN must not be computable from device
+	// identity (see sep2config.SEP2Policy.RegistrationPINs).
+	//
+	// A nil resolvePIN means no PIN policy was supplied at all and is
+	// treated exactly like a resolver that answers false for every device:
+	// seeding refuses rather than inventing a value. Never logged.
+	resolvePIN func(lfdi string) (uint32, bool)
 
 	// pollRate, when non-nil, is stamped onto each seeded Registration's
 	// optional pollRate attribute. nil leaves it zero, which marshals as
@@ -196,15 +200,28 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	// advertised RegistrationLink resolvable: a link to a resource the
 	// store does not hold would 404, which reads to a client exactly like
 	// the missing-link failure this seeding exists to fix.
-	pin := policy.registrationPIN
-	if pin == nil {
-		derived := deriveRegistrationPIN(id)
-		pin = &derived
+	// sep.xsd's Registration sequence (lines 172-197) makes pIN
+	// minOccurs=1 at line 184, so a served Registration cannot legally omit
+	// it, and 0 is a schema-valid value that carries no meaning. There is
+	// therefore no safe default: refuse to provision the device instead.
+	// Failing here rather than at first GET is deliberate, because the
+	// EndDevice above already advertises a RegistrationLink, and a link to
+	// a resource the server will not serve is the exact failure mode the
+	// seeding path exists to prevent.
+	pin, ok := uint32(0), false
+	if policy.resolvePIN != nil {
+		pin, ok = policy.resolvePIN(id)
+	}
+	if !ok {
+		return fmt.Errorf(
+			"no registration PIN configured for device %s: set a per-device entry in "+
+				"sep2config.SEP2Policy.RegistrationPINs or a fleet-wide DefaultRegistrationPIN; "+
+				"a PIN must be operator-supplied and is never derived", id)
 	}
 
 	reg := sep2.Registration{
 		DateTimeRegistered: time.Now().Unix(),
-		PIN:                *pin,
+		PIN:                pin,
 	}
 	reg.Href = registrationHref
 	if policy.pollRate != nil {
@@ -298,55 +315,6 @@ func buildRTGMaxVar(maxQ *int64, deviceID string) (*sep2.ReactivePower, error) {
 		return nil, fmt.Errorf("device %q: %w", deviceID, err)
 	}
 	return &sep2.ReactivePower{Multiplier: mult, Value: value}, nil
-}
-
-// deriveRegistrationPIN returns the registration PIN for the device
-// identified by lfdi: a deterministic, schema-shaped value used when
-// policy supplies no explicit override.
-//
-// Shape: IEEE 2030.5's PINType (sep.xsd complexType "PINType") is a
-// "6 digit unsigned decimal integer (0 - 999999)", and section 10.6.4's
-// pIN documentation states it includes a checksum digit. This derives
-// the leading five digits from a SHA-256 digest of the LFDI and appends
-// the same digit-sum check digit derivePlaceholderSFDI uses (the spec
-// section 6.3.3 scheme), so the result is always within [0, 999999]:
-// the maximum is 99999*10+9, which is exactly 999999.
-//
-// Why derived rather than random: the PIN is a value the client may
-// re-fetch (the EPRI client GETs the Registration resource behind
-// EndDevice.RegistrationLink), so a value that changed between two GETs
-// of the same resource would be a wire-visible correctness bug. Deriving
-// from the LFDI alone makes the value stable across repeated GETs,
-// across re-seeding a fresh store, and across process restarts, with no
-// persisted state to keep in sync. Why per-device rather than one
-// fleet-wide constant: the PIN is a per-device fact in the spec's model,
-// and distinct LFDIs yield distinct digests.
-//
-// The digest input is domain-separated with a fixed prefix so this value
-// is not the same digest derivePlaceholderSFDI computes over the bare
-// LFDI; the two must not coincide.
-//
-// Security: this is not a cryptographic authenticator, and it is not
-// treated as one. What actually protects the Registration resource is
-// the ownership gate (acl.go's OwnsEndDevice plus core's own
-// dev.LFDI != lfdi compare in HandleGetRegistration), which this
-// function does not touch. The returned value is a shared secret in the
-// registration flow and is never logged, never placed in an error
-// message, and never included in a committed fixture.
-func deriveRegistrationPIN(lfdi string) uint32 {
-	sum := sha256.Sum256([]byte("ieee2030.5-registration-pin:" + lfdi))
-
-	raw := uint32(sum[0])<<24 | uint32(sum[1])<<16 | uint32(sum[2])<<8 | uint32(sum[3])
-	lead := raw % 100000
-
-	digits := fmt.Sprintf("%05d", lead)
-	check := 0
-	for _, c := range digits {
-		check += int(c - '0')
-	}
-	checkDigit := uint32((10 - check%10) % 10)
-
-	return lead*10 + checkDigit
 }
 
 // derivePlaceholderSFDI returns a syntactically valid (spec 6.3.3 shaped,

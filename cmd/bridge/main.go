@@ -420,8 +420,9 @@ func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(c
 // DefaultPolicy leaves it nil, so seeding is nil-safe until a real
 // policy value is configured.
 //
-// policy.RegistrationPIN and policy.DefaultPollRate are threaded through
-// as RegistrationPIN and RegistrationPollRate, the two policy inputs to
+// policy.ResolveRegistrationPIN and policy.DefaultPollRate are threaded
+// through as ResolveRegistrationPIN and RegistrationPollRate, the two
+// policy inputs to
 // the Registration resource seeded for every device. Both are nil under
 // DefaultPolicy: a nil PIN selects the stable per-device value derived
 // from that device's own LFDI (the production default), and a nil poll
@@ -442,16 +443,16 @@ func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.S
 		dest = sim.InputTopic(cfg.SimulationID)
 	}
 	return sep2embed.Config{
-		Addr:                  cfg.SEP2ServerAddr,
-		CertDir:               cfg.SEP2ServerCertDir,
-		Bus:                   bus,
-		TelemetryDestination:  dest,
-		TelemetrySimulationID: cfg.SimulationID,
-		DefaultControl:        policy.DefaultControl,
-		ModesSupported:        policy.ModesSupported,
-		RegistrationPIN:       policy.RegistrationPIN,
-		RegistrationPollRate:  policy.DefaultPollRate,
-		Observer:              connHook,
+		Addr:                   cfg.SEP2ServerAddr,
+		CertDir:                cfg.SEP2ServerCertDir,
+		Bus:                    bus,
+		TelemetryDestination:   dest,
+		TelemetrySimulationID:  cfg.SimulationID,
+		DefaultControl:         policy.DefaultControl,
+		ModesSupported:         policy.ModesSupported,
+		ResolveRegistrationPIN: policy.ResolveRegistrationPIN,
+		RegistrationPollRate:   policy.DefaultPollRate,
+		Observer:               connHook,
 	}
 }
 

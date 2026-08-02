@@ -71,6 +71,7 @@ func newMUPTestServer(t *testing.T, serials ...string) (string, []mupTestDevice)
 	mintCtx, mintCancel := context.WithCancel(context.Background())
 	if _, err := New(mintCtx, Config{
 		Addr: "127.0.0.1:0", CertDir: certDir, ShutdownTimeout: time.Second,
+		ResolveRegistrationPIN: testResolvePIN,
 	}, seedReg); err != nil {
 		mintCancel()
 		t.Fatalf("New (ca mint): %v", err)
@@ -138,6 +139,7 @@ func newMUPTestServer(t *testing.T, serials ...string) (string, []mupTestDevice)
 	t.Cleanup(cancel)
 	e, err := New(ctx, Config{
 		Addr: "127.0.0.1:0", CertDir: certDir, ShutdownTimeout: time.Second,
+		ResolveRegistrationPIN: testResolvePIN,
 	}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)

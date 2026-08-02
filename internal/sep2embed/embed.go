@@ -113,13 +113,18 @@ type Config struct {
 	// bitmap here.
 	ModesSupported *uint32
 
-	// RegistrationPIN overrides the registration PIN stamped onto the
-	// Registration New seeds for every registry entry. Nil (the zero
-	// value) selects the per-device value derived from that device's own
-	// LFDI, which is the production default; callers should source this
-	// from sep2config.SEP2Policy.RegistrationPIN. Never logged: see that
-	// field's doc comment and deriveRegistrationPIN.
-	RegistrationPIN *uint32
+	// ResolveRegistrationPIN returns the operator-supplied registration
+	// PIN for the device with the given canonical LFDI, and whether one is
+	// configured. Callers should pass
+	// sep2config.SEP2Policy.ResolveRegistrationPIN.
+	//
+	// There is deliberately no derived fallback: the PIN must not be
+	// computable from device identity. Nil, or a resolver that answers
+	// false for a device New is asked to seed, makes New fail with an
+	// error naming that device, because sep.xsd:184 makes pIN minOccurs=1
+	// in the Registration sequence and 0 is a meaningless schema-valid
+	// value. Never logged.
+	ResolveRegistrationPIN func(lfdi string) (uint32, bool)
 
 	// RegistrationPollRate is stamped onto each seeded Registration's
 	// optional pollRate attribute. Nil (the zero value) omits the
@@ -198,9 +203,9 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 
 	stores := newStores()
 	seeding := seedPolicy{
-		modesSupported:  cfg.ModesSupported,
-		registrationPIN: cfg.RegistrationPIN,
-		pollRate:        cfg.RegistrationPollRate,
+		modesSupported: cfg.ModesSupported,
+		resolvePIN:     cfg.ResolveRegistrationPIN,
+		pollRate:       cfg.RegistrationPollRate,
 	}
 	if err := seedStores(ctx, stores, reg, seeding); err != nil {
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)

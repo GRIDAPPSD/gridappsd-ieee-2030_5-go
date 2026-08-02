@@ -42,7 +42,7 @@ func twoDeviceFixture(t *testing.T) (reg *registry.Registry, st *assembly.Stores
 	}
 
 	st = newStores()
-	if err := seedStores(context.Background(), st, reg, seedPolicy{}); err != nil {
+	if err := seedStores(context.Background(), st, reg, seedPolicy{resolvePIN: testResolvePIN}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 

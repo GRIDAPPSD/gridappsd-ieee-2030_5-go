@@ -122,9 +122,10 @@ func TestACLTwoDeviceCrossAccessMatrix(t *testing.T) {
 	t.Cleanup(cancel)
 
 	e, err := New(ctx, Config{
-		Addr:            "127.0.0.1:0",
-		CertDir:         certDir,
-		ShutdownTimeout: time.Second,
+		Addr:                   "127.0.0.1:0",
+		CertDir:                certDir,
+		ResolveRegistrationPIN: testResolvePIN,
+		ShutdownTimeout:        time.Second,
 	}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
