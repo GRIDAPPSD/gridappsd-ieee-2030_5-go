@@ -71,19 +71,19 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 	}))
 	defer srvB.Close()
 
-	lfdiA, _ := reg.LFDI("mrid-a")
-	lfdiB, _ := reg.LFDI("mrid-b")
+	edevA := urlIndexFor(t, st, "mrid-a")
+	edevB := urlIndexFor(t, st, "mrid-b")
 
 	if err := st.Subscriptions.Create(ctx, "sub-a", sep2.Subscription{
-		SubscribableResource: sep2.SubscribableResource{Resource: sep2.Resource{Href: "/edev/" + lfdiA + "/sub/1"}},
-		SubscribedResource:   derProgramListHref(lfdiA, controlFSAID),
+		SubscribableResource: sep2.SubscribableResource{Resource: sep2.Resource{Href: "/edev/" + edevA + "/sub/1"}},
+		SubscribedResource:   derProgramListHref(edevA, controlFSAID),
 		NotificationURI:      srvA.URL + "/notify",
 	}); err != nil {
 		t.Fatalf("seed subscription A: %v", err)
 	}
 	if err := st.Subscriptions.Create(ctx, "sub-b", sep2.Subscription{
-		SubscribableResource: sep2.SubscribableResource{Resource: sep2.Resource{Href: "/edev/" + lfdiB + "/sub/1"}},
-		SubscribedResource:   derProgramListHref(lfdiB, controlFSAID),
+		SubscribableResource: sep2.SubscribableResource{Resource: sep2.Resource{Href: "/edev/" + edevB + "/sub/1"}},
+		SubscribedResource:   derProgramListHref(edevB, controlFSAID),
 		NotificationURI:      srvB.URL + "/notify",
 	}); err != nil {
 		t.Fatalf("seed subscription B: %v", err)
@@ -100,7 +100,7 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 	}
 
 	// Field fidelity: A's control carries exactly the delta's value.
-	scopeA := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+	scopeA := derControlScope(edevA, controlFSAID, controlDERProgramID)
 	control, err := st.DERControls.Get(ctx, scopeA, activeControlID)
 	if err != nil {
 		t.Fatalf("DERControls.Get(A): %v", err)
@@ -113,7 +113,7 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 	}
 
 	// Owner scoping: device B's own scope carries NO control at all.
-	scopeB := derControlScope(lfdiB, controlFSAID, controlDERProgramID)
+	scopeB := derControlScope(edevB, controlFSAID, controlDERProgramID)
 	if _, err := st.DERControls.Get(ctx, scopeB, activeControlID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("DERControls.Get(B) = (%v), want store.ErrNotFound (control must not leak to device B)", err)
 	}
@@ -158,8 +158,8 @@ func TestApplyControlDeltaRefusesUnknownDevice(t *testing.T) {
 	}
 
 	// Neither device's scope gained a control from the refused delta.
-	lfdiA, _ := reg.LFDI("mrid-a")
-	scopeA := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+	edevA := urlIndexFor(t, st, "mrid-a")
+	scopeA := derControlScope(edevA, controlFSAID, controlDERProgramID)
 	if _, err := st.DERControls.Get(ctx, scopeA, activeControlID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("DERControls.Get(A) after refused delta = (%v), want store.ErrNotFound", err)
 	}
@@ -220,8 +220,8 @@ func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
 		t.Fatalf("ApplyControlDelta(second): %v", err)
 	}
 
-	lfdiA, _ := reg.LFDI("mrid-a")
-	scope := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+	edevA := urlIndexFor(t, st, "mrid-a")
+	scope := derControlScope(edevA, controlFSAID, controlDERProgramID)
 
 	// Exactly one control exists at the active slot; List confirms no
 	// second entry was created alongside it.
@@ -280,10 +280,10 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 		t.Fatalf("ApplyControlDelta: %v", err)
 	}
 
-	lfdiA, _ := reg.LFDI("mrid-a")
+	edevA := urlIndexFor(t, st, "mrid-a")
 
 	// The DERProgram's own DefaultDERControlLink is populated.
-	program, err := st.DERPrograms.ForParent(lfdiA).Get(ctx, controlDERProgramID)
+	program, err := st.DERPrograms.ForParent(edevA).Get(ctx, controlDERProgramID)
 	if err != nil {
 		t.Fatalf("DERPrograms.Get: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 
 	// The link resolves: the store holds a DefaultDERControl at this
 	// program's scope whose Href matches the link exactly.
-	scope := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+	scope := derControlScope(edevA, controlFSAID, controlDERProgramID)
 	dderc, err := st.DefaultDERControls.Get(ctx, scope, singletonKey)
 	if err != nil {
 		t.Fatalf("DefaultDERControls.Get: %v", err)
@@ -334,8 +334,8 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 
 	// Owner scoping: device B never had ApplyControlDelta called for it,
 	// so it must have no DERProgram, and therefore no DefaultDERControl.
-	lfdiB, _ := reg.LFDI("mrid-b")
-	if _, err := st.DERPrograms.ForParent(lfdiB).Get(ctx, controlDERProgramID); !errors.Is(err, store.ErrNotFound) {
+	edevB := urlIndexFor(t, st, "mrid-b")
+	if _, err := st.DERPrograms.ForParent(edevB).Get(ctx, controlDERProgramID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("DERPrograms.Get(B) = (%v), want store.ErrNotFound (program must not leak to device B)", err)
 	}
 }
@@ -542,8 +542,8 @@ func TestApplyControlDeltaRefusesPercentModeAttributes(t *testing.T) {
 		})
 	}
 
-	lfdiA, _ := reg.LFDI("mrid-a")
-	scopeA := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+	edevA := urlIndexFor(t, st, "mrid-a")
+	scopeA := derControlScope(edevA, controlFSAID, controlDERProgramID)
 	if _, err := st.DERControls.Get(ctx, scopeA, activeControlID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("DERControls.Get(A) after refused percent-mode deltas = (%v), want store.ErrNotFound", err)
 	}

@@ -92,8 +92,7 @@ func TestGAGO044SignConventionPinned(t *testing.T) {
 				t.Fatalf("ApplyControlDelta: %v", err)
 			}
 
-			lfdiA, _ := reg.LFDI("mrid-a")
-			scope := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+			scope := derControlScope(urlIndexFor(t, st, "mrid-a"), controlFSAID, controlDERProgramID)
 			control, err := st.DERControls.Get(ctx, scope, activeControlID)
 			if err != nil {
 				t.Fatalf("DERControls.Get: %v", err)
@@ -197,8 +196,7 @@ func TestGAGO044CaptureBridgeSetpoints(t *testing.T) {
 			t.Fatalf("ApplyControlDelta(%s): %v", cmd.name, err)
 		}
 
-		lfdiA, _ := reg.LFDI("mrid-a")
-		scope := derControlScope(lfdiA, controlFSAID, controlDERProgramID)
+		scope := derControlScope(urlIndexFor(t, st, "mrid-a"), controlFSAID, controlDERProgramID)
 		control, err := st.DERControls.Get(ctx, scope, activeControlID)
 		if err != nil {
 			t.Fatalf("DERControls.Get(%s): %v", cmd.name, err)

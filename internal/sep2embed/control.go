@@ -134,26 +134,36 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		return fmt.Errorf("%w: attribute %q (want prefix %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix)
 	}
 
-	// edevID must be the device's ADVERTISED store id, which is Entry.LFDI:
-	// seed.go keys stores.EndDevices (and every /edev/{id} href) by the
-	// canonical LFDI alone, with no separate alias. reg.Get resolves the
-	// delta's mRID to its Entry; entry.LFDI is then the same id the
-	// device is advertised under.
+	// edevID must be the device's ADVERTISED store id, which since
+	// IEEECORE-URLINDEX is the opaque URL index rather than the LFDI.
+	// reg.Get resolves the delta's mRID to its Entry; the index allocator
+	// then maps that same mRID (its device key, as used by seed.go) to the
+	// id the device is actually seeded and advertised under.
 	entry, ok := reg.Get(delta.Object)
 	if !ok {
 		return fmt.Errorf("%w: mrid=%q", ErrUnknownControlDevice, delta.Object)
 	}
-	edevID := entry.LFDI
+
+	// IndexFor, not Allocate: this path must never mint an index. An mRID
+	// with no assignment means the device was never seeded, which is the
+	// drift condition the check below exists to catch. Allocating here would
+	// manufacture an id for a device that has no EndDevice record and turn a
+	// clean failure into a dangling control.
+	edevID, ok := stores.EndDeviceIndexes.IndexFor(entry.MRID)
+	if !ok {
+		return fmt.Errorf("%w: mrid=%q has no seeded URL index", ErrUnknownControlDevice, entry.MRID)
+	}
 
 	// Defense in depth: the registry and stores.EndDevices are seeded
 	// together (bridge.bootstrapRegistry + sep2embed.New), but if they
 	// were ever to drift, fail closed rather than write a DERControl
 	// with no corresponding seeded device.
 	if _, err := stores.EndDevices.Get(ctx, edevID); err != nil {
-		return fmt.Errorf("%w: edev %q not seeded: %v", ErrUnknownControlDevice, edevID, err)
+		return fmt.Errorf("%w: edev %q (mrid=%q) not seeded: %v",
+			ErrUnknownControlDevice, edevID, entry.MRID, err)
 	}
 
-	if err := ensureDERProgram(ctx, stores, edevID, controlFSAID, controlDERProgramID, defaultControl); err != nil {
+	if err := ensureDERProgram(ctx, stores, edevID, entry.LFDI, controlFSAID, controlDERProgramID, defaultControl); err != nil {
 		return fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
 	}
 
@@ -181,7 +191,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 
 	control := sep2.DERControl{}
 	control.Href = "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
-	control.MRID = edevID + "-" + activeControlID
+	control.MRID = entry.LFDI + "-" + activeControlID
 	control.EventStatus = &sep2.EventStatus{
 		CurrentStatus: sep2.EventStatusActive,
 		DateTime:      time.Now().UTC().Unix(),
@@ -230,7 +240,12 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 // DefaultDERControl) this function creates is control-flow plumbing
 // local to the DOWN path, created lazily on first use rather than at
 // bulk seed time.
-func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, fsaID, derpID string, defaultControl sep2.DefaultDERControl) error {
+// edevID addresses the resources (it is the URL index); mridBase is the
+// device's canonical LFDI and seeds the wire-level MRID fields. The two are
+// deliberately separate arguments: an MRID is an identity value that must not
+// become a URL-addressing artifact, and building one from the index would
+// make it collide across restarts once indices are reassigned.
+func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mridBase, fsaID, derpID string, defaultControl sep2.DefaultDERControl) error {
 	inner := stores.DERPrograms.ForParent(edevID)
 	if _, err := inner.Get(ctx, derpID); err == nil {
 		return nil
@@ -240,7 +255,7 @@ func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, fsaI
 
 	dderc := defaultControl.Copy()
 	dderc.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/dderc"
-	dderc.MRID = edevID + "-dderc"
+	dderc.MRID = mridBase + "-dderc"
 
 	scope := derControlScope(edevID, fsaID, derpID)
 	if err := stores.DefaultDERControls.Create(ctx, scope, singletonKey, dderc); err != nil {

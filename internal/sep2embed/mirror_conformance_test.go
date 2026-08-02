@@ -44,12 +44,20 @@ import (
 // from Resource (sep.xsd:5393), optional pollRate, then a repeated
 // MirrorUsagePoint child.
 
-// mupTestDevice is one device's mTLS client plus the canonical LFDI its
-// certificate derives to, so a test can address the device's own
-// resources and assert on ownership-scoped behavior.
+// mupTestDevice is one device's mTLS client, the canonical LFDI its
+// certificate derives to, and the opaque URL index the server addresses it
+// by, so a test can reach the device's own resources and assert on
+// ownership-scoped behavior.
+//
+// lfdi and edevID are deliberately separate fields: lfdi is IDENTITY (what
+// the ownership gate matches the presented certificate against) and edevID is
+// ADDRESSING (the {id} segment of the device's URLs). They stopped being the
+// same value at IEEECORE-URLINDEX, and a test that used one for the other
+// would be asserting the coupling that change removed.
 type mupTestDevice struct {
 	client *http.Client
 	lfdi   string
+	edevID string
 }
 
 // newMUPTestServer stands up an Embed whose registry contains one entry
@@ -155,6 +163,12 @@ func newMUPTestServer(t *testing.T, serials ...string) (string, []mupTestDevice)
 		}
 	})
 
+	// The URL index is only assigned once seeding has run inside New, so it
+	// is backfilled here rather than at client-construction time above.
+	for i := range devices {
+		devices[i].edevID = embedURLIndex(t, e, "mrid-"+serials[i])
+	}
+
 	return "https://" + e.Addr(), devices
 }
 
@@ -180,10 +194,16 @@ func getSEP2(t *testing.T, d mupTestDevice, url string) (int, []byte) {
 }
 
 // postMirrorUsagePoint POSTs a MirrorUsagePoint document and returns the
-// status plus served bytes. claimLFDI is written into the document's
-// deviceLFDI element so a test can attempt to claim another device's
-// identity.
-func postMirrorUsagePoint(t *testing.T, d mupTestDevice, baseURL, mrid, claimLFDI string) (int, []byte) {
+// status, the Location header, and the served bytes. claimLFDI is written
+// into the document's deviceLFDI element so a test can attempt to claim
+// another device's identity.
+//
+// Location is returned because IEEE 2030.5-2018 section 10.11.3 rule (a)(3)
+// makes it the ONLY output of a successful POST: the 201 carries no body
+// (IEEECORE-MMR), and the EPRI reference client's process_response never
+// reads a POST response body, it follows Location with a fresh GET. A test
+// that wants to inspect what was actually created must do the same.
+func postMirrorUsagePoint(t *testing.T, d mupTestDevice, baseURL, mrid, claimLFDI string) (int, string, []byte) {
 	t.Helper()
 	doc := `<MirrorUsagePoint xmlns="urn:ieee:std:2030.5:ns">` +
 		`<mRID>` + mrid + `</mRID>` +
@@ -206,7 +226,7 @@ func postMirrorUsagePoint(t *testing.T, d mupTestDevice, baseURL, mrid, claimLFD
 	if err != nil {
 		t.Fatalf("read POST /mup body: %v", err)
 	}
-	return resp.StatusCode, body
+	return resp.StatusCode, resp.Header.Get("Location"), body
 }
 
 // rootElement decodes only the first start element of served bytes and
@@ -297,7 +317,7 @@ func TestGETMirrorUsagePointListChildFollowsSchemaSequence(t *testing.T) {
 	dev := devices[0]
 
 	const mrid = "4DA1B1B4B1D0D0D0D0D0D0D0D0D0D0D0"
-	status, body := postMirrorUsagePoint(t, dev, baseURL, mrid, dev.lfdi)
+	status, _, body := postMirrorUsagePoint(t, dev, baseURL, mrid, dev.lfdi)
 	if status != http.StatusCreated {
 		t.Fatalf("POST /mup status = %d, want 201; body=%s", status, body)
 	}
@@ -364,9 +384,9 @@ func TestMirrorUsagePointAndRegistrationRootElementsDiffer(t *testing.T) {
 	if mupStatus != http.StatusOK {
 		t.Fatalf("GET /mup status = %d, want 200; body=%s", mupStatus, mupBody)
 	}
-	rgStatus, rgBody := getSEP2(t, dev, baseURL+"/edev/"+dev.lfdi+"/rg")
+	rgStatus, rgBody := getSEP2(t, dev, baseURL+"/edev/"+dev.edevID+"/rg")
 	if rgStatus != http.StatusOK {
-		t.Fatalf("GET /edev/{lfdi}/rg status = %d, want 200; body=%s", rgStatus, rgBody)
+		t.Fatalf("GET /edev/{id}/rg status = %d, want 200; body=%s", rgStatus, rgBody)
 	}
 
 	_, mupRoot := rootElement(t, mupBody)
@@ -405,18 +425,35 @@ func TestPOSTMirrorUsagePointStampsCallerLFDIOverClaimedValue(t *testing.T) {
 
 	// Device B POSTs a MirrorUsagePoint claiming device A's LFDI.
 	const mrid = "5EB2C2C5C2E1E1E1E1E1E1E1E1E1E1E1"
-	status, body := postMirrorUsagePoint(t, deviceB, baseURL, mrid, deviceA.lfdi)
+	status, location, body := postMirrorUsagePoint(t, deviceB, baseURL, mrid, deviceA.lfdi)
 	if status != http.StatusCreated {
 		t.Fatalf("POST /mup status = %d, want 201; body=%s", status, body)
 	}
 
-	// The created resource must be attributed to device B, the actual
-	// authenticated caller, never to the LFDI it tried to claim.
-	if !bytes.Contains(body, []byte("<deviceLFDI>"+deviceB.lfdi+"</deviceLFDI>")) {
-		t.Errorf("POST /mup did not stamp the caller's own LFDI; body=%s", body)
+	// Section 10.11.3 rule (a)(3): the 201 carries the Location header and no
+	// body (IEEECORE-MMR). Assert both halves, so a regression that starts
+	// echoing the created resource back is caught here rather than by a
+	// strict client in the field.
+	if len(bytes.TrimSpace(body)) != 0 {
+		t.Errorf("POST /mup 201 carried a body, want none per section 10.11.3 rule (a)(3); body=%s", body)
 	}
-	if bytes.Contains(body, []byte(deviceA.lfdi)) {
-		t.Errorf("POST /mup echoed the claimed foreign LFDI, allowing identity spoofing; body=%s", body)
+	if location == "" {
+		t.Fatal("POST /mup 201 has no Location header; a client has no way to reach the created resource")
+	}
+
+	// The created resource must be attributed to device B, the actual
+	// authenticated caller, never to the LFDI it tried to claim. Read it
+	// back at its own URL, the way the EPRI client does, since the POST no
+	// longer echoes it.
+	status, created := getSEP2(t, deviceB, baseURL+location)
+	if status != http.StatusOK {
+		t.Fatalf("GET %s (Location from POST) status = %d, want 200; body=%s", location, status, created)
+	}
+	if !bytes.Contains(created, []byte("<deviceLFDI>"+deviceB.lfdi+"</deviceLFDI>")) {
+		t.Errorf("created MirrorUsagePoint did not stamp the caller's own LFDI; body=%s", created)
+	}
+	if bytes.Contains(created, []byte(deviceA.lfdi)) {
+		t.Errorf("created MirrorUsagePoint carries the claimed foreign LFDI, allowing identity spoofing; body=%s", created)
 	}
 
 	// The stored resource, read back, must carry the same attribution:
@@ -443,7 +480,7 @@ func TestCrossDeviceEndDeviceScopedResourcesRemainOwnerGated(t *testing.T) {
 	baseURL, devices := newMUPTestServer(t, "mup-acl-a", "mup-acl-b")
 	deviceA, deviceB := devices[0], devices[1]
 
-	status, body := getSEP2(t, deviceB, baseURL+"/edev/"+deviceA.lfdi+"/rg")
+	status, body := getSEP2(t, deviceB, baseURL+"/edev/"+deviceA.edevID+"/rg")
 	if status != http.StatusForbidden {
 		t.Fatalf("cross-device GET /edev/{other}/rg status = %d, want 403; body=%s", status, body)
 	}
@@ -453,7 +490,7 @@ func TestCrossDeviceEndDeviceScopedResourcesRemainOwnerGated(t *testing.T) {
 
 	// The owner still reads its own Registration, so the gate denies by
 	// ownership rather than by denying everyone.
-	status, ownBody := getSEP2(t, deviceA, baseURL+"/edev/"+deviceA.lfdi+"/rg")
+	status, ownBody := getSEP2(t, deviceA, baseURL+"/edev/"+deviceA.edevID+"/rg")
 	if status != http.StatusOK {
 		t.Fatalf("owner GET of its own /rg status = %d, want 200; body=%s", status, ownBody)
 	}

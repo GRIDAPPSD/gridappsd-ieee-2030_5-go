@@ -216,9 +216,30 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}, Timeout: 5 * time.Second}
 
 	baseURL := "https://" + embed.Addr()
+
+	// Resource URLs address a device by its opaque server-assigned index
+	// rather than by its LFDI (IEEECORE-URLINDEX), so the {id} segment has to
+	// be discovered rather than built from deviceLFDI. The EndDevices
+	// snapshot is the supported way out of this package: it carries the
+	// device's addressing ID alongside its identity LFDI.
+	snaps, err := embed.EndDevices(context.Background())
+	if err != nil {
+		t.Fatalf("EndDevices: %v", err)
+	}
+	edevID := ""
+	for _, s := range snaps {
+		if s.LFDI == deviceLFDI {
+			edevID = s.ID
+			break
+		}
+	}
+	if edevID == "" {
+		t.Fatalf("no seeded EndDevice for LFDI %q; cannot address its resources", deviceLFDI)
+	}
+
 	var list sep2.DERControlList
 	waitFor(3*time.Second, func() bool {
-		resp, err := client.Get(baseURL + "/edev/" + deviceLFDI + "/fsa/1/derp/1/derc")
+		resp, err := client.Get(baseURL + "/edev/" + edevID + "/fsa/1/derp/1/derc")
 		if err != nil {
 			return false
 		}

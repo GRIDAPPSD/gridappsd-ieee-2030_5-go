@@ -149,23 +149,34 @@ func TestACLTwoDeviceCrossAccessMatrix(t *testing.T) {
 	clientA := deviceClient(t, certA, keyA, caCertPEM)
 	clientB := deviceClient(t, certB, keyB, caCertPEM)
 
+	// Resource URLs address a device by its opaque server-assigned index, not
+	// by its LFDI (IEEECORE-URLINDEX). The LFDI above is still the IDENTITY
+	// the ownership gate matches the client certificate against, which is
+	// exactly what this matrix exercises: each request below is authorized on
+	// the presenting certificate, never on the index it names.
+	edevA := embedURLIndex(t, e, "mrid-device-a")
+	edevB := embedURLIndex(t, e, "mrid-device-b")
+	if edevA == edevB {
+		t.Fatalf("devices A and B share URL index %q; the fixture cannot test cross-device access", edevA)
+	}
+
 	// Own-device reads succeed; cross-device reads are denied.
 
-	assertStatus(t, clientA, http.MethodGet, baseURL+"/edev/"+lfdiA, nil, http.StatusOK,
+	assertStatus(t, clientA, http.MethodGet, baseURL+"/edev/"+edevA, nil, http.StatusOK,
 		"device A reading its own EndDevice")
-	assertStatus(t, clientA, http.MethodGet, baseURL+"/edev/"+lfdiB, nil, http.StatusForbidden,
+	assertStatus(t, clientA, http.MethodGet, baseURL+"/edev/"+edevB, nil, http.StatusForbidden,
 		"device A reading device B's EndDevice (cross-device read)")
-	assertStatus(t, clientB, http.MethodGet, baseURL+"/edev/"+lfdiB, nil, http.StatusOK,
+	assertStatus(t, clientB, http.MethodGet, baseURL+"/edev/"+edevB, nil, http.StatusOK,
 		"device B reading its own EndDevice")
-	assertStatus(t, clientB, http.MethodGet, baseURL+"/edev/"+lfdiA, nil, http.StatusForbidden,
+	assertStatus(t, clientB, http.MethodGet, baseURL+"/edev/"+edevA, nil, http.StatusForbidden,
 		"device B reading device A's EndDevice (cross-device read)")
 
 	// A nested own-vs-cross resource, not just the EndDevice singleton
 	// itself: proves ownership scoping applies to the whole /edev/{id}
 	// subtree, per the design's explicit sub-resource list.
-	assertStatus(t, clientA, http.MethodGet, baseURL+"/edev/"+lfdiA+"/der", nil, http.StatusOK,
+	assertStatus(t, clientA, http.MethodGet, baseURL+"/edev/"+edevA+"/der", nil, http.StatusOK,
 		"device A reading its own DER list")
-	assertStatus(t, clientA, http.MethodGet, baseURL+"/edev/"+lfdiB+"/der", nil, http.StatusForbidden,
+	assertStatus(t, clientA, http.MethodGet, baseURL+"/edev/"+edevB+"/der", nil, http.StatusForbidden,
 		"device A reading device B's DER list (cross-device read)")
 
 	// Own-device writes reach the handler; cross-device writes are denied.
@@ -177,16 +188,16 @@ func TestACLTwoDeviceCrossAccessMatrix(t *testing.T) {
 
 	// PUT /edev/{id}/ps on A's own subtree must reach the handler (204
 	// No Content on a valid upsert), not a 403 from the ACL.
-	assertStatus(t, clientA, http.MethodPut, baseURL+"/edev/"+lfdiA+"/ps", psBody, http.StatusNoContent,
+	assertStatus(t, clientA, http.MethodPut, baseURL+"/edev/"+edevA+"/ps", psBody, http.StatusNoContent,
 		"device A writing its own PowerStatus")
 
 	// The same PUT against B's subtree, issued by A, must be denied by
 	// the ACL before the handler ever sees it.
-	assertStatus(t, clientA, http.MethodPut, baseURL+"/edev/"+lfdiB+"/ps", psBody, http.StatusForbidden,
+	assertStatus(t, clientA, http.MethodPut, baseURL+"/edev/"+edevB+"/ps", psBody, http.StatusForbidden,
 		"device A writing device B's PowerStatus (cross-device write)")
 
 	// And the reverse: B cannot write A's PowerStatus either.
-	assertStatus(t, clientB, http.MethodPut, baseURL+"/edev/"+lfdiA+"/ps", psBody, http.StatusForbidden,
+	assertStatus(t, clientB, http.MethodPut, baseURL+"/edev/"+edevA+"/ps", psBody, http.StatusForbidden,
 		"device B writing device A's PowerStatus (cross-device write)")
 
 	// Common/global resources are reachable by any authenticated device.
