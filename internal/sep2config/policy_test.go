@@ -1,7 +1,9 @@
 package sep2config
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -96,3 +98,59 @@ func TestDefaultPolicy_ModesAndRatesUnset(t *testing.T) {
 		t.Errorf("DefaultPostRate = %v, want nil (unset)", *got.DefaultPostRate)
 	}
 }
+
+// TestValidateRegistrationPIN covers the PINType range guard on the
+// operator-configurable registration PIN. sep.xsd's complexType "PINType"
+// is a "6 digit unsigned decimal integer (0 - 999999)", so a configured
+// value above that bound cannot be represented on the wire and must be
+// refused at boot rather than silently truncated into a different PIN.
+func TestValidateRegistrationPIN(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pin     *uint32
+		wantErr bool
+	}{
+		{name: "nil selects the per-device derived default", pin: nil, wantErr: false},
+		{name: "zero is a valid PINType value", pin: u32(0), wantErr: false},
+		{name: "the maximum is inclusive", pin: u32(MaxRegistrationPIN), wantErr: false},
+		{name: "one past the maximum is refused", pin: u32(MaxRegistrationPIN + 1), wantErr: true},
+		{name: "a seven digit value is refused", pin: u32(1234567), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := SEP2Policy{RegistrationPIN: tt.pin}.ValidateRegistrationPIN()
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateRegistrationPIN returned nil, want an error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateRegistrationPIN returned %v, want nil", err)
+			}
+			// The PIN is a shared secret in the registration flow and
+			// boot errors are logged, so the message must name the
+			// bound without echoing the rejected value.
+			if err != nil && tt.pin != nil {
+				if strings.Contains(err.Error(), fmt.Sprintf("%d", *tt.pin)) {
+					t.Error("ValidateRegistrationPIN error message echoes the rejected PIN value")
+				}
+			}
+		})
+	}
+}
+
+// TestDefaultPolicyLeavesRegistrationPINUnset locks the production
+// default: no compiled-in fleet-wide PIN, so seeding derives a stable
+// per-device value instead of every device sharing one constant.
+func TestDefaultPolicyLeavesRegistrationPINUnset(t *testing.T) {
+	t.Parallel()
+
+	if got := DefaultPolicy().RegistrationPIN; got != nil {
+		t.Error("DefaultPolicy sets a compiled-in RegistrationPIN; it must stay nil so each device gets its own derived PIN")
+	}
+}
+
+func u32(v uint32) *uint32 { return &v }

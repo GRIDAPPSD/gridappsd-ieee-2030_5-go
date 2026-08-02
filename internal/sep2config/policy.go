@@ -13,7 +13,11 @@
 // cannot carry lives here.
 package sep2config
 
-import "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+import (
+	"fmt"
+
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+)
 
 // SEP2Policy is loaded once at bridge boot. Nothing in this package reads
 // or seeds any store: consuming SEP2Policy is the job of later cards
@@ -41,6 +45,47 @@ type SEP2Policy struct {
 	// spec's) default rate.
 	DefaultPollRate *uint32
 	DefaultPostRate *uint32
+
+	// RegistrationPIN overrides the registration PIN stamped onto every
+	// seeded Registration resource (IEEE 2030.5 section 10.6.4; sep.xsd
+	// complexType "Registration", element pIN of type PINType).
+	//
+	// Nil (the default) is the normal production setting: seeding derives
+	// a stable per-device PIN from that device's own canonical LFDI, which
+	// matches the spec's per-device semantics (a PIN is a per-device fact,
+	// conventionally printed on the device label) and needs no
+	// configuration to boot. Set this only for an interop or conformance
+	// harness whose client is compiled to expect one known fleet-wide
+	// value; note that doing so gives every device the SAME PIN, which is
+	// weaker than the per-device default and is why it is not the default.
+	//
+	// A configured value must be in PINType's range [0, 999999];
+	// ValidateRegistrationPIN reports one that is not. The value is a
+	// shared secret in the registration flow: it is never logged, and no
+	// error message this package produces embeds it.
+	RegistrationPIN *uint32
+}
+
+// MaxRegistrationPIN is the inclusive upper bound of IEEE 2030.5's
+// PINType: "6 digit unsigned decimal integer (0 - 999999)" (sep.xsd
+// complexType "PINType").
+const MaxRegistrationPIN uint32 = 999999
+
+// ValidateRegistrationPIN reports whether p.RegistrationPIN, when set, is
+// within PINType's range. A nil RegistrationPIN is valid (it selects the
+// per-device derived default).
+//
+// The returned error names the field and the bound but deliberately does
+// NOT echo the offending value: the PIN is a shared secret in the
+// registration flow, and configuration errors are commonly logged.
+func (p SEP2Policy) ValidateRegistrationPIN() error {
+	if p.RegistrationPIN == nil {
+		return nil
+	}
+	if *p.RegistrationPIN > MaxRegistrationPIN {
+		return fmt.Errorf("sep2config: RegistrationPIN exceeds the IEEE 2030.5 PINType maximum of %d", MaxRegistrationPIN)
+	}
+	return nil
 }
 
 // DefaultPolicy returns the compiled-in, spec-sane SEP2Policy defaults, so
