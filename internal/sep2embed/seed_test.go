@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
 
@@ -212,7 +213,7 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 func TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil(t *testing.T) {
 	t.Parallel()
 
-	const wantModes uint32 = 0x00000005 // arbitrary non-zero test bitmap
+	const wantModes sep2.DERControlType = 0x00000005 // arbitrary non-zero test bitmap
 
 	reg := registry.New()
 	entries := []registry.Entry{

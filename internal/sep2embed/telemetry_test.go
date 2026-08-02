@@ -23,7 +23,7 @@ func TestMapDERStatusToDifferences(t *testing.T) {
 
 	conn := sep2.ConnectStatusType{Value: 1, DateTime: 100}
 	mode := sep2.OperationalModeStatusType{Value: 2, DateTime: 200}
-	alarm := uint32(7)
+	alarm := sep2.HexBinary32(7)
 
 	status := sep2.DERStatus{
 		GenConnectStatus:      &conn,
@@ -47,13 +47,16 @@ func TestMapDERStatusToDifferences(t *testing.T) {
 		byAttr[d.Attribute] = d
 	}
 
-	if v, ok := byAttr["DERStatus.genConnectStatus"]; !ok || v.Value != uint8(1) {
+	// ConnectStatusType.Value is sep2.HexBinary8 (sep.xsd:4471,
+	// IEEECORE-047), unlike its OperationalModeStatusType sibling below,
+	// which stays plain UInt8 (sep.xsd:4559) and so stays uint8 here too.
+	if v, ok := byAttr["DERStatus.genConnectStatus"]; !ok || v.Value != sep2.HexBinary8(1) {
 		t.Errorf("DERStatus.genConnectStatus = %+v, want Value=1", v)
 	}
 	if v, ok := byAttr["DERStatus.operationalModeStatus"]; !ok || v.Value != uint8(2) {
 		t.Errorf("DERStatus.operationalModeStatus = %+v, want Value=2", v)
 	}
-	if v, ok := byAttr["DERStatus.alarmStatus"]; !ok || v.Value != uint32(7) {
+	if v, ok := byAttr["DERStatus.alarmStatus"]; !ok || v.Value != sep2.HexBinary32(7) {
 		t.Errorf("DERStatus.alarmStatus = %+v, want Value=7", v)
 	}
 }
@@ -136,7 +139,7 @@ func TestPublishDERStatusSendsMappedDifferences(t *testing.T) {
 	pub := &fakeBusPublisher{}
 	conn := sep2.ConnectStatusType{Value: 1}
 	mode := sep2.OperationalModeStatusType{Value: 2}
-	alarm := uint32(9)
+	alarm := sep2.HexBinary32(9)
 	status := sep2.DERStatus{GenConnectStatus: &conn, OperationalModeStatus: &mode, AlarmStatus: &alarm}
 
 	now := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)

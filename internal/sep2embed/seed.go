@@ -83,10 +83,13 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 type seedPolicy struct {
 	// modesSupported is the DERControlType bitmap (sep2config.SEP2Policy's
 	// own field of the same name) stamped onto every seeded
-	// DERCapability. nil means seedOne leaves the seeded
+	// DERCapability. Typed as *sep2.DERControlType (IEEECORE-047),
+	// matching sep2.DERCapability.ModesSupported's own field type
+	// exactly, so this struct assigns straight through with no
+	// conversion at line ~251 below. nil means seedOne leaves the seeded
 	// DERCapability.ModesSupported nil rather than fabricating a bitmap
 	// (GAGO-049).
-	modesSupported *uint32
+	modesSupported *sep2.DERControlType
 
 	// resolvePIN returns the operator-supplied registration PIN for the
 	// device with the given canonical LFDI, and whether one is configured

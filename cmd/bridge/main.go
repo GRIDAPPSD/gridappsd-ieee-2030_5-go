@@ -51,6 +51,8 @@ import (
 
 	"github.com/GRIDAPPSD/gridappsd-go/fieldbus"
 	"github.com/GRIDAPPSD/gridappsd-go/gridappsd"
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
@@ -189,7 +191,7 @@ func run(ctx context.Context, cfg config) error {
 	// this log is written on every boot. Log whether it is configured, if
 	// that is ever needed, never what it is.
 	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s",
-		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
+		fmtDERControlTypePtr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
 
 	bus, err := connectClient(ctx, cfg)
 	if err != nil {
@@ -561,14 +563,28 @@ func connectClient(ctx context.Context, cfg config) (fieldbus.MessageBus, error)
 // rather than silently picking a mode, matching the fail-closed
 // posture the preprovisioned mode itself is for.
 // fmtU32Ptr renders a *uint32 as its decimal value, or "unset" for nil.
-// sep2config.SEP2Policy's ModesSupported/DefaultPollRate/DefaultPostRate
-// are pointer-typed precisely so a real 0 is distinguishable from unset;
+// sep2config.SEP2Policy's DefaultPollRate/DefaultPostRate are
+// pointer-typed precisely so a real 0 is distinguishable from unset;
 // this keeps that distinction visible in the boot log too.
 func fmtU32Ptr(v *uint32) string {
 	if v == nil {
 		return "unset"
 	}
 	return fmt.Sprintf("%d", *v)
+}
+
+// fmtDERControlTypePtr renders a *sep2.DERControlType (IEEECORE-047's
+// hexBinary bitmap family) as hex, or "unset" for nil, matching how the
+// value actually appears on the wire (sep2.HexBinary32.MarshalXML's
+// uppercase, minimal even-padded hex form) rather than decimal. This is
+// a debug log line only: it is not itself part of any wire encoding, but
+// printing it in decimal would make it harder to cross-reference against
+// a served DERCapability document while debugging.
+func fmtDERControlTypePtr(v *sep2.DERControlType) string {
+	if v == nil {
+		return "unset"
+	}
+	return fmt.Sprintf("%X", uint32(*v))
 }
 
 // parsePECCount extracts the single "count" binding QueryPECCount's

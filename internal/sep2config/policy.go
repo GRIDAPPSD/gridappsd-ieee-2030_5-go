@@ -33,10 +33,14 @@ type SEP2Policy struct {
 	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
 	// each seeded DERCapability. Not derivable from CIM: no CIM class
 	// carries which control modes a device advertises over 2030.5.
-	// Pointer-typed to match the core convention (sep2.DERCapability's own
-	// ModesSupported is *uint32) so a real, deliberate 0 bitmap is
-	// distinguishable from unset; nil means policy imposes no default.
-	ModesSupported *uint32
+	// Typed as *sep2.DERControlType (an alias for *sep2.HexBinary32,
+	// IEEECORE-047), matching sep2.DERCapability.ModesSupported's own
+	// field type exactly, so the type that owns the hexBinary wire
+	// encoding flows end to end rather than being carried as a plain
+	// integer and converted at the seeding boundary. Pointer-typed so a
+	// real, deliberate 0 bitmap is distinguishable from unset; nil means
+	// policy imposes no default.
+	ModesSupported *sep2.DERControlType
 
 	// DefaultPollRate and DefaultPostRate are the default polling and
 	// posting intervals, in seconds, that future FunctionSetAssignments

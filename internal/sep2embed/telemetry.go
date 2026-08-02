@@ -86,8 +86,11 @@ const derStatusAttributePrefix = "DERStatus."
 //
 // Raw passthrough, unbounded (Leon LOW, GAGO-034 PR #9 review): every
 // value below is carried through exactly as the device reported it, at
-// its full wire type range (genConnectStatus/operationalModeStatus are
-// uint8, alarmStatus is uint32), with no plausibility or range check
+// its full wire type range (genConnectStatus is sep2.HexBinary8,
+// operationalModeStatus is plain uint8, alarmStatus is
+// sep2.HexBinary32; IEEECORE-047 moved genConnectStatus and alarmStatus
+// onto the hexBinary family, operationalModeStatus was and stays a
+// plain UInt8 per sep.xsd), with no plausibility or range check
 // against what a real device could sanely report. This is a deliberate
 // discovery-stage choice (GAGO-046 tracks the enum/bitmap passthrough
 // broadly), not an oversight: these are device-SUPPLIED values from an

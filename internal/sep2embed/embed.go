@@ -107,11 +107,13 @@ type Config struct {
 
 	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
 	// the DERCapability New seeds for every registry entry (see
-	// seedStores/seedOne). Nil (the zero value) leaves every seeded
+	// seedStores/seedOne). Typed as *sep2.DERControlType (IEEECORE-047),
+	// matching sep2.DERCapability.ModesSupported's own field type
+	// exactly. Nil (the zero value) leaves every seeded
 	// DERCapability.ModesSupported nil: callers should source this from
 	// sep2config.SEP2Policy.ModesSupported rather than fabricating a
 	// bitmap here.
-	ModesSupported *uint32
+	ModesSupported *sep2.DERControlType
 
 	// ResolveRegistrationPIN returns the operator-supplied registration
 	// PIN for the device with the given canonical LFDI, and whether one is
