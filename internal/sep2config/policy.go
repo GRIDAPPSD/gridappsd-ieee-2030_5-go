@@ -42,15 +42,50 @@ type SEP2Policy struct {
 	// policy imposes no default.
 	ModesSupported *sep2.DERControlType
 
-	// DefaultPollRate and DefaultPostRate are the default polling and
-	// posting intervals, in seconds, that future FunctionSetAssignments
-	// seeding may apply. Pointer-typed to match the core convention (e.g.
-	// sep2.MirrorUsagePoint's own PostRate is *uint32) so a real,
-	// deliberate 0-second rate is distinguishable from unset; nil means no
-	// default is imposed and the consumer falls back to its own (or the
-	// spec's) default rate.
+	// DefaultPollRate and DefaultPostRate are the FLEET-WIDE polling and
+	// posting intervals, in seconds. DefaultPollRate is stamped onto every
+	// seeded Registration's pollRate attribute (sep.xsd:190);
+	// DefaultPostRate is stamped onto every MirrorUsagePoint a client
+	// creates via POST /mup (sep.xsd:6485).
+	//
+	// Pointer-typed to match the core convention (sep2.MirrorUsagePoint's
+	// own PostRate is *uint32); nil means no default is imposed and the
+	// consumer falls back to its own (or the schema's) default rate. Unlike
+	// the registration PIN, 0 is NOT a meaningful value here and
+	// ValidateRates rejects it: a 0-second rate reads as "poll or post
+	// continuously", so the pointer distinguishes unset from configured
+	// rather than unset from a deliberate zero.
+	//
+	// Read these through ResolvePollRate / ResolvePostRate, never directly.
+	// See PollRates below for why.
 	DefaultPollRate *uint32
 	DefaultPostRate *uint32
+
+	// PollRates and PostRates are the PER-DEVICE overrides, keyed on
+	// canonical LFDI exactly as RegistrationPINs is, and matched
+	// case-insensitively by the resolvers. A per-device entry wins over the
+	// corresponding fleet-wide default.
+	//
+	// Both are nil today: no flag or file populates them yet, and the
+	// operator-facing surface is fleet-wide only. They exist now because
+	// the eventual shape is settled (per-device rates, editable from the
+	// admin UI, over a fleet-wide default), and the cost of retrofitting
+	// that later is paid entirely at the CONSUMERS if they read a bare
+	// field. Every consumer instead calls ResolvePollRate/ResolvePostRate
+	// with a device LFDI and cannot tell whether the answer came from an
+	// override or the default. Populating these maps is therefore a change
+	// to this package alone.
+	//
+	// Where they will eventually be populated FROM is a separate decision
+	// already pointed at by IEEECORE-050, which settled that registration
+	// PINs are auto-generated per device and persisted to an
+	// operator-editable file that is the source of truth, with the UI as an
+	// editor over it. Per-device rates belong in that same per-device
+	// provisioning record rather than a parallel store, so that two files
+	// can never disagree about the same device. Building that record is not
+	// this card's work.
+	PollRates map[string]uint32
+	PostRates map[string]uint32
 
 	// RegistrationPINs maps a device's canonical LFDI to that device's
 	// registration PIN (IEEE 2030.5 section 10.6.4; sep.xsd complexType
@@ -158,18 +193,132 @@ func (p SEP2Policy) ValidateRegistrationPIN() error {
 // that means nothing. A caller that cannot resolve a PIN must refuse to
 // provision the device rather than serve a meaningless one.
 func (p SEP2Policy) ResolveRegistrationPIN(lfdi string) (uint32, bool) {
+	return resolvePerDevice(p.RegistrationPINs, p.DefaultRegistrationPIN, lfdi)
+}
+
+// ResolvePollRate returns the polling interval, in seconds, configured for
+// the device with the given canonical LFDI, and whether one was configured
+// at all. A PollRates entry wins over DefaultPollRate.
+//
+// Consumers call this instead of reading DefaultPollRate so that the
+// fleet-default and per-device cases are indistinguishable at the point of
+// use; see the PollRates field comment.
+//
+// The false return means "no rate configured" and must be honored, not
+// papered over with a zero. sep.xsd:190 makes pollRate an OPTIONAL attribute
+// with its own documented default of 900, so omitting the attribute entirely
+// is the correct representation of "unconfigured" and lets the client apply
+// the schema default. Stamping 0 instead would advertise a continuous poll.
+func (p SEP2Policy) ResolvePollRate(lfdi string) (uint32, bool) {
+	return resolvePerDevice(p.PollRates, p.DefaultPollRate, lfdi)
+}
+
+// ResolvePostRate returns the posting interval, in seconds, configured for
+// the device with the given canonical LFDI, and whether one was configured
+// at all. A PostRates entry wins over DefaultPostRate.
+//
+// This is the function passed to core as its metering.PostRateProvider, so
+// the LFDI it receives is the LFDI of the client that created the
+// MirrorUsagePoint. Same contract as ResolvePollRate on the false return:
+// postRate is minOccurs=0 (sep.xsd:6485), so unconfigured means the element
+// is absent, never present-and-zero.
+func (p SEP2Policy) ResolvePostRate(lfdi string) (uint32, bool) {
+	return resolvePerDevice(p.PostRates, p.DefaultPostRate, lfdi)
+}
+
+// resolvePerDevice implements the one precedence rule shared by every
+// per-device policy value in this package: a per-device entry keyed on the
+// canonical LFDI wins, a fleet-wide default is the fallback, and neither
+// configured reports false rather than inventing a zero.
+//
+// Keys are compared case- and space-insensitively against the canonical
+// uppercase-hex LFDI, so an operator-written config file that differs only
+// in casing still matches the identity derived from the certificate.
+func resolvePerDevice(perDevice map[string]uint32, fleetDefault *uint32, lfdi string) (uint32, bool) {
 	key := strings.ToUpper(strings.TrimSpace(lfdi))
 	if key != "" {
-		for k, v := range p.RegistrationPINs {
+		for k, v := range perDevice {
 			if strings.ToUpper(strings.TrimSpace(k)) == key {
 				return v, true
 			}
 		}
 	}
-	if p.DefaultRegistrationPIN != nil {
-		return *p.DefaultRegistrationPIN, true
+	if fleetDefault != nil {
+		return *fleetDefault, true
 	}
 	return 0, false
+}
+
+// RecommendedPollRate is the IEEE 2030.5 schema's own documented default for
+// Registration.pollRate: "If not specified, a default of 900 seconds (15
+// minutes) is used" (sep.xsd:190). Advertising it explicitly rather than
+// relying on the client to know the schema default costs one attribute and
+// removes an assumption about the client's schema handling.
+const RecommendedPollRate uint32 = 900
+
+// RecommendedPostRate is the suggested MirrorUsagePoint.postRate for a
+// co-simulation stepping at 30 seconds.
+//
+// postRate is how often a client posts mirrored data. Setting it equal to
+// the simulation step means each POST carries the readings from a single
+// step rather than an accumulation of several: raising it multiplies the
+// readings per request roughly linearly, which is the parameter to tune if
+// request size turns out to matter. Below the step it buys nothing, because
+// no new reading exists to send.
+//
+// Neither constant is applied automatically. Both are compiled-in
+// RECOMMENDATIONS an operator can reach for; an unset flag leaves the
+// corresponding policy field nil and the bridge advertises nothing, exactly
+// as it did before these existed.
+const RecommendedPostRate uint32 = 30
+
+// ValidateRates reports whether every configured poll and post rate, fleet-wide
+// and per-device, is usable. It is called at bridge boot, before anything is
+// seeded or served, so a bad rate stops the process rather than being
+// discovered as a wire-level oddity by a client hours later.
+//
+// The only rejected value is 0. uint32 already bounds the range from above,
+// and sep.xsd applies no facets to either rate (both are plain UInt32), so
+// there is no schema ceiling to enforce and inventing one here would reject
+// configurations the standard permits. 0 is different in kind: as an
+// interval it means "with no delay", which for postRate is an unbounded
+// request rate against this bridge and for pollRate is an unbounded request
+// rate against every client. Neither is a rate an operator can have meant,
+// and both are schema-valid, so nothing downstream would catch it.
+//
+// Errors name the flag an operator would set, not the struct field, because
+// the flag is what they can act on.
+func (p SEP2Policy) ValidateRates() error {
+	if p.DefaultPollRate != nil && *p.DefaultPollRate == 0 {
+		return fmt.Errorf("sep2config: -sep2-poll-rate must be at least 1 second; 0 would advertise a continuous poll")
+	}
+	if p.DefaultPostRate != nil && *p.DefaultPostRate == 0 {
+		return fmt.Errorf("sep2config: -sep2-post-rate must be at least 1 second; 0 would advertise a continuous post")
+	}
+	// Sort before iterating: Go randomizes map order, so an unsorted loop
+	// over a config with two bad entries would blame a different device on
+	// each boot. Same reasoning as ValidateRegistrationPIN.
+	for _, m := range []struct {
+		rates map[string]uint32
+		flag  string
+	}{
+		{p.PollRates, "-sep2-poll-rate"},
+		{p.PostRates, "-sep2-post-rate"},
+	} {
+		lfdis := make([]string, 0, len(m.rates))
+		for lfdi := range m.rates {
+			lfdis = append(lfdis, lfdi)
+		}
+		sort.Strings(lfdis)
+		for _, lfdi := range lfdis {
+			if m.rates[lfdi] == 0 {
+				return fmt.Errorf(
+					"sep2config: per-device %s for %s must be at least 1 second; 0 would advertise a continuous interval",
+					m.flag, strings.ToUpper(lfdi))
+			}
+		}
+	}
+	return nil
 }
 
 // HasValidPINCheckDigit reports whether pin satisfies the IEEE 2030.5

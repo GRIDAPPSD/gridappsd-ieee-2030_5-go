@@ -443,11 +443,29 @@ func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(c
 // IEEE 2030.5 section 6.3.5 check-digit rule stops the bridge before it
 // dials anything, let alone before it serves a device: not lazily at
 // first device-seeding time.
+// cfg.SEP2PollRate and cfg.SEP2PostRate (from -sep2-poll-rate and
+// -sep2-post-rate) become the fleet-wide DefaultPollRate and
+// DefaultPostRate. Both stay nil when their flag is absent, which leaves
+// the bridge advertising no rate at all: a seeded Registration omits its
+// optional pollRate attribute and a client-created MirrorUsagePoint keeps
+// whatever postRate the client sent. The per-device PollRates/PostRates
+// maps are deliberately left nil here: no operator surface populates them
+// yet, and SEP2Policy's resolvers already implement the precedence, so
+// wiring them later is a change to this function and nothing downstream.
+//
+// ValidateRates runs alongside ValidateRegistrationPIN, in the same
+// before-we-dial-anything window, so a 0-second rate stops the bridge at
+// boot rather than surfacing as a client hammering the server.
 func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 	policy := sep2config.DefaultPolicy()
 	policy.DefaultRegistrationPIN = cfg.SEP2RegistrationPIN
 	policy.RegistrationPINs = cfg.SEP2RegistrationPINs
+	policy.DefaultPollRate = cfg.SEP2PollRate
+	policy.DefaultPostRate = cfg.SEP2PostRate
 	if err := policy.ValidateRegistrationPIN(); err != nil {
+		return sep2config.SEP2Policy{}, err
+	}
+	if err := policy.ValidateRates(); err != nil {
 		return sep2config.SEP2Policy{}, err
 	}
 	return policy, nil
@@ -506,8 +524,13 @@ func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.S
 		DefaultControl:         policy.DefaultControl,
 		ModesSupported:         policy.ModesSupported,
 		ResolveRegistrationPIN: policy.ResolveRegistrationPIN,
-		RegistrationPollRate:   policy.DefaultPollRate,
-		Observer:               connHook,
+		// Resolvers, not the bare DefaultPollRate/DefaultPostRate fields:
+		// the consumer must not be able to tell a fleet default from a
+		// per-device override, so populating SEP2Policy's per-device maps
+		// later changes nothing here or downstream of here.
+		ResolveRegistrationPollRate: policy.ResolvePollRate,
+		ResolvePostRate:             policy.ResolvePostRate,
+		Observer:                    connHook,
 	}
 }
 
