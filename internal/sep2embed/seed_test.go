@@ -45,15 +45,19 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		dev, err := stores.EndDevices.Get(ctx, e.LFDI)
+		// The store key (and the {id} URL segment) is the opaque index, not
+		// the LFDI. Identity assertions below still use e.LFDI.
+		id := urlIndexFor(t, stores, e.MRID)
+
+		dev, err := stores.EndDevices.Get(ctx, id)
 		if err != nil {
-			t.Fatalf("EndDevices.Get(%q): %v", e.LFDI, err)
+			t.Fatalf("EndDevices.Get(%q): %v", id, err)
 		}
 		if dev.LFDI != e.LFDI {
 			t.Errorf("dev.LFDI = %q, want %q", dev.LFDI, e.LFDI)
 		}
-		if dev.Href != "/edev/"+e.LFDI {
-			t.Errorf("dev.Href = %q, want %q", dev.Href, "/edev/"+e.LFDI)
+		if dev.Href != "/edev/"+id {
+			t.Errorf("dev.Href = %q, want %q", dev.Href, "/edev/"+id)
 		}
 		if dev.Enabled == nil || !*dev.Enabled {
 			t.Errorf("dev.Enabled = %v, want true", dev.Enabled)
@@ -67,8 +71,8 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 		if dev.DERListLink == nil {
 			t.Fatalf("dev.DERListLink is nil for LFDI %q", e.LFDI)
 		}
-		if dev.DERListLink.Href != "/edev/"+e.LFDI+"/der" {
-			t.Errorf("dev.DERListLink.Href = %q, want %q", dev.DERListLink.Href, "/edev/"+e.LFDI+"/der")
+		if dev.DERListLink.Href != "/edev/"+id+"/der" {
+			t.Errorf("dev.DERListLink.Href = %q, want %q", dev.DERListLink.Href, "/edev/"+id+"/der")
 		}
 		if dev.DERListLink.All != 1 {
 			t.Errorf("dev.DERListLink.All = %d, want 1", dev.DERListLink.All)
@@ -86,17 +90,17 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 		}
 
 		// Exactly one child DER, keyed "1" under the device's own id.
-		derList, err := stores.DERs.List(ctx, e.LFDI, store.ListOptions{Limit: 10})
+		derList, err := stores.DERs.List(ctx, id, store.ListOptions{Limit: 10})
 		if err != nil {
-			t.Fatalf("DERs.List(%q): %v", e.LFDI, err)
+			t.Fatalf("DERs.List(%q): %v", id, err)
 		}
 		if derList.All != 1 {
-			t.Fatalf("DERs.List(%q).All = %d, want 1", e.LFDI, derList.All)
+			t.Fatalf("DERs.List(%q).All = %d, want 1", id, derList.All)
 		}
 		if len(derList.Items) != 1 {
-			t.Fatalf("DERs.List(%q) returned %d items, want 1", e.LFDI, len(derList.Items))
+			t.Fatalf("DERs.List(%q) returned %d items, want 1", id, len(derList.Items))
 		}
-		wantDERHref := "/edev/" + e.LFDI + "/der/1"
+		wantDERHref := "/edev/" + id + "/der/1"
 		if derList.Items[0].Href != wantDERHref {
 			t.Errorf("DER.Href = %q, want %q", derList.Items[0].Href, wantDERHref)
 		}
@@ -106,11 +110,11 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 		// derParentKey and the fixed singleton key. modesSupported is nil
 		// here: seedStores above was called with a nil modesSupported
 		// argument, and seedOne must not fabricate a bitmap.
-		dercap, err := stores.DERCapabilities.Get(ctx, e.LFDI+"/1", "default")
+		dercap, err := stores.DERCapabilities.Get(ctx, id+"/1", "default")
 		if err != nil {
-			t.Fatalf("DERCapabilities.Get(%q, %q): %v", e.LFDI+"/1", "default", err)
+			t.Fatalf("DERCapabilities.Get(%q, %q): %v", id+"/1", "default", err)
 		}
-		wantDERCapHref := "/edev/" + e.LFDI + "/der/1/dercap"
+		wantDERCapHref := "/edev/" + id + "/der/1/dercap"
 		if dercap.Href != wantDERCapHref {
 			t.Errorf("DERCapability.Href = %q, want %q", dercap.Href, wantDERCapHref)
 		}
@@ -124,9 +128,9 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 	// distinct, so the derived SFDIs must be too.
 	seen := make(map[string]string, len(entries))
 	for _, e := range entries {
-		dev, err := stores.EndDevices.Get(ctx, e.LFDI)
+		dev, err := stores.EndDevices.Get(ctx, urlIndexFor(t, stores, e.MRID))
 		if err != nil {
-			t.Fatalf("EndDevices.Get(%q): %v", e.LFDI, err)
+			t.Fatalf("EndDevices.Get for mRID %q: %v", e.MRID, err)
 		}
 		if prior, ok := seen[dev.SFDI]; ok {
 			t.Errorf("SFDI collision: LFDI %q and %q both derived SFDI %q", prior, e.LFDI, dev.SFDI)
@@ -232,9 +236,9 @@ func TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		dercap, err := stores.DERCapabilities.Get(ctx, e.LFDI+"/1", "default")
+		dercap, err := stores.DERCapabilities.Get(ctx, urlIndexFor(t, stores, e.MRID)+"/1", "default")
 		if err != nil {
-			t.Fatalf("DERCapabilities.Get(%q, %q): %v", e.LFDI+"/1", "default", err)
+			t.Fatalf("DERCapabilities.Get for mRID %q: %v", e.MRID, err)
 		}
 		if dercap.ModesSupported == nil {
 			t.Fatalf("DERCapability.ModesSupported is nil for LFDI %q, want %#x", e.LFDI, wantModes)
@@ -248,7 +252,7 @@ func TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil(t *testing.T) {
 	// change what was stored: seedOne must copy the value, not alias the
 	// pointer, matching sep2.DERCapability.Copy's own by-value semantics.
 	modes = 0xFFFFFFFF
-	dercap, err := stores.DERCapabilities.Get(ctx, entries[0].LFDI+"/1", "default")
+	dercap, err := stores.DERCapabilities.Get(ctx, urlIndexFor(t, stores, entries[0].MRID)+"/1", "default")
 	if err != nil {
 		t.Fatalf("DERCapabilities.Get after mutating caller's pointee: %v", err)
 	}
@@ -285,9 +289,9 @@ func TestSeedStoresStampsRTGMaxVarFromEntryMaxQ(t *testing.T) {
 		t.Fatalf("seedStores: %v", err)
 	}
 
-	withMaxQ, err := stores.DERCapabilities.Get(ctx, entries[0].LFDI+"/1", "default")
+	withMaxQ, err := stores.DERCapabilities.Get(ctx, urlIndexFor(t, stores, entries[0].MRID)+"/1", "default")
 	if err != nil {
-		t.Fatalf("DERCapabilities.Get(%q, %q): %v", entries[0].LFDI+"/1", "default", err)
+		t.Fatalf("DERCapabilities.Get for mRID %q: %v", entries[0].MRID, err)
 	}
 	if withMaxQ.RTGMaxVar == nil {
 		t.Fatalf("DERCapability.RTGMaxVar is nil for LFDI %q, want value+multiplier for maxQ=%d", entries[0].LFDI, wantMaxQ)
@@ -305,9 +309,9 @@ func TestSeedStoresStampsRTGMaxVarFromEntryMaxQ(t *testing.T) {
 		t.Errorf("reconstructed effective VAr = %d, want %d (Value %d * 10^Multiplier %d)", reconstructed, wantMaxQ, withMaxQ.RTGMaxVar.Value, withMaxQ.RTGMaxVar.Multiplier)
 	}
 
-	withoutMaxQ, err := stores.DERCapabilities.Get(ctx, entries[1].LFDI+"/1", "default")
+	withoutMaxQ, err := stores.DERCapabilities.Get(ctx, urlIndexFor(t, stores, entries[1].MRID)+"/1", "default")
 	if err != nil {
-		t.Fatalf("DERCapabilities.Get(%q, %q): %v", entries[1].LFDI+"/1", "default", err)
+		t.Fatalf("DERCapabilities.Get for mRID %q: %v", entries[1].MRID, err)
 	}
 	if withoutMaxQ.RTGMaxVar != nil {
 		t.Errorf("DERCapability.RTGMaxVar = %+v for an entry with nil MaxQ, want nil (no fabricated rating)", withoutMaxQ.RTGMaxVar)
@@ -334,22 +338,23 @@ func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 		t.Fatalf("seedStores: %v", err)
 	}
 
-	der, err := stores.DERs.Get(ctx, entry.LFDI, "1")
+	entryID := urlIndexFor(t, stores, entry.MRID)
+	der, err := stores.DERs.Get(ctx, entryID, "1")
 	if err != nil {
-		t.Fatalf("DERs.Get(%q, %q): %v", entry.LFDI, "1", err)
+		t.Fatalf("DERs.Get(%q, %q): %v", entryID, "1", err)
 	}
 	if der.DERCapabilityLink == nil {
 		t.Fatalf("DER.DERCapabilityLink is nil for LFDI %q, want a populated link", entry.LFDI)
 	}
 
-	wantHref := "/edev/" + entry.LFDI + "/der/1/dercap"
+	wantHref := "/edev/" + entryID + "/der/1/dercap"
 	if der.DERCapabilityLink.Href != wantHref {
 		t.Errorf("DER.DERCapabilityLink.Href = %q, want %q", der.DERCapabilityLink.Href, wantHref)
 	}
 
-	dercap, err := stores.DERCapabilities.Get(ctx, entry.LFDI+"/1", "default")
+	dercap, err := stores.DERCapabilities.Get(ctx, entryID+"/1", "default")
 	if err != nil {
-		t.Fatalf("DERCapabilities.Get(%q, %q): %v", entry.LFDI+"/1", "default", err)
+		t.Fatalf("DERCapabilities.Get(%q, %q): %v", entryID+"/1", "default", err)
 	}
 	if der.DERCapabilityLink.Href != dercap.Href {
 		t.Errorf("DER.DERCapabilityLink.Href = %q does not resolve to the seeded DERCapability's own Href %q", der.DERCapabilityLink.Href, dercap.Href)
@@ -482,9 +487,10 @@ func TestSeedStoresDropsNegativeMaxQToNilRTGMaxVar(t *testing.T) {
 		t.Fatalf("seedStores: %v", err)
 	}
 
-	dercap, err := stores.DERCapabilities.Get(ctx, entry.LFDI+"/1", "default")
+	negEntryID := urlIndexFor(t, stores, entry.MRID)
+	dercap, err := stores.DERCapabilities.Get(ctx, negEntryID+"/1", "default")
 	if err != nil {
-		t.Fatalf("DERCapabilities.Get(%q, %q): %v", entry.LFDI+"/1", "default", err)
+		t.Fatalf("DERCapabilities.Get(%q, %q): %v", negEntryID+"/1", "default", err)
 	}
 	if dercap.RTGMaxVar != nil {
 		t.Errorf("DERCapability.RTGMaxVar = %+v for a negative MaxQ, want nil (no wrong-sign capability advertised)", dercap.RTGMaxVar)
@@ -535,11 +541,12 @@ func TestSeedStoresCreatesRegistrationAndLinkPerDevice(t *testing.T) {
 
 	seenPINs := make(map[uint32]string, len(entries))
 	for _, e := range entries {
-		wantHref := "/edev/" + e.LFDI + "/rg"
+		id := urlIndexFor(t, stores, e.MRID)
+		wantHref := "/edev/" + id + "/rg"
 
-		dev, err := stores.EndDevices.Get(ctx, e.LFDI)
+		dev, err := stores.EndDevices.Get(ctx, id)
 		if err != nil {
-			t.Fatalf("EndDevices.Get(%q): %v", e.LFDI, err)
+			t.Fatalf("EndDevices.Get(%q): %v", id, err)
 		}
 		if dev.RegistrationLink == nil {
 			t.Fatalf("dev.RegistrationLink is nil for LFDI %q; the EPRI client fails registration outright on this", e.LFDI)
@@ -554,9 +561,9 @@ func TestSeedStoresCreatesRegistrationAndLinkPerDevice(t *testing.T) {
 		// The advertised link must resolve to a record the store
 		// actually holds, keyed by the same id the route's {id} segment
 		// carries.
-		got, err := stores.Registrations.Get(ctx, e.LFDI)
+		got, err := stores.Registrations.Get(ctx, id)
 		if err != nil {
-			t.Fatalf("Registrations.Get(%q): %v (advertised link would 404)", e.LFDI, err)
+			t.Fatalf("Registrations.Get(%q): %v (advertised link would 404)", id, err)
 		}
 		if got.Href != wantHref {
 			t.Errorf("Registration.Href = %q, want %q", got.Href, wantHref)
@@ -612,9 +619,9 @@ func TestSeedStoresRegistrationPINIsStableAcrossReseeding(t *testing.T) {
 		if err := seedStores(ctx, stores, reg, seedPolicy{resolvePIN: testResolvePIN}); err != nil {
 			t.Fatalf("seedStores: %v", err)
 		}
-		got, err := stores.Registrations.Get(ctx, lfdi)
+		got, err := stores.Registrations.Get(ctx, urlIndexFor(t, stores, entry.MRID))
 		if err != nil {
-			t.Fatalf("Registrations.Get(%q): %v", lfdi, err)
+			t.Fatalf("Registrations.Get for mRID %q: %v", entry.MRID, err)
 		}
 		return got.PIN
 	}
@@ -650,9 +657,9 @@ func TestSeedStoresStampsRegistrationPolicyWhenNonNil(t *testing.T) {
 		t.Fatalf("seedStores: %v", err)
 	}
 
-	got, err := stores.Registrations.Get(ctx, lfdi)
+	got, err := stores.Registrations.Get(ctx, urlIndexFor(t, stores, "mrid-policy"))
 	if err != nil {
-		t.Fatalf("Registrations.Get(%q): %v", lfdi, err)
+		t.Fatalf("Registrations.Get: %v", err)
 	}
 	if got.PIN != wantPIN {
 		t.Error("Registration.PIN did not take the configured policy override")
@@ -700,8 +707,10 @@ func TestSeedRefusesDeviceWithNoConfiguredPIN(t *testing.T) {
 			// Fail closed means nothing was provisioned for the device: no
 			// Registration to serve, and so no EndDevice advertising a
 			// RegistrationLink to a resource the server would refuse.
-			if _, err := stores.Registrations.Get(ctx, lfdi); err == nil {
-				t.Error("a Registration was stored for a device with no configured PIN")
+			if n, err := stores.Registrations.Count(ctx); err != nil {
+				t.Fatalf("Registrations.Count: %v", err)
+			} else if n != 0 {
+				t.Errorf("%d Registration(s) stored for a device with no configured PIN, want 0", n)
 			}
 		})
 	}

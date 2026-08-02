@@ -44,12 +44,20 @@ import (
 // from Resource (sep.xsd:5393), optional pollRate, then a repeated
 // MirrorUsagePoint child.
 
-// mupTestDevice is one device's mTLS client plus the canonical LFDI its
-// certificate derives to, so a test can address the device's own
-// resources and assert on ownership-scoped behavior.
+// mupTestDevice is one device's mTLS client, the canonical LFDI its
+// certificate derives to, and the opaque URL index the server addresses it
+// by, so a test can reach the device's own resources and assert on
+// ownership-scoped behavior.
+//
+// lfdi and edevID are deliberately separate fields: lfdi is IDENTITY (what
+// the ownership gate matches the presented certificate against) and edevID is
+// ADDRESSING (the {id} segment of the device's URLs). They stopped being the
+// same value at IEEECORE-URLINDEX, and a test that used one for the other
+// would be asserting the coupling that change removed.
 type mupTestDevice struct {
 	client *http.Client
 	lfdi   string
+	edevID string
 }
 
 // newMUPTestServer stands up an Embed whose registry contains one entry
@@ -154,6 +162,12 @@ func newMUPTestServer(t *testing.T, serials ...string) (string, []mupTestDevice)
 			t.Error("Embed.Run did not return within 5s of cancel")
 		}
 	})
+
+	// The URL index is only assigned once seeding has run inside New, so it
+	// is backfilled here rather than at client-construction time above.
+	for i := range devices {
+		devices[i].edevID = embedURLIndex(t, e, "mrid-"+serials[i])
+	}
 
 	return "https://" + e.Addr(), devices
 }
@@ -364,9 +378,9 @@ func TestMirrorUsagePointAndRegistrationRootElementsDiffer(t *testing.T) {
 	if mupStatus != http.StatusOK {
 		t.Fatalf("GET /mup status = %d, want 200; body=%s", mupStatus, mupBody)
 	}
-	rgStatus, rgBody := getSEP2(t, dev, baseURL+"/edev/"+dev.lfdi+"/rg")
+	rgStatus, rgBody := getSEP2(t, dev, baseURL+"/edev/"+dev.edevID+"/rg")
 	if rgStatus != http.StatusOK {
-		t.Fatalf("GET /edev/{lfdi}/rg status = %d, want 200; body=%s", rgStatus, rgBody)
+		t.Fatalf("GET /edev/{id}/rg status = %d, want 200; body=%s", rgStatus, rgBody)
 	}
 
 	_, mupRoot := rootElement(t, mupBody)
@@ -443,7 +457,7 @@ func TestCrossDeviceEndDeviceScopedResourcesRemainOwnerGated(t *testing.T) {
 	baseURL, devices := newMUPTestServer(t, "mup-acl-a", "mup-acl-b")
 	deviceA, deviceB := devices[0], devices[1]
 
-	status, body := getSEP2(t, deviceB, baseURL+"/edev/"+deviceA.lfdi+"/rg")
+	status, body := getSEP2(t, deviceB, baseURL+"/edev/"+deviceA.edevID+"/rg")
 	if status != http.StatusForbidden {
 		t.Fatalf("cross-device GET /edev/{other}/rg status = %d, want 403; body=%s", status, body)
 	}
@@ -453,7 +467,7 @@ func TestCrossDeviceEndDeviceScopedResourcesRemainOwnerGated(t *testing.T) {
 
 	// The owner still reads its own Registration, so the gate denies by
 	// ownership rather than by denying everyone.
-	status, ownBody := getSEP2(t, deviceA, baseURL+"/edev/"+deviceA.lfdi+"/rg")
+	status, ownBody := getSEP2(t, deviceA, baseURL+"/edev/"+deviceA.edevID+"/rg")
 	if status != http.StatusOK {
 		t.Fatalf("owner GET of its own /rg status = %d, want 200; body=%s", status, ownBody)
 	}

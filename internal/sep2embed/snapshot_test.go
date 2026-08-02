@@ -73,18 +73,27 @@ func TestEndDevicesReturnsSeededFieldValues(t *testing.T) {
 	}
 
 	for _, want := range entries {
+		// The snapshot is keyed by LFDI (identity), but ID and every href
+		// carry the opaque URL index (addressing). Asserting both against
+		// the right source is the point: an assertion that expected the
+		// LFDI in the href would be asserting the bug this change removed.
+		wantID := embedURLIndex(t, e, want.MRID)
+
 		got, ok := byLFDI[want.LFDI]
 		if !ok {
 			t.Fatalf("EndDevices missing entry for LFDI %q", want.LFDI)
 		}
-		if got.ID != want.LFDI {
-			t.Errorf("EndDevice(%q).ID = %q, want %q", want.LFDI, got.ID, want.LFDI)
+		if got.ID != wantID {
+			t.Errorf("EndDevice(%q).ID = %q, want %q", want.LFDI, got.ID, wantID)
+		}
+		if got.LFDI != want.LFDI {
+			t.Errorf("EndDevice(%q).LFDI = %q, want %q: identity must stay the LFDI", want.LFDI, got.LFDI, want.LFDI)
 		}
 		if got.SFDI == "" {
 			t.Errorf("EndDevice(%q).SFDI is empty, want a derived placeholder SFDI", want.LFDI)
 		}
-		if got.Href != "/edev/"+want.LFDI {
-			t.Errorf("EndDevice(%q).Href = %q, want %q", want.LFDI, got.Href, "/edev/"+want.LFDI)
+		if got.Href != "/edev/"+wantID {
+			t.Errorf("EndDevice(%q).Href = %q, want %q", want.LFDI, got.Href, "/edev/"+wantID)
 		}
 		if !got.Enabled {
 			t.Errorf("EndDevice(%q).Enabled = false, want true (seed.go always sets Enabled=true)", want.LFDI)
@@ -92,7 +101,7 @@ func TestEndDevicesReturnsSeededFieldValues(t *testing.T) {
 		if len(got.DERs) != 1 {
 			t.Fatalf("EndDevice(%q).DERs has %d items, want 1 (seed.go seeds exactly one DER per device)", want.LFDI, len(got.DERs))
 		}
-		wantDERHref := "/edev/" + want.LFDI + "/der/1"
+		wantDERHref := "/edev/" + wantID + "/der/1"
 		if got.DERs[0].Href != wantDERHref {
 			t.Errorf("EndDevice(%q).DERs[0].Href = %q, want %q", want.LFDI, got.DERs[0].Href, wantDERHref)
 		}
@@ -132,7 +141,7 @@ func TestDefaultDERControlReturnsNilBeforeAnyDeltaApplied(t *testing.T) {
 
 	e, _ := newTestEmbed(t)
 	entries := fixtureEntries()
-	edevID := entries[0].LFDI
+	edevID := embedURLIndex(t, e, entries[0].MRID)
 
 	snap, err := e.DefaultDERControl(context.Background(), edevID, controlFSAID, controlDERProgramID)
 	if err != nil {
@@ -154,7 +163,7 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 	e, reg := newTestEmbed(t)
 	entries := fixtureEntries()
 	targetMRID := entries[0].MRID
-	edevID := entries[0].LFDI
+	edevID := embedURLIndex(t, e, entries[0].MRID)
 
 	delta := diff.Difference{
 		Object:    targetMRID,
@@ -282,7 +291,7 @@ func TestDERControlsScopedToUnknownDeviceReturnsEmpty(t *testing.T) {
 
 	e, _ := newTestEmbed(t)
 	entries := fixtureEntries()
-	edevID := entries[1].LFDI // never had a delta applied
+	edevID := embedURLIndex(t, e, entries[1].MRID) // never had a delta applied
 
 	controls, err := e.DERControls(context.Background(), edevID, controlFSAID, controlDERProgramID)
 	if err != nil {

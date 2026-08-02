@@ -102,7 +102,12 @@ func TestRegistrationEndToEndOverMTLS(t *testing.T) {
 	clientA := deviceClient(t, certA, keyA, caCertPEM)
 	clientB := deviceClient(t, certB, keyB, caCertPEM)
 
-	wantHrefA := "/edev/" + lfdiA + "/rg"
+	// Addressing is the opaque URL index; lfdiA/lfdiB remain the identities
+	// the ownership gate matches the presented certificates against.
+	edevA := embedURLIndex(t, e, "mrid-reg-a")
+	edevB := embedURLIndex(t, e, "mrid-reg-b")
+
+	wantHrefA := "/edev/" + edevA + "/rg"
 
 	// Step 1: the EndDeviceList the client walks must carry a
 	// RegistrationLink for the calling device. This is the exact
@@ -121,7 +126,7 @@ func TestRegistrationEndToEndOverMTLS(t *testing.T) {
 	}
 
 	// The singleton EndDevice resource must advertise the same link.
-	devStatus, devBody := getBody(t, clientA, baseURL+"/edev/"+lfdiA, "GET /edev/{a} as device A")
+	devStatus, devBody := getBody(t, clientA, baseURL+"/edev/"+edevA, "GET /edev/{a} as device A")
 	if devStatus != http.StatusOK {
 		t.Fatalf("GET /edev/{a} = %d, want 200", devStatus)
 	}
@@ -201,7 +206,7 @@ func TestRegistrationEndToEndOverMTLS(t *testing.T) {
 		}
 	}
 	// And the symmetric direction, so the gate is not one-sided.
-	reverseStatus, reverseBody := getBody(t, clientA, baseURL+"/edev/"+lfdiB+"/rg", "device A reading device B's Registration")
+	reverseStatus, reverseBody := getBody(t, clientA, baseURL+"/edev/"+edevB+"/rg", "device A reading device B's Registration")
 	if reverseStatus != http.StatusForbidden {
 		t.Errorf("cross-device GET of device B's Registration by device A = %d, want %d", reverseStatus, http.StatusForbidden)
 	}
@@ -211,7 +216,7 @@ func TestRegistrationEndToEndOverMTLS(t *testing.T) {
 
 	// Device B reading its OWN Registration still succeeds: the gate
 	// denies the other device, it does not break the owner's access.
-	ownBStatus, ownBBody := getBody(t, clientB, baseURL+"/edev/"+lfdiB+"/rg", "device B reading its own Registration")
+	ownBStatus, ownBBody := getBody(t, clientB, baseURL+"/edev/"+edevB+"/rg", "device B reading its own Registration")
 	if ownBStatus != http.StatusOK {
 		t.Fatalf("device B reading its own Registration = %d, want 200", ownBStatus)
 	}
@@ -219,8 +224,8 @@ func TestRegistrationEndToEndOverMTLS(t *testing.T) {
 	if err := xml.Unmarshal([]byte(ownBBody), &regB); err != nil {
 		t.Fatalf("unmarshal device B Registration: %v", err)
 	}
-	if regB.Href != "/edev/"+lfdiB+"/rg" {
-		t.Errorf("device B Registration.Href = %q, want %q", regB.Href, "/edev/"+lfdiB+"/rg")
+	if regB.Href != "/edev/"+edevB+"/rg" {
+		t.Errorf("device B Registration.Href = %q, want %q", regB.Href, "/edev/"+edevB+"/rg")
 	}
 	// Each device is served ITS OWN configured PIN. This is a per-device
 	// configuration fact, not a derivation: section 6.3.5 exists because

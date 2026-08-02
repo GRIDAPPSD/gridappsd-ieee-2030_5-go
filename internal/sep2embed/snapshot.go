@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
@@ -97,6 +98,32 @@ type DERControlSnapshot struct {
 	Base          *DERControlBaseSnapshot
 }
 
+// edevIDFromHref recovers the EndDevice store id (the opaque URL index) from
+// a served EndDevice href of the canonical shape "/edev/{id}".
+//
+// It exists because store List returns values without their keys, and since
+// IEEECORE-URLINDEX the key is no longer derivable from any field on the
+// value: the LFDI is identity, not addressing.
+//
+// It is deliberately strict. A malformed or absent href is an error rather
+// than a best-effort guess, because every caller uses the result as a store
+// scope key, and a wrong key is a silent empty result rather than a visible
+// failure.
+func edevIDFromHref(href string) (string, error) {
+	const prefix = "/edev/"
+	id, ok := strings.CutPrefix(href, prefix)
+	if !ok {
+		return "", fmt.Errorf("href %q does not have the canonical %q prefix", href, prefix)
+	}
+	if id == "" {
+		return "", fmt.Errorf("href %q has an empty id segment", href)
+	}
+	if strings.Contains(id, "/") {
+		return "", fmt.Errorf("href %q has more than one path segment after %q", href, prefix)
+	}
+	return id, nil
+}
+
 // EndDevices returns a read only snapshot of every seeded EndDevice and
 // its child DERs. The returned slice and every value it contains are
 // copies: no field is a shared pointer into this Embed's live stores, so
@@ -112,7 +139,16 @@ func (e *Embed) EndDevices(ctx context.Context) ([]EndDeviceSnapshot, error) {
 
 	snaps := make([]EndDeviceSnapshot, 0, len(result.Items))
 	for _, dev := range result.Items {
-		id := dev.LFDI
+		// The store key is the opaque URL index, NOT the LFDI
+		// (IEEECORE-URLINDEX). List returns values without their keys, so
+		// recover the key from the device's own canonical href, which seeding
+		// stamped as "/edev/" + id. Using dev.LFDI here would silently scope
+		// every child lookup to a key that no longer exists and report every
+		// device as having zero DERs.
+		id, err := edevIDFromHref(dev.Href)
+		if err != nil {
+			return nil, fmt.Errorf("sep2embed: snapshot end device (lfdi %q): %w", dev.LFDI, err)
+		}
 
 		ders, err := e.dersFor(ctx, id)
 		if err != nil {

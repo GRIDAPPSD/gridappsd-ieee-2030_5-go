@@ -16,7 +16,27 @@ import (
 // this function set's routes", which we do not want here.
 func newStores() *assembly.Stores {
 	return &assembly.Stores{
-		EndDevices:          memory.NewEndDeviceStore(),
+		EndDevices: memory.NewEndDeviceStore(),
+
+		// Allocates the opaque URL index that addresses each EndDevice
+		// ("/edev/3/rg") in place of its LFDI. Addressing only: device
+		// identity remains the certificate-derived LFDI on the EndDevice
+		// record, which is what acl.go's ownership gate compares against.
+		//
+		// No persistence path is configured, matching every other store here,
+		// so assignments last one process lifetime and a restart re-addresses
+		// the fleet. That is acceptable while client and server are assumed
+		// to start fresh together. It stops being acceptable as soon as a
+		// client outlives a bridge restart, at which point this should move
+		// to memory.NewEndDeviceIndexWithPersistence, ideally folded into the
+		// same per-device provisioning record that holds registration PINs
+		// rather than a second file that can disagree with it.
+		//
+		// A stale URL is safe in either configuration: an index that resolves
+		// to a device other than the caller's certificate identity is denied
+		// by the ownership gate, never served.
+		EndDeviceIndexes: memory.NewEndDeviceIndex(),
+
 		Registrations:       memory.NewRegistrationStore(),
 		MirrorUsagePoints:   memory.NewStore[sep2.MirrorUsagePoint](),
 		MirrorMeterReadings: memory.NewScopedStore[sep2.MirrorMeterReading](),

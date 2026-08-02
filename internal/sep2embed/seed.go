@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
@@ -18,9 +19,9 @@ import (
 // one child DER resource (the bridge does not yet carry more than one
 // DER per device's CIM identity; see internal/cim.DictItem, which is all
 // the registry entries are built from as of GAGO-025). The mapping,
-// field by field (id = Entry.LFDI, the canonical identity):
+// field by field (id = the opaque URL index allocated for Entry.MRID):
 //
-//	store id (both EndDevice and the DER's parent key) = Entry.LFDI
+//	store id (both EndDevice and the DER's parent key) = index for Entry.MRID
 //	EndDevice.LFDI                                      = Entry.LFDI
 //	EndDevice.SFDI                                       = Entry.SFDI, or
 //	                                                       derivePlaceholderSFDI(Entry.LFDI)
@@ -31,26 +32,32 @@ import (
 //	DER id (within the EndDevice's DER scope)             = "1"
 //	DER.Href                                              = "/edev/" + id + "/der/1"
 //
-// The store id uses Entry.LFDI (not a sequential counter) so a device's
-// EndDeviceStore.GetByLFDI lookup resolves to the same id every time,
-// and so re-seeding the same registry entry against a fresh store always
-// produces the same store key. A device is stored and advertised under
-// its canonical LFDI alone: the store id, the advertised
-// EndDevice.LFDI, and the ownership match (see acl.go) are all the same
-// value, so there is no separate discovery-vs-ownership identity split
-// to reason about. A client that self-hashes its own raw DER
-// certificate (see internal/sep2embed's .x509 emission) computes this
-// exact value and discovers itself via GET /edev. reg.Snapshot() itself
-// iterates a Go map and its element order is unspecified per seeding
-// run; that is fine because store id assignment does not depend on
-// iteration order (each entry's id is derived solely from its own LFDI,
-// not from its position in the snapshot). What IS ordered, and is what
-// an /edev GET actually returns, is core's memory.Store[T].List: it
-// walks a separately maintained sorted key slice, so list responses are
-// sorted by id regardless of the order seedStores wrote them in. LFDI
-// is guaranteed non-empty (registry validation requires it) and unique
-// per device, and the uppercase-hex canonical LFDI is URL-safe (40 hex
-// characters).
+// ADDRESSING AND IDENTITY ARE SEPARATE (IEEECORE-URLINDEX). The store id,
+// and therefore the {id} segment of every URL, is an opaque server-chosen
+// index ("/edev/3/rg"), allocated by core's memory.EndDeviceIndex. It was
+// previously Entry.LFDI. The device's IDENTITY is unchanged and is still
+// Entry.LFDI: it is what EndDevice.LFDI advertises, what
+// EndDeviceStore.GetByLFDI indexes, what the ownership gate compares the
+// caller's certificate against (acl.go's storeOwnerResolver), and what the
+// registration-PIN resolver is keyed by. A client that self-hashes its own
+// raw DER certificate (see internal/sep2embed's .x509 emission) still
+// computes that exact LFDI and still discovers itself by walking GET /edev
+// and matching on the LFDI field; what it must NOT do is construct its own
+// URL from that LFDI, because paths are server-chosen and discovered through
+// links.
+//
+// The allocator is keyed by Entry.MRID rather than Entry.LFDI on purpose.
+// The LFDI is SHA-256 over the device certificate, so a certificate rotation
+// changes it; the CIM mRID does not move when a cert rotates, so keying on
+// it is what lets a device keep its URLs across rotation. Both are non-empty
+// and unique per device by registry validation.
+//
+// reg.Snapshot() iterates a Go map, so its order is randomized per process.
+// That used to be harmless because each id was derived solely from its own
+// entry, but index allocation is sequential, so seedStores now sorts by mRID
+// before allocating. An unchanged fleet therefore produces the same URLs on
+// every run. What an /edev GET returns is ordered separately by core's
+// memory.Store[T].List, which walks a sorted key slice.
 //
 // An empty registry seeds empty stores without error: the /edev list
 // still serves (0 results), it is simply empty rather than absent.
@@ -61,7 +68,17 @@ import (
 // per-device value or leaves the wire field unset, never fabricating one
 // (see [[data-invariants]] on not silently inventing values).
 func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, policy seedPolicy) error {
-	for _, e := range reg.Snapshot() {
+	entries := reg.Snapshot()
+
+	// reg.Snapshot() iterates a Go map, whose order is randomized per
+	// process. Index assignment is sequential, so seeding straight off that
+	// order would give the same fleet different URLs on every run. Sort by
+	// mRID (the allocator's device key, unique and non-empty by registry
+	// validation) so an unchanged fleet produces the same URLs every time and
+	// an end-to-end run is reproducible.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].MRID < entries[j].MRID })
+
+	for _, e := range entries {
 		if err := seedOne(ctx, stores, e, policy); err != nil {
 			return fmt.Errorf("seed entry mRID=%q: %w", e.MRID, err)
 		}
@@ -115,15 +132,15 @@ type seedPolicy struct {
 // indexes are built as a side effect, exactly as they would be for a
 // device that self-registered over HTTP.
 //
-// Advertised identity: the store id, the EndDevice.LFDI field, and every
-// derived href all use Entry.LFDI, the canonical DER-hash identity. A
-// client that is handed the device's raw DER certificate (see
-// internal/sep2embed's .x509 emission) self-hashes to this exact value
-// and discovers itself by walking GET /edev, with no separate alias to
-// reconcile. Ownership is matched against the same canonical LFDI (see
-// acl.go's storeOwnerResolver), so the advertised identity and the
-// ownership identity are one and the same value. SFDI is unchanged: the
-// canonical certificate-derived SFDI (or the LFDI-derived placeholder).
+// Advertised identity vs addressing: EndDevice.LFDI carries Entry.LFDI,
+// the canonical DER-hash identity, and ownership is matched against that
+// same value (see acl.go's storeOwnerResolver). The store id and every
+// derived href carry the opaque URL index instead. A client handed the
+// device's raw DER certificate (see internal/sep2embed's .x509 emission)
+// self-hashes to the LFDI and discovers itself by walking GET /edev and
+// matching the LFDI field, then follows the hrefs it finds there; it never
+// constructs a path from the LFDI. SFDI is unchanged: the canonical
+// certificate-derived SFDI (or the LFDI-derived placeholder).
 //
 // GAGO-049 adds a third resource per entry: a DERCapability, scoped
 // under the DER's own parent key (id + "/1", matching core's
@@ -173,7 +190,25 @@ type seedPolicy struct {
 //     one exception: it is itself a rated maximum, not a live value, so
 //     RTGMaxVar is populated from it.
 func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, policy seedPolicy) error {
-	id := e.LFDI
+	// The store key, and therefore the {id} segment of every URL this device
+	// is served under, is an opaque server-chosen index rather than the
+	// device's LFDI (IEEECORE-URLINDEX).
+	//
+	// The allocator is keyed by the CIM mRID, not by the LFDI, and that
+	// choice is load-bearing. The LFDI is SHA-256 over the device
+	// certificate, so rotating a cert changes it; keying on the mRID (which a
+	// cert rotation does not touch) is what lets a device keep its URLs
+	// across rotation. Keying on the LFDI here would reintroduce exactly the
+	// breakage this change exists to remove.
+	//
+	// IDENTITY IS UNAFFECTED. e.LFDI is still what goes into
+	// EndDevice.LFDI, still what the ownership gate compares the caller's
+	// certificate against (acl.go), and still what the PIN resolver is keyed
+	// by. Only addressing moved.
+	id, err := stores.EndDeviceIndexes.Allocate(e.MRID)
+	if err != nil {
+		return fmt.Errorf("allocate URL index: %w", err)
+	}
 
 	sfdi := e.SFDI
 	if sfdi == "" {
@@ -185,8 +220,10 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	enabled := true
 	dev := sep2.EndDevice{
 		Enabled: &enabled,
-		LFDI:    id,
-		SFDI:    sfdi,
+		// Identity, NOT addressing: this is the canonical certificate-derived
+		// LFDI the ownership gate matches on. It is deliberately not id.
+		LFDI: e.LFDI,
+		SFDI: sfdi,
 	}
 	dev.Href = "/edev/" + id
 	dev.DERListLink = &sep2.ListLink{Href: "/edev/" + id + "/der", All: 1}
@@ -211,15 +248,19 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	// EndDevice above already advertises a RegistrationLink, and a link to
 	// a resource the server will not serve is the exact failure mode the
 	// seeding path exists to prevent.
+	// resolvePIN is keyed by the canonical LFDI, which is the identity the
+	// operator's config names devices by. It must NOT be handed the URL index:
+	// the index is an addressing artifact with no meaning in that config, and
+	// passing it would look up a device the operator never configured.
 	pin, ok := uint32(0), false
 	if policy.resolvePIN != nil {
-		pin, ok = policy.resolvePIN(id)
+		pin, ok = policy.resolvePIN(e.LFDI)
 	}
 	if !ok {
 		return fmt.Errorf(
 			"no registration PIN configured for device %s: set a per-device entry in "+
 				"sep2config.SEP2Policy.RegistrationPINs or a fleet-wide DefaultRegistrationPIN; "+
-				"a PIN must be operator-supplied and is never derived", id)
+				"a PIN must be operator-supplied and is never derived", e.LFDI)
 	}
 
 	reg := sep2.Registration{
@@ -245,7 +286,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 		return fmt.Errorf("create DER: %w", err)
 	}
 
-	rtgMaxVar, err := buildRTGMaxVar(e.MaxQ, id)
+	rtgMaxVar, err := buildRTGMaxVar(e.MaxQ, e.LFDI)
 	if err != nil {
 		return fmt.Errorf("build RTGMaxVar: %w", err)
 	}
