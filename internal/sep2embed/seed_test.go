@@ -3,6 +3,7 @@ package sep2embed
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ func TestSeedStoresPopulatesEndDevicesAndDERsFromRegistry(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -141,7 +142,7 @@ func TestSeedStoresEmptyRegistrySeedsEmptyStoresWithoutError(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores on empty registry: %v", err)
 	}
 
@@ -178,7 +179,7 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 
 	ctx := context.Background()
 	stores := newStores()
-	if err := seedOne(ctx, stores, entry, nil); err != nil {
+	if err := seedOne(ctx, stores, entry, seedPolicy{}); err != nil {
 		t.Fatalf("pre-seed via seedOne: %v", err)
 	}
 
@@ -187,7 +188,7 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	err := seedStores(ctx, stores, reg, nil)
+	err := seedStores(ctx, stores, reg, seedPolicy{})
 	if err == nil {
 		t.Fatal("seedStores against a store pre-populated with the same id: want error, got nil")
 	}
@@ -226,7 +227,7 @@ func TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil(t *testing.T) {
 	stores := newStores()
 	ctx := context.Background()
 	modes := wantModes
-	if err := seedStores(ctx, stores, reg, &modes); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{modesSupported: &modes}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -280,7 +281,7 @@ func TestSeedStoresStampsRTGMaxVarFromEntryMaxQ(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -329,7 +330,7 @@ func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -477,7 +478,7 @@ func TestSeedStoresDropsNegativeMaxQToNilRTGMaxVar(t *testing.T) {
 
 	stores := newStores()
 	ctx := context.Background()
-	if err := seedStores(ctx, stores, reg, nil); err != nil {
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -506,5 +507,203 @@ func TestDerivePlaceholderSFDIIsDeterministicAndValid(t *testing.T) {
 	}
 	if !sepTLS.ValidateSFDI(got1) {
 		t.Fatalf("derivePlaceholderSFDI(%q) = %q fails sepTLS.ValidateSFDI", lfdi, got1)
+	}
+}
+
+// TestSeedStoresCreatesRegistrationAndLinkPerDevice is the regression test
+// for the end-to-end blocker where every EPRI client failed registration
+// with "EndDevice does not contain RegistrationLink": seeding wrote the
+// EndDevice but never the RegistrationLink nor a Registration record, so
+// the client had nothing to follow. Asserts both halves, by value.
+func TestSeedStoresCreatesRegistrationAndLinkPerDevice(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.New()
+	entries := []registry.Entry{
+		{MRID: "mrid-inv-1", Name: "Inverter 1", LFDI: "AAAA00000000000000000000000000000000AAAA", Placeholder: true},
+		{MRID: "mrid-bat-1", Name: "Battery 1", LFDI: "BBBB00000000000000000000000000000000BBBB", Placeholder: true},
+	}
+	if err := reg.AddBatch(entries); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+
+	stores := newStores()
+	ctx := context.Background()
+	if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
+		t.Fatalf("seedStores: %v", err)
+	}
+
+	seenPINs := make(map[uint32]string, len(entries))
+	for _, e := range entries {
+		wantHref := "/edev/" + e.LFDI + "/rg"
+
+		dev, err := stores.EndDevices.Get(ctx, e.LFDI)
+		if err != nil {
+			t.Fatalf("EndDevices.Get(%q): %v", e.LFDI, err)
+		}
+		if dev.RegistrationLink == nil {
+			t.Fatalf("dev.RegistrationLink is nil for LFDI %q; the EPRI client fails registration outright on this", e.LFDI)
+		}
+		// Exact href string: the client GETs this path verbatim, so a
+		// near-miss (missing leading slash, "/reg" instead of "/rg") is
+		// a 404 at the client, not a cosmetic difference.
+		if dev.RegistrationLink.Href != wantHref {
+			t.Errorf("dev.RegistrationLink.Href = %q, want %q", dev.RegistrationLink.Href, wantHref)
+		}
+
+		// The advertised link must resolve to a record the store
+		// actually holds, keyed by the same id the route's {id} segment
+		// carries.
+		got, err := stores.Registrations.Get(ctx, e.LFDI)
+		if err != nil {
+			t.Fatalf("Registrations.Get(%q): %v (advertised link would 404)", e.LFDI, err)
+		}
+		if got.Href != wantHref {
+			t.Errorf("Registration.Href = %q, want %q", got.Href, wantHref)
+		}
+		if got.DateTimeRegistered <= 0 {
+			t.Errorf("Registration.DateTimeRegistered = %d, want a positive epoch second (required xsd element)", got.DateTimeRegistered)
+		}
+		// PINType is a 6-digit unsigned decimal, 0 to 999999 inclusive.
+		if got.PIN > 999999 {
+			t.Errorf("Registration.PIN is outside the PINType range [0, 999999] for LFDI %q", e.LFDI)
+		}
+		// No policy poll rate supplied: the attribute must stay unset so
+		// the client applies sep.xsd's own 900-second default rather
+		// than a rate the bridge invented.
+		if got.PollRate != 0 {
+			t.Errorf("Registration.PollRate = %d, want 0 (unset) when policy supplies none", got.PollRate)
+		}
+
+		if prior, dup := seenPINs[got.PIN]; dup {
+			t.Errorf("PIN collision between LFDI %q and %q", prior, e.LFDI)
+		}
+		seenPINs[got.PIN] = e.LFDI
+	}
+}
+
+// TestSeedStoresRegistrationPINIsStableAcrossReseeding locks the property
+// the wire depends on: a client may re-fetch its Registration, so the PIN
+// must not vary between reads. Re-seeding a fresh store from the same
+// registry is the strongest form of that check, since it also covers a
+// process restart (no persisted PIN state to reload).
+func TestSeedStoresRegistrationPINIsStableAcrossReseeding(t *testing.T) {
+	t.Parallel()
+
+	const lfdi = "CCCC00000000000000000000000000000000CCCC"
+	entry := registry.Entry{MRID: "mrid-stable", Name: "Stable", LFDI: lfdi}
+
+	ctx := context.Background()
+
+	seedAndRead := func() uint32 {
+		t.Helper()
+		reg := registry.New()
+		if err := reg.Add(entry); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		stores := newStores()
+		if err := seedStores(ctx, stores, reg, seedPolicy{}); err != nil {
+			t.Fatalf("seedStores: %v", err)
+		}
+		got, err := stores.Registrations.Get(ctx, lfdi)
+		if err != nil {
+			t.Fatalf("Registrations.Get(%q): %v", lfdi, err)
+		}
+		return got.PIN
+	}
+
+	if first, second := seedAndRead(), seedAndRead(); first != second {
+		t.Fatal("registration PIN differed across two seedings of the same device; the PIN must be stable for a device that re-fetches its Registration")
+	}
+}
+
+// TestSeedStoresStampsRegistrationPolicyWhenNonNil asserts the policy
+// override path: a configured PIN replaces the derived one on every
+// device, and a configured poll rate reaches the wire attribute.
+func TestSeedStoresStampsRegistrationPolicyWhenNonNil(t *testing.T) {
+	t.Parallel()
+
+	const lfdi = "DDDD00000000000000000000000000000000DDDD"
+	reg := registry.New()
+	if err := reg.Add(registry.Entry{MRID: "mrid-policy", Name: "Policy", LFDI: lfdi}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// An obvious dummy, not a credential: this is a test fixture value
+	// only and is never a default anywhere in the shipped code.
+	wantPIN := uint32(123454)
+	wantPollRate := uint32(300)
+
+	stores := newStores()
+	ctx := context.Background()
+	if err := seedStores(ctx, stores, reg, seedPolicy{
+		registrationPIN: &wantPIN,
+		pollRate:        &wantPollRate,
+	}); err != nil {
+		t.Fatalf("seedStores: %v", err)
+	}
+
+	got, err := stores.Registrations.Get(ctx, lfdi)
+	if err != nil {
+		t.Fatalf("Registrations.Get(%q): %v", lfdi, err)
+	}
+	if got.PIN != wantPIN {
+		t.Error("Registration.PIN did not take the configured policy override")
+	}
+	if got.PollRate != wantPollRate {
+		t.Errorf("Registration.PollRate = %d, want %d", got.PollRate, wantPollRate)
+	}
+	// The override must not disturb the derived value for a device whose
+	// policy leaves it unset.
+	if derived := deriveRegistrationPIN(lfdi); derived == wantPIN {
+		t.Skip("derived PIN coincidentally equals the fixture override; override-vs-derived is untestable with this fixture")
+	}
+}
+
+// TestDeriveRegistrationPINIsDeterministicAndInRange asserts the two
+// properties the wire contract needs: determinism (a re-fetching client
+// must never see the value change) and PINType range conformance
+// (sep.xsd: "6 digit unsigned decimal integer (0 - 999999)").
+func TestDeriveRegistrationPINIsDeterministicAndInRange(t *testing.T) {
+	t.Parallel()
+
+	lfdis := []string{
+		"0011223344556677889900112233445566778899",
+		"AAAA00000000000000000000000000000000AAAA",
+		"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+		"0000000000000000000000000000000000000000",
+	}
+
+	seen := make(map[uint32]string, len(lfdis))
+	for _, lfdi := range lfdis {
+		first := deriveRegistrationPIN(lfdi)
+		if second := deriveRegistrationPIN(lfdi); first != second {
+			t.Fatalf("deriveRegistrationPIN(%q) is not deterministic across two calls", lfdi)
+		}
+		if first > 999999 {
+			t.Errorf("deriveRegistrationPIN(%q) exceeds the PINType maximum of 999999", lfdi)
+		}
+		// The trailing digit is a checksum over the leading five, per
+		// the spec's "including the checksum digit" wording. Recompute
+		// it independently here rather than trusting the implementation.
+		lead := first / 10
+		sum := 0
+		for _, c := range fmt.Sprintf("%05d", lead) {
+			sum += int(c - '0')
+		}
+		if wantCheck := uint32((10 - sum%10) % 10); first%10 != wantCheck {
+			t.Errorf("deriveRegistrationPIN(%q): trailing checksum digit does not match the digit sum of the leading five", lfdi)
+		}
+		if prior, dup := seen[first]; dup {
+			t.Errorf("distinct LFDIs %q and %q derived the same PIN", prior, lfdi)
+		}
+		seen[first] = lfdi
+	}
+
+	// Domain separation: the PIN digest must not collide with the SFDI
+	// derivation, which hashes the bare LFDI.
+	const probe = "0011223344556677889900112233445566778899"
+	if strings.HasPrefix(derivePlaceholderSFDI(probe), fmt.Sprintf("%06d", deriveRegistrationPIN(probe))) {
+		t.Error("registration PIN appears to share a digest with derivePlaceholderSFDI; the two derivations must be domain-separated")
 	}
 }

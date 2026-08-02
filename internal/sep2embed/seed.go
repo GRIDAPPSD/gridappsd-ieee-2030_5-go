@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
@@ -54,18 +55,51 @@ import (
 // An empty registry seeds empty stores without error: the /edev list
 // still serves (0 results), it is simply empty rather than absent.
 //
-// modesSupported is the DERControlType bitmap (sep2config.SEP2Policy's
-// own field of the same name) stamped onto every seeded DERCapability.
-// nil means no policy value was supplied: seedOne leaves the seeded
-// DERCapability.ModesSupported nil rather than fabricating a bitmap
-// (GAGO-049; see [[data-invariants]] on not silently inventing values).
-func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, modesSupported *uint32) error {
+// policy carries the sep2config.SEP2Policy-sourced values seeding stamps
+// onto the resources it creates. Each field's nil/zero value means "no
+// policy value was supplied", and seedOne then either derives a
+// per-device value or leaves the wire field unset, never fabricating one
+// (see [[data-invariants]] on not silently inventing values).
+func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, policy seedPolicy) error {
 	for _, e := range reg.Snapshot() {
-		if err := seedOne(ctx, stores, e, modesSupported); err != nil {
+		if err := seedOne(ctx, stores, e, policy); err != nil {
 			return fmt.Errorf("seed entry mRID=%q: %w", e.MRID, err)
 		}
 	}
 	return nil
+}
+
+// seedPolicy is the seeding-relevant projection of
+// sep2config.SEP2Policy. It is a struct rather than a widening parameter
+// list because seeding now stamps three independent optional policy
+// values, and three same-typed *uint32 positional arguments would be
+// trivially transposable at a call site.
+//
+// The zero value is valid and means "no policy supplied": nil
+// modesSupported leaves DERCapability.ModesSupported nil, nil
+// registrationPIN selects the per-device derived PIN (see
+// deriveRegistrationPIN), and nil pollRate omits the Registration's
+// optional pollRate attribute so the client falls back to the schema
+// default.
+type seedPolicy struct {
+	// modesSupported is the DERControlType bitmap (sep2config.SEP2Policy's
+	// own field of the same name) stamped onto every seeded
+	// DERCapability. nil means seedOne leaves the seeded
+	// DERCapability.ModesSupported nil rather than fabricating a bitmap
+	// (GAGO-049).
+	modesSupported *uint32
+
+	// registrationPIN, when non-nil, overrides the per-device derived
+	// registration PIN on every seeded Registration. See
+	// sep2config.SEP2Policy.RegistrationPIN for why nil (per-device
+	// derivation) is the production default. Never logged.
+	registrationPIN *uint32
+
+	// pollRate, when non-nil, is stamped onto each seeded Registration's
+	// optional pollRate attribute. nil leaves it zero, which marshals as
+	// absent (omitempty) so the client applies sep.xsd's own 900-second
+	// default rather than a value the bridge invented.
+	pollRate *uint32
 }
 
 // seedOne writes the EndDevice and its single child DER for one registry
@@ -131,13 +165,15 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 //     mapping"; "do NOT silently invent capability bits"). maxQ is the
 //     one exception: it is itself a rated maximum, not a live value, so
 //     RTGMaxVar is populated from it.
-func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, modesSupported *uint32) error {
+func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, policy seedPolicy) error {
 	id := e.LFDI
 
 	sfdi := e.SFDI
 	if sfdi == "" {
 		sfdi = derivePlaceholderSFDI(e.LFDI)
 	}
+
+	registrationHref := "/edev/" + id + "/rg"
 
 	enabled := true
 	dev := sep2.EndDevice{
@@ -147,9 +183,36 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 	}
 	dev.Href = "/edev/" + id
 	dev.DERListLink = &sep2.ListLink{Href: "/edev/" + id + "/der", All: 1}
+	dev.RegistrationLink = &sep2.Link{Href: registrationHref}
 
 	if err := stores.EndDevices.Create(ctx, id, dev); err != nil {
 		return fmt.Errorf("create EndDevice: %w", err)
+	}
+
+	// The Registration is keyed by the same store id as its EndDevice
+	// because core's registration.HandleGetRegistration looks it up with
+	// the {id} segment of /edev/{id}/rg, which is the EndDeviceStore key.
+	// Seeding it here (rather than lazily on first GET) is what makes the
+	// advertised RegistrationLink resolvable: a link to a resource the
+	// store does not hold would 404, which reads to a client exactly like
+	// the missing-link failure this seeding exists to fix.
+	pin := policy.registrationPIN
+	if pin == nil {
+		derived := deriveRegistrationPIN(id)
+		pin = &derived
+	}
+
+	reg := sep2.Registration{
+		DateTimeRegistered: time.Now().Unix(),
+		PIN:                *pin,
+	}
+	reg.Href = registrationHref
+	if policy.pollRate != nil {
+		reg.PollRate = *policy.pollRate
+	}
+
+	if err := stores.Registrations.Create(ctx, id, reg); err != nil {
+		return fmt.Errorf("create Registration: %w", err)
 	}
 
 	dercapHref := "/edev/" + id + "/der/1/dercap"
@@ -168,7 +231,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, mod
 	}
 
 	dercap := sep2.DERCapability{
-		ModesSupported: modesSupported,
+		ModesSupported: policy.modesSupported,
 		RTGMaxVar:      rtgMaxVar,
 	}
 	dercap.Href = dercapHref
@@ -235,6 +298,55 @@ func buildRTGMaxVar(maxQ *int64, deviceID string) (*sep2.ReactivePower, error) {
 		return nil, fmt.Errorf("device %q: %w", deviceID, err)
 	}
 	return &sep2.ReactivePower{Multiplier: mult, Value: value}, nil
+}
+
+// deriveRegistrationPIN returns the registration PIN for the device
+// identified by lfdi: a deterministic, schema-shaped value used when
+// policy supplies no explicit override.
+//
+// Shape: IEEE 2030.5's PINType (sep.xsd complexType "PINType") is a
+// "6 digit unsigned decimal integer (0 - 999999)", and section 10.6.4's
+// pIN documentation states it includes a checksum digit. This derives
+// the leading five digits from a SHA-256 digest of the LFDI and appends
+// the same digit-sum check digit derivePlaceholderSFDI uses (the spec
+// section 6.3.3 scheme), so the result is always within [0, 999999]:
+// the maximum is 99999*10+9, which is exactly 999999.
+//
+// Why derived rather than random: the PIN is a value the client may
+// re-fetch (the EPRI client GETs the Registration resource behind
+// EndDevice.RegistrationLink), so a value that changed between two GETs
+// of the same resource would be a wire-visible correctness bug. Deriving
+// from the LFDI alone makes the value stable across repeated GETs,
+// across re-seeding a fresh store, and across process restarts, with no
+// persisted state to keep in sync. Why per-device rather than one
+// fleet-wide constant: the PIN is a per-device fact in the spec's model,
+// and distinct LFDIs yield distinct digests.
+//
+// The digest input is domain-separated with a fixed prefix so this value
+// is not the same digest derivePlaceholderSFDI computes over the bare
+// LFDI; the two must not coincide.
+//
+// Security: this is not a cryptographic authenticator, and it is not
+// treated as one. What actually protects the Registration resource is
+// the ownership gate (acl.go's OwnsEndDevice plus core's own
+// dev.LFDI != lfdi compare in HandleGetRegistration), which this
+// function does not touch. The returned value is a shared secret in the
+// registration flow and is never logged, never placed in an error
+// message, and never included in a committed fixture.
+func deriveRegistrationPIN(lfdi string) uint32 {
+	sum := sha256.Sum256([]byte("ieee2030.5-registration-pin:" + lfdi))
+
+	raw := uint32(sum[0])<<24 | uint32(sum[1])<<16 | uint32(sum[2])<<8 | uint32(sum[3])
+	lead := raw % 100000
+
+	digits := fmt.Sprintf("%05d", lead)
+	check := 0
+	for _, c := range digits {
+		check += int(c - '0')
+	}
+	checkDigit := uint32((10 - check%10) % 10)
+
+	return lead*10 + checkDigit
 }
 
 // derivePlaceholderSFDI returns a syntactically valid (spec 6.3.3 shaped,
