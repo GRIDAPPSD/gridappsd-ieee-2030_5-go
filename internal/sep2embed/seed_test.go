@@ -361,6 +361,61 @@ func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 	}
 }
 
+// TestSeedStoresStampsAllFourDERLinksOnDER confirms seedOne stamps all
+// four of DERCapabilityLink, DERSettingsLink, DERStatusLink, and
+// DERAvailabilityLink onto the seeded DER (GAGO-DERLINKS). Each is
+// asserted against its exact expected href, not merely non-nil, per
+// [[data-invariants]] Rule 1.
+//
+// This closes the gap Devi's finding identified: the EPRI client's
+// put_der_settings gates each of its four PUTs (dera, dercap, derg, ders)
+// independently on se_exists(der, <Type>Link), so a DER advertising only
+// DERCapabilityLink gets only the dercap PUT and the other three are
+// silently skipped client-side. Eight prior end-to-end runs showed exactly
+// that: PUT dercap and nothing else, and therefore no DERStatus PUT ever
+// reaching the bridge's telemetry relay.
+func TestSeedStoresStampsAllFourDERLinksOnDER(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.New()
+	entry := registry.Entry{MRID: "mrid-alllinks-1", Name: "Inverter All Links", LFDI: "444400000000000000000000000000000000DDDD"}
+	if err := reg.Add(entry); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	stores := newStores()
+	ctx := context.Background()
+	if err := seedStores(ctx, stores, reg, seedPolicy{resolvePIN: testResolvePIN}); err != nil {
+		t.Fatalf("seedStores: %v", err)
+	}
+
+	entryID := urlIndexFor(t, stores, entry.MRID)
+	der, err := stores.DERs.Get(ctx, entryID, "1")
+	if err != nil {
+		t.Fatalf("DERs.Get(%q, %q): %v", entryID, "1", err)
+	}
+
+	base := "/edev/" + entryID + "/der/1/"
+	cases := []struct {
+		name string
+		link *sep2.Link
+		want string
+	}{
+		{"DERCapabilityLink", der.DERCapabilityLink, base + "dercap"},
+		{"DERSettingsLink", der.DERSettingsLink, base + "derg"},
+		{"DERStatusLink", der.DERStatusLink, base + "ders"},
+		{"DERAvailabilityLink", der.DERAvailabilityLink, base + "dera"},
+	}
+	for _, c := range cases {
+		if c.link == nil {
+			t.Fatalf("DER.%s is nil for LFDI %q, want a populated link", c.name, entry.LFDI)
+		}
+		if c.link.Href != c.want {
+			t.Errorf("DER.%s.Href = %q, want %q", c.name, c.link.Href, c.want)
+		}
+	}
+}
+
 // TestBuildRTGMaxVar is a table-driven test on buildRTGMaxVar directly,
 // asserting the returned struct's field values plus the reconstructed
 // effective VAr (not just non-nil), per [[data-invariants]]. Covers: nil
