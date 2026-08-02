@@ -267,14 +267,29 @@ func run(ctx context.Context, cfg config) error {
 			return runCtx.Err()
 		}
 		// runCtx is the pump's (and the control subscriber's) root.
-		// gridappsd-go's router does not yet surface a broker-teardown
+		//
+		// gridappsd-go's router still does not surface a broker-teardown
 		// signal to fieldbus.MessageBus callers (upstream gap GAG-009;
 		// see the relay doc comment in
 		// internal/gridappsdclient/subscriber.go), so a mid-run broker
-		// disconnect does NOT independently wake either loop: only
-		// runCtx's cancellation (SIGINT/SIGTERM, or the embed side
-		// exiting) does.
-		return runSimSide(runCtx, bus, embed, reg, cfg.SimulationID, &controlHook)
+		// disconnect does NOT independently wake either loop. GAGO-107:
+		// that is why the subscribe path goes through a Supervisor
+		// rather than a bare Subscriber. The Supervisor polls the bus
+		// for liveness, and on a dead connection reconnects it (which
+		// re-runs the GOSS token bootstrap) and resubscribes BOTH
+		// simulation destinations, loudly, instead of leaving the
+		// bridge alive-but-deaf.
+		//
+		// The probe destination is the per-simulation log topic: a
+		// sibling of the output and input topics subscribed below, so
+		// it carries no ACL risk the bridge is not already taking, and
+		// nothing this bridge cares about is lost by churning a
+		// subscription on it. See WithProbeDestination for why a
+		// destination the broker would reject must not be used.
+		subs := gridappsdclient.NewSupervisor(bus,
+			gridappsdclient.WithProbeDestination(sim.LogTopic(cfg.SimulationID)))
+
+		return runSimSide(runCtx, subs, embed, reg, cfg.SimulationID, &controlHook)
 	}
 
 	// adminSrv is the GAGO-058/GAGO-059 read only operator HTTP API. It
@@ -975,11 +990,11 @@ func queryDevices(
 // lookup key (e.g., to the parent ConductingEquipment mRID) without
 // reworking the pump glue. Richer downstream consumption (IEEE 2030.5
 // MirrorMeterReading mapping) is Stage 2.
-func runPump(ctx context.Context, bus fieldbus.MessageBus, reg *registry.Registry, simID string) error {
+func runPump(ctx context.Context, subs sim.SubscribeClient, reg *registry.Registry, simID string) error {
 	dest := sim.OutputTopic(simID)
 	log.Printf("bridge: subscribing to %s", dest)
 
-	pump := sim.NewPump(gridappsdclient.NewSubscriber(bus), simID)
+	pump := sim.NewPump(subs, simID)
 
 	// seen dedupes the per-mRID lookup log so a 1Hz simulation does not
 	// reprint the same line every timestep. Plain map plus mutex; the
@@ -1053,15 +1068,15 @@ func runPump(ctx context.Context, bus fieldbus.MessageBus, reg *registry.Registr
 // does not depend on either loop actually receiving a frame. hook may be
 // nil (tests that do not care about observation can omit it); every
 // call below guards for that.
-func runSimSide(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook) error {
+func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook) error {
 	if hook != nil {
 		hook.SetTopics(sim.OutputTopic(simID), sim.InputTopic(simID))
 	}
 
 	pumpErr := make(chan error, 1)
-	go func() { pumpErr <- runPump(ctx, bus, reg, simID) }()
+	go func() { pumpErr <- runPump(ctx, subs, reg, simID) }()
 
-	ctrlErr := runControlSubscriber(ctx, bus, embed, reg, simID, hook)
+	ctrlErr := runControlSubscriber(ctx, subs, embed, reg, simID, hook)
 
 	perr := <-pumpErr
 	pGraceful := perr == nil || errors.Is(perr, context.Canceled)
@@ -1130,11 +1145,11 @@ func runSimSide(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.E
 // resolves to a delta is not counted at all (there is no delta to
 // report skipping); only a decoded delta that ApplyControlDelta accepts
 // or rejects is counted.
-func runControlSubscriber(ctx context.Context, bus fieldbus.MessageBus, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook) error {
+func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook) error {
 	dest := sim.InputTopic(simID)
 	log.Printf("bridge: subscribing to %s for control deltas", dest)
 
-	sub, err := gridappsdclient.NewSubscriber(bus).Subscribe(ctx, dest)
+	sub, err := subs.Subscribe(ctx, dest)
 	if err != nil {
 		return fmt.Errorf("control subscriber: subscribe %s: %w", dest, err)
 	}
