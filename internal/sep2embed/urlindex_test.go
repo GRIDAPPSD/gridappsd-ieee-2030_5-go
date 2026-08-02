@@ -236,3 +236,35 @@ func TestURLIndexSeedingIsDeterministicWithinARun(t *testing.T) {
 		t.Errorf("mrid-z-last index = %q, want %q (assignment walks mRIDs in sorted order)", got, "4")
 	}
 }
+
+// TestNewStoresWiresNonNilEndDeviceIndex guards the one field whose absence
+// is now a BOOT-TIME PANIC rather than a silent degradation.
+//
+// core's enddevice.HandleCreateEndDevice panics at construction on a nil
+// EndDeviceIndexer (core 584b02a), deliberately, so a mis-wired server fails
+// loudly at assembly instead of returning a recovered 500 on every POST /edev.
+// assembly.BuildProtocolRouter substitutes a process-local allocator when
+// Stores.EndDeviceIndexes is nil, so the bridge would not actually trip that
+// panic today; what it WOULD do is silently lose the index assignments seeding
+// depends on, because seedOne allocates from stores.EndDeviceIndexes directly
+// and would nil-panic there first.
+//
+// Either way the failure is at startup and far from the edit that caused it.
+// Assert the wiring here, where the cause is named.
+func TestNewStoresWiresNonNilEndDeviceIndex(t *testing.T) {
+	t.Parallel()
+
+	stores := newStores()
+	if stores.EndDeviceIndexes == nil {
+		t.Fatal("newStores() left Stores.EndDeviceIndexes nil: seeding would nil-panic at boot, and a nil indexer reaching core's HandleCreateEndDevice panics at router construction")
+	}
+
+	// A usable allocator, not merely a non-nil pointer.
+	idx, err := stores.EndDeviceIndexes.Allocate("mrid-wiring-probe")
+	if err != nil {
+		t.Fatalf("Allocate on the wired index: %v", err)
+	}
+	if idx != "1" {
+		t.Errorf("first allocation from a fresh store = %q, want %q", idx, "1")
+	}
+}
