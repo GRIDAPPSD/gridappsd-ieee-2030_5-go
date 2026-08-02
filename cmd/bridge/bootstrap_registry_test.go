@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -39,14 +40,20 @@ func (m *mockCIMRequester) Request(_ context.Context, _ string, _ []byte) ([]byt
 }
 
 // threeDeviceBinding is one SPARQL binding row shaped the way
-// queryDevices expects: an "id" and a "name" field, matching what
+// queryDevices expects: "id", "pecid", and "name" fields, matching what
 // internal/cim.QueryDataResult.Results.Bindings decodes into. maxQ is
 // omitted (OPTIONAL binding absent), matching the current threeDevice*
 // fixtures' scope; see deviceBindingWithMaxQ for a row that carries it.
+// pecid is set equal to mrid: GAGO-104 anchors device identity on
+// ?pecid, so these fixtures (which are not exercising the
+// unit-vs-PEC-identity split; see
+// TestBootstrapRegistryCollapsesUnitAndPECIdentityToOnePEC for that)
+// model the case where the row's ?id and ?pecid bindings already agree.
 func threeDeviceBinding(mrid, name string) map[string]any {
 	return map[string]any{
-		"id":   map[string]string{"type": "literal", "value": mrid},
-		"name": map[string]string{"type": "literal", "value": name},
+		"id":    map[string]string{"type": "literal", "value": mrid},
+		"pecid": map[string]string{"type": "literal", "value": mrid},
+		"name":  map[string]string{"type": "literal", "value": name},
 	}
 }
 
@@ -83,6 +90,274 @@ func threeDeviceEnvelope(t *testing.T) []byte {
 		t.Fatalf("marshal envelope: %v", err)
 	}
 	return b
+}
+
+// pecUnitBinding builds a single SPARQL binding row with independently
+// controllable ?id (the COALESCE(unitID, pecid) result) and ?pecid
+// bindings, exercising GAGO-104's device-identity-anchoring fix
+// directly: two rows sharing the same pecid but carrying different id
+// values must still dedupe to one device once identity is anchored on
+// ?pecid.
+func pecUnitBinding(id, pecid, name string) map[string]any {
+	return map[string]any{
+		"id":    map[string]string{"type": "literal", "value": id},
+		"pecid": map[string]string{"type": "literal", "value": pecid},
+		"name":  map[string]string{"type": "literal", "value": name},
+	}
+}
+
+// singleRowEnvelope wraps one binding row in the {"data": {...},
+// "responseComplete": true} envelope callEnveloped expects.
+func singleRowEnvelope(t *testing.T, row map[string]any) []byte {
+	t.Helper()
+
+	data := map[string]any{
+		"head": map[string]any{"vars": []string{"id", "pecid", "name"}},
+		"results": map[string]any{
+			"bindings": []map[string]any{row},
+		},
+	}
+	env := map[string]any{"data": data, "responseComplete": true, "id": "x"}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	return b
+}
+
+// kindRoutedMockCIMRequester discriminates between the four SPARQL
+// templates bootstrapRegistry issues (inverter, solar, battery, and the
+// GAGO-051 discovery count) by inspecting the request body for each
+// template's distinctive substring (matching the discrimination
+// approach routedMockCIMRequester in empty_fleet_guard_test.go already
+// uses for the count-vs-device split), and returns an independently
+// controllable canned envelope for each. Unlike mockCIMRequester's
+// single canned response, this lets a test drive a scenario where the
+// SAME PowerElectronicsConnection surfaces under a different ?id
+// binding depending on which query produced the row (GAGO-104's
+// diagnosed failure mode): the inverter and solar templates' OPTIONAL
+// Unit blocks bind a PhotovoltaicUnit and yield its mRID, while the
+// battery template's BatteryUnit type filter never matches that same
+// PV unit and falls through to the pecid fallback.
+type kindRoutedMockCIMRequester struct {
+	inverterResp []byte
+	solarResp    []byte
+	batteryResp  []byte
+	countResp    []byte
+}
+
+func (m *kindRoutedMockCIMRequester) Request(_ context.Context, _ string, body []byte) ([]byte, error) {
+	var src []byte
+	switch {
+	case bytes.Contains(body, []byte("COUNT(DISTINCT")):
+		src = m.countResp
+	case bytes.Contains(body, []byte("DistSolar")):
+		src = m.solarResp
+	case bytes.Contains(body, []byte("DistStorage")):
+		src = m.batteryResp
+	default:
+		src = m.inverterResp
+	}
+	out := make([]byte, len(src))
+	copy(out, src)
+	return out, nil
+}
+
+// TestBootstrapRegistryAnchorsIdentityOnPECNotUnit is the GAGO-104 core
+// regression. A single PowerElectronicsConnection ("PEC-MRID-1") with a
+// bound child PhotovoltaicUnit ("UNIT-MRID-1") surfaces:
+//
+//   - a unit-mRID identity from the inverter and solar queries, whose
+//     OPTIONAL Unit block binds the PhotovoltaicUnit and COALESCEs ?id
+//     to its mRID;
+//   - a pecid-mRID identity from the battery query, whose BatteryUnit
+//     type filter never matches a PhotovoltaicUnit, so its OPTIONAL
+//     never binds and COALESCE falls back to ?pecid.
+//
+// Before GAGO-104, dedupe keyed on that ?id value, so this ONE physical
+// converter dedupe-collapsed to TWO registry entries (this is the exact
+// shape of the live-run defect: 9 PECs minted 18 devices). After the
+// fix, dedupe is keyed on ?pecid for every row regardless of which
+// query produced it, so the registry must carry exactly ONE entry, keyed
+// on the PEC's own mRID, never the unit's.
+//
+// This test deliberately does not call t.Parallel(): it uses
+// captureLog, and per that helper's doc comment, callers must stay
+// non-parallel to avoid interleaved log output from this package's
+// other parallel bootstrapRegistry tests.
+func TestBootstrapRegistryAnchorsIdentityOnPECNotUnit(t *testing.T) {
+	const (
+		pecMRID  = "PEC-MRID-1"
+		unitMRID = "UNIT-MRID-1"
+		name     = "Inverter 1"
+	)
+
+	requester := &kindRoutedMockCIMRequester{
+		inverterResp: singleRowEnvelope(t, pecUnitBinding(unitMRID, pecMRID, name)),
+		solarResp:    singleRowEnvelope(t, pecUnitBinding(unitMRID, pecMRID, name)),
+		batteryResp:  singleRowEnvelope(t, pecUnitBinding(pecMRID, pecMRID, name)),
+		countResp:    countEnvelope(t, 1),
+	}
+	client := cim.NewClient(requester)
+
+	buf := captureLog(t)
+
+	certDir := t.TempDir()
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
+	if err != nil {
+		t.Fatalf("bootstrapRegistry: %v", err)
+	}
+
+	if got := reg.Len(); got != 1 {
+		t.Fatalf("registry.Len() = %d, want 1 (one PEC surfaced under a unit identity from inverter/solar and a pecid identity from battery; GAGO-104 requires these to dedupe to one device)", got)
+	}
+
+	entry, ok := reg.Get(pecMRID)
+	if !ok {
+		t.Fatalf("registry has no entry keyed on the PEC's own mRID %q", pecMRID)
+	}
+	if entry.Name != name {
+		t.Errorf("entry.Name = %q, want %q", entry.Name, name)
+	}
+	if entry.Placeholder {
+		t.Errorf("entry.Placeholder = true, want false")
+	}
+
+	if _, ok := reg.Get(unitMRID); ok {
+		t.Errorf("registry has a spurious entry keyed on the child PowerElectronicsUnit's mRID %q; GAGO-104 requires identity to be PEC-anchored only", unitMRID)
+	}
+
+	logged := buf.String()
+	if strings.Contains(logged, "bridge: WARNING") {
+		t.Errorf("discovered(1) == projected(1) after the GAGO-104 fix; want no WARNING, got:\n%s", logged)
+	}
+	if !strings.Contains(logged, "no drops") {
+		t.Errorf("expected the discover-vs-project log line to confirm the match; got:\n%s", logged)
+	}
+}
+
+// TestQueryDevicesAnchorsMRIDOnPECIDAndPreservesUnitMRID is the
+// GAGO-104 unit-level VALUE assertion at the queryDevices layer:
+// cimDevice.MRID must come from ?pecid (the PowerElectronicsConnection's
+// own mRID), and the ?id binding queries.go COALESCEs (the unit mRID
+// when a child Unit bound, the pecid again when it did not) must
+// survive as cimDevice.UnitMRID rather than being discarded.
+func TestQueryDevicesAnchorsMRIDOnPECIDAndPreservesUnitMRID(t *testing.T) {
+	t.Parallel()
+
+	fakeQuery := func(_ context.Context, _ string) (*cim.QueryDataResult, error) {
+		return &cim.QueryDataResult{
+			Results: cim.SPARQLResults{
+				Bindings: []map[string]cim.Binding{
+					{
+						"id":    {Value: "UNIT-MRID-1"},
+						"pecid": {Value: "PEC-MRID-1"},
+						"name":  {Value: "Inverter 1"},
+					},
+				},
+			},
+		}, nil
+	}
+
+	devices, err := queryDevices(context.Background(), "inverter", fakeQuery, "_DEADBEEF-0000-0000-0000-000000000123")
+	if err != nil {
+		t.Fatalf("queryDevices: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("queryDevices returned %d devices, want 1", len(devices))
+	}
+
+	got := devices[0]
+	if got.MRID != "PEC-MRID-1" {
+		t.Errorf("devices[0].MRID = %q, want %q (the PowerElectronicsConnection's own mRID, GAGO-104)", got.MRID, "PEC-MRID-1")
+	}
+	if got.UnitMRID != "UNIT-MRID-1" {
+		t.Errorf("devices[0].UnitMRID = %q, want %q (the ?id COALESCE result, preserved not discarded)", got.UnitMRID, "UNIT-MRID-1")
+	}
+}
+
+// TestQueryDevicesSkipsRowsWithEmptyPECID confirms the GAGO-104 skip
+// condition moved from ?id to ?pecid: a row whose ?pecid binding is
+// missing or empty is skipped, matching the pre-GAGO-104 behavior of
+// skipping rows with a missing identity binding (previously ?id).
+func TestQueryDevicesSkipsRowsWithEmptyPECID(t *testing.T) {
+	t.Parallel()
+
+	fakeQuery := func(_ context.Context, _ string) (*cim.QueryDataResult, error) {
+		return &cim.QueryDataResult{
+			Results: cim.SPARQLResults{
+				Bindings: []map[string]cim.Binding{
+					{
+						"id":   {Value: "UNIT-MRID-1"},
+						"name": {Value: "No PECID"},
+						// pecid deliberately absent.
+					},
+					{
+						"id":    {Value: "UNIT-MRID-2"},
+						"pecid": {Value: "PEC-MRID-2"},
+						"name":  {Value: "Has PECID"},
+					},
+				},
+			},
+		}, nil
+	}
+
+	devices, err := queryDevices(context.Background(), "inverter", fakeQuery, "_DEADBEEF-0000-0000-0000-000000000123")
+	if err != nil {
+		t.Fatalf("queryDevices: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("queryDevices returned %d devices, want 1 (the row with an empty pecid must be skipped)", len(devices))
+	}
+	if devices[0].MRID != "PEC-MRID-2" {
+		t.Errorf("devices[0].MRID = %q, want %q", devices[0].MRID, "PEC-MRID-2")
+	}
+}
+
+// TestQueryDevicesBatteryPathStillAnchorsOnPECWhenBatteryUnitBound
+// confirms GAGO-104 does not regress a feeder that genuinely has
+// BatteryUnit children: when the battery query's BatteryUnit type
+// filter DOES match (unlike the PV-only-feeder case exercised by
+// TestBootstrapRegistryAnchorsIdentityOnPECNotUnit, where it never
+// binds), the row's ?id COALESCEs to the BatteryUnit's own mRID. That
+// value must still be preserved as UnitMRID while MRID stays anchored
+// on ?pecid, exactly like the PV path: only the identity anchor
+// changed, not the battery-vs-PV binding shape itself.
+func TestQueryDevicesBatteryPathStillAnchorsOnPECWhenBatteryUnitBound(t *testing.T) {
+	t.Parallel()
+
+	fakeQuery := func(_ context.Context, _ string) (*cim.QueryDataResult, error) {
+		return &cim.QueryDataResult{
+			Results: cim.SPARQLResults{
+				Bindings: []map[string]cim.Binding{
+					{
+						"id":    {Value: "BATTERY-UNIT-MRID-1"},
+						"pecid": {Value: "PEC-MRID-2"},
+						"name":  {Value: "Battery 1"},
+					},
+				},
+			},
+		}, nil
+	}
+
+	devices, err := queryDevices(context.Background(), "battery", fakeQuery, "_DEADBEEF-0000-0000-0000-000000000123")
+	if err != nil {
+		t.Fatalf("queryDevices: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("queryDevices returned %d devices, want 1", len(devices))
+	}
+
+	got := devices[0]
+	if got.MRID != "PEC-MRID-2" {
+		t.Errorf("devices[0].MRID = %q, want %q", got.MRID, "PEC-MRID-2")
+	}
+	if got.UnitMRID != "BATTERY-UNIT-MRID-1" {
+		t.Errorf("devices[0].UnitMRID = %q, want %q", got.UnitMRID, "BATTERY-UNIT-MRID-1")
+	}
+	if got.Name != "Battery 1" {
+		t.Errorf("devices[0].Name = %q, want %q", got.Name, "Battery 1")
+	}
 }
 
 // TestBootstrapRegistryDerivesRealCertBackedIdentities is the
@@ -206,13 +481,15 @@ func TestQueryDevicesParsesOptionalMaxQ(t *testing.T) {
 			Results: cim.SPARQLResults{
 				Bindings: []map[string]cim.Binding{
 					{
-						"id":   {Value: "mrid-maxq-1"},
-						"name": {Value: "Inverter MaxQ"},
-						"maxQ": {Value: "250000"},
+						"id":    {Value: "mrid-maxq-1"},
+						"pecid": {Value: "mrid-maxq-1"},
+						"name":  {Value: "Inverter MaxQ"},
+						"maxQ":  {Value: "250000"},
 					},
 					{
-						"id":   {Value: "mrid-nomaxq-1"},
-						"name": {Value: "Inverter NoMaxQ"},
+						"id":    {Value: "mrid-nomaxq-1"},
+						"pecid": {Value: "mrid-nomaxq-1"},
+						"name":  {Value: "Inverter NoMaxQ"},
 					},
 				},
 			},
@@ -255,9 +532,10 @@ func TestQueryDevicesRejectsMalformedMaxQ(t *testing.T) {
 			Results: cim.SPARQLResults{
 				Bindings: []map[string]cim.Binding{
 					{
-						"id":   {Value: "mrid-bad-1"},
-						"name": {Value: "Bad MaxQ"},
-						"maxQ": {Value: "not-a-number"},
+						"id":    {Value: "mrid-bad-1"},
+						"pecid": {Value: "mrid-bad-1"},
+						"name":  {Value: "Bad MaxQ"},
+						"maxQ":  {Value: "not-a-number"},
 					},
 				},
 			},
@@ -312,8 +590,9 @@ func TestQueryDevicesParsesFloatMaxQ(t *testing.T) {
 			t.Parallel()
 
 			binding := map[string]cim.Binding{
-				"id":   {Value: "mrid-floatmaxq-1"},
-				"name": {Value: "Inverter FloatMaxQ"},
+				"id":    {Value: "mrid-floatmaxq-1"},
+				"pecid": {Value: "mrid-floatmaxq-1"},
+				"name":  {Value: "Inverter FloatMaxQ"},
 			}
 			if tt.raw != "" {
 				binding["maxQ"] = cim.Binding{Value: tt.raw}
