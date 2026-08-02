@@ -6,6 +6,7 @@ import (
 	"flag"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -653,5 +654,299 @@ func TestLoadConfigVersionFlagReturnsBeforeValidate(t *testing.T) {
 	_, err := loadConfig([]string{"-version"})
 	if !errors.Is(err, errVersionRequested) {
 		t.Fatalf("loadConfig([-version]): got err %v, want errVersionRequested", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINUnsetByDefault is the GAGO-PIN no-op
+// contract for an operator who never passes either PIN flag: neither
+// SEP2RegistrationPIN nor SEP2RegistrationPINs is populated, so
+// buildSEP2Policy in main.go leaves sep2config.DefaultPolicy()'s own
+// unset state (fail closed at seeding time) exactly as it is today.
+func TestLoadConfigRegistrationPINUnsetByDefault(t *testing.T) {
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2RegistrationPIN != nil {
+		t.Errorf("SEP2RegistrationPIN: got %v, want nil", cfg.SEP2RegistrationPIN)
+	}
+	if cfg.SEP2RegistrationPINs != nil {
+		t.Errorf("SEP2RegistrationPINs: got %v, want nil", cfg.SEP2RegistrationPINs)
+	}
+}
+
+// TestLoadConfigRegistrationPINFlagSetsPointer verifies
+// -sep2-registration-pin parses into the exact configured value, using
+// 123455 (the IEEE 2030.5 section 6.3.5 worked example: PIN 12345,
+// digits summing to 15, check digit 5).
+func TestLoadConfigRegistrationPINFlagSetsPointer(t *testing.T) {
+	cfg, err := loadConfig([]string{"-sep2-registration-pin=123455"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2RegistrationPIN == nil {
+		t.Fatal("SEP2RegistrationPIN: got nil, want a populated pointer")
+	}
+	if *cfg.SEP2RegistrationPIN != 123455 {
+		t.Errorf("SEP2RegistrationPIN: got %d, want 123455", *cfg.SEP2RegistrationPIN)
+	}
+}
+
+// TestLoadConfigRegistrationPINFlagRejectsNonNumeric verifies a
+// non-numeric -sep2-registration-pin value is a loadConfig error, and
+// that the error deliberately does not echo the raw offending string:
+// the flag may carry an operator's mistyped PIN, and a PIN is never
+// logged or echoed in an error (see sep2config.SEP2Policy's
+// RegistrationPINs doc comment).
+func TestLoadConfigRegistrationPINFlagRejectsNonNumeric(t *testing.T) {
+	_, err := loadConfig([]string{"-sep2-registration-pin=not-a-number"})
+	if err == nil {
+		t.Fatal("expected an error for a non-numeric -sep2-registration-pin, got nil")
+	}
+	if !strings.Contains(err.Error(), "-sep2-registration-pin") {
+		t.Errorf("error should name the flag: %v", err)
+	}
+	if strings.Contains(err.Error(), "not-a-number") {
+		t.Errorf("error must not echo the raw flag value: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINFlagRejectsNegative verifies a negative
+// -sep2-registration-pin value is rejected at parse time (flag.Uint has
+// no negative representation, so this exercises the manual
+// strconv.ParseUint path instead of flag's own numeric flag types).
+func TestLoadConfigRegistrationPINFlagRejectsNegative(t *testing.T) {
+	_, err := loadConfig([]string{"-sep2-registration-pin=-5"})
+	if err == nil {
+		t.Fatal("expected an error for a negative -sep2-registration-pin, got nil")
+	}
+	if !strings.Contains(err.Error(), "-sep2-registration-pin") {
+		t.Errorf("error should name the flag: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINFileLoadsExactMap verifies a valid
+// -sep2-registration-pin-file populates SEP2RegistrationPINs with
+// exactly the entries in the file, keys and values both, and in
+// whatever case the file used (ResolveRegistrationPIN normalizes case
+// at lookup time, so the loader must not).
+func TestLoadConfigRegistrationPINFileLoadsExactMap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	if err := os.WriteFile(path, []byte(`{"f0fa1ac6":123455,"BCD85AA8":234564}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := loadConfig([]string{"-sep2-registration-pin-file=" + path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	want := map[string]uint32{"f0fa1ac6": 123455, "BCD85AA8": 234564}
+	if len(cfg.SEP2RegistrationPINs) != len(want) {
+		t.Fatalf("SEP2RegistrationPINs: got %v, want %v", cfg.SEP2RegistrationPINs, want)
+	}
+	for k, v := range want {
+		got, ok := cfg.SEP2RegistrationPINs[k]
+		if !ok {
+			t.Errorf("SEP2RegistrationPINs missing key %q", k)
+			continue
+		}
+		if got != v {
+			t.Errorf("SEP2RegistrationPINs[%q]: got %d, want %d", k, got, v)
+		}
+	}
+}
+
+// TestLoadConfigRegistrationPINFileMissing verifies a nonexistent
+// -sep2-registration-pin-file path is a distinct, named loadConfig
+// error: a typo in the path must fail the boot outright, never fall
+// back silently to no per-device PINs.
+func TestLoadConfigRegistrationPINFileMissing(t *testing.T) {
+	_, err := loadConfig([]string{"-sep2-registration-pin-file=/nonexistent/pins.json"})
+	if err == nil {
+		t.Fatal("expected an error for a missing PIN file, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error should say the file does not exist: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINFileUnreadable verifies a PIN file that
+// exists but cannot be read (permission denied) is a distinct error
+// from "does not exist".
+func TestLoadConfigRegistrationPINFileUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permission bits; skip under root")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	if err := os.WriteFile(path, []byte(`{"A":123455}`), 0o000); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-registration-pin-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for an unreadable PIN file, got nil")
+	}
+	if !strings.Contains(err.Error(), "is not readable") {
+		t.Errorf("error should say the file is not readable: %v", err)
+	}
+	if strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("unreadable and missing must be distinct errors, got: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINFileMalformedJSON verifies invalid JSON
+// syntax is a distinct error from every other PIN-file failure mode.
+func TestLoadConfigRegistrationPINFileMalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	if err := os.WriteFile(path, []byte(`{"A":123455,`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-registration-pin-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for malformed JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "is not valid JSON") {
+		t.Errorf("error should say the file is not valid JSON: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINFileNotAnObject verifies a syntactically
+// valid JSON document whose top level is not an object (here, an
+// array) is a distinct error from a JSON syntax error.
+func TestLoadConfigRegistrationPINFileNotAnObject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	if err := os.WriteFile(path, []byte(`[123455,234564]`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-registration-pin-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for a non-object top-level JSON value, got nil")
+	}
+	if !strings.Contains(err.Error(), "is not a flat JSON object") {
+		t.Errorf("error should say the file is not a flat JSON object: %v", err)
+	}
+	if strings.Contains(err.Error(), "is not valid JSON") {
+		t.Errorf("not-an-object and malformed-JSON must be distinct errors, got: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINFileNonNumberValue verifies a value that
+// is valid JSON but not a JSON number (here, a quoted string) is
+// rejected rather than silently accepted: encoding/json's json.Number
+// type would otherwise accept "123455" as if it were the bare number
+// 123455.
+func TestLoadConfigRegistrationPINFileNonNumberValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	if err := os.WriteFile(path, []byte(`{"A":"123455"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-registration-pin-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for a non-number PIN value, got nil")
+	}
+	if !strings.Contains(err.Error(), "is not a JSON number") {
+		t.Errorf("error should say the entry is not a JSON number: %v", err)
+	}
+	if !strings.Contains(err.Error(), `"A"`) {
+		t.Errorf("error should name the offending LFDI: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINFileNonIntegerValue verifies a
+// fractional JSON number is rejected as a distinct error from every
+// other failure mode, and that the error never echoes the offending
+// number.
+func TestLoadConfigRegistrationPINFileNonIntegerValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	if err := os.WriteFile(path, []byte(`{"A":123455.5}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-registration-pin-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for a non-integer PIN value, got nil")
+	}
+	if !strings.Contains(err.Error(), "is not an integer") {
+		t.Errorf("error should say the entry is not an integer: %v", err)
+	}
+	if strings.Contains(err.Error(), "123455.5") {
+		t.Errorf("error must not echo the raw PIN value: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINFileOutOfRangeValue verifies a value
+// above sep2config.MaxRegistrationPIN (999999) is a distinct error, and
+// that the offending value itself never appears in the error message.
+func TestLoadConfigRegistrationPINFileOutOfRangeValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	if err := os.WriteFile(path, []byte(`{"A":1000000}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-registration-pin-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for an out-of-range PIN value, got nil")
+	}
+	if !strings.Contains(err.Error(), "out of the IEEE 2030.5 PIN range") {
+		t.Errorf("error should say the entry is out of range: %v", err)
+	}
+	if strings.Contains(err.Error(), "1000000") {
+		t.Errorf("error must not echo the raw PIN value: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINFileEmptyObject verifies an empty JSON
+// object is rejected outright rather than silently producing an empty
+// map: an empty file must not be indistinguishable from "flag absent".
+func TestLoadConfigRegistrationPINFileEmptyObject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-registration-pin-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for an empty PIN file, got nil")
+	}
+	if !strings.Contains(err.Error(), "contains no entries") {
+		t.Errorf("error should say the file has no entries: %v", err)
+	}
+}
+
+// TestLoadConfigRegistrationPINBothFlagsTogether verifies both PIN
+// flags can be set at once, each populating its own distinct field with
+// no cross-contamination: this is the precedence shape
+// SEP2Policy.ResolveRegistrationPIN reads later, per-device wins over
+// the fleet default.
+func TestLoadConfigRegistrationPINBothFlagsTogether(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	if err := os.WriteFile(path, []byte(`{"F0FA1AC6":234564}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := loadConfig([]string{
+		"-sep2-registration-pin=123455",
+		"-sep2-registration-pin-file=" + path,
+	})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2RegistrationPIN == nil || *cfg.SEP2RegistrationPIN != 123455 {
+		t.Errorf("SEP2RegistrationPIN: got %v, want 123455", cfg.SEP2RegistrationPIN)
+	}
+	if len(cfg.SEP2RegistrationPINs) != 1 || cfg.SEP2RegistrationPINs["F0FA1AC6"] != 234564 {
+		t.Errorf("SEP2RegistrationPINs: got %v, want {F0FA1AC6: 234564}", cfg.SEP2RegistrationPINs)
 	}
 }

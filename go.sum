@@ -1,7 +1,7 @@
 github.com/GRIDAPPSD/gridappsd-go v0.0.0-20260717032458-1823402cfecc h1:uoN49+uZ0yZZGWMDb5Texypf7xD9Ly3IneYF+NMB4PM=
 github.com/GRIDAPPSD/gridappsd-go v0.0.0-20260717032458-1823402cfecc/go.mod h1:Y/eEXOS6Co5uer73z3mIHrpSt0ja2W25AEUuLsJwFeI=
-github.com/GRIDAPPSD/ieee-2030_5-core-go v0.6.1-0.20260723035419-6fd69e3ef325 h1:GHq5VVX0hCqWPRRt9wLMhq+lzRCaZKBLhI7+moaENG4=
-github.com/GRIDAPPSD/ieee-2030_5-core-go v0.6.1-0.20260723035419-6fd69e3ef325/go.mod h1:dP7sIUCVceNoLz5cP1fMWzSc7y/888RpdPx9CU010Dw=
+github.com/GRIDAPPSD/ieee-2030_5-core-go v0.6.1-0.20260802181718-fcbb2161e9dc h1:UzNWVa3hoS7sFB9GS4kmPvFvZfxoGXDErmzjcFFrI4I=
+github.com/GRIDAPPSD/ieee-2030_5-core-go v0.6.1-0.20260802181718-fcbb2161e9dc/go.mod h1:dP7sIUCVceNoLz5cP1fMWzSc7y/888RpdPx9CU010Dw=
 github.com/go-stomp/stomp/v3 v3.1.5 h1:Pikz1OSusmSKUm5mRKYfXQZaDatfZ+EnBBA1JJ2xENQ=
 github.com/go-stomp/stomp/v3 v3.1.5/go.mod h1:ztzZej6T2W4Y6FlD+Tb5n7HQP3/O5UNQiuC169pIp10=
 github.com/golang/mock v1.6.0 h1:ErTB+efbowRARo13NNdxyJji2egdxLGQhRaY+DUumQc=

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 )
 
 // config carries the runtime knobs the Stage 1 bridge needs. Only the
@@ -123,6 +127,29 @@ type config struct {
 	// Empty means unset: no link, no error, no admin UI behavior
 	// change.
 	SEP2AdminUISORLink string
+
+	// SEP2RegistrationPIN is the optional fleet-wide fallback IEEE
+	// 2030.5 registration PIN (see sep2config.SEP2Policy's
+	// DefaultRegistrationPIN doc comment for why a fleet-wide value is
+	// a dev/interop fallback, not a production shape). Pointer-typed
+	// because 0 is itself a schema-legal PIN (sep.xsd's PINType has no
+	// range floor above 0), so a *uint32 is the only way to distinguish
+	// "operator configured 0" from "operator configured nothing"; nil
+	// means the flag was not set. Populated from -sep2-registration-pin
+	// only: this value is never sourced from an env var, so it never
+	// needs the credential flags' "empty flag default, resolve after
+	// Parse" dance.
+	SEP2RegistrationPIN *uint32
+
+	// SEP2RegistrationPINs is the optional per-device IEEE 2030.5
+	// registration PIN map, loaded verbatim from the JSON file at
+	// -sep2-registration-pin-file (device LFDI to PIN). Nil means the
+	// flag was not set: zero devices configured this way is
+	// indistinguishable from "flag absent" for this field, unlike
+	// SEP2RegistrationPIN's zero-value ambiguity, because an existing
+	// but empty PIN file is rejected outright by
+	// loadRegistrationPINFile rather than producing an empty map here.
+	SEP2RegistrationPINs map[string]uint32
 }
 
 // deviceCertMode* are the only two values config.validate accepts for
@@ -251,6 +278,19 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
 	fs.StringVar(&cfg.SEP2AdminUISORLink, "admin-ui-sor-link", cfg.SEP2AdminUISORLink, "optional server of record dashboard URL exposed via the admin UI (env: SEP2_ADMIN_UI_SOR_LINK)")
 
+	// sep2-registration-pin and sep2-registration-pin-file register with
+	// an empty string default, then are parsed and validated by hand
+	// after Parse below (GAGO-PIN). A registered numeric flag default
+	// cannot represent "unset" here, because 0 is itself a schema-legal
+	// PIN (see SEP2RegistrationPIN's doc comment above); the empty
+	// string sentinel resolves that ambiguity the same way the
+	// credential flags above resolve theirs.
+	var registrationPINFlag, registrationPINFileFlag string
+	fs.StringVar(&registrationPINFlag, "sep2-registration-pin", "",
+		"fleet-wide fallback IEEE 2030.5 registration PIN, 0-999999 with a valid section 6.3.5 check digit; unset means no fleet-wide fallback")
+	fs.StringVar(&registrationPINFileFlag, "sep2-registration-pin-file", "",
+		"path to a JSON object mapping device LFDI to that device's IEEE 2030.5 registration PIN; unset means no per-device PINs are configured")
+
 	var versionFlag bool
 	fs.BoolVar(&versionFlag, "version", false, "print the build version and exit")
 
@@ -281,10 +321,130 @@ func loadConfig(args []string) (config, error) {
 	// fallback argument encodes exactly that.
 	cfg.SEP2AdminUIKey = resolveCred(adminUIKeyFlag, "SEP2_ADMIN_UI_KEY", "")
 
+	// registrationPINFlag / registrationPINFileFlag are resolved here,
+	// before validate, so a malformed value stops the bridge at config
+	// load, before any network I/O (connectClient has not run yet: see
+	// main's call order). Domain validation (0-999999 range, section
+	// 6.3.5 check digit) is deliberately NOT duplicated here: it lives
+	// in sep2config.SEP2Policy.ValidateRegistrationPIN, the single place
+	// that logic already lives, and buildSEP2Policy in main.go calls it
+	// on both of these fields before the bridge serves anything.
+	if registrationPINFlag != "" {
+		pin, err := parseRegistrationPINFlag(registrationPINFlag)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.SEP2RegistrationPIN = &pin
+	}
+	if registrationPINFileFlag != "" {
+		pins, err := loadRegistrationPINFile(registrationPINFileFlag)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.SEP2RegistrationPINs = pins
+	}
+
 	if err := cfg.validate(); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
+}
+
+// parseRegistrationPINFlag parses -sep2-registration-pin's raw string
+// into a uint32. It only rejects syntax: a non-numeric string, a
+// negative number, or a value too large for 32 bits. The IEEE 2030.5
+// domain checks (0-999999 range, section 6.3.5 check digit) are left to
+// sep2config.SEP2Policy.ValidateRegistrationPIN, called from
+// buildSEP2Policy in main.go.
+//
+// The returned error deliberately never echoes raw: even syntactically
+// invalid input may be an operator's mistyped PIN, and the PIN is a
+// shared secret in the registration flow that must never appear in a
+// log or error message (see SEP2Policy.RegistrationPINs's doc comment
+// in internal/sep2config/policy.go).
+func parseRegistrationPINFlag(raw string) (uint32, error) {
+	v, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, errors.New("config: -sep2-registration-pin must be a base-10, non-negative integer that fits in 32 bits")
+	}
+	return uint32(v), nil
+}
+
+// loadRegistrationPINFile reads and validates the JSON file at path,
+// which must be a flat object mapping device LFDI to that device's
+// IEEE 2030.5 registration PIN (e.g. {"F0FA1AC6...": 123455}). Keys are
+// stored exactly as they appear in the file: ResolveRegistrationPIN
+// normalizes case at lookup time, so this loader does not need to.
+//
+// Every failure mode below returns a distinct, named error and this
+// function never falls back to any other data source on a bad file: an
+// operator's path typo or a malformed entry must produce a fail-closed
+// boot, not a bridge that quietly boots with the fleet default (or with
+// no PIN at all) and then rejects every device at seeding time with a
+// confusing, hard to trace error.
+//
+// Only file shape and JSON-number-vs-integer syntax are checked here.
+// The IEEE 2030.5 domain checks (0-999999 range, section 6.3.5 check
+// digit) are deliberately NOT duplicated here: they live in
+// sep2config.SEP2Policy.ValidateRegistrationPIN, called from
+// buildSEP2Policy in main.go before the bridge serves anything.
+//
+// No parsed PIN value is ever included in a returned error: only the
+// path and, for a per-entry problem, the LFDI (which is not secret, see
+// SEP2Policy.RegistrationPINs's doc comment) are named.
+func loadRegistrationPINFile(path string) (map[string]uint32, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("config: -sep2-registration-pin-file %q does not exist", path)
+		}
+		return nil, fmt.Errorf("config: -sep2-registration-pin-file %q is not readable: %w", path, err)
+	}
+
+	// Decode into map[string]interface{} with UseNumber, then type-check
+	// each value by hand, rather than decoding straight into
+	// map[string]json.Number: encoding/json's Number type silently
+	// accepts a quoted numeric string ("123455") as if it were a bare
+	// JSON number, which would let a value of the wrong JSON type pass
+	// as "a flat object of string to number" when it is not one.
+	var entries map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&entries); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			// The bytes parsed as JSON but the top-level value is not
+			// an object (e.g. an array, a bare number, or a string):
+			// a distinct case from a syntax error, so it gets its own
+			// message.
+			return nil, fmt.Errorf("config: -sep2-registration-pin-file %q is not a flat JSON object of LFDI to PIN", path)
+		}
+		return nil, fmt.Errorf("config: -sep2-registration-pin-file %q is not valid JSON: %w", path, err)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("config: -sep2-registration-pin-file %q contains no entries", path)
+	}
+
+	pins := make(map[string]uint32, len(entries))
+	for lfdi, val := range entries {
+		num, ok := val.(json.Number)
+		if !ok {
+			return nil, fmt.Errorf(
+				"config: -sep2-registration-pin-file %q: entry %q is not a JSON number",
+				path, lfdi)
+		}
+		i, err := num.Int64()
+		if err != nil {
+			return nil, fmt.Errorf("config: -sep2-registration-pin-file %q: entry %q is not an integer", path, lfdi)
+		}
+		if i < 0 || i > int64(sep2config.MaxRegistrationPIN) {
+			return nil, fmt.Errorf(
+				"config: -sep2-registration-pin-file %q: entry %q is out of the IEEE 2030.5 PIN range [0, %d]",
+				path, lfdi, sep2config.MaxRegistrationPIN)
+		}
+		pins[lfdi] = uint32(i)
+	}
+	return pins, nil
 }
 
 // resolveCred returns the first non-empty value among the parsed flag,

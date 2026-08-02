@@ -63,9 +63,21 @@ func TestRegistrationEndToEndOverMTLS(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
+	// Distinct per-device PINs, which is the provisioning shape IEEE
+	// 2030.5 section 6.3.5 describes ("configurable on a device where
+	// possible for registration purposes"). Both are obvious dummies that
+	// satisfy 6.3.5's checksum rule: their six digits sum to a multiple
+	// of ten. 123455 is the standard's own worked example.
+	const pinA, pinB = uint32(123455), uint32(222220)
+	pins := map[string]uint32{lfdiA: pinA, lfdiB: pinB}
+
 	e, err := New(ctx, Config{
-		Addr:            "127.0.0.1:0",
-		CertDir:         certDir,
+		Addr:    "127.0.0.1:0",
+		CertDir: certDir,
+		ResolveRegistrationPIN: func(lfdi string) (uint32, bool) {
+			v, ok := pins[lfdi]
+			return v, ok
+		},
 		ShutdownTimeout: time.Second,
 	}, reg)
 	if err != nil {
@@ -144,13 +156,12 @@ func TestRegistrationEndToEndOverMTLS(t *testing.T) {
 	if got.PIN > 999999 {
 		t.Error("served Registration.PIN is outside the PINType range [0, 999999]")
 	}
-	// The served PIN must be the one seeding derived for THIS device, not
-	// another device's and not a fresh per-request value.
-	if got.PIN != deriveRegistrationPIN(lfdiA) {
-		t.Error("served Registration.PIN does not match the value derived for this device's LFDI")
-	}
-	if got.PIN == deriveRegistrationPIN(lfdiB) {
-		t.Error("device A was served device B's registration PIN")
+	// The served PIN must be the operator-supplied configured value,
+	// stable across re-fetches. It must NOT be a function of the device's
+	// LFDI: the LFDI is a public digest of the device certificate, so a
+	// PIN derived from it would be computable by any peer.
+	if got.PIN != pinA {
+		t.Error("served Registration.PIN is not the value configured for this device")
 	}
 	// Sequence order on the served bytes, per sep.xsd complexType
 	// "Registration": dateTimeRegistered then pIN.
@@ -211,8 +222,17 @@ func TestRegistrationEndToEndOverMTLS(t *testing.T) {
 	if regB.Href != "/edev/"+lfdiB+"/rg" {
 		t.Errorf("device B Registration.Href = %q, want %q", regB.Href, "/edev/"+lfdiB+"/rg")
 	}
+	// Each device is served ITS OWN configured PIN. This is a per-device
+	// configuration fact, not a derivation: section 6.3.5 exists because
+	// the SFDI and LFDI "are derived from public information (i.e., a
+	// Certificate), therefore can potentially be recreated by an
+	// eavesdropper", so a PIN computed from device identity would defeat
+	// the field's stated purpose.
+	if regB.PIN != pinB {
+		t.Error("device B was not served the PIN configured for device B")
+	}
 	if regB.PIN == got.PIN {
-		t.Error("devices A and B were served the same registration PIN")
+		t.Error("distinctly configured devices A and B were served the same registration PIN")
 	}
 }
 
