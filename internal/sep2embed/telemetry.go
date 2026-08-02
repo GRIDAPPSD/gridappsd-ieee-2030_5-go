@@ -15,7 +15,6 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
-	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
 // GAGO-034 UP path: SEP2 device telemetry -> GridAPPS-D bus.
@@ -168,20 +167,37 @@ func PublishDERStatus(ctx context.Context, pub BusPublisher, dest, simID, mrid s
 	return nil
 }
 
+// endDeviceKeyResolver is the minimal surface telemetryMiddleware needs to
+// resolve the URL {id} segment back to the CIM device key (mRID) seeding
+// allocated that segment under. Defined at the consumer (this package),
+// per the workspace Go standards, rather than depending on
+// *memory.EndDeviceIndex directly; that type satisfies this method set
+// unchanged, and a test double can supply it without pulling in the real
+// allocator (GAGO-109).
+//
+// The {id} segment is the opaque, server-chosen index seed.go's
+// stores.EndDeviceIndexes.Allocate hands out, keyed on the CIM mRID (see
+// seed.go's own doc comment): the reverse direction is DeviceKey(index),
+// not a certificate-derived-LFDI lookup, because seeding never indexed
+// EndDevices by LFDI in the first place.
+type endDeviceKeyResolver interface {
+	DeviceKey(index string) (string, bool)
+}
+
 // telemetryConfig groups the optional UP-path wiring. The zero value
 // (enabled() == false) disables the relay entirely: buildHandler
 // composes telemetryMiddleware as a pass-through in that case, so a
 // bridge that never sets Config.Bus/Config.SimulationID sees no
 // behavior change from this card.
 type telemetryConfig struct {
-	bus   BusPublisher
-	reg   *registry.Registry
-	dest  string
-	simID string
+	bus       BusPublisher
+	edevIndex endDeviceKeyResolver
+	dest      string
+	simID     string
 }
 
 func (c telemetryConfig) enabled() bool {
-	return c.bus != nil && c.reg != nil && c.dest != "" && c.simID != ""
+	return c.bus != nil && c.edevIndex != nil && c.dest != "" && c.simID != ""
 }
 
 // derStatusPathEndDeviceID extracts the {id} segment from a
@@ -265,13 +281,15 @@ func telemetryMiddleware(cfg telemetryConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			// edevID is the device's ADVERTISED id, which is its canonical
-			// LFDI (seed.go keys stores.EndDevices by Entry.LFDI alone, no
-			// separate alias), so resolve it through reg.MRID, the
-			// canonical LFDI to mRID reverse lookup. This middleware runs
-			// inside aclMiddleware, so edevID is already the caller's own
-			// confirmed device.
-			mrid, ok := cfg.reg.MRID(edevID)
+			// edevID is the {id} segment of the request path, which is the
+			// opaque, server-chosen URL index seed.go's
+			// stores.EndDeviceIndexes.Allocate assigned to this device (see
+			// seed.go:202-220), NOT its LFDI: seeding never keyed
+			// EndDevices by LFDI. Resolve it through cfg.edevIndex, the
+			// index-to-mRID reverse lookup that same allocator exposes.
+			// This middleware runs inside aclMiddleware, so edevID is
+			// already the caller's own confirmed device.
+			mrid, ok := cfg.edevIndex.DeviceKey(edevID)
 			if !ok {
 				log.Printf("sep2embed: telemetry relay: no registered mRID for edev=%s; dropping telemetry", edevID)
 				return

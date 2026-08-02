@@ -251,10 +251,10 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	notifier := coresub.NewManager(stores.Subscriptions, workers, queueSize)
 
 	telemetry := telemetryConfig{
-		bus:   cfg.Bus,
-		reg:   reg,
-		dest:  cfg.TelemetryDestination,
-		simID: cfg.TelemetrySimulationID,
+		bus:       cfg.Bus,
+		edevIndex: stores.EndDeviceIndexes,
+		dest:      cfg.TelemetryDestination,
+		simID:     cfg.TelemetrySimulationID,
 	}
 
 	// postRate reaches the wire through core's POST /mup handler, not

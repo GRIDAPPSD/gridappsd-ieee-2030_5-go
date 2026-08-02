@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +18,6 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
-	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
 func TestMapDERStatusToDifferences(t *testing.T) {
@@ -252,20 +254,38 @@ func TestDerStatusPathEndDeviceID(t *testing.T) {
 	}
 }
 
+// fakeEndDeviceIndex is a minimal test double for endDeviceKeyResolver: the
+// same index-to-device-key shape memory.EndDeviceIndex.DeviceKey exposes,
+// without pulling in the real allocator.
+type fakeEndDeviceIndex struct {
+	byIndex map[string]string
+}
+
+func (f *fakeEndDeviceIndex) DeviceKey(index string) (string, bool) {
+	key, ok := f.byIndex[index]
+	return key, ok
+}
+
 // TestTelemetryMiddlewareRelaysSuccessfulPUT is the UP-path wiring
 // centerpiece: a PUT of a device's own DERStatus, through the full
 // telemetry middleware, results in exactly one bus Send carrying the
 // mapped field values, and the original PUT response is unaffected.
+//
+// The path segment is the opaque, server-chosen URL index seed.go's
+// EndDeviceIndexes.Allocate hands out (GAGO-109), not the device's LFDI:
+// two devices are registered here (8 and 9) so a lookup that resolved
+// through the wrong table, or the wrong entry, would surface as a wrong
+// Object on the published message rather than merely an empty one.
 func TestTelemetryMiddlewareRelaysSuccessfulPUT(t *testing.T) {
 	t.Parallel()
 
-	reg := registry.New()
-	if err := reg.Add(registry.Entry{MRID: "mrid-a", LFDI: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}); err != nil {
-		t.Fatalf("registry.Add: %v", err)
-	}
+	edevIndex := &fakeEndDeviceIndex{byIndex: map[string]string{
+		"8": "mrid-a",
+		"9": "mrid-b",
+	}}
 	pub := &fakeBusPublisher{}
 
-	cfg := telemetryConfig{bus: pub, reg: reg, dest: "/topic/dest", simID: "sim-1"}
+	cfg := telemetryConfig{bus: pub, edevIndex: edevIndex, dest: "/topic/dest", simID: "sim-1"}
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -278,7 +298,7 @@ func TestTelemetryMiddlewareRelaysSuccessfulPUT(t *testing.T) {
 		t.Fatalf("marshal DERStatus: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPut, "/edev/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/der/1/ders", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/edev/8/der/1/ders", bytes.NewReader(body))
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
@@ -299,14 +319,61 @@ func TestTelemetryMiddlewareRelaysSuccessfulPUT(t *testing.T) {
 	// bytes actually sent to the bus: a SEP2 operationalModeStatus of 2
 	// must arrive as exactly 2 under exactly
 	// "DERStatus.operationalModeStatus".
+	//
+	// Object must be device 8's own mRID ("mrid-a"), not device 9's
+	// ("mrid-b"): a lookup that silently resolved to the wrong index or
+	// the wrong table would still pass a bare "did it publish something"
+	// check, so this asserts the specific resolved value per
+	// data-invariants Rule 1.
 	if fd.Object != "mrid-a" {
-		t.Errorf("forward difference Object = %q, want %q (reverse-resolved via registry.MRID)", fd.Object, "mrid-a")
+		t.Errorf("forward difference Object = %q, want %q (reverse-resolved via EndDeviceIndexes.DeviceKey, GAGO-109)", fd.Object, "mrid-a")
 	}
 	if fd.Attribute != "DERStatus.operationalModeStatus" {
 		t.Errorf("forward difference Attribute = %q, want %q", fd.Attribute, "DERStatus.operationalModeStatus")
 	}
 	if v, ok := fd.Value.(float64); !ok || v != 2 {
 		t.Errorf("forward difference Value = %v (%T), want 2", fd.Value, fd.Value)
+	}
+}
+
+// TestTelemetryMiddlewareDropsUnknownEndDeviceID proves an EndDevice id
+// with no entry in the resolver is dropped and logged, never published
+// under an empty or fabricated mRID (GAGO-109 invariant: a miss must stay
+// a miss, not become a wrong or empty publish).
+func TestTelemetryMiddlewareDropsUnknownEndDeviceID(t *testing.T) {
+	t.Parallel()
+
+	edevIndex := &fakeEndDeviceIndex{byIndex: map[string]string{"8": "mrid-a"}}
+	pub := &fakeBusPublisher{}
+	cfg := telemetryConfig{bus: pub, edevIndex: edevIndex, dest: "/topic/dest", simID: "sim-1"}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := telemetryMiddleware(cfg)(inner)
+
+	mode := sep2.OperationalModeStatusType{Value: 2}
+	status := sep2.DERStatus{OperationalModeStatus: &mode}
+	body, err := xml.Marshal(&status)
+	if err != nil {
+		t.Fatalf("marshal DERStatus: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	req := httptest.NewRequest(http.MethodPut, "/edev/999/der/1/ders", bytes.NewReader(body))
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusNoContent {
+		t.Fatalf("response status = %d, want 204 (device's own PUT must still succeed)", rw.Code)
+	}
+	if sends := pub.snapshot(); len(sends) != 0 {
+		t.Fatalf("bus Send called %d times, want 0 for an unregistered EndDevice id", len(sends))
+	}
+	if !strings.Contains(logBuf.String(), "edev=999") {
+		t.Errorf("log output = %q, want it to mention the dropped edev id 999", logBuf.String())
 	}
 }
 
@@ -317,9 +384,9 @@ func TestTelemetryMiddlewareRelaysSuccessfulPUT(t *testing.T) {
 func TestTelemetryMiddlewareSkipsNonMatchingRequests(t *testing.T) {
 	t.Parallel()
 
-	reg := registry.New()
+	edevIndex := &fakeEndDeviceIndex{}
 	pub := &fakeBusPublisher{}
-	cfg := telemetryConfig{bus: pub, reg: reg, dest: "/topic/dest", simID: "sim-1"}
+	cfg := telemetryConfig{bus: pub, edevIndex: edevIndex, dest: "/topic/dest", simID: "sim-1"}
 
 	calls := 0
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -329,8 +396,8 @@ func TestTelemetryMiddlewareSkipsNonMatchingRequests(t *testing.T) {
 	handler := telemetryMiddleware(cfg)(inner)
 
 	for _, req := range []*http.Request{
-		httptest.NewRequest(http.MethodGet, "/edev/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/der/1/ders", nil),
-		httptest.NewRequest(http.MethodPut, "/edev/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/der/1/dercap", nil),
+		httptest.NewRequest(http.MethodGet, "/edev/8/der/1/ders", nil),
+		httptest.NewRequest(http.MethodPut, "/edev/8/der/1/dercap", nil),
 	} {
 		rw := httptest.NewRecorder()
 		handler.ServeHTTP(rw, req)
@@ -350,12 +417,9 @@ func TestTelemetryMiddlewareSkipsNonMatchingRequests(t *testing.T) {
 func TestTelemetryMiddlewareSkipsRejectedPUT(t *testing.T) {
 	t.Parallel()
 
-	reg := registry.New()
-	if err := reg.Add(registry.Entry{MRID: "mrid-a", LFDI: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}); err != nil {
-		t.Fatalf("registry.Add: %v", err)
-	}
+	edevIndex := &fakeEndDeviceIndex{byIndex: map[string]string{"8": "mrid-a"}}
 	pub := &fakeBusPublisher{}
-	cfg := telemetryConfig{bus: pub, reg: reg, dest: "/topic/dest", simID: "sim-1"}
+	cfg := telemetryConfig{bus: pub, edevIndex: edevIndex, dest: "/topic/dest", simID: "sim-1"}
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -366,7 +430,7 @@ func TestTelemetryMiddlewareSkipsRejectedPUT(t *testing.T) {
 	status := sep2.DERStatus{GenConnectStatus: &conn}
 	body, _ := xml.Marshal(&status)
 
-	req := httptest.NewRequest(http.MethodPut, "/edev/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/der/1/ders", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/edev/8/der/1/ders", bytes.NewReader(body))
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
