@@ -168,6 +168,29 @@ func handleVersionFlag(w io.Writer, err error) bool {
 // registry populate) are fatal: the bridge has nothing useful to do
 // without them.
 func run(ctx context.Context, cfg config) error {
+	// policy is built and validated first, before connectClient below
+	// ever dials the GridAPPS-D broker. buildSEP2Policy is a pure
+	// function of cfg (matching this bridge's other config sources), so
+	// running it first means an operator-supplied registration PIN that
+	// is out of range or fails the IEEE 2030.5 section 6.3.5 check digit
+	// (-sep2-registration-pin, -sep2-registration-pin-file, GAGO-PIN)
+	// stops the bridge immediately: before it dials anything, not merely
+	// before it seeds or serves a device. GAGO-050 consumes
+	// policy.DefaultControl and GAGO-049 consumes policy.ModesSupported,
+	// both threaded through newSEP2Embed below; DefaultPolicy leaves
+	// ModesSupported nil, so the DERCapability GAGO-049 seeds is still
+	// nil-safe until a real policy value is configured.
+	policy, err := buildSEP2Policy(cfg)
+	if err != nil {
+		return err
+	}
+	// The registration PIN is deliberately absent from this line and must
+	// stay absent: it is a shared secret in the registration flow, and
+	// this log is written on every boot. Log whether it is configured, if
+	// that is ever needed, never what it is.
+	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s",
+		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
+
 	bus, err := connectClient(ctx, cfg)
 	if err != nil {
 		return err
@@ -188,23 +211,6 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-
-	// policy is loaded once, here at boot, matching this bridge's other
-	// config sources. GAGO-050 consumes policy.DefaultControl and
-	// GAGO-049 consumes policy.ModesSupported, both threaded through
-	// newSEP2Embed below. DefaultPolicy leaves ModesSupported nil, so the
-	// DERCapability GAGO-049 seeds is still nil-safe until a real policy
-	// value is configured.
-	policy := sep2config.DefaultPolicy()
-	if err := policy.ValidateRegistrationPIN(); err != nil {
-		return err
-	}
-	// The registration PIN is deliberately absent from this line and must
-	// stay absent: it is a shared secret in the registration flow, and
-	// this log is written on every boot. Log whether it is configured, if
-	// that is ever needed, never what it is.
-	log.Printf("bridge: sep2 policy loaded modesSupported=%s pollRate=%s postRate=%s",
-		fmtU32Ptr(policy.ModesSupported), fmtU32Ptr(policy.DefaultPollRate), fmtU32Ptr(policy.DefaultPostRate))
 
 	if cfg.PublishOnStart {
 		// The publish smoke test wants to send a DifferenceBuilder
@@ -396,6 +402,38 @@ func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(c
 		return wrappedAdminErr
 	}
 	return errors.Join(coreErr, wrappedAdminErr)
+}
+
+// buildSEP2Policy assembles the runtime SEP2Policy from the compiled-in
+// defaults plus any operator-supplied registration PIN configuration,
+// then validates every configured PIN before returning (GAGO-PIN).
+//
+// cfg.SEP2RegistrationPIN (from -sep2-registration-pin) becomes the
+// fleet-wide DefaultRegistrationPIN fallback; cfg.SEP2RegistrationPINs
+// (from -sep2-registration-pin-file) becomes the per-device
+// RegistrationPINs map. Both may be set together: SEP2Policy's own
+// ResolveRegistrationPIN (unchanged by this function) already implements
+// the precedence, a per-device entry wins over the fleet default, so
+// this function does not reimplement it. Neither flag set is exactly
+// sep2config.DefaultPolicy(): both fields stay nil/unset, so the bridge
+// still refuses to seed any device with no PIN configured, matching
+// today's fail-closed default.
+//
+// This is the single point where cfg's PIN fields reach the policy
+// ResolveRegistrationPIN reads at seeding time. It is called from run,
+// before connectClient, before bootstrapRegistry, and before
+// newSEP2Embed, so a PIN failing ValidateRegistrationPIN's range or
+// IEEE 2030.5 section 6.3.5 check-digit rule stops the bridge before it
+// dials anything, let alone before it serves a device: not lazily at
+// first device-seeding time.
+func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
+	policy := sep2config.DefaultPolicy()
+	policy.DefaultRegistrationPIN = cfg.SEP2RegistrationPIN
+	policy.RegistrationPINs = cfg.SEP2RegistrationPINs
+	if err := policy.ValidateRegistrationPIN(); err != nil {
+		return sep2config.SEP2Policy{}, err
+	}
+	return policy, nil
 }
 
 // sep2EmbedConfig projects the bridge's config onto sep2embed.Config.

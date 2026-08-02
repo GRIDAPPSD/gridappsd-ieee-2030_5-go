@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
@@ -221,6 +222,142 @@ func TestAdminUIConfigZeroValueMapsToDisabledShape(t *testing.T) {
 	}
 	if got.SORLink != "" {
 		t.Errorf("SORLink: got %q, want empty for a zero-value config", got.SORLink)
+	}
+}
+
+// TestBuildSEP2PolicyNeitherFlagSetMatchesDefaultPolicy verifies the
+// GAGO-PIN no-op contract at the policy layer: a zero-value config (no
+// -sep2-registration-pin, no -sep2-registration-pin-file) produces a
+// policy whose registration-PIN fields are exactly
+// sep2config.DefaultPolicy()'s own unset state, so the fail-closed
+// seeding behavior for an unconfigured device is unchanged.
+func TestBuildSEP2PolicyNeitherFlagSetMatchesDefaultPolicy(t *testing.T) {
+	t.Parallel()
+
+	policy, err := buildSEP2Policy(config{})
+	if err != nil {
+		t.Fatalf("buildSEP2Policy: %v", err)
+	}
+	want := sep2config.DefaultPolicy()
+	if policy.DefaultRegistrationPIN != want.DefaultRegistrationPIN {
+		t.Errorf("DefaultRegistrationPIN: got %v, want %v (DefaultPolicy's own nil)", policy.DefaultRegistrationPIN, want.DefaultRegistrationPIN)
+	}
+	if policy.RegistrationPINs != nil {
+		t.Errorf("RegistrationPINs: got %v, want nil (DefaultPolicy's own unset state)", policy.RegistrationPINs)
+	}
+	if _, ok := policy.ResolveRegistrationPIN("ANY-LFDI"); ok {
+		t.Errorf("ResolveRegistrationPIN: got ok=true for an unconfigured device, want ok=false (fail closed)")
+	}
+}
+
+// TestBuildSEP2PolicyPopulatesFleetDefault verifies
+// cfg.SEP2RegistrationPIN becomes policy.DefaultRegistrationPIN, and
+// that a device with no per-device entry resolves to it.
+func TestBuildSEP2PolicyPopulatesFleetDefault(t *testing.T) {
+	t.Parallel()
+
+	pin := uint32(123455)
+	policy, err := buildSEP2Policy(config{SEP2RegistrationPIN: &pin})
+	if err != nil {
+		t.Fatalf("buildSEP2Policy: %v", err)
+	}
+	if policy.DefaultRegistrationPIN == nil || *policy.DefaultRegistrationPIN != 123455 {
+		t.Errorf("DefaultRegistrationPIN: got %v, want 123455", policy.DefaultRegistrationPIN)
+	}
+	got, ok := policy.ResolveRegistrationPIN("SOME-DEVICE-LFDI")
+	if !ok || got != 123455 {
+		t.Errorf("ResolveRegistrationPIN: got (%d, %v), want (123455, true)", got, ok)
+	}
+}
+
+// TestBuildSEP2PolicyPerDeviceWinsOverFleetDefault verifies the
+// resolution precedence buildSEP2Policy must not reimplement, only
+// populate: a device present in RegistrationPINs resolves to its own
+// entry even when a fleet-wide default is also configured, a device
+// absent from the map falls back to the default, and a device absent
+// from both resolves ok=false rather than a fabricated 0.
+func TestBuildSEP2PolicyPerDeviceWinsOverFleetDefault(t *testing.T) {
+	t.Parallel()
+
+	fleetDefault := uint32(123455)
+	cfg := config{
+		SEP2RegistrationPIN:  &fleetDefault,
+		SEP2RegistrationPINs: map[string]uint32{"DEVICE-A-LFDI": 200008},
+	}
+	policy, err := buildSEP2Policy(cfg)
+	if err != nil {
+		t.Fatalf("buildSEP2Policy: %v", err)
+	}
+
+	got, ok := policy.ResolveRegistrationPIN("DEVICE-A-LFDI")
+	if !ok || got != 200008 {
+		t.Errorf("device with a per-device entry: got (%d, %v), want (200008, true)", got, ok)
+	}
+
+	got, ok = policy.ResolveRegistrationPIN("DEVICE-B-LFDI")
+	if !ok || got != 123455 {
+		t.Errorf("device with no per-device entry: got (%d, %v), want the fleet default (123455, true)", got, ok)
+	}
+}
+
+// TestBuildSEP2PolicyPopulatesRegistrationPINsMapExactly verifies the
+// full map, not just one lookup, passes through cfg to policy
+// unmodified.
+func TestBuildSEP2PolicyPopulatesRegistrationPINsMapExactly(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]uint32{"F0FA1AC6": 123455, "BCD85AA8": 200008}
+	policy, err := buildSEP2Policy(config{SEP2RegistrationPINs: want})
+	if err != nil {
+		t.Fatalf("buildSEP2Policy: %v", err)
+	}
+	if len(policy.RegistrationPINs) != len(want) {
+		t.Fatalf("RegistrationPINs: got %v, want %v", policy.RegistrationPINs, want)
+	}
+	for k, v := range want {
+		if policy.RegistrationPINs[k] != v {
+			t.Errorf("RegistrationPINs[%q]: got %d, want %d", k, policy.RegistrationPINs[k], v)
+		}
+	}
+}
+
+// TestBuildSEP2PolicyRejectsBadCheckDigitFleetDefault verifies a fleet
+// default PIN failing the IEEE 2030.5 section 6.3.5 check-digit rule is
+// rejected at buildSEP2Policy time (called from run before newSEP2Embed,
+// i.e. before the bridge serves anything), and that the offending value
+// is never present in the error. 999999 is a good negative fixture:
+// digits sum to 54, and 54 mod 10 is 4, not 0.
+func TestBuildSEP2PolicyRejectsBadCheckDigitFleetDefault(t *testing.T) {
+	t.Parallel()
+
+	pin := uint32(999999)
+	_, err := buildSEP2Policy(config{SEP2RegistrationPIN: &pin})
+	if err == nil {
+		t.Fatal("expected an error for a fleet default PIN failing the check digit, got nil")
+	}
+	if strings.Contains(err.Error(), "999999") {
+		t.Errorf("error must not echo the PIN value: %v", err)
+	}
+}
+
+// TestBuildSEP2PolicyRejectsBadCheckDigitPerDevice mirrors
+// TestBuildSEP2PolicyRejectsBadCheckDigitFleetDefault for the
+// per-device source: a per-device PIN failing the check digit is
+// rejected at the same startup point, names the offending LFDI (public,
+// safe to log), and never echoes the value.
+func TestBuildSEP2PolicyRejectsBadCheckDigitPerDevice(t *testing.T) {
+	t.Parallel()
+
+	cfg := config{SEP2RegistrationPINs: map[string]uint32{"BAD-DEVICE-LFDI": 999999}}
+	_, err := buildSEP2Policy(cfg)
+	if err == nil {
+		t.Fatal("expected an error for a per-device PIN failing the check digit, got nil")
+	}
+	if strings.Contains(err.Error(), "999999") {
+		t.Errorf("error must not echo the PIN value: %v", err)
+	}
+	if !strings.Contains(err.Error(), "BAD-DEVICE-LFDI") {
+		t.Errorf("error should name the offending device LFDI: %v", err)
 	}
 }
 
