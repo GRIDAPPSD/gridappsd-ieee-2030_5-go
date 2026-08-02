@@ -1,5 +1,13 @@
 # gridappsd-ieee-2030_5-go
 
+[![Build, vet, and test](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/codeql.yml)
+[![Go 1.26.3](https://img.shields.io/badge/go-1.26.3-00ADD8?logo=go)](https://go.dev)
+
+This repo is private: the workflow badges above render for viewers with
+repository access and show nothing for anonymous visitors. No release
+badge yet; this repo has not cut a tagged release.
+
 Go bridge that wires the IEEE 2030.5 protocol surface to the GridAPPS-D
 platform via STOMP/ActiveMQ messaging.
 
