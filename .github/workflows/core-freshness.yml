@@ -1,0 +1,173 @@
+name: "Core freshness"
+
+# Two independent watchdogs against github.com/GRIDAPPSD/ieee-2030_5-core-go,
+# the private wire-format module this bridge depends on. Neither gates
+# a pull_request: core moves on its own schedule, independent of what a
+# given bridge PR touches, so failing an unrelated PR because core
+# advanced would be noise, not signal. Both run on a daily schedule
+# plus workflow_dispatch instead.
+#
+# Background (2026-08-02): three separate core fixes in one day failed
+# to reach the bridge because the bridge pins core by version and
+# nothing flagged the gap (a stale /mup parse failure, a hexBinary
+# wire-encoding defect needing a second bump, and a URL-index change
+# needing a third). "Fixed in core" and "fixed in the deployed bridge"
+# kept being silently different states.
+#
+# staleness-check answers "is our pin behind core main, and by what
+# commits" cheaply (no test run). conformance-vs-core-main answers the
+# more important question: "does the bridge still behave correctly
+# against core main," because all three incidents were changes to
+# SERVED WIRE BYTES that no compile check catches — the bridge built
+# fine each time; only a test caught the behavior change. A version
+# drift alert catches the symptom; the conformance run catches the
+# class.
+#
+# GitHub-hosted runners are appropriate: both jobs are read-only
+# (a git clone/rev-list comparison, and a `go get` plus test run that
+# is never committed or pushed back). See .claude/rules/devops.md
+# "GitHub Actions" for the posture this follows.
+
+on:
+  schedule:
+    # Daily, 07:00 UTC.
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  staleness-check:
+    name: Core pin staleness check
+    runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/GRIDAPPSD/*
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Mint GitHub App installation token
+        # Read-only, scoped to the one repo this job inspects. It does
+        # not need gridappsd-go: that module's freshness is a separate
+        # concern this job does not check.
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GRIDAPPSD_CI_APP_ID }}
+          private-key: ${{ secrets.GRIDAPPSD_CI_APP_PRIVATE_KEY }}
+          owner: GRIDAPPSD
+          repositories: |
+            ieee-2030_5-core-go
+          permission-contents: read
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Compare pinned core version against core main
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          # Full clone (not shallow): rev-list --count below needs the
+          # ancestry graph between the pinned commit and main, and the
+          # repo is small enough that this costs nothing meaningful.
+          git clone --quiet \
+            "https://x-access-token:${APP_TOKEN}@github.com/GRIDAPPSD/ieee-2030_5-core-go.git" \
+            /tmp/core-freshness-check
+          CORE_MAIN_SHA=$(git -C /tmp/core-freshness-check rev-parse origin/main)
+          echo "core origin/main: $CORE_MAIN_SHA"
+
+          PIN_VERSION=$(go list -m -f '{{.Version}}' github.com/GRIDAPPSD/ieee-2030_5-core-go)
+          echo "Pinned version: $PIN_VERSION"
+
+          # A Go pseudo-version (vX.Y.Z-0.YYYYMMDDHHMMSS-abcdefabcdef or
+          # vX.Y.Z-YYYYMMDDHHMMSS-abcdefabcdef) ends in a 14-digit
+          # timestamp and a 12-hex-digit abbreviated commit hash; pull
+          # the hash straight out of the version string. A plain semver
+          # tag (vX.Y.Z, no such suffix) is resolved to a commit via the
+          # tag ref in the clone instead. This repo currently pins a
+          # pseudo-version; the tag branch exists so this check keeps
+          # working the day the pin moves to a real release tag.
+          if echo "$PIN_VERSION" | grep -qE -- '[0-9]{14}-[0-9a-f]{12}$'; then
+            PIN_SHA=$(echo "$PIN_VERSION" | grep -oE '[0-9a-f]{12}$')
+          else
+            PIN_SHA=$(git -C /tmp/core-freshness-check rev-list -n1 "refs/tags/${PIN_VERSION}")
+          fi
+          echo "Pinned commit: $PIN_SHA"
+
+          BEHIND=$(git -C /tmp/core-freshness-check rev-list --count "${PIN_SHA}..origin/main")
+          echo "Commits behind core main: $BEHIND"
+
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "::error::Pinned github.com/GRIDAPPSD/ieee-2030_5-core-go ($PIN_VERSION) is $BEHIND commit(s) behind core main ($CORE_MAIN_SHA)."
+            echo "Commits since the pin:"
+            git -C /tmp/core-freshness-check log --oneline "${PIN_SHA}..origin/main"
+            exit 1
+          fi
+          echo "Pin is current with core main."
+
+  conformance-vs-core-main:
+    name: Conformance test against core main
+    runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/GRIDAPPSD/*
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Mint GitHub App installation token
+        # Needs both dependency repos, same as ci.yml: `go get ... @main`
+        # below re-resolves the module graph, which touches
+        # gridappsd-go too.
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GRIDAPPSD_CI_APP_ID }}
+          private-key: ${{ secrets.GRIDAPPSD_CI_APP_PRIVATE_KEY }}
+          owner: GRIDAPPSD
+          repositories: |
+            gridappsd-go
+            ieee-2030_5-core-go
+          permission-contents: read
+
+      - name: Configure private module access
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${APP_TOKEN}@github.com/GRIDAPPSD/".insteadOf \
+            "https://github.com/GRIDAPPSD/"
+
+      - name: Disable git background maintenance
+        run: |
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Bump core to latest main (in-memory only, never committed)
+        # go.mod/go.sum are modified on the runner's checkout and are
+        # never staged, committed, or pushed: this job only reads the
+        # result of building and testing against them, then the runner
+        # is destroyed.
+        run: go get github.com/GRIDAPPSD/ieee-2030_5-core-go@main
+
+      - name: Report resolved core version
+        run: go list -m github.com/GRIDAPPSD/ieee-2030_5-core-go
+
+      - name: Build against core main
+        run: go build ./...
+
+      - name: Test against core main
+        # The bridge has no separate CSIP-style conformance suite; its
+        # full test suite is the conformance surface against core's
+        # served wire bytes (registry, sep2embed, sep2acl, sep2config
+        # all round-trip through core's types).
+        run: go test ./...
