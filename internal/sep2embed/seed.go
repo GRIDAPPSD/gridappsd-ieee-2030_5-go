@@ -292,10 +292,30 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	}
 
 	dercapHref := "/edev/" + id + "/der/1/dercap"
+	dergHref := "/edev/" + id + "/der/1/derg"
+	dersHref := "/edev/" + id + "/der/1/ders"
+	deraHref := "/edev/" + id + "/der/1/dera"
 
 	der := sep2.DER{}
 	der.Href = "/edev/" + id + "/der/1"
 	der.DERCapabilityLink = &sep2.Link{Href: dercapHref}
+	// DERSettingsLink, DERStatusLink, and DERAvailabilityLink (GAGO-DERLINKS):
+	// the EPRI client's put_der_settings (oeg_client.c:352-356) gates each of
+	// its four PUTs (dera, dercap, derg, ders) independently on
+	// se_exists(der, <Type>Link), so a DER that advertises only
+	// DERCapabilityLink gets only the dercap PUT; the other three are
+	// silently skipped client-side, which is exactly what eight prior
+	// end-to-end runs showed (PUT dercap and nothing else, zero bus frames
+	// downstream because no DERStatus PUT ever reaches the telemetry relay).
+	// No content is seeded into these three resources: core's
+	// HandleSingletonGetPut (pkg/sep2srv/handlers/singleton) already GETs a
+	// spec-valid empty default when the backing store holds nothing yet, and
+	// upserts on the client's first PUT, so advertising the link is
+	// sufficient to unblock the client; seeding placeholder content here
+	// would just be fabricated data with no source.
+	der.DERSettingsLink = &sep2.Link{Href: dergHref}
+	der.DERStatusLink = &sep2.Link{Href: dersHref}
+	der.DERAvailabilityLink = &sep2.Link{Href: deraHref}
 
 	if err := stores.DERs.Create(ctx, id, "1", der); err != nil {
 		return fmt.Errorf("create DER: %w", err)
