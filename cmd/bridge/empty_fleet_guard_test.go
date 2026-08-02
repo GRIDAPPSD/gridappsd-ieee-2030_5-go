@@ -325,21 +325,22 @@ func TestPECCountLogLine(t *testing.T) {
 			rejectSubs:   []string{"0 dropped"},
 		},
 		{
-			// Dutch's review finding: discovered < projected cannot be a
-			// real drop (the enumeration queries cannot project more
-			// devices than truly exist), so it must be treated as the
-			// no-drops path rather than surfaced as a nonsensical negative
-			// drop count. This is a dataset-changed-mid-query artifact
-			// (QueryPECCount and the enumeration queries share qctx's
-			// queryTimeout budget but still run as separate requests), not
-			// evidence of an INNER-join drop.
-			name:         "discovered-less-than-projected-clamped",
-			discovered:   2,
+			// GAGO-104 supersedes the earlier "clamp discovered <
+			// projected to no-drops" assumption: that assumption was
+			// exactly the blind spot that let a 9-PEC feeder mint 18
+			// devices with a clean "no drops" log line. discovered <
+			// projected now means some PowerElectronicsConnection
+			// surfaced under more than one identity (a child
+			// PowerElectronicsUnit bound under a different mRID than its
+			// own parent PEC), and must be surfaced as a WARNING, not
+			// silently folded into the counts-match path.
+			name:         "discovered-less-than-projected-over-projection-warns",
+			discovered:   9,
 			discoveredOK: true,
-			projected:    3,
-			wantWarn:     false,
-			wantSubs:     []string{"2", "3", "no drops"},
-			rejectSubs:   []string{"-1 dropped", "dropped for missing"},
+			projected:    18,
+			wantWarn:     true,
+			wantSubs:     []string{"9", "18", "over-projected"},
+			rejectSubs:   []string{"no drops", "dropped for missing"},
 		},
 	}
 

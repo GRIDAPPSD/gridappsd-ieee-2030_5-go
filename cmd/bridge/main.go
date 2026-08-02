@@ -542,38 +542,50 @@ func parsePECCount(res *cim.QueryDataResult) (int, bool) {
 // projected. It returns the message text and whether the caller should
 // log it at WARNING level.
 //
-//   - discoveredOK && discovered <= projected: counts-match path; INFO-level,
-//     no "WARNING" text. discovered < projected is not a valid drop
-//     (the enumeration queries cannot project more devices than truly
-//     exist), so it is treated the same as an exact match rather than
-//     surfaced as a nonsensical negative drop count: the two queries
-//     ran against a moving CIM dataset (queryTimeout apart, see
-//     bootstrapRegistry), so a discovered count that lags the projected
-//     count is a dataset-changed-mid-query artifact, not evidence of a
-//     drop.
+//   - discoveredOK && discovered == projected: counts match; INFO-level,
+//     "no drops" text, no WARNING.
 //   - discoveredOK && discovered > projected: some PECs were silently
 //     dropped by the enumeration queries' mandatory attribute joins;
 //     WARNING-level, states both counts and the drop count.
+//   - discoveredOK && discovered < projected: some PowerElectronicsConnection
+//     objects were counted MORE than once by the enumeration queries
+//     (GAGO-104: a PowerElectronicsUnit child bound under a different mRID
+//     than its own parent PowerElectronicsConnection, producing a second,
+//     spurious device identity for the same physical converter);
+//     WARNING-level, states both counts and the over-projection count.
+//     This branch used to be silently folded into the counts-match path
+//     under the theory that the two queries running queryTimeout apart
+//     could only ever make discovered lag a moving dataset, never lead
+//     it. That theory was the exact blind spot GAGO-104 exposed: a
+//     9-PEC feeder minted 18 devices and this guard logged "no drops."
+//     Over-projection is now surfaced, not clamped away.
 //   - !discoveredOK: the true discovered count could not be determined
 //     (QueryPECCount failed, or returned an unparsable/missing count);
 //     WARNING-level, states the limitation rather than fabricating a
-//     drop count of 0.
+//     drop or over-projection count of 0.
 func pecCountLogLine(feederMRID string, discovered int, discoveredOK bool, projected int) (string, bool) {
 	if !discoveredOK {
 		return fmt.Sprintf(
 			"feeder %s: could not determine the true discovered PowerElectronicsConnection count; "+
-				"projected %d device(s) from the enumeration queries, but cannot confirm whether any were dropped by their mandatory attribute joins",
+				"projected %d device(s) from the enumeration queries, but cannot confirm whether any were dropped or over-projected",
 			feederMRID, projected), true
 	}
-	if discovered <= projected {
+	switch {
+	case discovered == projected:
 		return fmt.Sprintf(
 			"feeder %s: discovered %d PowerElectronicsConnection object(s), projected %d device(s); no drops",
 			feederMRID, discovered, projected), false
+	case discovered > projected:
+		dropped := discovered - projected
+		return fmt.Sprintf(
+			"feeder %s: discovered %d PowerElectronicsConnection object(s) but only %d were fully projected as devices (%d dropped for missing mandatory attributes)",
+			feederMRID, discovered, projected, dropped), true
+	default:
+		over := projected - discovered
+		return fmt.Sprintf(
+			"feeder %s: discovered %d PowerElectronicsConnection object(s) but %d were projected as devices (%d over-projected; a PowerElectronicsConnection likely surfaced under more than one identity, see GAGO-104)",
+			feederMRID, discovered, projected, over), true
 	}
-	dropped := discovered - projected
-	return fmt.Sprintf(
-		"feeder %s: discovered %d PowerElectronicsConnection object(s) but only %d were fully projected as devices (%d dropped for missing mandatory attributes)",
-		feederMRID, discovered, projected, dropped), true
 }
 
 func deviceCertMode(s string) (sep2embed.DeviceCertMode, error) {
@@ -625,9 +637,17 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 	log.Printf("bridge: queried CIM feeder %s; %d inverters / %d solar / %d battery",
 		feederMRID, len(inverters), len(solar), len(battery))
 
-	// Dedupe across the three lists. A PhotovoltaicUnit shows up under
-	// QueryInverter (open filter) and QuerySolar; the registry must
-	// only carry one entry per mRID.
+	// Dedupe across the three lists, keyed on d.MRID (the
+	// PowerElectronicsConnection's own ?pecid, GAGO-104). A single PEC
+	// shows up under QueryInverter (open filter) and QuerySolar because
+	// both bind the same child PhotovoltaicUnit; the registry must only
+	// carry one entry per PEC. Anchoring d.MRID on ?pecid rather than the
+	// COALESCE(unitID, pecid) ?id binding is what makes this collapse
+	// correct: before GAGO-104, a PEC with a bound child Unit produced a
+	// unit-mRID identity from the inverter/solar rows and a separate
+	// pecid-mRID identity from the battery row (whose Unit-type filter
+	// never matched a PhotovoltaicUnit), so the same physical converter
+	// dedupe-collapsed to TWO registry entries instead of one.
 	seen := make(map[string]struct{})
 	var devices []cimDevice
 	for _, src := range [][]cimDevice{inverters, solar, battery} {
@@ -769,17 +789,37 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 // type (RTGMaxVar). Other richer attributes (ratedS, ratedU, phases)
 // stay in the raw QueryDataResult and can be lifted into typed structs
 // when downstream code consumes them.
+//
+// GAGO-104: MRID is anchored on ?pecid, the PowerElectronicsConnection's
+// own mRID, never on the optional child PowerElectronicsUnit's mRID. A
+// PowerElectronicsUnit (PhotovoltaicUnit, BatteryUnit) has no Terminal
+// and no ConnectivityNode attachment in CIM100: it is not the
+// ConductingEquipment GridAPPS-D applies p/q setpoints to and it cannot
+// execute an IEEE 2030.5 opModConnect or DERControlBase target. The
+// PowerElectronicsConnection is. Anchoring identity there is what makes
+// dedupe (see bootstrapRegistry) collapse a PEC's inverter/solar/battery
+// query rows down to exactly one device, regardless of whether an
+// OPTIONAL child-Unit block happened to bind on that row.
 type cimDevice struct {
-	MRID string
-	Name string
-	MaxQ *int64 // CIM PowerElectronicsConnection.maxQ, base VAr, rounded from the CIM float; nil when the binding is absent
+	MRID string // CIM PowerElectronicsConnection.mRID (?pecid): the IEEE 2030.5 device identity anchor and the dedupe key
+	// UnitMRID is the raw ?id binding (COALESCE(unitID, pecid)) queries.go
+	// selects: the child PowerElectronicsUnit's mRID when one bound on
+	// this row, or MRID again when it did not. Retained as a
+	// display/reference label only; it is never used for identity,
+	// dedupe, or certificate minting.
+	UnitMRID string
+	Name     string
+	MaxQ     *int64 // CIM PowerElectronicsConnection.maxQ, base VAr, rounded from the CIM float; nil when the binding is absent
 }
 
 // queryDevices runs one of the cim.Client Query* wrappers, projects each
-// binding row down to a cimDevice, and skips rows whose ?id binding is
-// missing or empty. kind is used only for log/error readability; query
-// is the bound *cim.Client method, passed as a value so the three call
-// sites share this projection without a type switch.
+// binding row down to a cimDevice, and skips rows whose ?pecid binding
+// is missing or empty (GAGO-104: identity is anchored on the
+// PowerElectronicsConnection's own mRID, not the optional child
+// PowerElectronicsUnit's; see cimDevice's doc comment). kind is used
+// only for log/error readability; query is the bound *cim.Client
+// method, passed as a value so the three call sites share this
+// projection without a type switch.
 //
 // ?maxQ is OPTIONAL: an empty Binding.Value means "absent" and leaves
 // cimDevice.MaxQ nil, never a fabricated zero. Live CIMHub CIM100 stores
@@ -810,13 +850,14 @@ func queryDevices(
 	}
 	out := make([]cimDevice, 0, len(res.Results.Bindings))
 	for _, row := range res.Results.Bindings {
-		mrid := row["id"].Value
+		mrid := row["pecid"].Value
 		if mrid == "" {
 			continue
 		}
 		d := cimDevice{
-			MRID: mrid,
-			Name: row["name"].Value,
+			MRID:     mrid,
+			UnitMRID: row["id"].Value,
+			Name:     row["name"].Value,
 		}
 		if raw := row["maxQ"].Value; raw != "" {
 			maxQF, err := strconv.ParseFloat(raw, 64)
