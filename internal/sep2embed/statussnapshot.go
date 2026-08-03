@@ -78,7 +78,19 @@ func (e *Embed) DERStatusSnapshots(ctx context.Context) ([]DERStatusSnapshot, er
 			// seeded device, so taking that path would have every quiet
 			// device's store allocated by the reader rather than by its
 			// first PUT.
-			if !e.stores.DERStatuses.HasParent(scope) {
+			//
+			// The check is fallible by contract (store.ScopedReader:
+			// "on a durable backend this is a query, not a cheap local map
+			// lookup"), so an error is surfaced rather than absorbed into
+			// the skip branch. Absorbing it would report a device that the
+			// store could not be asked about as an ordinary quiet device,
+			// which is the same wire result as "no reading" and would hide
+			// a backend fault behind a plausible-looking empty snapshot.
+			has, err := e.stores.DERStatuses.HasParent(ctx, scope)
+			if err != nil {
+				return nil, fmt.Errorf("sep2embed: der status snapshots: has parent %q: %w", scope, err)
+			}
+			if !has {
 				continue
 			}
 
