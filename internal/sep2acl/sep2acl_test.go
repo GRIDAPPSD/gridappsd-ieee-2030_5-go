@@ -54,6 +54,17 @@ func TestMethodAllowedFamilyMatrix(t *testing.T) {
 		{"edev/{id}/sub/{subId} DELETE allowed (prefix)", "/edev/DEV-A/sub/1", http.MethodDelete, true, true},
 		{"edev/{id}/der GET allowed", "/edev/DEV-A/der", http.MethodGet, true, true},
 		{"edev/{id}/der PUT denied", "/edev/DEV-A/der", http.MethodPut, false, true},
+		// DER instance (GAGO-111): the WADL declares PUTDER mode O, so the
+		// instance path must be read-write, not the DER list's read-only
+		// classification. Verifies neither the list (3 segments, above)
+		// nor the specific writable sub-resources (5 segments, below) had
+		// their own classification disturbed by adding this 4-segment
+		// entry to the table.
+		{"der/{derId} GET allowed", "/edev/DEV-A/der/1", http.MethodGet, true, true},
+		{"der/{derId} HEAD allowed", "/edev/DEV-A/der/1", http.MethodHead, true, true},
+		{"der/{derId} PUT allowed", "/edev/DEV-A/der/1", http.MethodPut, true, true},
+		{"der/{derId} POST denied", "/edev/DEV-A/der/1", http.MethodPost, false, true},
+		{"der/{derId} DELETE denied", "/edev/DEV-A/der/1", http.MethodDelete, false, true},
 		{"der/{derId}/dercap PUT allowed", "/edev/DEV-A/der/1/dercap", http.MethodPut, true, true},
 		{"der/{derId}/derg PUT allowed", "/edev/DEV-A/der/1/derg", http.MethodPut, true, true},
 		{"der/{derId}/ders PUT allowed", "/edev/DEV-A/der/1/ders", http.MethodPut, true, true},

@@ -146,6 +146,59 @@ func TestACLMiddlewareDeniesCrossDeviceOwnership(t *testing.T) {
 	}
 }
 
+// TestACLMiddlewareAllowsOwnedDERInstanceWrite is the GAGO-111
+// regression test: a PUT to the DER instance path
+// (/edev/{id}/der/{derId}) from the OWNING device must reach the
+// handler, not be refused by the method-family table (the defect this
+// card fixes) or by ownership.
+func TestACLMiddlewareAllowsOwnedDERInstanceWrite(t *testing.T) {
+	t.Parallel()
+
+	resolver := &spyResolver{owns: func(caller, edevID string) bool {
+		return caller == "CALLER-LFDI" && edevID == "DEV-A"
+	}}
+	next := &spyHandler{}
+	h := aclMiddleware(resolver)(next)
+
+	req := withIdentity(httptest.NewRequest(http.MethodPut, "/edev/DEV-A/der/1", nil), "CALLER-LFDI", "CALLER-SFDI")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (owning device PUT to its own DER instance)", w.Code, http.StatusOK)
+	}
+	if !next.called {
+		t.Error("next handler was not called; want the owning device's DER instance PUT dispatched")
+	}
+}
+
+// TestACLMiddlewareDeniesNonOwnerDERInstanceWrite pins the ownership
+// boundary that must NOT regress alongside the GAGO-111 method-table
+// widening: a PUT to the DER instance path from a device that does not
+// own the target EndDevice is still refused, before the handler ever
+// sees it.
+func TestACLMiddlewareDeniesNonOwnerDERInstanceWrite(t *testing.T) {
+	t.Parallel()
+
+	resolver := &spyResolver{owns: func(caller, edevID string) bool {
+		// CALLER-LFDI owns only DEV-A, never DEV-B.
+		return caller == "CALLER-LFDI" && edevID == "DEV-A"
+	}}
+	next := &spyHandler{}
+	h := aclMiddleware(resolver)(next)
+
+	req := withIdentity(httptest.NewRequest(http.MethodPut, "/edev/DEV-B/der/1", nil), "CALLER-LFDI", "CALLER-SFDI")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d (non-owner DER instance write)", w.Code, http.StatusForbidden)
+	}
+	if next.called {
+		t.Error("next handler was called; want non-owner DER instance write denied before dispatch")
+	}
+}
+
 func TestACLMiddlewareDeniesCrossDeviceWrite(t *testing.T) {
 	t.Parallel()
 

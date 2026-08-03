@@ -97,6 +97,7 @@ var families = []family{
 	{[]string{"edev", segWild, "rg"}, readOnly},
 	{[]string{"edev", segWild, "sub"}, readSub},
 	{[]string{"edev", segWild, "der"}, readOnly},
+	{[]string{"edev", segWild, "der", segWild}, readWrite}, // DER instance: GET/HEAD/PUT (WADL PUTDER mode O, GAGO-111)
 	{[]string{"edev", segWild, "der", segWild, "dercap"}, readWrite},
 	{[]string{"edev", segWild, "der", segWild, "derg"}, readWrite},
 	{[]string{"edev", segWild, "der", segWild, "ders"}, readWrite},
