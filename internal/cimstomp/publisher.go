@@ -56,9 +56,16 @@ func (p *Publisher) Connect(ctx context.Context) error {
 		return err
 	}
 
+	// The heartbeat request is asymmetric on purpose, matching
+	// Client.dialAndBootstrap: we promise to SEND one every `heartbeat`,
+	// and we request NONE inbound (the second argument is 0). A
+	// symmetric request had this same dial site dying silently after an
+	// idle period, the Publisher-side half of the GAGO-112 defect: see
+	// Client.dialAndBootstrap's comment in client.go for the full
+	// go-stomp read-deadline mechanics.
 	conn, err := stomp.ConnectWithContext(ctx, tcp,
 		stomp.ConnOpt.Login(p.cfg.User, p.cfg.Password),
-		stomp.ConnOpt.HeartBeat(heartbeat, heartbeat),
+		stomp.ConnOpt.HeartBeat(heartbeat, 0),
 		stomp.ConnOpt.Header(frame.ContentType, "application/json"),
 	)
 	if err != nil {
