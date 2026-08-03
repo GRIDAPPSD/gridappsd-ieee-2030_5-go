@@ -69,6 +69,18 @@ var ErrUnknownControlDevice = errors.New("sep2embed: control delta targets an un
 // shape, or names a Field this bridge does not (yet) map.
 var ErrUnsupportedControlAttribute = errors.New("sep2embed: unsupported control delta attribute")
 
+// ErrDERControlDurationUnset is returned by ApplyControlDelta when the
+// supplied ControlPolicy carries a zero DERControlSeed.Duration.
+//
+// This is a refusal, not a fallback to some invented window, for the same
+// data-invariants reason ErrUnknownControlDevice is: writing the control
+// anyway would produce an interval whose end equals its start, which a
+// conformant client expires on arrival. The client would still fetch it,
+// parse it, and POST a conformant DERControlResponse, so the failure would
+// look exactly like success from every vantage point except the device that
+// never moved. Refusing puts the error where an operator can see it.
+var ErrDERControlDurationUnset = errors.New("sep2embed: DERControl interval duration is not configured")
+
 // DERProgramSeed carries the operator-configurable fields of the DERProgram
 // this package seeds and lazily creates. It mirrors
 // sep2config.DERProgramPolicy, which is where the values and their rationale
@@ -91,6 +103,76 @@ type DERProgramSeed struct {
 	// sep2config.SEP2Policy.ValidateDefaultProgram at boot; empty is valid
 	// and marshals as absent.
 	Description string
+}
+
+// DERControlSeed carries the temporal shape stamped onto every DERControl
+// ApplyControlDelta issues. It mirrors sep2config.DERControlPolicy, which is
+// where the values, their bounds and their reasoning live; the shape is
+// duplicated here rather than imported for the same reason DERProgramSeed
+// duplicates DERProgramPolicy: sep2config is a policy-only package that knows
+// nothing about stores, so this package takes plain values and the dependency
+// cannot run the wrong way.
+//
+// Callers source Duration and RandomizeDuration from
+// sep2config.SEP2Policy.DERControl, validated by ValidateDERControl at boot.
+// The zero value is NOT usable: a zero Duration is the defect this seed
+// exists to fix (see Duration below), which is why boot validation is a hard
+// reject rather than a warning.
+type DERControlSeed struct {
+	// Duration is the DateTimeInterval.duration, in seconds, of every issued
+	// control. Zero produces an event whose end equals its start, which a
+	// conformant client expires the instant it arrives.
+	Duration uint32
+
+	// RandomizeDuration is the randomizeDuration element served on every
+	// issued control, in seconds, bounded to -3600..3600 by boot validation.
+	// It is served explicitly even at 0.
+	RandomizeDuration int32
+
+	// Now is the clock the interval start, creationTime and EventStatus
+	// timestamp are read from. Nil uses time.Now, which is what every
+	// non-test caller passes.
+	//
+	// It exists because the values this seed produces are asserted at the
+	// BYTE level: a test that cannot fix the clock cannot state the exact
+	// document a client receives, and an approximate assertion would not
+	// have caught the absent-element defect this work fixes. Same seam, and
+	// same nil-means-time.Now contract, as telemetrypub.Config.Now.
+	Now func() time.Time
+}
+
+// now returns the seed's clock, defaulting to time.Now when unset.
+func (s DERControlSeed) now() time.Time {
+	if s.Now == nil {
+		return time.Now()
+	}
+	return s.Now()
+}
+
+// ControlPolicy bundles the three operator-configured values the DOWN
+// control path needs: the fallback control, the program both it and every
+// issued control hang off, and the temporal shape of those issued controls.
+//
+// They travel together because they are only meaningful together. The
+// DefaultDERControl is what applies once an issued control's interval
+// elapses, that interval comes from Control, and neither resource is
+// reachable except through Program. Grouping them also keeps
+// ApplyControlDelta's signature from growing a parameter every time the
+// operator surface does.
+type ControlPolicy struct {
+	// DefaultControl is the DefaultDERControl singleton seeded onto each
+	// DERProgram's DefaultDERControlLink, written verbatim except for the
+	// Href and MRID createDERProgram stamps. Sourced from
+	// sep2config.SEP2Policy.DefaultControl.
+	DefaultControl sep2.DefaultDERControl
+
+	// Program is the DERProgram seeded for every device, sourced from
+	// sep2config.SEP2Policy.DefaultProgram.
+	Program DERProgramSeed
+
+	// Control is the interval and randomization policy for issued
+	// DERControls, sourced from sep2config.SEP2Policy.DERControl.
+	Control DERControlSeed
 }
 
 // derProgramListHref returns the canonical href for the DERProgramList
@@ -146,19 +228,49 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // simultaneously), so "one active control per device, fields merged in"
 // is the correct model, not an arbitrary limitation.
 //
-// defaultControl is GAGO-050's seed value for the DERProgram's
-// DefaultDERControl singleton, forwarded unchanged to ensureDERProgram.
-// It is sourced by the caller from SEP2Policy.DefaultControl
-// (cmd/bridge/main.go), never hardcoded here: ApplyControlDelta itself
-// carries no opinion on the value, only the plumbing to seed it once
-// per (edevID, fsaID, derpID).
+// TEMPORAL PLACEMENT (GAGO-131 / IEEECORE-041). Every control written here
+// carries a creationTime and an interval, both minOccurs=1 on Event
+// (sep.xsd:5578 and :5584). Neither is decoration and neither can be left to
+// a downstream layer:
 //
-// programSeed is the matching operator policy for the DERProgram itself,
-// sourced from SEP2Policy.DefaultProgram. Since boot seeding now creates a
-// program for every registered device, ensureDERProgram below is a fallback
-// for a device seeding did not cover; it takes the same policy so the two
-// paths cannot serve different programs for the same fleet.
-func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, defaultControl sep2.DefaultDERControl, programSeed DERProgramSeed, delta ControlDelta) error {
+//   - interval absent makes a client compute end = start + duration = 0,
+//     find end <= now on arrival, and mark the event expired. It fetches the
+//     control, parses it, POSTs a conformant DERControlResponse, and then
+//     discards it, so the entire control path completes with nothing
+//     actuated. That was this bridge's observed behavior before this change.
+//   - creationTime absent (serialized as 0) makes supersession undecidable.
+//     A client orders two overlapping controls of equal primacy by
+//     creationTime and compares with a strict greater-than, so two zeros
+//     compare false in both directions and the INCOMING control is the one
+//     discarded. Fixing the interval alone would leave a server that cannot
+//     replace a setpoint it has already issued, which is the standard's own
+//     mechanism for changing one.
+//
+// Both are refreshed on the supersede path below, not just on first
+// creation. A merged control is new content: a stale creationTime would rank
+// it no newer than what the client already holds, and a stale interval start
+// would let a window opened by an earlier delta expire while the platform is
+// still actively commanding.
+//
+// policy carries all three operator-configured inputs. DefaultControl is
+// GAGO-050's seed value for the DERProgram's DefaultDERControl singleton,
+// forwarded unchanged to ensureDERProgram. Program is the matching policy
+// for the DERProgram itself; since boot seeding now creates a program for
+// every registered device, ensureDERProgram below is a fallback for a device
+// seeding did not cover, and it takes the same policy so the two paths
+// cannot serve different programs for the same fleet. Control supplies the
+// interval duration and randomizeDuration. Every one is sourced by the
+// caller from sep2config.SEP2Policy (cmd/bridge/main.go) and none is
+// hardcoded here: ApplyControlDelta carries no opinion on the values, only
+// the plumbing to stamp them.
+func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, policy ControlPolicy, delta ControlDelta) error {
+	// Checked before anything is resolved or written, so a misconfigured
+	// bridge cannot create a DERProgram or a DefaultDERControl as a side
+	// effect of a delta it is going to refuse.
+	if policy.Control.Duration == 0 {
+		return fmt.Errorf("%w: set -sep2-control-duration to at least 1 second", ErrDERControlDurationUnset)
+	}
+
 	field, ok := strings.CutPrefix(delta.Attribute, derControlAttributePrefix)
 	if !ok || field == "" {
 		return fmt.Errorf("%w: attribute %q (want prefix %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix)
@@ -193,7 +305,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 			ErrUnknownControlDevice, edevID, entry.MRID, err)
 	}
 
-	if err := ensureDERProgram(ctx, stores, edevID, entry.LFDI, controlFSAID, controlDERProgramID, defaultControl, programSeed); err != nil {
+	if err := ensureDERProgram(ctx, stores, edevID, entry.LFDI, controlFSAID, controlDERProgramID, policy); err != nil {
 		return fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
 	}
 
@@ -219,16 +331,40 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		return fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 
+	// One clock read for the whole event. creationTime, EventStatus.dateTime
+	// and interval.start are three views of the same instant, and reading
+	// the clock three times could land them on different seconds, which a
+	// client comparing them has no way to interpret.
+	nowUnix := policy.Control.now().UTC().Unix()
+
 	control := sep2.DERControl{}
 	control.Href = "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
 	// Schema-valid hexBinary(16), not "<LFDI>-active": a conformant client
 	// aborts the whole DERControlList parse on a non-hex mRID and so never
 	// reads responseRequired or replyTo off this control. See deriveMRID.
 	control.MRID = deriveMRID(mridKindDERControl, entry.LFDI)
+	// Required element, refreshed on every write including a supersede: see
+	// this function's TEMPORAL PLACEMENT note for why a stale or zero value
+	// makes supersession undecidable rather than merely losing metadata.
+	control.CreationTime = nowUnix
 	control.EventStatus = &sep2.EventStatus{
 		CurrentStatus: sep2.EventStatusActive,
-		DateTime:      time.Now().UTC().Unix(),
+		DateTime:      nowUnix,
 	}
+	// Required element. start is now because the platform's delta means
+	// "this setpoint, from here"; duration is operator policy, because the
+	// GridAPPS-D delta contract carries no window of its own.
+	control.Interval = &sep2.DateTimeInterval{
+		Start:    nowUnix,
+		Duration: policy.Control.Duration,
+	}
+	// Served explicitly, including at 0. The value is addressable rather
+	// than inlined because the field is a pointer whose nil means "element
+	// absent"; a pointer to 0 still reaches the wire as
+	// <randomizeDuration>0</randomizeDuration>, which states the policy
+	// instead of relying on the client to apply the schema's own default.
+	randomizeDuration := policy.Control.RandomizeDuration
+	control.RandomizeDuration = &randomizeDuration
 	control.DERControlBase = &base
 
 	if isUpdate {
@@ -278,14 +414,14 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 // deliberately separate arguments: an MRID is an identity value that must not
 // become a URL-addressing artifact, and building one from the index would
 // make it collide across restarts once indices are reassigned.
-func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mridBase, fsaID, derpID string, defaultControl sep2.DefaultDERControl, seed DERProgramSeed) error {
+func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mridBase, fsaID, derpID string, policy ControlPolicy) error {
 	inner := stores.DERPrograms.ForParent(edevID)
 	if _, err := inner.Get(ctx, derpID); err == nil {
 		return nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("get der program: %w", err)
 	}
-	return createDERProgram(ctx, stores, edevID, mridBase, fsaID, derpID, defaultControl, seed)
+	return createDERProgram(ctx, stores, edevID, mridBase, fsaID, derpID, policy)
 }
 
 // createDERProgram writes one DERProgram and its DefaultDERControl singleton
@@ -305,8 +441,12 @@ func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mrid
 // lazy path would then short-circuit and the DefaultDERControl would never be
 // created at all. The program and its default control are one unit and are
 // written as one.
-func createDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mridBase, fsaID, derpID string, defaultControl sep2.DefaultDERControl, seed DERProgramSeed) error {
-	dderc := defaultControl.Copy()
+func createDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mridBase, fsaID, derpID string, policy ControlPolicy) error {
+	// Copy, then stamp ONLY the two addressing fields this layer owns. Every
+	// other field on the operator's configured DefaultDERControl survives
+	// verbatim, including an explicitly configured false: this path fills
+	// what is structural and never overrides what was set.
+	dderc := policy.DefaultControl.Copy()
 	dderc.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/dderc"
 	dderc.MRID = deriveMRID(mridKindDefaultDERControl, mridBase)
 
@@ -327,8 +467,8 @@ func createDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mrid
 	// priority), so a zero value is served as configured rather than
 	// silently rewritten to 1.
 	program := sep2.DERProgram{
-		Primacy:     seed.Primacy,
-		Description: seed.Description,
+		Primacy:     policy.Program.Primacy,
+		Description: policy.Program.Description,
 		MRID:        deriveMRID(mridKindDERProgram, mridBase),
 	}
 	program.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID

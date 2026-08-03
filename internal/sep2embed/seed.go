@@ -135,15 +135,17 @@ type seedPolicy struct {
 	// touching this file; see sep2config.SEP2Policy.PollRates.
 	resolvePollRate func(lfdi string) (uint32, bool)
 
-	// defaultControl and defaultProgram are the DefaultDERControl and the
-	// DERProgram seeded for every device, sourced from
-	// sep2config.SEP2Policy.DefaultControl and .DefaultProgram.
+	// control is the DefaultDERControl, the DERProgram, and the issued-control
+	// interval policy seeded for every device, sourced from
+	// sep2config.SEP2Policy's DefaultControl, DefaultProgram and DERControl.
 	//
-	// Both zero values are valid but degenerate rather than fatal: a
-	// well-formed program carrying an all-unset default control. That is a
-	// different case from resolvePIN, where no value can be invented at all.
-	defaultControl sep2.DefaultDERControl
-	defaultProgram DERProgramSeed
+	// A zero DefaultControl or Program is valid but degenerate rather than
+	// fatal: a well-formed program carrying an all-unset default control.
+	// That is a different case from resolvePIN, where no value can be
+	// invented at all. Seeding does not read the interval policy at all
+	// (a DefaultDERControl is not an Event and carries no interval); it is
+	// carried here only so seedOne and the lazy path share one value.
+	control ControlPolicy
 }
 
 // seedOne writes the EndDevice and its single child DER for one registry
@@ -286,7 +288,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	// (controlFSAID, controlDERProgramID) is the same fixed pair
 	// ApplyControlDelta writes under, so the program seeded here is the exact
 	// resource the control path later adds DERControls to, not a parallel one.
-	if err := createDERProgram(ctx, stores, id, e.LFDI, controlFSAID, controlDERProgramID, policy.defaultControl, policy.defaultProgram); err != nil {
+	if err := createDERProgram(ctx, stores, id, e.LFDI, controlFSAID, controlDERProgramID, policy.control); err != nil {
 		return fmt.Errorf("seed der program: %w", err)
 	}
 

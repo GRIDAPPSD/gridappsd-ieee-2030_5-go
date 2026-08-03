@@ -34,6 +34,27 @@ var testDefaultControl = sep2.DefaultDERControl{}
 // value would silently assert a different program than the one shipped.
 var testProgramSeed = DERProgramSeed{Primacy: 1, Description: "GridAPPS-D DER program"}
 
+// testControlSeed is the issued-DERControl temporal policy this file's tests
+// pass to ApplyControlDelta. Duration mirrors
+// sep2config.DefaultDERControlDuration rather than being an arbitrary test
+// number, so a test asserting on an issued control sees the window a default
+// deployment serves. It is spelled out rather than left zero because a zero
+// Duration is refused outright (ErrDERControlDurationUnset), which is itself
+// asserted by TestApplyControlDeltaRefusesUnconfiguredDuration.
+//
+// Now is nil, so these tests read the real clock: they assert field mapping
+// and owner scoping, not timestamps. The wire-level temporal assertions in
+// control_interval_test.go fix the clock instead.
+var testControlSeed = DERControlSeed{Duration: 1800}
+
+// testControlPolicy bundles the three fixtures above into the single value
+// ApplyControlDelta and seedStores now take.
+var testControlPolicy = ControlPolicy{
+	DefaultControl: testDefaultControl,
+	Program:        testProgramSeed,
+	Control:        testControlSeed,
+}
+
 // twoDeviceFixture seeds a Registry and a fully populated assembly.Stores
 // (via the package's own seedStores, not a parallel construction) with
 // two devices, A and B, so tests below can assert owner scoping between
@@ -41,9 +62,8 @@ var testProgramSeed = DERProgramSeed{Primacy: 1, Description: "GridAPPS-D DER pr
 func twoDeviceFixture(t *testing.T) (reg *registry.Registry, st *assembly.Stores) {
 	t.Helper()
 	return twoDeviceFixtureWithPolicy(t, seedPolicy{
-		resolvePIN:     testResolvePIN,
-		defaultControl: testDefaultControl,
-		defaultProgram: testProgramSeed,
+		resolvePIN: testResolvePIN,
+		control:    testControlPolicy,
 	})
 }
 
@@ -124,7 +144,7 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 		Value:     map[string]any{"multiplier": 0.0, "value": 5000.0},
 	}
 
-	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, delta); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testControlPolicy, delta); err != nil {
 		t.Fatalf("ApplyControlDelta: %v", err)
 	}
 
@@ -181,7 +201,7 @@ func TestApplyControlDeltaRefusesUnknownDevice(t *testing.T) {
 		Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
 	}
 
-	err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, delta)
+	err := ApplyControlDelta(ctx, st, notifier, reg, testControlPolicy, delta)
 	if !errors.Is(err, ErrUnknownControlDevice) {
 		t.Fatalf("ApplyControlDelta(unknown device) error = %v, want ErrUnknownControlDevice", err)
 	}
@@ -212,7 +232,7 @@ func TestApplyControlDeltaRefusesUnsupportedAttribute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			delta := diff.Difference{Object: "mrid-a", Attribute: tt.attr, Value: true}
-			err := ApplyControlDelta(context.Background(), st, notifier, reg, testDefaultControl, testProgramSeed, delta)
+			err := ApplyControlDelta(context.Background(), st, notifier, reg, testControlPolicy, delta)
 			if !errors.Is(err, ErrUnsupportedControlAttribute) {
 				t.Fatalf("ApplyControlDelta(%q) error = %v, want ErrUnsupportedControlAttribute", tt.attr, err)
 			}
@@ -242,10 +262,10 @@ func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
 		Value:     map[string]any{"multiplier": 0.0, "value": 500.0},
 	}
 
-	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, first); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testControlPolicy, first); err != nil {
 		t.Fatalf("ApplyControlDelta(first): %v", err)
 	}
-	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, second); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testControlPolicy, second); err != nil {
 		t.Fatalf("ApplyControlDelta(second): %v", err)
 	}
 
@@ -298,13 +318,14 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 
 	// Seeded with the same default control this test asserts on: since the
 	// program and its DefaultDERControl are now written at seed time, this
-	// is the policy that reaches the store. Passing seed to
-	// ApplyControlDelta below as well mirrors cmd/bridge, where both come
-	// from one policy.DefaultControl.
+	// is the policy that reaches the store. Passing the same policy to
+	// ApplyControlDelta below mirrors cmd/bridge, where both come from one
+	// sep2config.SEP2Policy.
+	seedPolicyForTest := testControlPolicy
+	seedPolicyForTest.DefaultControl = seed
 	reg, st := twoDeviceFixtureWithPolicy(t, seedPolicy{
-		resolvePIN:     testResolvePIN,
-		defaultControl: seed,
-		defaultProgram: testProgramSeed,
+		resolvePIN: testResolvePIN,
+		control:    seedPolicyForTest,
 	})
 	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
 	ctx := context.Background()
@@ -314,7 +335,7 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 		Attribute: "DERControl.DERControlBase.opModTargetW",
 		Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
 	}
-	if err := ApplyControlDelta(ctx, st, notifier, reg, seed, testProgramSeed, delta); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, seedPolicyForTest, delta); err != nil {
 		t.Fatalf("ApplyControlDelta: %v", err)
 	}
 
@@ -583,7 +604,7 @@ func TestApplyControlDeltaRefusesPercentModeAttributes(t *testing.T) {
 				Attribute: attr,
 				Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
 			}
-			err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, delta)
+			err := ApplyControlDelta(ctx, st, notifier, reg, testControlPolicy, delta)
 			if !errors.Is(err, ErrUnsupportedControlAttribute) {
 				t.Fatalf("ApplyControlDelta(%q) error = %v, want ErrUnsupportedControlAttribute", attr, err)
 			}

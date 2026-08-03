@@ -67,6 +67,21 @@ type mupTestDevice struct {
 // device certificate below chains to the CA the server will trust.
 func newMUPTestServer(t *testing.T, serials ...string) (string, []mupTestDevice) {
 	t.Helper()
+	baseURL, devices, _, _ := newEmbedTestServer(t, nil, serials...)
+	return baseURL, devices
+}
+
+// newEmbedTestServer is newMUPTestServer with three additions a control-flow
+// test needs: the Embed itself and the Registry it was seeded from (together
+// these are what ApplyControlDelta needs to drive the same stores the
+// listener serves), and a hook to adjust the Config before New sees it.
+//
+// tune runs on the fully-populated Config and may be nil. It exists so a test
+// can vary one policy field, the issued-control interval for instance,
+// without either duplicating this eighty-line harness or widening the
+// signature again the next time a field is added.
+func newEmbedTestServer(t *testing.T, tune func(*Config), serials ...string) (string, []mupTestDevice, *Embed, *registry.Registry) {
+	t.Helper()
 
 	certDir := t.TempDir()
 
@@ -145,7 +160,7 @@ func newMUPTestServer(t *testing.T, serials ...string) (string, []mupTestDevice)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	e, err := New(ctx, Config{
+	cfg := Config{
 		Addr: "127.0.0.1:0", CertDir: certDir, ShutdownTimeout: time.Second,
 		ResolveRegistrationPIN: testResolvePIN,
 		// The seeded DERProgram policy is supplied here so this harness
@@ -155,7 +170,15 @@ func newMUPTestServer(t *testing.T, serials ...string) (string, []mupTestDevice)
 		// operator ever sees.
 		DefaultControl: testDefaultControlSnapshot(),
 		DefaultProgram: testProgramSeed,
-	}, reg)
+		// Same reasoning for the issued-control interval: the harness serves
+		// a usable window, so a test asserting on control bytes sees a real
+		// deployment's shape rather than the unserviceable zero value.
+		DERControl: testControlSeed,
+	}
+	if tune != nil {
+		tune(&cfg)
+	}
+	e, err := New(ctx, cfg, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -176,7 +199,7 @@ func newMUPTestServer(t *testing.T, serials ...string) (string, []mupTestDevice)
 		devices[i].edevID = embedURLIndex(t, e, "mrid-"+serials[i])
 	}
 
-	return "https://" + e.Addr(), devices
+	return "https://" + e.Addr(), devices, e, reg
 }
 
 // getSEP2 performs a GET with the Accept header the reference CSIP

@@ -124,6 +124,25 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 	if base.OpModEnergize != nil {
 		t.Errorf("DefaultControl.DERControlBase.OpModEnergize = %v, want nil (the policy commands nothing)", *base.OpModEnergize)
 	}
+
+	// GAGO-131: the issued-control interval policy maps through too. A zero
+	// Duration here would mean the mapping layer dropped the field, and
+	// ApplyControlDelta would then refuse every delta the bridge received.
+	if got.DERControl.Duration != policy.DERControl.Duration {
+		t.Errorf("DERControl.Duration: got %d, want %d (the policy value)", got.DERControl.Duration, policy.DERControl.Duration)
+	}
+	if got.DERControl.Duration == 0 {
+		t.Error("DERControl.Duration = 0: every issued DERControl would carry a zero-length interval and expire on arrival")
+	}
+	if got.DERControl.RandomizeDuration != policy.DERControl.RandomizeDuration {
+		t.Errorf("DERControl.RandomizeDuration: got %d, want %d (the policy value)",
+			got.DERControl.RandomizeDuration, policy.DERControl.RandomizeDuration)
+	}
+	// Nil so the bridge reads the real clock. A non-nil clock reaching
+	// production would freeze creationTime and every interval start.
+	if got.DERControl.Now != nil {
+		t.Error("DERControl.Now is non-nil; the bridge must read the real clock, the seam exists only for tests")
+	}
 }
 
 // TestAdminUIConfigMapsFields verifies adminUIConfig's field-by-field

@@ -88,7 +88,7 @@ func TestGAGO044SignConventionPinned(t *testing.T) {
 				Attribute: "DERControl.DERControlBase." + tc.attribute,
 				Value:     map[string]any{"multiplier": 0.0, "value": tc.commanded},
 			}
-			if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, delta); err != nil {
+			if err := ApplyControlDelta(ctx, st, notifier, reg, testControlPolicy, delta); err != nil {
 				t.Fatalf("ApplyControlDelta: %v", err)
 			}
 
@@ -192,7 +192,7 @@ func TestGAGO044CaptureBridgeSetpoints(t *testing.T) {
 			Attribute: "DERControl.DERControlBase." + cmd.attribute,
 			Value:     map[string]any{"multiplier": 0.0, "value": cmd.commanded},
 		}
-		if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, delta); err != nil {
+		if err := ApplyControlDelta(ctx, st, notifier, reg, testControlPolicy, delta); err != nil {
 			t.Fatalf("ApplyControlDelta(%s): %v", cmd.name, err)
 		}
 
