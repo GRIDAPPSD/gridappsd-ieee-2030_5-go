@@ -66,14 +66,86 @@ const telemetryContentType = "application/json"
 // a future revision routes them over the same topic.
 const derStatusAttributePrefix = "DERStatus."
 
-// MapDERStatusToDifferences projects the subset of DERStatus fields this
-// bridge relays into diff.Difference entries, Object=mrid for every
-// entry (the CIM device the status belongs to; see PublishDERStatus's
-// doc comment for how mrid is resolved from the caller's own LFDI).
+// derStatusStateOfChargeAttribute names the stateOfChargeStatus
+// difference. It is the one mapped attribute whose name carries a unit
+// suffix, and that is deliberate (GAGO-110).
 //
-// Only fields present on status (non-nil pointers) produce an entry; a
-// DERStatus with none of the mapped fields set yields an empty, non-nil
-// slice, not an error, since the client's PUT is otherwise still valid.
+// sep.xsd types stateOfChargeStatus/value as PerCent (sep.xsd:4566-4582,
+// sep.xsd:5945-5952): a UInt16 in HUNDREDTHS of a percent, 0 to 10000,
+// where 10000 means 100%. Every other value this file maps is a bare
+// enum, bitmap, or epoch, so the field name alone is unambiguous; this
+// one is not. A bare "DERStatus.stateOfChargeStatus" carrying 6500 reads
+// as 6500 percent (or, worse, as 65 percent to a consumer that guesses
+// right for the wrong reason). The EPRI client observed in e2e run 10
+// reports exactly 6500, meaning 65 percent, so the ambiguity is live and
+// not hypothetical.
+//
+// The value is published RAW, exactly as the device reported it, and the
+// name states the unit. Converting to whole percent here would mean
+// either integer division (silently discarding the two fractional digits
+// the spec exists to carry) or a float (introducing a representation the
+// rest of this mapping does not use, for a field whose wire type is an
+// integer). Both are lossy or surprising; neither is recoverable by a
+// downstream consumer. Raw plus a self-describing name is, and it keeps
+// this field consistent with the raw-passthrough contract documented on
+// MapDERStatusToDifferences below.
+const derStatusStateOfChargeAttribute = derStatusAttributePrefix + "stateOfChargeStatusHundredthsPerCent"
+
+// MapDERStatusToDifferences projects the DERStatus fields this bridge
+// relays into diff.Difference entries, Object=mrid for every entry (the
+// CIM device the status belongs to; see PublishDERStatus's doc comment
+// for how mrid is resolved from the caller's own LFDI).
+//
+// Coverage: every field core's sep2.DERStatus models is mapped
+// (readingTime, genConnectStatus, inverterStatus, operationalModeStatus,
+// stateOfChargeStatus, storageModeStatus, alarmStatus). Before GAGO-110
+// only the middle three of those existed here, which made a DERStatus
+// populating none of them a total silent no-op: PublishDERStatus's
+// empty-slice short-circuit returned nil with nothing published and
+// nothing logged. That was not theoretical: the EPRI client sends
+// readingTime plus stateOfChargeStatus and nothing else, so e2e run 10
+// completed 36 DERStatus PUTs, every one answered 204, and produced zero
+// bus frames.
+//
+// sep.xsd's DERStatus also carries localControlModeStatus
+// (sep.xsd:4167), manufacturerStatus (sep.xsd:4173) and storConnectStatus
+// (sep.xsd:4201). Core v0.10.0 does not model any of the three, so there
+// is nothing here to read; they need a core change first and are tracked
+// separately. This mapping is complete with respect to core, not with
+// respect to sep.xsd.
+//
+// Field order: the three pre-GAGO-110 attributes keep their exact
+// relative order at the head of the slice, ahead of the four added here,
+// rather than being re-sorted into sep.xsd sequence order. The order is
+// observable in the published forward_differences array, so preserving
+// it keeps existing consumers byte-identical (pinned by
+// TestMapDERStatusToDifferencesExistingThreeAreByteIdentical).
+//
+// Only fields present on status produce an entry; a DERStatus with none
+// of the mapped fields set yields an empty, non-nil slice, not an error,
+// since the client's PUT is otherwise still valid. Presence is a nil
+// pointer check for every field except readingTime: core models that one
+// as a non-pointer int64 with omitempty, so absent and epoch-0 are
+// indistinguishable at this layer and a zero is therefore treated as
+// absent. That is the fail-closed direction: publishing a synthesized
+// 1970-01-01 reading timestamp would be a plausible-looking value
+// downstream, which is exactly the invisible corruption a nil guard
+// exists to prevent. A device that genuinely means epoch 0 loses one
+// implausible reading; nothing else is affected.
+//
+// The per-field dateTime is deliberately dropped. ConnectStatusType and
+// its siblings each carry a dateTime alongside their value, but
+// diff.Difference is a flat Object/Attribute/Value triple with no place
+// for a per-value timestamp, and the envelope already stamps its own
+// publish time. Flattening dateTime into a second synthetic attribute
+// would also mean republishing whatever the device sent: the EPRI client
+// observed in e2e run 10 reports stateOfChargeStatus/dateTime =
+// -5838048000, a negative epoch landing around the year 1785. That value
+// is harmless only because it is dropped; on the bus a consumer could
+// reasonably read it as a real observation time. Do not "helpfully"
+// restore dateTime here without first fixing the source of values like
+// that one. Pinned by
+// TestMapDERStatusToDifferencesDropsPerFieldDateTime.
 //
 // The reverse value on each Difference is set equal to the forward
 // value. This deliberately differs from the DOWN path's forward/reverse
@@ -86,8 +158,10 @@ const derStatusAttributePrefix = "DERStatus."
 // Raw passthrough, unbounded (Leon LOW, GAGO-034 PR #9 review): every
 // value below is carried through exactly as the device reported it, at
 // its full wire type range (genConnectStatus is sep2.HexBinary8,
-// operationalModeStatus is plain uint8, alarmStatus is
-// sep2.HexBinary32; IEEECORE-047 moved genConnectStatus and alarmStatus
+// alarmStatus is sep2.HexBinary32; operationalModeStatus,
+// inverterStatus and storageModeStatus are plain uint8;
+// stateOfChargeStatus is uint16; readingTime is int64;
+// IEEECORE-047 moved genConnectStatus and alarmStatus
 // onto the hexBinary family, operationalModeStatus was and stays a
 // plain UInt8 per sep.xsd), with no plausibility or range check
 // against what a real device could sanely report. This is a deliberate
@@ -104,7 +178,7 @@ func MapDERStatusToDifferences(mrid string, status sep2.DERStatus) ([]diff.Diffe
 		return nil, errors.New("sep2embed: MapDERStatusToDifferences: empty mrid")
 	}
 
-	diffs := make([]diff.Difference, 0, 3)
+	diffs := make([]diff.Difference, 0, 7)
 
 	if status.GenConnectStatus != nil {
 		diffs = append(diffs, diff.Difference{
@@ -128,6 +202,39 @@ func MapDERStatusToDifferences(mrid string, status sep2.DERStatus) ([]diff.Diffe
 		})
 	}
 
+	// Fields added by GAGO-110, appended after the three above so the
+	// pre-existing output stays byte-identical. See the doc comment for
+	// why readingTime's guard is a zero check rather than a nil check,
+	// and for the units and dateTime decisions.
+	if status.ReadingTime != 0 {
+		diffs = append(diffs, diff.Difference{
+			Object:    mrid,
+			Attribute: derStatusAttributePrefix + "readingTime",
+			Value:     status.ReadingTime,
+		})
+	}
+	if status.InverterStatus != nil {
+		diffs = append(diffs, diff.Difference{
+			Object:    mrid,
+			Attribute: derStatusAttributePrefix + "inverterStatus",
+			Value:     status.InverterStatus.Value,
+		})
+	}
+	if status.StateOfChargeStatus != nil {
+		diffs = append(diffs, diff.Difference{
+			Object:    mrid,
+			Attribute: derStatusStateOfChargeAttribute,
+			Value:     status.StateOfChargeStatus.Value,
+		})
+	}
+	if status.StorageModeStatus != nil {
+		diffs = append(diffs, diff.Difference{
+			Object:    mrid,
+			Attribute: derStatusAttributePrefix + "storageModeStatus",
+			Value:     status.StorageModeStatus.Value,
+		})
+	}
+
 	return diffs, nil
 }
 
@@ -139,13 +246,26 @@ func MapDERStatusToDifferences(mrid string, status sep2.DERStatus) ([]diff.Diffe
 //
 // A DERStatus with no mapped fields set (MapDERStatusToDifferences
 // returns an empty slice) is a no-op: nothing is published, and nil is
-// returned rather than sending an empty envelope.
+// returned rather than sending an empty envelope. That no-op is LOGGED
+// (GAGO-110). It used to be entirely silent, which is what made the
+// missing-field class of bug hard to diagnose: a device's PUT succeeded,
+// the relay ran, and the absence of a bus frame was indistinguishable
+// from success at every layer except the topic itself.
+//
+// Logged unconditionally rather than rate-limited: now that every field
+// core models is mapped, reaching this branch means the device PUT a
+// DERStatus carrying no status field at all, which is a malformed-client
+// signal and inherently rare, so there is no volume to suppress and no
+// per-device state worth keeping to suppress it. Only the mrid is
+// logged, matching the other relay log lines in this file; no field
+// values are logged.
 func PublishDERStatus(ctx context.Context, pub BusPublisher, dest, simID, mrid string, status sep2.DERStatus, now time.Time) error {
 	diffs, err := MapDERStatusToDifferences(mrid, status)
 	if err != nil {
 		return fmt.Errorf("sep2embed: PublishDERStatus: %w", err)
 	}
 	if len(diffs) == 0 {
+		log.Printf("sep2embed: PublishDERStatus: DERStatus for mrid=%s carried no mapped field; nothing published", mrid)
 		return nil
 	}
 
