@@ -142,10 +142,7 @@ func TestServedDERControlCarriesStampedResponseRequest(t *testing.T) {
 	edevA := embedURLIndex(t, e, "mrid-rspreq-a")
 	scope := derControlScope(edevA, controlFSAID, controlDERProgramID)
 
-	stored, err := e.stores.DERControls.Get(ctx, scope, activeControlID)
-	if err != nil {
-		t.Fatalf("DERControls.Get: %v", err)
-	}
+	stored, storedID := soleControl(t, ctx, e.stores, scope)
 	if stored.ReplyTo != "" {
 		t.Errorf("stored DERControl.ReplyTo = %q, want empty: the bridge must leave replyTo absent so core's serve-time stamp fills it with a URI core itself routes", stored.ReplyTo)
 	}
@@ -162,7 +159,7 @@ func TestServedDERControlCarriesStampedResponseRequest(t *testing.T) {
 		name string
 		url  string
 	}{
-		{"single-resource route", dercBase + "/" + activeControlID},
+		{"single-resource route", dercBase + "/" + storedID},
 		{"list route", dercBase},
 	} {
 		desc := "device A GETting its own DERControl " + tc.name

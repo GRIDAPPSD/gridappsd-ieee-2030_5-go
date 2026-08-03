@@ -73,13 +73,40 @@ func fixedControlClock() func() time.Time {
 // what ApplyControlDelta actually produces.
 func applyTestControlDelta(t *testing.T, e *Embed, reg *registry.Registry, mrid string) {
 	t.Helper()
+	applyTestControlDeltaValue(t, e, reg, mrid, "opModTargetW", 5000.0)
+}
+
+// applyTestControlDeltaValue is applyTestControlDelta with the control mode
+// and the commanded value supplied by the caller, for the tests that need two
+// deltas that differ in one or the other.
+func applyTestControlDeltaValue(t *testing.T, e *Embed, reg *registry.Registry, mrid, field string, value float64) {
+	t.Helper()
 	if err := e.ApplyControlDelta(context.Background(), reg, diff.Difference{
 		Object:    mrid,
-		Attribute: "DERControl.DERControlBase.opModTargetW",
-		Value:     map[string]any{"multiplier": 0.0, "value": 5000.0},
+		Attribute: "DERControl.DERControlBase." + field,
+		Value:     map[string]any{"multiplier": 0.0, "value": value},
 	}); err != nil {
-		t.Fatalf("ApplyControlDelta(%s): %v", mrid, err)
+		t.Fatalf("ApplyControlDelta(%s, %s=%v): %v", mrid, field, value, err)
 	}
+}
+
+// soleServedControlID returns the store key of the one DERControl the given
+// device holds, failing the test if it holds any other number.
+//
+// Tests addressed the single-resource route by the fixed "active" key before
+// GAGO-133. There is no fixed key now: an issued control is addressed by an
+// id derived from its own creation instant and mRID, so a test that wants to
+// GET "the control this delta produced" has to ask which one that is.
+func soleServedControlID(t *testing.T, e *Embed, edevID string) string {
+	t.Helper()
+	snaps, err := e.DERControls(context.Background(), edevID, controlFSAID, controlDERProgramID)
+	if err != nil {
+		t.Fatalf("DERControls(%s): %v", edevID, err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("device %s holds %d DERControls, want exactly 1", edevID, len(snaps))
+	}
+	return snaps[0].ID
 }
 
 // TestServedDERControlCarriesIntervalAndCreationTime is the wire-level
@@ -104,7 +131,7 @@ func TestServedDERControlCarriesIntervalAndCreationTime(t *testing.T) {
 		url  string
 	}{
 		{"list route", baseURL + dercHref},
-		{"single-resource route", baseURL + dercHref + "/" + activeControlID},
+		{"single-resource route", baseURL + dercHref + "/" + soleServedControlID(t, e, d.edevID)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status, body := getSEP2(t, d, tc.url)
@@ -269,8 +296,10 @@ func TestServedDERControlAlwaysCarriesRandomizeDuration(t *testing.T) {
 	}
 }
 
-// TestSupersedingDeltaRefreshesCreationTimeAndIntervalStart covers the
-// supersede path, which is the one that would silently keep a stale value.
+// TestSupersedingDeltaCarriesFreshCreationTimeAndIntervalStart covers the
+// temporal half of the supersede path: whatever else changes, the SUPERSEDING
+// control must carry the later creation instant and a window that opens at
+// that instant.
 //
 // Both halves matter and for different reasons. A stale creationTime makes
 // the new control rank no newer than the one the client already holds: the
@@ -280,7 +309,12 @@ func TestServedDERControlAlwaysCarriesRandomizeDuration(t *testing.T) {
 // stale interval start means a window opened by an earlier delta expires
 // while the platform is still actively commanding, dropping the device onto
 // its DefaultDERControl mid-dispatch.
-func TestSupersedingDeltaRefreshesCreationTimeAndIntervalStart(t *testing.T) {
+//
+// The two deltas here carry the SAME control mode with different values,
+// which is what "supersede" means under 2018 rule t) p.91. The
+// differing-mode case does not supersede and is covered in
+// control_supersede_test.go.
+func TestSupersedingDeltaCarriesFreshCreationTimeAndIntervalStart(t *testing.T) {
 	t.Parallel()
 
 	// A clock that advances by a fixed step on each read, so the two writes
@@ -298,40 +332,39 @@ func TestSupersedingDeltaRefreshesCreationTimeAndIntervalStart(t *testing.T) {
 	}, "DERCSUPERSEDE1")
 	d := devices[0]
 
-	applyTestControlDelta(t, e, reg, "mrid-DERCSUPERSEDE1")
-	// A second, different field so the merge path is exercised rather than a
-	// rewrite of the same value.
-	if err := e.ApplyControlDelta(context.Background(), reg, diff.Difference{
-		Object:    "mrid-DERCSUPERSEDE1",
-		Attribute: "DERControl.DERControlBase.opModTargetVar",
-		Value:     map[string]any{"multiplier": 0.0, "value": 250.0},
-	}); err != nil {
-		t.Fatalf("ApplyControlDelta (superseding): %v", err)
-	}
+	applyTestControlDeltaValue(t, e, reg, "mrid-DERCSUPERSEDE1", "opModTargetW", 5000)
+	applyTestControlDeltaValue(t, e, reg, "mrid-DERCSUPERSEDE1", "opModTargetW", 7500)
 
 	status, body := getSEP2(t, d, baseURL+"/edev/"+d.edevID+"/fsa/"+controlFSAID+"/derp/"+controlDERProgramID+"/derc")
 	if status != http.StatusOK {
 		t.Fatalf("GET DERControlList status = %d, want 200\nbody=%s", status, body)
 	}
 
-	if got := elementInt64(t, body, "creationTime"); got != secondInstant {
-		t.Errorf("served creationTime after supersede = %d, want %d (the second write's instant); "+
+	// Both events are served, so the assertions are made against the
+	// SUPERSEDING element specifically rather than against whichever one the
+	// document happens to carry first.
+	newest := derControlElementWith(t, body, "<opModTargetW><multiplier>0</multiplier><value>7500</value></opModTargetW>")
+
+	if got := elementInt64(t, newest, "creationTime"); got != secondInstant {
+		t.Errorf("superseding control creationTime = %d, want %d (the second write's instant); "+
 			"a stale value leaves the control no newer than the one the client already holds, and a strict-greater comparison then discards the incoming one",
 			got, secondInstant)
 	}
-	if got := elementInt64(t, body, "start"); got != secondInstant {
-		t.Errorf("served interval start after supersede = %d, want %d (the second write's instant); "+
+	if got := elementInt64(t, newest, "start"); got != secondInstant {
+		t.Errorf("superseding control interval start = %d, want %d (the second write's instant); "+
 			"a stale start lets a window opened by an earlier delta expire while the platform is still commanding",
 			got, secondInstant)
 	}
 
-	// The merge itself still happened: superseding must not drop the field
-	// the first delta set.
-	if !bytes.Contains(body, []byte("<opModTargetW>")) {
-		t.Errorf("served DERControl lost opModTargetW across the supersede; the merge must preserve previously-set fields\nbody=%s", body)
+	// The superseded control is still served, in its entirety, at its
+	// original instant: 2018 rules q)2) p.91 and t)3) p.92.
+	oldest := derControlElementWith(t, body, "<opModTargetW><multiplier>0</multiplier><value>5000</value></opModTargetW>")
+	if got := elementInt64(t, oldest, "creationTime"); got != controlClockUnix {
+		t.Errorf("superseded control creationTime = %d, want %d unchanged; a server SHALL NOT edit the original Event",
+			got, controlClockUnix)
 	}
-	if !bytes.Contains(body, []byte("<opModTargetVar>")) {
-		t.Errorf("served DERControl does not carry the superseding opModTargetVar\nbody=%s", body)
+	if got := elementInt64(t, oldest, "start"); got != controlClockUnix {
+		t.Errorf("superseded control interval start = %d, want %d unchanged", got, controlClockUnix)
 	}
 }
 
@@ -367,8 +400,8 @@ func TestApplyControlDeltaRefusesUnconfiguredDuration(t *testing.T) {
 	// tree behind for the next delta to trip over.
 	edevA := urlIndexFor(t, st, "mrid-a")
 	scope := derControlScope(edevA, controlFSAID, controlDERProgramID)
-	if _, getErr := st.DERControls.Get(ctx, scope, activeControlID); getErr == nil {
-		t.Error("a DERControl was written despite the refusal; the guard must run before any store write")
+	if n := controlCount(t, ctx, st, scope); n != 0 {
+		t.Errorf("%d DERControls were written despite the refusal; the guard must run before any store write", n)
 	}
 }
 

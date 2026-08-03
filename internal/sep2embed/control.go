@@ -49,14 +49,12 @@ const (
 	controlDERProgramID = "1"
 )
 
-// activeControlID is the single "active" DERControl slot ApplyControlDelta
-// maintains per device. A second delta for the same device updates the
-// SAME DERControl (merging the new field into its existing
-// DERControlBase) rather than creating a second, competing control: see
-// ApplyControlDelta's doc comment for why this is the correct
-// supersede-shaped behavior for this bridge, not an accidental
-// singleton limitation.
-const activeControlID = "active"
+// derControlListHref returns the canonical href of the DERControlList
+// scoped to (edev, fsa, derp), which is both the list route a client polls
+// and the prefix every issued control's own href extends.
+func derControlListHref(edevID, fsaID, derpID string) string {
+	return "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/derc"
+}
 
 // ErrUnknownControlDevice is returned by ApplyControlDelta when the
 // delta's Object does not resolve to a registered, seeded EndDevice.
@@ -217,16 +215,29 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // explicit, currently-no-op activeSignFlip / reactiveSignFlip seam (see
 // their doc comment): no other unit or sign conversion happens.
 //
-// Supersede semantics: a second delta for the same device does not
-// create a second DERControl. ApplyControlDelta reads the device's
-// existing "active" DERControl (if any), merges the new field into its
-// DERControlBase (previously-set fields on other attributes are
-// preserved), and writes it back with Update. This avoids the
-// duplicate-conflicting-controls failure mode data-invariants warns
-// about: DERControlBase is naturally a bag of independent op-mode
-// fields (opModTargetW and opModTargetVar can both be active
-// simultaneously), so "one active control per device, fields merged in"
-// is the correct model, not an arbitrary limitation.
+// SUPERSEDE SEMANTICS (GAGO-133). Every delta issues a NEW DERControl,
+// carrying exactly the one control mode the delta names, with its own mRID,
+// its own href and a creationTime strictly newer than any overlapping control
+// on the same mode. No previously issued control is ever rewritten. Prior
+// controls stay in the DERControlList, fetchable at their own hrefs, and are
+// only marked (2018 EventStatus 4) when a newer control covers the same
+// control set over an overlapping window. See supersede.go for the clause
+// chain; the short version is that 2018 rules q)2) p.91 and t)3) p.92 forbid
+// editing a served Event, 10.2.5.6 p.95 makes a client discard a repeated
+// mRID as a duplicate, and CSIP v2.0 section 4.4.1 lines 282 to 283 names the
+// remedy as "a new DERControl ... to supersede or cancel the existing
+// DERControl".
+//
+// This REPLACES an earlier merge-into-one-control model, and the difference
+// is visible to a client rather than internal. Two deltas on DIFFERENT modes
+// used to produce one control carrying both; they now produce two independent
+// controls that both stay active, which is what 2018 rule t) p.91 requires
+// ("differing controls ... are independent and are allowed to overlap or nest
+// without superseding") and what CTP BASIC-024 through BASIC-026 test by
+// requiring the client to execute BOTH. The earlier setpoint is not lost when
+// a delta on another mode arrives: it remains in force as its own event, per
+// rule t)1) and t)2) p.92, rather than by being copied forward into a
+// rewritten record.
 //
 // TEMPORAL PLACEMENT (GAGO-131 / IEEECORE-041). Every control written here
 // carries a creationTime and an interval, both minOccurs=1 on Event
@@ -246,11 +257,11 @@ func derControlScope(edevID, fsaID, derpID string) string {
 //     replace a setpoint it has already issued, which is the standard's own
 //     mechanism for changing one.
 //
-// Both are refreshed on the supersede path below, not just on first
-// creation. A merged control is new content: a stale creationTime would rank
-// it no newer than what the client already holds, and a stale interval start
-// would let a window opened by an earlier delta expire while the platform is
-// still actively commanding.
+// Both are stamped fresh on every issued control. Because each delta now
+// issues its own event rather than rewriting one, the creationTime carried by
+// a superseding control IS what tells the client which of two overlapping
+// controls to run (rule f) p.90: the larger creationTime is newer), and the
+// interval start is when the new setpoint takes effect.
 //
 // policy carries all three operator-configured inputs. DefaultControl is
 // GAGO-050's seed value for the DERProgram's DefaultDERControl singleton,
@@ -312,45 +323,54 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	scope := derControlScope(edevID, controlFSAID, controlDERProgramID)
 	controlStore := stores.DERControls.ForParent(scope)
 
-	existing, err := controlStore.Get(ctx, activeControlID)
+	// The issued control carries EXACTLY the mode this delta names. It does
+	// not inherit the modes of previously issued controls: those remain in
+	// force as their own events (2018 rule t)1) and t)2) p.92), and copying
+	// them forward would make every delta's control set a superset of the
+	// last, turning independent modes into same-set supersessions.
 	var base sep2.DERControlBase
-	isUpdate := false
-	switch {
-	case err == nil:
-		isUpdate = true
-		if existing.DERControlBase != nil {
-			base = existing.DERControlBase.Copy()
-		}
-	case errors.Is(err, store.ErrNotFound):
-		// Fresh control: base starts zero-valued.
-	default:
-		return fmt.Errorf("sep2embed: control delta: read existing control: %w", err)
-	}
-
 	if err := applyDERControlBaseField(&base, field, delta.Value); err != nil {
 		return fmt.Errorf("sep2embed: control delta: %w", err)
+	}
+
+	// Everything already stored for this device, read before anything is
+	// written, so both the creation-instant guard and the supersession pass
+	// below see the same snapshot.
+	//
+	// Unbounded is the correct paging choice for a server-internal read over
+	// a collection the server itself bounds (see store.ListOptions.Unbounded):
+	// a page here would silently hide events from the supersession pass, and
+	// an event that is not examined is an event that is left Active.
+	priorList, err := controlStore.List(ctx, store.ListOptions{Unbounded: true})
+	if err != nil {
+		return fmt.Errorf("sep2embed: control delta: list existing controls: %w", err)
 	}
 
 	// One clock read for the whole event. creationTime, EventStatus.dateTime
 	// and interval.start are three views of the same instant, and reading
 	// the clock three times could land them on different seconds, which a
 	// client comparing them has no way to interpret.
-	nowUnix := policy.Control.now().UTC().Unix()
+	nowUnix := nextEventCreationTime(priorList.Items, base, policy.Control.now().UTC().Unix())
+
+	mrid, err := deriveEventMRID(mridKindDERControl, entry.LFDI, nowUnix, &base)
+	if err != nil {
+		return fmt.Errorf("sep2embed: control delta: %w", err)
+	}
+	controlID := derControlID(nowUnix, mrid)
 
 	control := sep2.DERControl{}
-	control.Href = "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
-	// Schema-valid hexBinary(16), not "<LFDI>-active": a conformant client
-	// aborts the whole DERControlList parse on a non-hex mRID and so never
-	// reads responseRequired or replyTo off this control. See deriveMRID.
-	control.MRID = deriveMRID(mridKindDERControl, entry.LFDI)
-	// Required element, refreshed on every write including a supersede: see
-	// this function's TEMPORAL PLACEMENT note for why a stale or zero value
-	// makes supersession undecidable rather than merely losing metadata.
+	control.Href = derControlListHref(edevID, controlFSAID, controlDERProgramID) + "/" + controlID
+	// Schema-valid hexBinary(16), and unique to THIS event rather than
+	// constant per device: a conformant client aborts the whole
+	// DERControlList parse on a non-hex mRID, and discards a repeated one as
+	// a duplicate of an event it already holds. See deriveEventMRID.
+	control.MRID = mrid
+	// Required element. It is the sole tiebreaker between two overlapping
+	// controls of equal primacy (rule f) p.90), which is the mechanism this
+	// whole path depends on now that a setpoint change is a second event
+	// rather than a rewrite of the first.
 	control.CreationTime = nowUnix
-	control.EventStatus = &sep2.EventStatus{
-		CurrentStatus: sep2.EventStatusActive,
-		DateTime:      nowUnix,
-	}
+	control.EventStatus = newEventStatus(servedEventEdition, nowUnix)
 	// Required element. start is now because the platform's delta means
 	// "this setpoint, from here"; duration is operator policy, because the
 	// GridAPPS-D delta contract carries no window of its own.
@@ -367,19 +387,143 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	control.RandomizeDuration = &randomizeDuration
 	control.DERControlBase = &base
 
-	if isUpdate {
-		err = controlStore.Update(ctx, activeControlID, control)
-	} else {
-		err = controlStore.Create(ctx, activeControlID, control)
-	}
-	if err != nil {
+	// Create BEFORE marking predecessors, and in that order deliberately. If
+	// the create fails after the marks were applied, the device would be left
+	// with every control superseded and no replacement: a fail-open on the
+	// physical side. In the order used here a failure to mark leaves both
+	// controls Active, which the client still resolves correctly on its own
+	// from creationTime per rule f) p.90.
+	//
+	// ErrAlreadyExists is not an error condition. The id is a pure function
+	// of the event's content and creation instant, so an existing entry under
+	// this id IS this event, already published; there is nothing to write and
+	// nothing to change.
+	if err := controlStore.Create(ctx, controlID, control); err != nil && !errors.Is(err, store.ErrAlreadyExists) {
 		return fmt.Errorf("sep2embed: control delta: write control: %w", err)
+	}
+
+	if err := supersedePriorControls(ctx, controlStore, priorList.Items, control); err != nil {
+		return fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 
 	if notifier != nil {
 		notifier.Notify(ctx, derProgramListHref(edevID, controlFSAID), sep2.NotificationStatusChanged)
 	}
 
+	return nil
+}
+
+// nextEventCreationTime returns the creation instant to stamp on a control
+// carrying base, given everything already issued for the device and the
+// current wall clock.
+//
+// It is wallUnix, except when an already-issued control that this one would
+// supersede shares or postdates that second, in which case it is one second
+// past that control's creationTime.
+//
+// WHY. creationTime is the ONLY discriminator a client has between two
+// overlapping controls of equal primacy (2018 rule f) p.90), and the
+// comparison is strictly greater on both sides: the EPRI reference client's
+// block_supersede evaluates `x->creationTime > y->creationTime`, so two
+// controls stamped in the same wall-clock second compare false in both
+// directions and the INCOMING one is discarded. That is this card's defect
+// exactly, arriving through the clock instead of through the mRID, and it is
+// reachable whenever two GridAPPS-D deltas for one device land inside one
+// second, which a fast simulation loop does routinely. TimeType has
+// one-second resolution (sep.xsd:6382), so there is no finer stamp available
+// to break the tie with.
+//
+// Only controls this one would actually supersede are consulted. A control on
+// an independent mode may share a second freely: rule t) p.91 makes the two
+// independent, so no ordering between them is ever evaluated.
+//
+// The standard does not say what to do when two events would share a
+// creationTime; it simply assumes they do not. Advancing the stamp is OUR
+// decision, and it is the conservative one, because the alternative is
+// serving a control the client is required to ignore. The cost is that the
+// interval start moves with it, so a burst of same-second deltas issues
+// controls that start up to a few seconds out; the window is not shortened,
+// only shifted.
+func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wallUnix int64) int64 {
+	incomingModes := controlModesOf(&base)
+	next := wallUnix
+	for _, p := range prior {
+		if p.CreationTime < next {
+			continue
+		}
+		if classifyModes(controlModesOf(p.DERControlBase), incomingModes) == modesIndependent {
+			continue
+		}
+		next = p.CreationTime + 1
+	}
+	return next
+}
+
+// supersedePriorControls marks every already-issued control that the newly
+// issued one supersedes, per the edition this server presents.
+//
+// prior is the snapshot taken BEFORE issued was created, so issued cannot
+// classify against itself.
+//
+// Only EventStatus is written back. Rule c) p.90 permits updating an Event's
+// status and nothing else, and rules q)2) p.91 and t)3) p.92 require the
+// server to "maintain all Events in their entirety": the control payload, the
+// interval, the creationTime and the mRID of a superseded event all survive
+// untouched, and the event stays fetchable at its own href for its Effective
+// Scheduled Period (rule r) p.91, and 2018 Annex B p.160, which makes
+// maintaining a Superseded event for that period a server responsibility).
+// Removing it when that period ends is a separate lifecycle concern and is
+// deliberately not done here (GAGO-134).
+//
+// A control whose status the edition leaves unchanged is not written back at
+// all, which is why markSuperseded and markPotentiallySuperseded report
+// whether they changed anything: under 2023 both are no-ops, and rewriting a
+// record to store the value it already holds would be a needless edit of a
+// served Event.
+func supersedePriorControls(ctx context.Context, controlStore store.ResourceStore[sep2.DERControl], prior []sep2.DERControl, issued sep2.DERControl) error {
+	// The instant recorded on a superseded event is the superseding event's
+	// Effective Start Time, which 2018 Annex B p.160 names explicitly: the
+	// server "SHALL mark the event as Superseded at the earliest Effective
+	// Start Time of the overlapping event".
+	//
+	// Refused rather than defaulted when it is unavailable. There is no
+	// substitute instant that would be correct, and stamping a wrong one onto
+	// a served Event is worse than leaving the supersession unmarked: the
+	// client computes supersession from creationTime regardless, so an
+	// unmarked event still resolves, while a wrongly stamped one is a
+	// falsified server record.
+	if issued.Interval == nil {
+		return fmt.Errorf("issued control %s has no interval; cannot determine the Effective Start Time to mark predecessors at", issued.MRID)
+	}
+	at := issued.Interval.Start
+
+	for _, p := range prior {
+		if p.MRID == issued.MRID {
+			continue
+		}
+
+		var changed bool
+		switch supersedes(p, issued) {
+		case modesIdentical:
+			changed = markSuperseded(servedEventEdition, p.EventStatus, at)
+		case modesPartial:
+			changed = markPotentiallySuperseded(servedEventEdition, p.EventStatus, at)
+		case modesIndependent:
+			// Rule t) p.91: independent controls overlap without
+			// superseding. Nothing to record.
+		}
+		if !changed {
+			continue
+		}
+
+		// The id is recomputed from the record rather than parsed out of its
+		// href, because derControlID is what produced both and a recomputation
+		// cannot drift from a string the way a parse can.
+		// TestIssuedDERControlHrefEndsWithItsStoreKey pins the two together.
+		if err := controlStore.Update(ctx, derControlID(p.CreationTime, p.MRID), p); err != nil {
+			return fmt.Errorf("mark control %s superseded: %w", p.MRID, err)
+		}
+	}
 	return nil
 }
 

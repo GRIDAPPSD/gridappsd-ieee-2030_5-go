@@ -93,10 +93,7 @@ func TestGAGO044SignConventionPinned(t *testing.T) {
 			}
 
 			scope := derControlScope(urlIndexFor(t, st, "mrid-a"), controlFSAID, controlDERProgramID)
-			control, err := st.DERControls.Get(ctx, scope, activeControlID)
-			if err != nil {
-				t.Fatalf("DERControls.Get: %v", err)
-			}
+			control, _ := soleControl(t, ctx, st, scope)
 			base := control.DERControlBase
 			if base == nil {
 				t.Fatalf("control has no DERControlBase: %+v", control)
@@ -197,10 +194,7 @@ func TestGAGO044CaptureBridgeSetpoints(t *testing.T) {
 		}
 
 		scope := derControlScope(urlIndexFor(t, st, "mrid-a"), controlFSAID, controlDERProgramID)
-		control, err := st.DERControls.Get(ctx, scope, activeControlID)
-		if err != nil {
-			t.Fatalf("DERControls.Get(%s): %v", cmd.name, err)
-		}
+		control, _ := soleControl(t, ctx, st, scope)
 		base := control.DERControlBase
 
 		cc := gago044CaptureCase{ID: cmd.id, Name: cmd.name, Attribute: cmd.attribute, CommandedValue: cmd.commanded}
