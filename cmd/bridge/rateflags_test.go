@@ -210,7 +210,7 @@ func TestSEP2EmbedConfigWiresRateResolvers(t *testing.T) {
 	policy.PollRates = map[string]uint32{"DEVICE-A": 60}
 	policy.PostRates = map[string]uint32{"DEVICE-A": 15}
 
-	got := sep2EmbedConfig(config{}, nil, policy, nil)
+	got := sep2EmbedConfig(config{}, policy, nil)
 
 	if got.ResolveRegistrationPollRate == nil {
 		t.Fatal("ResolveRegistrationPollRate is nil, want the policy resolver")
@@ -239,7 +239,7 @@ func TestSEP2EmbedConfigWiresRateResolvers(t *testing.T) {
 func TestSEP2EmbedConfigRateResolversNilSafeWhenUnconfigured(t *testing.T) {
 	t.Parallel()
 
-	got := sep2EmbedConfig(config{}, nil, sep2config.DefaultPolicy(), nil)
+	got := sep2EmbedConfig(config{}, sep2config.DefaultPolicy(), nil)
 
 	if got.ResolveRegistrationPollRate == nil || got.ResolvePostRate == nil {
 		t.Fatal("rate resolvers must be non-nil even when unconfigured")

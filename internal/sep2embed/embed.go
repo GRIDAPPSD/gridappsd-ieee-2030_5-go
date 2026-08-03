@@ -75,24 +75,13 @@ type Config struct {
 	NotifyWorkers   int
 	NotifyQueueSize int
 
-	// Bus is the optional GridAPPS-D message-bus publisher used for the
-	// GAGO-034 UP-path telemetry relay: each successful PUT of an
-	// owning device's DERStatus is mapped to a diff.Message (see
-	// telemetry.go) and sent over Bus to TelemetryDestination. Nil (the
-	// zero value) disables the relay entirely: DERStatus PUT still
-	// succeeds and is stored exactly as before, it is just not echoed
-	// to the bus. See BusPublisher's doc comment for why this is not
-	// internal/cimstomp.Publisher.
-	Bus BusPublisher
-
-	// TelemetryDestination is the bus destination the relay publishes
-	// to (typically internal/cim/sim.InputTopic(simID)). Empty disables
-	// the relay.
-	TelemetryDestination string
-
-	// TelemetrySimulationID is stamped into the outgoing diff.Message
-	// envelope's simulation_id field. Empty disables the relay.
-	TelemetrySimulationID string
+	// There is deliberately no bus, destination or simulation id here
+	// (GAGO-121). This package serves the IEEE 2030.5 protocol and owns
+	// the resource stores; it does not publish to the GridAPPS-D bus,
+	// because a protocol request must never cause a platform-side send.
+	// internal/telemetrypub reads DERStatusSnapshots on its own timer
+	// and publishes from there. TestConfigCarriesNoBusPublishSurface
+	// guards this.
 
 	// DefaultControl is the DefaultDERControl GAGO-050 seeds onto every
 	// DERProgram's DefaultDERControlLink, at the same lazy-creation
@@ -250,13 +239,6 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 	notifier := coresub.NewManager(stores.Subscriptions, workers, queueSize)
 
-	telemetry := telemetryConfig{
-		bus:       cfg.Bus,
-		edevIndex: stores.EndDeviceIndexes,
-		dest:      cfg.TelemetryDestination,
-		simID:     cfg.TelemetrySimulationID,
-	}
-
 	// postRate reaches the wire through core's POST /mup handler, not
 	// through seeding: this bridge creates no MirrorUsagePoints, so
 	// creation-time stamping in core is the only point at which a
@@ -285,7 +267,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			return nil, err
 		}
 
-		handler := buildHandler(cfg.Router, stores, reg, identity, notifier, telemetry, cfg.Observer)
+		handler := buildHandler(cfg.Router, stores, reg, identity, notifier, cfg.Observer)
 
 		shutdownTimeout := cfg.ShutdownTimeout
 		if shutdownTimeout <= 0 {
@@ -319,7 +301,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	build := func(identity sep2srv.Identity) http.Handler {
-		return buildHandler(cfg.Router, stores, reg, identity, notifier, telemetry, cfg.Observer)
+		return buildHandler(cfg.Router, stores, reg, identity, notifier, cfg.Observer)
 	}
 
 	srv, err := sep2srv.New(opts, build)

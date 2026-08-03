@@ -38,13 +38,14 @@ import (
 // observes an uncleaned path. See aclMiddleware's own doc comment for
 // why that ordering is load-bearing for its path parsing.
 //
-// telemetry (GAGO-034) is composed INSIDE acl, not outside it: it must
-// only ever observe requests the ACL has already confirmed are the
-// caller's own device, so it can trust the {id} path segment as the
-// caller's own LFDI without a separate ownership check. A disabled
-// telemetryConfig (the zero value) makes telemetryMiddleware a
-// pass-through, so this composition is a no-op when the relay isn't
-// configured.
+// There is deliberately no GridAPPS-D telemetry relay in this chain
+// (GAGO-121). Until then a successful DERStatus PUT also published to
+// the platform bus from inside this request path, which coupled the
+// protocol layer to the platform layer: receiving a 2030.5 request
+// caused a bus send. The 2030.5 server's responsibility now ends at
+// storing the resource, and internal/telemetrypub reads that store on
+// its own timer. Do not reintroduce a publishing middleware here; add
+// to the publisher instead.
 //
 // observe (GAGO-090) is composed OUTSIDE acl, immediately after
 // identityMiddleware: it records every request from a cert-verified
@@ -56,15 +57,14 @@ import (
 // connObserveMiddleware a pass-through, so this composition is a no-op
 // wherever no observer is wired, e.g. every existing test that calls
 // buildHandler with hook == nil.
-func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, reg *registry.Registry, identity sep2srv.Identity, notifier assembly.ResourceNotifier, telemetry telemetryConfig, hook *connobs.Hook) http.Handler {
+func buildHandler(routerCfg assembly.RouterConfig, stores *assembly.Stores, reg *registry.Registry, identity sep2srv.Identity, notifier assembly.ResourceNotifier, hook *connobs.Hook) http.Handler {
 	resolver := newStoreOwnerResolver(stores.EndDevices)
 	acl := aclMiddleware(resolver)
-	relay := telemetryMiddleware(telemetry)
 	observe := connObserveMiddleware(hook)
 
 	authPolicy := assembly.AuthPolicy{
 		Wrap: func(next http.Handler) http.Handler {
-			return identityMiddleware(observe(acl(relay(next))))
+			return identityMiddleware(observe(acl(next)))
 		},
 		Identity:   identityFromContext,
 		SFDIPrefix: sfdiPrefix,

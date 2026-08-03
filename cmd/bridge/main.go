@@ -64,6 +64,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
 
 // connectTimeout bounds the initial STOMP dial plus auth-token
@@ -239,7 +240,7 @@ func run(ctx context.Context, cfg config) error {
 
 	// The embed seeds its EndDevice/DER stores from reg, so it must be
 	// built after bootstrapRegistry above, not before.
-	embed, err := newSEP2Embed(ctx, cfg, reg, bus, policy, &connHook)
+	embed, err := newSEP2Embed(ctx, cfg, reg, policy, &connHook)
 	if err != nil {
 		return fmt.Errorf("sep2 embed: %w", err)
 	}
@@ -299,6 +300,28 @@ func run(ctx context.Context, cfg config) error {
 	// default" hard rule. Any other error from New (an invalid Addr, or
 	// a non-loopback Addr without the explicit opt-in) is a genuine
 	// startup failure, not the disabled state.
+	// telemetryRun is the GAGO-121 UP path: an independent timer-driven
+	// publisher that reads the embed's DERStatus store and sends one
+	// aggregate per interval. It is a peer of the embed and the admin UI,
+	// not a hook inside the protocol request path, which is the whole
+	// point of the card: a 2030.5 PUT stores and returns, and nothing on
+	// the platform side can make it fail, block, or slow down.
+	//
+	// Gated on SimulationID for the same reason the pump is: with no
+	// simulation id there is no destination to publish to, and inventing
+	// one would put frames on a topic nobody asked for. Nil then, exactly
+	// like a disabled admin UI, so no goroutine is started at all.
+	var telemetryRun func(context.Context) error
+	if cfg.SimulationID == "" {
+		log.Printf("bridge: no SEP2_SIMULATION_ID set; DERStatus telemetry publisher disabled")
+	} else {
+		pub, perr := telemetrypub.New(telemetryPublisherConfig(cfg, embed, bus))
+		if perr != nil {
+			return fmt.Errorf("telemetry publisher: %w", perr)
+		}
+		telemetryRun = pub.Run
+	}
+
 	var adminUIRun func(context.Context) error
 	adminSrv, err := adminui.New(adminUIConfig(cfg), reg, embed, embed, &controlHook, embed, bus, &connHook)
 	switch {
@@ -311,7 +334,7 @@ func run(ctx context.Context, cfg config) error {
 		adminUIRun = adminSrv.Run
 	}
 
-	return runBridgeRunners(ctx, embed.Run, stompRun, adminUIRun)
+	return runBridgeRunners(ctx, embed.Run, stompRun, adminUIRun, telemetryRun)
 }
 
 // runEmbedAndStomp runs the embedded IEEE 2030.5 server (embedRun) and
@@ -389,7 +412,47 @@ func runEmbedAndStomp(ctx context.Context, embedRun, stompRun func(context.Conte
 // shutdown of embedRun/stompRun tears the admin UI down too: all three
 // share one derived context, following the same cancel on any exit,
 // join errors on independent failure pattern as runEmbedAndStomp.
-func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun func(context.Context) error) error {
+// telemetryRun (GAGO-121) is nil when no simulation id is configured, in
+// which case no publisher goroutine is started at all, exactly as a nil
+// adminUIRun starts no admin goroutine. When supplied it is a peer of
+// the other three: one shared derived context, cancel on any exit, join
+// errors on independent failure.
+func runBridgeRunners(ctx context.Context, embedRun, stompRun, adminUIRun, telemetryRun func(context.Context) error) error {
+	if telemetryRun == nil {
+		return runEmbedStompAdmin(ctx, embedRun, stompRun, adminUIRun)
+	}
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	telErr := make(chan error, 1)
+	go func() {
+		defer cancelRun()
+		telErr <- telemetryRun(runCtx)
+	}()
+
+	coreErr := runEmbedStompAdmin(runCtx, embedRun, stompRun, adminUIRun)
+	// Ask the publisher to stop even when the other sides returned on
+	// their own, so this function never returns while it is still
+	// publishing.
+	cancelRun()
+
+	terr := <-telErr
+	if terr == nil || errors.Is(terr, context.Canceled) {
+		return coreErr
+	}
+
+	wrappedTelemetryErr := fmt.Errorf("telemetry publisher: %w", terr)
+	if coreErr == nil || errors.Is(coreErr, context.Canceled) {
+		return wrappedTelemetryErr
+	}
+	return errors.Join(coreErr, wrappedTelemetryErr)
+}
+
+// runEmbedStompAdmin is the embed plus stomp plus admin UI combinator
+// runBridgeRunners builds on. See runBridgeRunners' doc comment for the
+// admin UI's nil-disabled contract and the shared teardown semantics.
+func runEmbedStompAdmin(ctx context.Context, embedRun, stompRun, adminUIRun func(context.Context) error) error {
 	if adminUIRun == nil {
 		return runEmbedAndStomp(ctx, embedRun, stompRun)
 	}
@@ -476,13 +539,10 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 // asserted by a unit test without minting real certificate material or
 // binding a listener.
 //
-// bus is threaded through as sep2embed.Config.Bus for the GAGO-034
-// UP-path telemetry relay (SEP2 DERStatus -> GridAPPS-D bus). A nil bus
-// (or an empty cfg.SimulationID) disables the relay: see
-// sep2embed.Config.Bus's doc comment. TelemetryDestination reuses
-// internal/cim/sim.InputTopic, the same simulation-input destination
-// this bridge's own -publish-on-start smoke test already documents as
-// the outgoing-difference channel.
+// No bus, destination or simulation id is threaded here (GAGO-121). The
+// embedded 2030.5 server stores DERStatus and stops there; the
+// GridAPPS-D publish is internal/telemetrypub's, driven by its own
+// timer off that store. See telemetryPublisher below for that wiring.
 //
 // policy is threaded through as sep2embed.Config.DefaultControl
 // (GAGO-050): the fallback DefaultDERControl this bridge seeds onto
@@ -510,17 +570,10 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 // non-nil *connobs.Hook (its own connHook), so observation is always
 // on for this bridge; a nil value here is only ever exercised by
 // sep2embed's own tests that leave Config.Observer unset.
-func sep2EmbedConfig(cfg config, bus sep2embed.BusPublisher, policy sep2config.SEP2Policy, connHook *connobs.Hook) sep2embed.Config {
-	dest := ""
-	if cfg.SimulationID != "" {
-		dest = sim.InputTopic(cfg.SimulationID)
-	}
+func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs.Hook) sep2embed.Config {
 	return sep2embed.Config{
 		Addr:                   cfg.SEP2ServerAddr,
 		CertDir:                cfg.SEP2ServerCertDir,
-		Bus:                    bus,
-		TelemetryDestination:   dest,
-		TelemetrySimulationID:  cfg.SimulationID,
 		DefaultControl:         policy.DefaultControl,
 		ModesSupported:         policy.ModesSupported,
 		ResolveRegistrationPIN: policy.ResolveRegistrationPIN,
@@ -552,8 +605,40 @@ func adminUIConfig(cfg config) adminui.Config {
 // newSEP2Embed builds, seeds, and binds the in-process IEEE 2030.5
 // protocol server from the bridge's registry. It does not start
 // serving; the caller starts embed.Run once this returns successfully.
-func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, bus sep2embed.BusPublisher, policy sep2config.SEP2Policy, connHook *connobs.Hook) (*sep2embed.Embed, error) {
-	return sep2embed.New(ctx, sep2EmbedConfig(cfg, bus, policy, connHook), reg)
+func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, policy sep2config.SEP2Policy, connHook *connobs.Hook) (*sep2embed.Embed, error) {
+	return sep2embed.New(ctx, sep2EmbedConfig(cfg, policy, connHook), reg)
+}
+
+// telemetryPublisherConfig projects the bridge's config onto
+// telemetrypub.Config: the timer-driven GridAPPS-D publisher that reads
+// the embedded 2030.5 server's DERStatus store and sends one aggregate
+// per interval (GAGO-121). Split out from run() so the field mapping can
+// be asserted by a unit test with no broker and no listener.
+//
+// Destination is the ONLY place this bridge names the telemetry topic.
+// It reuses internal/cim/sim.InputTopic, exactly as the removed per-PUT
+// relay did, which is a synthetic simulation id supplied by the
+// operator, never a real platform simulation and never a
+// goss.gridappsd.process.* destination. The agreed eventual target is an
+// application output topic; changing it is this one line, because
+// nothing inside telemetrypub derives or inspects the destination.
+//
+// Build likewise names the wire shape in exactly one place. It is the
+// diff envelope today (identical per device to what the per-PUT relay
+// published); the agreed eventual target is CIM AnalogValue, which is a
+// different MessageBuilder passed here and nothing else.
+//
+// PublishUnchanged comes straight from -sep2-telemetry-publish-unchanged
+// and is the single switch that turns unchanged-device suppression off.
+func telemetryPublisherConfig(cfg config, src telemetrypub.StatusSource, bus telemetrypub.BusPublisher) telemetrypub.Config {
+	return telemetrypub.Config{
+		Source:           src,
+		Bus:              bus,
+		Destination:      sim.InputTopic(cfg.SimulationID),
+		Build:            telemetrypub.DiffMessageBuilder(cfg.SimulationID),
+		Interval:         cfg.SEP2TelemetryInterval,
+		PublishUnchanged: cfg.SEP2TelemetryPublishUnchanged,
+	}
 }
 
 // busConfig projects the bridge's config onto gridappsd-go's connection

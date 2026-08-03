@@ -38,6 +38,19 @@ shadow envs, envs shadow compiled-in defaults.
 | `SEP2_FEEDER_MRID` | `-feeder-mrid` | `_C1C3E687-6FFD-C753-582B-632A27E28507` | IEEE 123-bus default |
 | `SEP2_PUBLISH_ON_START` | `-publish-on-start` | `false` | Stage 2 follow-up; logs and skips |
 | `SEP2_STOMP_ALLOW_PLAINTEXT` | `-stomp-allow-plaintext` | `false` | dev-only; gridappsd-docker's dev broker is plain TCP and needs this set to `true` |
+| `SEP2_TELEMETRY_INTERVAL` | `-sep2-telemetry-interval` | `15s` | period of the DERStatus telemetry publisher; a Go duration, not a bare number of seconds |
+| `SEP2_TELEMETRY_PUBLISH_UNCHANGED` | `-sep2-telemetry-publish-unchanged` | `false` | `true` publishes every device every interval (full-snapshot semantics) instead of only those whose values changed |
+
+### DERStatus telemetry publishing
+
+A device's DERStatus PUT is stored and answered, and that is the whole
+server-side effect: receiving an IEEE 2030.5 request never causes a bus
+publish. A separate publisher reads the stored statuses on its own
+timer (`SEP2_TELEMETRY_INTERVAL`, 15s by default, matching the Python
+upstream) and sends ONE aggregate message covering every device that
+changed. It runs only when a simulation id is configured, since without
+one there is no destination to publish to. An interval where no device
+changed publishes nothing and logs that it did not.
 
 The plaintext default is fail-closed: with no override, the bridge
 dials TLS against the system trust store. Set

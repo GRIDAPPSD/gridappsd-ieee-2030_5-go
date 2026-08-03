@@ -9,8 +9,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
 
 // config carries the runtime knobs the Stage 1 bridge needs. Only the
@@ -168,6 +170,34 @@ type config struct {
 	// values an operator should reach for, with the reasoning.
 	SEP2PollRate *uint32
 	SEP2PostRate *uint32
+
+	// SEP2TelemetryInterval is the period of the DERStatus telemetry
+	// publisher (internal/telemetrypub), from -sep2-telemetry-interval
+	// (env SEP2_TELEMETRY_INTERVAL). It is a Go duration string ("15s",
+	// "1m"), not a bare number of seconds, because a bare number is
+	// ambiguous about its unit at exactly the moment an operator is
+	// changing it under pressure.
+	//
+	// Unlike the poll/post rates above this one DOES carry a compiled-in
+	// default (telemetrypub.DefaultInterval, 15 seconds, matching the
+	// Python upstream's publish_interval_seconds), because the publisher
+	// always runs when a simulation id is configured and there is no
+	// "advertise nothing" state for it to be in.
+	SEP2TelemetryInterval time.Duration
+
+	// SEP2TelemetryPublishUnchanged turns OFF suppression of unchanged
+	// devices, from -sep2-telemetry-publish-unchanged (env
+	// SEP2_TELEMETRY_PUBLISH_UNCHANGED).
+	//
+	// THIS IS THE SUPPRESSION SWITCH. False (the default) publishes only
+	// devices whose mapped values moved since their last successful
+	// publish. True restores full-snapshot semantics: every device with
+	// a stored DERStatus, every interval, like the Python upstream. Flip
+	// it if the eventual subscriber turns out to treat each message as a
+	// complete state snapshot rather than a set of incremental updates,
+	// because suppression would then silently age out every device that
+	// has not moved.
+	SEP2TelemetryPublishUnchanged bool
 }
 
 // deviceCertMode* are the only two values config.validate accepts for
@@ -272,6 +302,15 @@ func loadConfig(args []string) (config, error) {
 	}
 	cfg.SEP2AdminUIAllowNonLoopback = adminUINonLoopbackFromEnv
 
+	// SEP2TelemetryPublishUnchanged defaults false: unchanged devices
+	// are suppressed unless an operator explicitly asks for
+	// full-snapshot semantics. See the field's doc comment.
+	publishUnchangedFromEnv, err := getenvBool("SEP2_TELEMETRY_PUBLISH_UNCHANGED", false)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.SEP2TelemetryPublishUnchanged = publishUnchangedFromEnv
+
 	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
 	fs.StringVar(&cfg.STOMPAddr, "stomp-addr", cfg.STOMPAddr, "GridAPPS-D STOMP broker host:port")
 	// User and password flags register with an empty default so the
@@ -320,6 +359,17 @@ func loadConfig(args []string) (config, error) {
 		"fleet-wide Registration pollRate in seconds, advertised to every device; unset advertises nothing and clients apply the sep.xsd default of 900")
 	fs.StringVar(&postRateFlag, "sep2-post-rate", "",
 		"fleet-wide MirrorUsagePoint postRate in seconds, stamped on every mirror a client creates; unset advertises nothing and leaves the client's own value untouched")
+
+	// sep2-telemetry-interval registers with an empty-string default and
+	// is parsed by hand after Parse, matching the PIN and rate flags
+	// above: the empty string is the "operator said nothing" sentinel,
+	// which is what lets the env fallback and the compiled-in default
+	// resolve in that order without a registered default masking either.
+	var telemetryIntervalFlag string
+	fs.StringVar(&telemetryIntervalFlag, "sep2-telemetry-interval", "",
+		"period of the DERStatus telemetry publisher as a Go duration (default 15s, matching the Python upstream)")
+	fs.BoolVar(&cfg.SEP2TelemetryPublishUnchanged, "sep2-telemetry-publish-unchanged", cfg.SEP2TelemetryPublishUnchanged,
+		"publish every device every interval instead of only those whose values changed (full-snapshot semantics; default false)")
 
 	var versionFlag bool
 	fs.BoolVar(&versionFlag, "version", false, "print the build version and exit")
@@ -403,6 +453,29 @@ func loadConfig(args []string) (config, error) {
 			return config{}, err
 		}
 		cfg.SEP2PostRate = &rate
+	}
+
+	// The telemetry interval resolves flag, then env, then the
+	// compiled-in default, and is validated here so an unusable value
+	// stops the bridge at config load rather than at the publisher's
+	// first tick (time.NewTicker panics on a non-positive period).
+	if telemetryIntervalFlag == "" {
+		telemetryIntervalFlag = os.Getenv("SEP2_TELEMETRY_INTERVAL")
+	}
+	if telemetryIntervalFlag == "" {
+		cfg.SEP2TelemetryInterval = telemetrypub.DefaultInterval
+	} else {
+		interval, err := time.ParseDuration(telemetryIntervalFlag)
+		if err != nil {
+			return config{}, fmt.Errorf(
+				"config: -sep2-telemetry-interval / SEP2_TELEMETRY_INTERVAL value %q must be a Go duration such as \"15s\" or \"1m\"",
+				telemetryIntervalFlag)
+		}
+		if interval <= 0 {
+			return config{}, fmt.Errorf(
+				"config: -sep2-telemetry-interval / SEP2_TELEMETRY_INTERVAL value %q must be greater than zero", telemetryIntervalFlag)
+		}
+		cfg.SEP2TelemetryInterval = interval
 	}
 
 	if err := cfg.validate(); err != nil {
