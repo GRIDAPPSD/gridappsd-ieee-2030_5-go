@@ -111,13 +111,18 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 	}
 
 	// GAGO-050: DefaultControl passes through from policy verbatim,
-	// never hardcoded at the sep2EmbedConfig mapping layer.
+	// never hardcoded at the sep2EmbedConfig mapping layer. The shipped
+	// policy commands nothing, so verbatim means both mode flags arrive
+	// nil; a non-nil value here would mean this layer invented one.
 	base := got.DefaultControl.DERControlBase
-	if base == nil || base.OpModConnect == nil || !*base.OpModConnect {
-		t.Errorf("DefaultControl.DERControlBase.OpModConnect = %+v, want true", base)
+	if base == nil {
+		t.Fatalf("DefaultControl.DERControlBase = nil, want the policy's present but empty base")
 	}
-	if base == nil || base.OpModEnergize == nil || !*base.OpModEnergize {
-		t.Errorf("DefaultControl.DERControlBase.OpModEnergize = %+v, want true", base)
+	if base.OpModConnect != nil {
+		t.Errorf("DefaultControl.DERControlBase.OpModConnect = %v, want nil (the policy commands nothing)", *base.OpModConnect)
+	}
+	if base.OpModEnergize != nil {
+		t.Errorf("DefaultControl.DERControlBase.OpModEnergize = %v, want nil (the policy commands nothing)", *base.OpModEnergize)
 	}
 }
 
