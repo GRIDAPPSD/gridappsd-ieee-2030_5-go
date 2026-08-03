@@ -178,7 +178,7 @@ func TestRunBridgeRunnersNilAdminDelegatesToRunEmbedAndStomp(t *testing.T) {
 	defer cancel()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, nil) }()
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, nil, nil) }()
 
 	select {
 	case err := <-errCh:
@@ -210,7 +210,7 @@ func TestRunBridgeRunnersAdminFailureCancelsEmbedAndStomp(t *testing.T) {
 	defer cancel()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun) }()
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun, nil) }()
 
 	select {
 	case err := <-errCh:
@@ -245,7 +245,7 @@ func TestRunBridgeRunnersCoreExitCancelsAdmin(t *testing.T) {
 	defer cancel()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun) }()
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun, nil) }()
 
 	select {
 	case err := <-errCh:
@@ -275,7 +275,7 @@ func TestRunBridgeRunnersParentCancelTearsDownAllThree(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun) }()
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun, nil) }()
 	cancel()
 
 	select {
@@ -314,7 +314,7 @@ func TestRunBridgeRunnersAdminAndCoreBothFailJoinsErrors(t *testing.T) {
 	defer cancel()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun) }()
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun, nil) }()
 
 	select {
 	case err := <-errCh:
@@ -326,5 +326,103 @@ func TestRunBridgeRunnersAdminAndCoreBothFailJoinsErrors(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("runBridgeRunners did not return within 2s when the admin UI and core both failed independently")
+	}
+}
+
+// TestRunBridgeRunnersNilTelemetryStartsNoPublisher: with no simulation
+// id there is no telemetry destination, so run() passes nil and no
+// fourth goroutine is started at all. The three-way behaviour must be
+// unchanged, which is what lets the disabled path keep exercising the
+// already tested combinator.
+func TestRunBridgeRunnersNilTelemetryStartsNoPublisher(t *testing.T) {
+	t.Parallel()
+
+	var embedObservedCancel, stompObservedCancel atomic.Bool
+	embedRun := waitForCancelThenReturn(&embedObservedCancel, nil)
+	stompRun := waitForCancelThenReturn(&stompObservedCancel, context.Canceled)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, nil, nil) }()
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runBridgeRunners(nil admin, nil telemetry) error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBridgeRunners(nil admin, nil telemetry) did not return within 2s")
+	}
+	if !embedObservedCancel.Load() || !stompObservedCancel.Load() {
+		t.Error("a runner never observed the parent ctx cancellation")
+	}
+}
+
+// TestRunBridgeRunnersParentCancelTearsDownAllFour is the SIGINT analog
+// with the telemetry publisher active: it must exit on the same shared
+// cancellation as everything else, with no goroutine left running.
+func TestRunBridgeRunnersParentCancelTearsDownAllFour(t *testing.T) {
+	t.Parallel()
+
+	var embedObservedCancel, stompObservedCancel, adminObservedCancel, telemetryObservedCancel atomic.Bool
+	embedRun := waitForCancelThenReturn(&embedObservedCancel, nil)
+	stompRun := waitForCancelThenReturn(&stompObservedCancel, context.Canceled)
+	adminRun := waitForCancelThenReturn(&adminObservedCancel, nil)
+	telemetryRun := waitForCancelThenReturn(&telemetryObservedCancel, context.Canceled)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runBridgeRunners(ctx, embedRun, stompRun, adminRun, telemetryRun) }()
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runBridgeRunners error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBridgeRunners did not return within 2s of the parent ctx cancel")
+	}
+	if !telemetryObservedCancel.Load() {
+		t.Error("telemetry publisher never observed the parent ctx cancellation")
+	}
+	if !embedObservedCancel.Load() || !stompObservedCancel.Load() || !adminObservedCancel.Load() {
+		t.Error("a runner never observed the parent ctx cancellation")
+	}
+}
+
+// TestRunBridgeRunnersTelemetryFailureTearsDownTheRest: the publisher's
+// Run only returns on cancellation in practice, but if it ever returns a
+// real error it must not be swallowed, and the rest of the bridge must
+// not be left running orphaned.
+func TestRunBridgeRunnersTelemetryFailureTearsDownTheRest(t *testing.T) {
+	t.Parallel()
+
+	telemetryFailErr := errors.New("telemetrypub: fake failure")
+	var embedObservedCancel, stompObservedCancel atomic.Bool
+	embedRun := waitForCancelThenReturn(&embedObservedCancel, nil)
+	stompRun := waitForCancelThenReturn(&stompObservedCancel, context.Canceled)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runBridgeRunners(ctx, embedRun, stompRun, nil, failImmediately(telemetryFailErr))
+	}()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, telemetryFailErr) {
+			t.Fatalf("runBridgeRunners error = %v, want it to wrap %v", err, telemetryFailErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBridgeRunners did not return within 2s (telemetry failure did not cancel the rest)")
+	}
+	if !embedObservedCancel.Load() || !stompObservedCancel.Load() {
+		t.Error("a runner never observed the cancellation triggered by the telemetry failure")
 	}
 }

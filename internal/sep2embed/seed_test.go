@@ -373,7 +373,7 @@ func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 // DERCapabilityLink gets only the dercap PUT and the other three are
 // silently skipped client-side. Eight prior end-to-end runs showed exactly
 // that: PUT dercap and nothing else, and therefore no DERStatus PUT ever
-// reaching the bridge's telemetry relay.
+// stored for the bridge's telemetry publisher to read.
 func TestSeedStoresStampsAllFourDERLinksOnDER(t *testing.T) {
 	t.Parallel()
 
