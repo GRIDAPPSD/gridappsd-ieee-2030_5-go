@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -519,6 +520,24 @@ func TestMapDERStatusToDifferencesExistingThreeAreByteIdentical(t *testing.T) {
 	}
 }
 
+// socEqualEpsilon bounds the tolerance socEqual allows. A sep2.PerCent
+// value divided by 100 is not always exactly representable in binary
+// floating point (6501/100 = 65.01, whose nearest float64 carries a
+// residual on the order of 1e-14). 6500/100 = 65.0 happens to be exact
+// (the division of two exactly representable integers whose true
+// quotient is itself an integer is exactly representable), so the tests
+// below that use 6500 could use `==` and still pass; socEqual is used
+// anyway so the assertions do not become spuriously fragile if a test
+// value ever changes to a non-round hundredths-of-a-percent input.
+const socEqualEpsilon = 1e-9
+
+// socEqual reports whether got and want are equal to within
+// socEqualEpsilon. See socEqualEpsilon's doc comment for why an exact
+// `==` is not the right tool for a value derived from float64 division.
+func socEqual(got, want float64) bool {
+	return math.Abs(got-want) < socEqualEpsilon
+}
+
 // fullDERStatus returns a DERStatus with every field core models set to a
 // distinct, non-zero value, so a mapping that reads the wrong source
 // field cannot pass by coincidence. The dateTime sentinels are large and
@@ -566,23 +585,31 @@ func TestMapDERStatusToDifferencesMapsEveryModelledField(t *testing.T) {
 	}
 
 	// Values are asserted at their exact wire type as well as their
-	// magnitude: a HexBinary8 silently widened to uint16, or a raw
-	// hundredths-of-a-percent stateOfChargeStatus silently divided by
-	// 100, is exactly the invisible data change [[data-invariants]]
-	// exists to catch.
+	// magnitude: a HexBinary8 silently widened to uint16, or a
+	// stateOfChargeStatus published raw instead of scaled to percent, is
+	// exactly the invisible data change [[data-invariants]] exists to
+	// catch. stateOfChargeStatus is compared with tolerance, not `!=`:
+	// see soatEqual's doc comment for why.
 	want := map[string]any{
-		"DERStatus.genConnectStatus":                     sep2.HexBinary8(1),
-		"DERStatus.operationalModeStatus":                uint8(2),
-		"DERStatus.alarmStatus":                          sep2.HexBinary32(7),
-		"DERStatus.readingTime":                          int64(1785714218),
-		"DERStatus.inverterStatus":                       uint8(3),
-		"DERStatus.stateOfChargeStatusHundredthsPerCent": uint16(6500),
-		"DERStatus.storageModeStatus":                    uint8(1),
+		"DERStatus.genConnectStatus":      sep2.HexBinary8(1),
+		"DERStatus.operationalModeStatus": uint8(2),
+		"DERStatus.alarmStatus":           sep2.HexBinary32(7),
+		"DERStatus.readingTime":           int64(1785714218),
+		"DERStatus.inverterStatus":        uint8(3),
+		"DERStatus.stateOfChargeStatus":   float64(65),
+		"DERStatus.storageModeStatus":     uint8(1),
 	}
 	for attr, wantVal := range want {
 		got, ok := byAttr[attr]
 		if !ok {
 			t.Errorf("missing difference for attribute %q", attr)
+			continue
+		}
+		if attr == "DERStatus.stateOfChargeStatus" {
+			gotFloat, ok := got.Value.(float64)
+			if !ok || !socEqual(gotFloat, wantVal.(float64)) {
+				t.Errorf("difference %q: Value = %v (%T), want %v (float64)", attr, got.Value, got.Value, wantVal)
+			}
 			continue
 		}
 		if got.Value != wantVal {
@@ -607,6 +634,10 @@ func TestMapDERStatusToDifferencesPerField(t *testing.T) {
 	inv := sep2.InverterStatusType{Value: 3, DateTime: 300}
 	mode := sep2.OperationalModeStatusType{Value: 2, DateTime: 200}
 	soc := sep2.StateOfChargeStatusType{Value: 6500, DateTime: -5838048000}
+	// socFractional is deliberately NOT a round percent: 6501/100 = 65.01
+	// is not exactly representable in binary floating point, so this case
+	// exercises the residual-precision path 6500 (an exact case) cannot.
+	socFractional := sep2.StateOfChargeStatusType{Value: 6501, DateTime: -5838048000}
 	storage := sep2.StorageModeStatusType{Value: 1, DateTime: 500}
 	alarm := sep2.HexBinary32(7)
 
@@ -621,7 +652,8 @@ func TestMapDERStatusToDifferencesPerField(t *testing.T) {
 		{"alarmStatus", sep2.DERStatus{AlarmStatus: &alarm}, "DERStatus.alarmStatus", sep2.HexBinary32(7)},
 		{"readingTime", sep2.DERStatus{ReadingTime: 1785714218}, "DERStatus.readingTime", int64(1785714218)},
 		{"inverterStatus", sep2.DERStatus{InverterStatus: &inv}, "DERStatus.inverterStatus", uint8(3)},
-		{"stateOfChargeStatus", sep2.DERStatus{StateOfChargeStatus: &soc}, "DERStatus.stateOfChargeStatusHundredthsPerCent", uint16(6500)},
+		{"stateOfChargeStatus", sep2.DERStatus{StateOfChargeStatus: &soc}, "DERStatus.stateOfChargeStatus", float64(65)},
+		{"stateOfChargeStatus fractional", sep2.DERStatus{StateOfChargeStatus: &socFractional}, "DERStatus.stateOfChargeStatus", float64(65.01)},
 		{"storageModeStatus", sep2.DERStatus{StorageModeStatus: &storage}, "DERStatus.storageModeStatus", uint8(1)},
 	}
 
@@ -639,7 +671,14 @@ func TestMapDERStatusToDifferencesPerField(t *testing.T) {
 			if diffs[0].Attribute != tc.wantAttr {
 				t.Errorf("Attribute = %q, want %q", diffs[0].Attribute, tc.wantAttr)
 			}
-			if diffs[0].Value != tc.wantVal {
+			// stateOfChargeStatus is a float64 division result and is
+			// compared with tolerance; see socEqual's doc comment.
+			if wantFloat, isFloat := tc.wantVal.(float64); isFloat {
+				gotFloat, ok := diffs[0].Value.(float64)
+				if !ok || !socEqual(gotFloat, wantFloat) {
+					t.Errorf("Value = %v (%T), want %v (float64)", diffs[0].Value, diffs[0].Value, wantFloat)
+				}
+			} else if diffs[0].Value != tc.wantVal {
 				t.Errorf("Value = %v (%T), want %v (%T)", diffs[0].Value, diffs[0].Value, tc.wantVal, tc.wantVal)
 			}
 			if diffs[0].Object != "mrid-a" {
@@ -673,9 +712,11 @@ func TestMapDERStatusToDifferencesPresentZeroValuesPublish(t *testing.T) {
 			if d.Value != sep2.HexBinary8(0) {
 				t.Errorf("%s: Value = %v, want HexBinary8(0)", d.Attribute, d.Value)
 			}
-		case "DERStatus.stateOfChargeStatusHundredthsPerCent":
-			if d.Value != uint16(0) {
-				t.Errorf("%s: Value = %v, want uint16(0)", d.Attribute, d.Value)
+		case "DERStatus.stateOfChargeStatus":
+			// 0/100 = 0.0 exactly, so a direct comparison is safe here;
+			// see socEqual's doc comment for the general case.
+			if d.Value != float64(0) {
+				t.Errorf("%s: Value = %v, want float64(0)", d.Attribute, d.Value)
 			}
 		case "DERStatus.alarmStatus":
 			if d.Value != sep2.HexBinary32(0) {
@@ -759,19 +800,33 @@ func TestPublishDERStatusPublishesEPRIClientBody(t *testing.T) {
 		}
 		got[fd.Attribute] = v
 	}
-	// 6500 hundredths of a percent is 65 percent: the raw wire value is
-	// published unconverted, under a name that says which it is.
+	// 6500 hundredths of a percent is 65 percent: the wire value is
+	// scaled and published under the plain sep.xsd attribute name.
 	want := map[string]float64{
-		"DERStatus.readingTime":                          1785714218,
-		"DERStatus.stateOfChargeStatusHundredthsPerCent": 6500,
+		"DERStatus.readingTime":         1785714218,
+		"DERStatus.stateOfChargeStatus": 65,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("forward differences = %v, want exactly %v", got, want)
 	}
 	for attr, wantVal := range want {
+		// This test round-trips through json.Marshal/Unmarshal (via
+		// decodeDiffMessage), and 6500/100 = 65.0 is exactly
+		// representable, so `!=` is safe here; see socEqual's doc
+		// comment in the non-round-trip tests for the general case.
 		if got[attr] != wantVal {
 			t.Errorf("forward difference %q: Value = %v, want %v", attr, got[attr], wantVal)
 		}
+	}
+
+	// Confirm what the marshalled JSON actually looks like for the
+	// scaled value: encoding/json emits float64(65) as the bare number
+	// "65", not "65.0". A JSON number carries no int-vs-float marker, so
+	// a consumer must not infer the type from the presence or absence of
+	// a decimal point; only the schema (PerCent, now in percent) says
+	// so.
+	if !strings.Contains(string(sends[0].body), `"attribute":"DERStatus.stateOfChargeStatus","value":65}`) {
+		t.Errorf("published payload does not carry the expected bare-integer JSON encoding of the scaled value.\nbody = %s", sends[0].body)
 	}
 }
 

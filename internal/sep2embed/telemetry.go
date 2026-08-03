@@ -67,29 +67,33 @@ const telemetryContentType = "application/json"
 const derStatusAttributePrefix = "DERStatus."
 
 // derStatusStateOfChargeAttribute names the stateOfChargeStatus
-// difference. It is the one mapped attribute whose name carries a unit
-// suffix, and that is deliberate (GAGO-110).
+// difference. Reversed from the GAGO-110 raw-passthrough choice: this
+// field publishes a SCALED value, in percent, under the plain sep.xsd
+// element name, and every other mapped field keeps publishing raw.
 //
 // sep.xsd types stateOfChargeStatus/value as PerCent (sep.xsd:4566-4582,
-// sep.xsd:5945-5952): a UInt16 in HUNDREDTHS of a percent, 0 to 10000,
-// where 10000 means 100%. Every other value this file maps is a bare
-// enum, bitmap, or epoch, so the field name alone is unambiguous; this
-// one is not. A bare "DERStatus.stateOfChargeStatus" carrying 6500 reads
-// as 6500 percent (or, worse, as 65 percent to a consumer that guesses
-// right for the wrong reason). The EPRI client observed in e2e run 10
-// reports exactly 6500, meaning 65 percent, so the ambiguity is live and
-// not hypothetical.
+// sep.xsd:5945-5952): a UInt16 documented "specified in hundredths of a
+// percent, 0 - 10000. (10000 = 100%)". That scale factor is fixed by the
+// type itself: there is no multiplier element on the wire, unlike
+// UnitValueType (sep.xsd:6169), which is how 2030.5 expresses a value
+// whose scale genuinely varies and carries an explicit multiplier of
+// PowerOfTenMultiplierType. The standard distinguishes the two cases
+// deliberately, so PerCent is a scaled quantity whose scale is known
+// unambiguously at the point of mapping, not an unresolved unit for a
+// downstream consumer to guess at from a naming convention.
 //
-// The value is published RAW, exactly as the device reported it, and the
-// name states the unit. Converting to whole percent here would mean
-// either integer division (silently discarding the two fractional digits
-// the spec exists to carry) or a float (introducing a representation the
-// rest of this mapping does not use, for a field whose wire type is an
-// integer). Both are lossy or surprising; neither is recoverable by a
-// downstream consumer. Raw plus a self-describing name is, and it keeps
-// this field consistent with the raw-passthrough contract documented on
-// MapDERStatusToDifferences below.
-const derStatusStateOfChargeAttribute = derStatusAttributePrefix + "stateOfChargeStatusHundredthsPerCent"
+// Integer division would have been the wrong way to convert (it silently
+// discards the two fractional digits the type exists to carry), which is
+// why GAGO-110 rejected conversion outright and published the raw
+// hundredths-of-a-percent integer instead, named accordingly. A float64
+// division is not lossy the same way: it carries the fractional digits,
+// and diff.Difference.Value is already `any`, so no plumbing changes.
+// 6500 (hundredths of a percent) becomes 65.0 (percent) here.
+const derStatusStateOfChargeAttribute = derStatusAttributePrefix + "stateOfChargeStatus"
+
+// derStatusStateOfChargePerCentScale converts a sep2.PerCent wire value
+// (hundredths of a percent, per sep.xsd:5945-5952) to percent.
+const derStatusStateOfChargePerCentScale = 100.0
 
 // MapDERStatusToDifferences projects the DERStatus fields this bridge
 // relays into diff.Difference entries, Object=mrid for every entry (the
@@ -159,12 +163,14 @@ const derStatusStateOfChargeAttribute = derStatusAttributePrefix + "stateOfCharg
 // value below is carried through exactly as the device reported it, at
 // its full wire type range (genConnectStatus is sep2.HexBinary8,
 // alarmStatus is sep2.HexBinary32; operationalModeStatus,
-// inverterStatus and storageModeStatus are plain uint8;
-// stateOfChargeStatus is uint16; readingTime is int64;
-// IEEECORE-047 moved genConnectStatus and alarmStatus
-// onto the hexBinary family, operationalModeStatus was and stays a
-// plain UInt8 per sep.xsd), with no plausibility or range check
-// against what a real device could sanely report. This is a deliberate
+// inverterStatus and storageModeStatus are plain uint8; readingTime is
+// int64; IEEECORE-047 moved genConnectStatus and alarmStatus onto the
+// hexBinary family, operationalModeStatus was and stays a plain UInt8
+// per sep.xsd), with no plausibility or range check against what a real
+// device could sanely report. stateOfChargeStatus is the one exception:
+// its wire type (PerCent, sep.xsd:5945-5952) fixes its scale by
+// definition, so it is published scaled to percent rather than raw; see
+// derStatusStateOfChargeAttribute's doc comment. This is a deliberate
 // discovery-stage choice (GAGO-046 tracks the enum/bitmap passthrough
 // broadly), not an oversight: these are device-SUPPLIED values from an
 // already ACL-scoped, mTLS-authenticated caller, so an out-of-range
@@ -224,7 +230,7 @@ func MapDERStatusToDifferences(mrid string, status sep2.DERStatus) ([]diff.Diffe
 		diffs = append(diffs, diff.Difference{
 			Object:    mrid,
 			Attribute: derStatusStateOfChargeAttribute,
-			Value:     status.StateOfChargeStatus.Value,
+			Value:     float64(status.StateOfChargeStatus.Value) / derStatusStateOfChargePerCentScale,
 		})
 	}
 	if status.StorageModeStatus != nil {
