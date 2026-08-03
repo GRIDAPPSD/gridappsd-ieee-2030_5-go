@@ -1204,7 +1204,7 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 
 // runControlSubscriber subscribes to the same differences destination
 // this bridge's own -publish-on-start smoke test and the UP-path
-// telemetry relay (internal/sep2embed's Config.TelemetryDestination)
+// telemetry publisher (telemetryPublisherConfig's Destination)
 // already publish to (internal/cim/sim.InputTopic), decodes each frame
 // as a diff.Message, and applies every forward difference to embed via
 // sep2embed.Embed.ApplyControlDelta.
@@ -1224,14 +1224,14 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // once that is settled.
 //
 // LOAD-BEARING INVARIANT (Leon INFO / Pike LOW, GAGO-034 PR #9 review):
-// this DOWN-path subscriber and the UP-path telemetry relay
-// (internal/sep2embed's telemetryMiddleware, which also publishes to
-// this same destination) are safe to share sim.InputTopic ONLY because
+// this DOWN-path subscriber and the UP-path telemetry publisher
+// (internal/telemetrypub, which publishes its aggregates to this same
+// destination) are safe to share sim.InputTopic ONLY because
 // their attribute namespaces never overlap: ApplyControlDelta acts
 // exclusively on "DERControl.DERControlBase."-prefixed attributes
-// (derControlAttributePrefix), and the telemetry relay publishes
+// (derControlAttributePrefix), and the telemetry publisher emits
 // exclusively "DERStatus."-prefixed attributes
-// (derStatusAttributePrefix). This bridge's own DERStatus echoes are
+// (telemetrypub's derStatusAttributePrefix). This bridge's own DERStatus echoes are
 // therefore ignored here, not misapplied as controls, purely because
 // the two prefixes never collide. THIS IS A GUARD, NOT A DESIGN: any
 // future field added under a THIRD shared prefix (or, worse, under

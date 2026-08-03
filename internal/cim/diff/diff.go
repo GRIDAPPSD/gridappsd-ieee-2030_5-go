@@ -200,10 +200,10 @@ func (b *Builder) BytesNow() ([]byte, error) {
 // difference_mrid feeds a message this bridge publishes to the
 // GridAPPS-D simulation input topic, and a panic there would crash the
 // whole bridge process over what is, at worst, a transient entropy-
-// source hiccup. The caller (PublishDERStatus, via Bytes) already has a
-// well-defined non-crashing path for a failed publish: log and skip
-// this one telemetry relay, exactly as it does for any other envelope-
-// build or send failure. Fail closed on the value (no envelope is sent
+// source hiccup. The caller (internal/telemetrypub's message builder,
+// via Bytes) already has a well-defined non-crashing path for a failed
+// publish: log and skip this one publish cycle, exactly as it does for
+// any other envelope-build or send failure. Fail closed on the value (no envelope is sent
 // without a real fresh UUID; nothing is silently defaulted), not on the
 // process.
 func newUUIDv4() (string, error) {

@@ -306,7 +306,8 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	// DERCapabilityLink gets only the dercap PUT; the other three are
 	// silently skipped client-side, which is exactly what eight prior
 	// end-to-end runs showed (PUT dercap and nothing else, zero bus frames
-	// downstream because no DERStatus PUT ever reaches the telemetry relay).
+	// downstream because no DERStatus is ever stored for the telemetry
+	// publisher to read).
 	// No content is seeded into these three resources: core's
 	// HandleSingletonGetPut (pkg/sep2srv/handlers/singleton) already GETs a
 	// spec-valid empty default when the backing store holds nothing yet, and
