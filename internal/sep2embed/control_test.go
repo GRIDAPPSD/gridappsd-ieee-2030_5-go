@@ -26,11 +26,40 @@ import (
 // DERProgram creation without asserting anything about its contents here.
 var testDefaultControl = sep2.DefaultDERControl{}
 
+// testProgramSeed is the DERProgram policy this file's tests pass to
+// ApplyControlDelta. It mirrors sep2config.DefaultPolicy's compiled-in
+// values rather than the zero value, so a test that does assert on the
+// served program sees what a default deployment serves. Primacy is spelled
+// out rather than left implicit because 0 is a legal primacy, so the zero
+// value would silently assert a different program than the one shipped.
+var testProgramSeed = DERProgramSeed{Primacy: 1, Description: "GridAPPS-D DER program"}
+
 // twoDeviceFixture seeds a Registry and a fully populated assembly.Stores
 // (via the package's own seedStores, not a parallel construction) with
 // two devices, A and B, so tests below can assert owner scoping between
 // them.
 func twoDeviceFixture(t *testing.T) (reg *registry.Registry, st *assembly.Stores) {
+	t.Helper()
+	return twoDeviceFixtureWithPolicy(t, seedPolicy{
+		resolvePIN:     testResolvePIN,
+		defaultControl: testDefaultControl,
+		defaultProgram: testProgramSeed,
+	})
+}
+
+// twoDeviceFixtureWithPolicy is twoDeviceFixture with the seeding policy
+// supplied by the caller.
+//
+// It exists because seeding now writes the DERProgram and its
+// DefaultDERControl, so the policy handed to seedStores is what those
+// resources are built from. A test that asserts on a seeded
+// DefaultDERControl must seed with the same value it later expects: passing
+// a populated default control to ApplyControlDelta alone no longer reaches
+// the store, because ensureDERProgram returns early once the seeded program
+// exists. In cmd/bridge both sides are the same policy.DefaultControl, so
+// they cannot disagree there; in a test they can, and this is how a test
+// keeps them consistent.
+func twoDeviceFixtureWithPolicy(t *testing.T, policy seedPolicy) (reg *registry.Registry, st *assembly.Stores) {
 	t.Helper()
 
 	reg = registry.New()
@@ -42,7 +71,7 @@ func twoDeviceFixture(t *testing.T) (reg *registry.Registry, st *assembly.Stores
 	}
 
 	st = newStores()
-	if err := seedStores(context.Background(), st, reg, seedPolicy{resolvePIN: testResolvePIN}); err != nil {
+	if err := seedStores(context.Background(), st, reg, policy); err != nil {
 		t.Fatalf("seedStores: %v", err)
 	}
 
@@ -95,7 +124,7 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 		Value:     map[string]any{"multiplier": 0.0, "value": 5000.0},
 	}
 
-	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, delta); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, delta); err != nil {
 		t.Fatalf("ApplyControlDelta: %v", err)
 	}
 
@@ -152,7 +181,7 @@ func TestApplyControlDeltaRefusesUnknownDevice(t *testing.T) {
 		Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
 	}
 
-	err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, delta)
+	err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, delta)
 	if !errors.Is(err, ErrUnknownControlDevice) {
 		t.Fatalf("ApplyControlDelta(unknown device) error = %v, want ErrUnknownControlDevice", err)
 	}
@@ -183,7 +212,7 @@ func TestApplyControlDeltaRefusesUnsupportedAttribute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			delta := diff.Difference{Object: "mrid-a", Attribute: tt.attr, Value: true}
-			err := ApplyControlDelta(context.Background(), st, notifier, reg, testDefaultControl, delta)
+			err := ApplyControlDelta(context.Background(), st, notifier, reg, testDefaultControl, testProgramSeed, delta)
 			if !errors.Is(err, ErrUnsupportedControlAttribute) {
 				t.Fatalf("ApplyControlDelta(%q) error = %v, want ErrUnsupportedControlAttribute", tt.attr, err)
 			}
@@ -213,10 +242,10 @@ func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
 		Value:     map[string]any{"multiplier": 0.0, "value": 500.0},
 	}
 
-	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, first); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, first); err != nil {
 		t.Fatalf("ApplyControlDelta(first): %v", err)
 	}
-	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, second); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, second); err != nil {
 		t.Fatalf("ApplyControlDelta(second): %v", err)
 	}
 
@@ -258,10 +287,6 @@ func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
 func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) {
 	t.Parallel()
 
-	reg, st := twoDeviceFixture(t)
-	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
-	ctx := context.Background()
-
 	connect := true
 	energize := true
 	seed := sep2.DefaultDERControl{
@@ -271,12 +296,25 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 		},
 	}
 
+	// Seeded with the same default control this test asserts on: since the
+	// program and its DefaultDERControl are now written at seed time, this
+	// is the policy that reaches the store. Passing seed to
+	// ApplyControlDelta below as well mirrors cmd/bridge, where both come
+	// from one policy.DefaultControl.
+	reg, st := twoDeviceFixtureWithPolicy(t, seedPolicy{
+		resolvePIN:     testResolvePIN,
+		defaultControl: seed,
+		defaultProgram: testProgramSeed,
+	})
+	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
+	ctx := context.Background()
+
 	delta := diff.Difference{
 		Object:    "mrid-a",
 		Attribute: "DERControl.DERControlBase.opModTargetW",
 		Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
 	}
-	if err := ApplyControlDelta(ctx, st, notifier, reg, seed, delta); err != nil {
+	if err := ApplyControlDelta(ctx, st, notifier, reg, seed, testProgramSeed, delta); err != nil {
 		t.Fatalf("ApplyControlDelta: %v", err)
 	}
 
@@ -332,11 +370,21 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 		t.Errorf("seeded DefaultDERControl.SetSoftGradW = %+v, want nil", dderc.SetSoftGradW)
 	}
 
-	// Owner scoping: device B never had ApplyControlDelta called for it,
-	// so it must have no DERProgram, and therefore no DefaultDERControl.
+	// Owner scoping. Device B never had ApplyControlDelta called for it. It
+	// now DOES have its own seeded DERProgram (every device does), so the
+	// scoping question is no longer "does B have a program" but "is B's
+	// program its own": a distinct identity, and carrying none of A's
+	// control.
 	edevB := urlIndexFor(t, st, "mrid-b")
-	if _, err := st.DERPrograms.ForParent(edevB).Get(ctx, controlDERProgramID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("DERPrograms.Get(B) = (%v), want store.ErrNotFound (program must not leak to device B)", err)
+	programB, err := st.DERPrograms.ForParent(edevB).Get(ctx, controlDERProgramID)
+	if err != nil {
+		t.Fatalf("DERPrograms.Get(B): %v (every seeded device has its own program)", err)
+	}
+	if programB.MRID == program.MRID {
+		t.Errorf("device B's DERProgram.MRID = %q, the same as device A's; each device's program must have its own identity", programB.MRID)
+	}
+	if _, err := st.DERControls.Get(ctx, derControlScope(edevB, controlFSAID, controlDERProgramID), activeControlID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DERControls.Get(B) = (%v), want store.ErrNotFound (A's control must not leak to device B)", err)
 	}
 }
 
@@ -535,7 +583,7 @@ func TestApplyControlDeltaRefusesPercentModeAttributes(t *testing.T) {
 				Attribute: attr,
 				Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
 			}
-			err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, delta)
+			err := ApplyControlDelta(ctx, st, notifier, reg, testDefaultControl, testProgramSeed, delta)
 			if !errors.Is(err, ErrUnsupportedControlAttribute) {
 				t.Fatalf("ApplyControlDelta(%q) error = %v, want ErrUnsupportedControlAttribute", attr, err)
 			}

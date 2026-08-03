@@ -525,10 +525,29 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 	policy.RegistrationPINs = cfg.SEP2RegistrationPINs
 	policy.DefaultPollRate = cfg.SEP2PollRate
 	policy.DefaultPostRate = cfg.SEP2PostRate
+
+	// Assigned only when configured, so an absent flag or file member
+	// leaves DefaultPolicy's compiled-in value in place. Both are legal
+	// values in their own right (primacy 0 is the highest priority, an
+	// empty description marshals as absent), which is why nil rather than
+	// the zero value is the "operator said nothing" signal.
+	if cfg.SEP2ProgramPrimacy != nil {
+		policy.DefaultProgram.Primacy = *cfg.SEP2ProgramPrimacy
+	}
+	if cfg.SEP2ProgramDescription != nil {
+		policy.DefaultProgram.Description = *cfg.SEP2ProgramDescription
+	}
+
 	if err := policy.ValidateRegistrationPIN(); err != nil {
 		return sep2config.SEP2Policy{}, err
 	}
 	if err := policy.ValidateRates(); err != nil {
+		return sep2config.SEP2Policy{}, err
+	}
+	// Same before-we-dial-anything window as the two above: an over-length
+	// description or a reserved primacy stops the bridge at boot rather
+	// than reaching a client as a document it refuses to parse.
+	if err := policy.ValidateDefaultProgram(); err != nil {
 		return sep2config.SEP2Policy{}, err
 	}
 	return policy, nil
@@ -572,9 +591,17 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 // sep2embed's own tests that leave Config.Observer unset.
 func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs.Hook) sep2embed.Config {
 	return sep2embed.Config{
-		Addr:                   cfg.SEP2ServerAddr,
-		CertDir:                cfg.SEP2ServerCertDir,
-		DefaultControl:         policy.DefaultControl,
+		Addr:           cfg.SEP2ServerAddr,
+		CertDir:        cfg.SEP2ServerCertDir,
+		DefaultControl: policy.DefaultControl,
+		// Projected field by field rather than by struct conversion: the
+		// two types are deliberately separate (sep2config knows nothing
+		// about stores), and naming the fields keeps that a real boundary
+		// instead of one that silently depends on declaration order.
+		DefaultProgram: sep2embed.DERProgramSeed{
+			Primacy:     policy.DefaultProgram.Primacy,
+			Description: policy.DefaultProgram.Description,
+		},
 		ModesSupported:         policy.ModesSupported,
 		ResolveRegistrationPIN: policy.ResolveRegistrationPIN,
 		// Resolvers, not the bare DefaultPollRate/DefaultPostRate fields:

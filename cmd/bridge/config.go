@@ -171,6 +171,28 @@ type config struct {
 	SEP2PollRate *uint32
 	SEP2PostRate *uint32
 
+	// SEP2ProgramPrimacy and SEP2ProgramDescription override the seeded
+	// default DERProgram's primacy and description. They resolve from
+	// -sep2-program-file (a JSON object an admin UI can rewrite), then from
+	// -sep2-program-primacy / -sep2-program-description, and become
+	// sep2config.SEP2Policy.DefaultProgram.
+	//
+	// Pointer-typed because both have a compiled-in default that nil must
+	// not clobber: sep2config.DefaultPolicy sets primacy to
+	// PrimacyContractedServiceProvider (1) and a non-empty description, and
+	// nil here means "leave the compiled-in default alone". A non-pointer
+	// uint8 could not express that, because 0 is a legal primacy (the
+	// highest priority) and would silently promote every deployment's
+	// program above any other on upgrade. The empty string is likewise a
+	// legal description (marshals as absent), so it cannot double as the
+	// unset sentinel either.
+	//
+	// The IEEE 2030.5 domain checks (String32 bound, reserved primacy
+	// ranges) live in sep2config.SEP2Policy.ValidateDefaultProgram, called
+	// from buildSEP2Policy, not here: this layer parses, that layer judges.
+	SEP2ProgramPrimacy     *uint8
+	SEP2ProgramDescription *string
+
 	// SEP2TelemetryInterval is the period of the DERStatus telemetry
 	// publisher (internal/telemetrypub), from -sep2-telemetry-interval
 	// (env SEP2_TELEMETRY_INTERVAL). It is a Go duration string ("15s",
@@ -360,6 +382,25 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&postRateFlag, "sep2-post-rate", "",
 		"fleet-wide MirrorUsagePoint postRate in seconds, stamped on every mirror a client creates; unset advertises nothing and leaves the client's own value untouched")
 
+	// The default DERProgram's operator surface. -sep2-program-file is the
+	// primary path and the one an admin UI is expected to write: a single
+	// JSON object holding every field of this settings group, so the UI
+	// rewrites one file and the bridge restarts, rather than the UI having
+	// to synthesize a command line. The two scalar flags are the
+	// dev-and-interop convenience path and override the file, matching the
+	// flag-beats-file precedence the PIN flags already use.
+	//
+	// All three register an empty-string default for the reason the flags
+	// above do: 0 is a legal primacy and "" is a legal description, so
+	// neither can serve as its own unset sentinel.
+	var programFileFlag, programPrimacyFlag, programDescriptionFlag string
+	fs.StringVar(&programFileFlag, "sep2-program-file", "",
+		"path to a JSON object configuring the seeded default DERProgram: {\"primacy\": 1, \"description\": \"...\"}; unset uses the compiled-in defaults")
+	fs.StringVar(&programPrimacyFlag, "sep2-program-primacy", "",
+		"primacy of the seeded default DERProgram, 0-2 or 65-191 (lower is higher priority); unset uses 1, contracted premises service provider")
+	fs.StringVar(&programDescriptionFlag, "sep2-program-description", "",
+		"description of the seeded default DERProgram, at most 32 characters (sep.xsd String32); unset uses the compiled-in default")
+
 	// sep2-telemetry-interval registers with an empty-string default and
 	// is parsed by hand after Parse, matching the PIN and rate flags
 	// above: the empty string is the "operator said nothing" sentinel,
@@ -455,6 +496,32 @@ func loadConfig(args []string) (config, error) {
 		cfg.SEP2PostRate = &rate
 	}
 
+	// The default DERProgram resolves file first, then the scalar flags,
+	// so a flag overrides the file rather than the other way round.
+	if programFileFlag != "" {
+		primacy, description, err := loadProgramFile(programFileFlag)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.SEP2ProgramPrimacy = primacy
+		cfg.SEP2ProgramDescription = description
+	}
+	if programPrimacyFlag != "" {
+		v, err := strconv.ParseUint(programPrimacyFlag, 10, 8)
+		if err != nil {
+			return config{}, fmt.Errorf(
+				"config: -sep2-program-primacy value %q must be a base-10 integer in [0, 255]", programPrimacyFlag)
+		}
+		primacy := uint8(v)
+		cfg.SEP2ProgramPrimacy = &primacy
+	}
+	if programDescriptionFlag != "" {
+		// Length is not checked here: the String32 bound is an IEEE 2030.5
+		// domain rule and lives in ValidateDefaultProgram with the rest of
+		// them, so there is one place an operator's value is judged.
+		cfg.SEP2ProgramDescription = &programDescriptionFlag
+	}
+
 	// The telemetry interval resolves flag, then env, then the
 	// compiled-in default, and is validated here so an unusable value
 	// stops the bridge at config load rather than at the publisher's
@@ -498,6 +565,98 @@ func loadConfig(args []string) (config, error) {
 // to per-device rates this flag does not carry, and duplicating it would
 // create a second place to update. sep2config.SEP2Policy.ValidateRates owns
 // it, and buildSEP2Policy runs that before the bridge dials anything.
+// loadProgramFile reads -sep2-program-file: a single JSON object holding
+// the seeded default DERProgram's operator-settable fields.
+//
+//	{"primacy": 1, "description": "GridAPPS-D DER program"}
+//
+// This is the shape an admin UI is expected to write, which is why it is a
+// whole-object file rather than a flag: a UI can rewrite it and the operator
+// restarts the bridge, with no command line to synthesize. Both members are
+// optional, and each returns nil when absent so the compiled-in default
+// survives. That is the reason for the pointer returns rather than an
+// (uint8, string) pair: a file setting only description must not silently
+// reset primacy to 0, which is a legal and higher-priority value.
+//
+// Only syntax and JSON type are judged here. The IEEE 2030.5 domain rules
+// (String32 bound, reserved primacy bands) live in
+// sep2config.SEP2Policy.ValidateDefaultProgram, so an operator sees the same
+// message whether the value came from this file or from a flag.
+func loadProgramFile(path string) (*uint8, *string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, fmt.Errorf("config: -sep2-program-file %q does not exist", path)
+		}
+		return nil, nil, fmt.Errorf("config: -sep2-program-file %q is not readable: %w", path, err)
+	}
+
+	// Decode into map[string]any with UseNumber and type-check each member
+	// by hand, rather than into a struct with json.Number fields.
+	// encoding/json's Number silently accepts a QUOTED numeric string
+	// ("1") as though it were a bare JSON number, so a struct decode would
+	// let a value of the wrong JSON type through. Same reasoning, and the
+	// same hazard, as loadRegistrationPINFile above.
+	var members map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&members); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			return nil, nil, fmt.Errorf(
+				"config: -sep2-program-file %q is not a JSON object", path)
+		}
+		return nil, nil, fmt.Errorf("config: -sep2-program-file %q is not valid JSON: %w", path, err)
+	}
+
+	// An unrecognized member is an error, not a silently ignored setting.
+	// An operator who writes "primacy_value" and sees the bridge come up on
+	// the default has no way to tell the setting was dropped; that is the
+	// class of config bug only ever noticed on the wire, days later.
+	for k := range members {
+		if k != "primacy" && k != "description" {
+			return nil, nil, fmt.Errorf(
+				"config: -sep2-program-file %q: unknown member %q (want \"primacy\" or \"description\")", path, k)
+		}
+	}
+
+	var primacy *uint8
+	if v, ok := members["primacy"]; ok {
+		num, ok := v.(json.Number)
+		if !ok {
+			return nil, nil, fmt.Errorf(
+				"config: -sep2-program-file %q: \"primacy\" is not a JSON number", path)
+		}
+		i, err := num.Int64()
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"config: -sep2-program-file %q: \"primacy\" must be an integer", path)
+		}
+		// Bounded here, not in ValidateDefaultProgram, because this is a
+		// representability question rather than an IEEE 2030.5 one: primacy
+		// is a UInt8 on the wire, and a value outside that range cannot be
+		// carried at all. Refusing beats the silent truncation a bare
+		// uint8(i) conversion would do.
+		if i < 0 || i > 255 {
+			return nil, nil, fmt.Errorf(
+				"config: -sep2-program-file %q: \"primacy\" %d is outside the PrimacyType range [0, 255]", path, i)
+		}
+		u := uint8(i)
+		primacy = &u
+	}
+
+	var description *string
+	if v, ok := members["description"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return nil, nil, fmt.Errorf(
+				"config: -sep2-program-file %q: \"description\" is not a JSON string", path)
+		}
+		description = &s
+	}
+	return primacy, description, nil
+}
+
 func parseRateFlag(raw, flagName string) (uint32, error) {
 	v, err := strconv.ParseUint(raw, 10, 32)
 	if err != nil {

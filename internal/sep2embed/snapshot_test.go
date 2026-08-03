@@ -46,6 +46,7 @@ func newTestEmbed(t *testing.T) (*Embed, *registry.Registry) {
 		ResolveRegistrationPIN: testResolvePIN,
 		ShutdownTimeout:        time.Second,
 		DefaultControl:         testDefaultControlSnapshot(),
+		DefaultProgram:         testProgramSeed,
 	}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -129,14 +130,22 @@ func TestEndDevicesOnEmptyRegistryReturnsEmptyNotNilError(t *testing.T) {
 	}
 }
 
-// TestDefaultDERControlReturnsNilBeforeAnyDeltaApplied locks in the
-// not-found-is-not-an-error contract documented on DefaultDERControl:
-// core's own DefaultDERControlHandler serves a default value (HTTP 200)
-// on a missing singleton rather than 404, and this bridge never writes
-// a DefaultDERControl at all (only the "active" DERControl via
-// ApplyControlDelta), so the accessor must report "none written" as
-// (nil, nil), not as an error.
-func TestDefaultDERControlReturnsNilBeforeAnyDeltaApplied(t *testing.T) {
+// TestDefaultDERControlIsReachableBeforeAnyDeltaApplied pins the reason the
+// default DERProgram is seeded at boot rather than created lazily.
+//
+// DefaultDERControl is reachable only through its containing DERProgram's
+// DefaultDERControlLink. While the program was created lazily, on the first
+// control delta for a device, a device that had never been controlled served
+// an empty DERProgramList, so the operator's configured DefaultDERControl,
+// the control that applies when no event is active, could not be reached at
+// all. CSIP is explicit that this is the resource a DER falls back to: "in
+// the absence of any active events, the inverter executes the
+// DefaultDERControl of the DERProgram with the highest priority"
+// (CSIP Implementation Guide v2.0, section 8).
+//
+// This test asserts the inverse of what it used to: the singleton is present
+// on a freshly seeded device that has received no delta.
+func TestDefaultDERControlIsReachableBeforeAnyDeltaApplied(t *testing.T) {
 	t.Parallel()
 
 	e, _ := newTestEmbed(t)
@@ -147,8 +156,23 @@ func TestDefaultDERControlReturnsNilBeforeAnyDeltaApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultDERControl: %v", err)
 	}
-	if snap != nil {
-		t.Fatalf("DefaultDERControl before any write = %+v, want nil", snap)
+	if snap == nil {
+		t.Fatal("DefaultDERControl before any delta = nil; the configured default control is unreachable until a control arrives, which is the defect seeding the program exists to fix")
+	}
+
+	// Value, not just presence: the seeded singleton must carry the
+	// operator's configured control rather than a zero one, and a
+	// schema-valid mRID.
+	wantHref := "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/dderc"
+	if snap.Href != wantHref {
+		t.Errorf("DefaultDERControl.Href = %q, want %q", snap.Href, wantHref)
+	}
+	assertValidMRID(t, "DefaultDERControl.MRID", snap.MRID)
+	if snap.Base == nil {
+		t.Fatal("DefaultDERControl.Base is nil, want the configured DERControlBase")
+	}
+	if snap.Base.OpModConnect == nil || !*snap.Base.OpModConnect {
+		t.Errorf("DefaultDERControl.Base.OpModConnect = %v, want true (the configured value from testDefaultControlSnapshot)", snap.Base.OpModConnect)
 	}
 }
 
@@ -179,7 +203,7 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 		t.Fatalf("DERPrograms: %v", err)
 	}
 	if len(programs) != 1 {
-		t.Fatalf("DERPrograms returned %d items, want 1 (ensureDERProgram creates exactly one)", len(programs))
+		t.Fatalf("DERPrograms returned %d items, want 1 (seeding creates exactly one, and the delta must reuse it rather than add a second)", len(programs))
 	}
 	if programs[0].ID != controlDERProgramID {
 		t.Errorf("DERPrograms[0].ID = %q, want %q", programs[0].ID, controlDERProgramID)
@@ -188,8 +212,12 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 	if programs[0].Href != wantProgramHref {
 		t.Errorf("DERPrograms[0].Href = %q, want %q", programs[0].Href, wantProgramHref)
 	}
-	if programs[0].Primacy != 1 {
-		t.Errorf("DERPrograms[0].Primacy = %d, want 1 (ensureDERProgram always writes Primacy: 1)", programs[0].Primacy)
+	// Primacy comes from the configured policy (testProgramSeed), not from
+	// a value hardcoded in the control path. Asserting the configured value
+	// rather than a literal 1 is what makes this a test of the policy
+	// plumbing instead of a restatement of a constant.
+	if programs[0].Primacy != testProgramSeed.Primacy {
+		t.Errorf("DERPrograms[0].Primacy = %d, want %d (the configured DefaultProgram.Primacy)", programs[0].Primacy, testProgramSeed.Primacy)
 	}
 	// GAGO-050: every DERProgram carries a non-empty DefaultDERControlLink,
 	// and it resolves to the seeded DefaultDERControl below (asserted
@@ -281,12 +309,20 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 	}
 }
 
-// TestDERControlsScopedToUnknownDeviceReturnsEmpty confirms the
-// accessor does not error, and returns no items, for a scope that has
-// never had ensureDERProgram or ApplyControlDelta run against it: a
-// bare List against an unpopulated scope key is a valid empty result,
-// not a not-found error (unlike the Get-based DefaultDERControl path).
-func TestDERControlsScopedToUnknownDeviceReturnsEmpty(t *testing.T) {
+// TestDERControlsScopedToUncontrolledDeviceReturnsEmptyButProgramExists
+// pins the two halves of the seeding contract that pull in opposite
+// directions on a device no control delta has ever targeted:
+//
+//   - Its DERControlList is empty. Seeding a program must NOT fabricate a
+//     control; a control means an active event, and inventing one would put
+//     the DER under a command no operator issued.
+//   - Its DERProgramList is NOT empty. The program is the operator's control
+//     channel and the only route to DefaultDERControl, so it exists from
+//     boot whether or not a control is currently active.
+//
+// The empty control list is also a valid empty List result rather than a
+// not-found error, unlike the Get-based DefaultDERControl path.
+func TestDERControlsScopedToUncontrolledDeviceReturnsEmptyButProgramExists(t *testing.T) {
 	t.Parallel()
 
 	e, _ := newTestEmbed(t)
@@ -295,17 +331,23 @@ func TestDERControlsScopedToUnknownDeviceReturnsEmpty(t *testing.T) {
 
 	controls, err := e.DERControls(context.Background(), edevID, controlFSAID, controlDERProgramID)
 	if err != nil {
-		t.Fatalf("DERControls on untouched scope: %v", err)
+		t.Fatalf("DERControls on uncontrolled scope: %v", err)
 	}
 	if len(controls) != 0 {
-		t.Fatalf("DERControls on untouched scope returned %d items, want 0", len(controls))
+		t.Fatalf("DERControls on uncontrolled scope returned %d items, want 0 (seeding a program must not fabricate a control)", len(controls))
 	}
 
 	programs, err := e.DERPrograms(context.Background(), edevID)
 	if err != nil {
-		t.Fatalf("DERPrograms on untouched device: %v", err)
+		t.Fatalf("DERPrograms on uncontrolled device: %v", err)
 	}
-	if len(programs) != 0 {
-		t.Fatalf("DERPrograms on untouched device returned %d items, want 0", len(programs))
+	if len(programs) != 1 {
+		t.Fatalf("DERPrograms on uncontrolled device returned %d items, want 1 (the program is seeded at boot, not on first control)", len(programs))
+	}
+	if programs[0].Primacy != testProgramSeed.Primacy {
+		t.Errorf("DERPrograms[0].Primacy = %d, want %d (the configured DefaultProgram.Primacy)", programs[0].Primacy, testProgramSeed.Primacy)
+	}
+	if programs[0].DefaultDERControlLink == "" {
+		t.Error("DERPrograms[0].DefaultDERControlLink is empty on an uncontrolled device; the configured default control is unreachable")
 	}
 }

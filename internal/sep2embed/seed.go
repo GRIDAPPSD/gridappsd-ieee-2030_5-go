@@ -134,6 +134,16 @@ type seedPolicy struct {
 	// Keyed on LFDI so a per-device rate policy can be added without
 	// touching this file; see sep2config.SEP2Policy.PollRates.
 	resolvePollRate func(lfdi string) (uint32, bool)
+
+	// defaultControl and defaultProgram are the DefaultDERControl and the
+	// DERProgram seeded for every device, sourced from
+	// sep2config.SEP2Policy.DefaultControl and .DefaultProgram.
+	//
+	// Both zero values are valid but degenerate rather than fatal: a
+	// well-formed program carrying an all-unset default control. That is a
+	// different case from resolvePIN, where no value can be invented at all.
+	defaultControl sep2.DefaultDERControl
+	defaultProgram DERProgramSeed
 }
 
 // seedOne writes the EndDevice and its single child DER for one registry
@@ -260,6 +270,24 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	// the missing-link failure this seeding exists to prevent.
 	if err := seedFSA(ctx, stores, id, e.LFDI); err != nil {
 		return err
+	}
+
+	// The DERProgram the FSA above advertises, plus its DefaultDERControl,
+	// created here at boot rather than lazily on the first control delta.
+	//
+	// This is the same argument one level down. The FSA advertises a
+	// DERProgramList; if that list stayed empty until a control arrived, a
+	// client that walks the tree once at startup would find nothing and never
+	// return. It also makes the operator's configured DefaultDERControl
+	// unreachable, because a DefaultDERControl is only ever reached through
+	// its containing DERProgram's DefaultDERControlLink, so the fallback that
+	// applies when no control is active would never apply.
+	//
+	// (controlFSAID, controlDERProgramID) is the same fixed pair
+	// ApplyControlDelta writes under, so the program seeded here is the exact
+	// resource the control path later adds DERControls to, not a parallel one.
+	if err := createDERProgram(ctx, stores, id, e.LFDI, controlFSAID, controlDERProgramID, policy.defaultControl, policy.defaultProgram); err != nil {
+		return fmt.Errorf("seed der program: %w", err)
 	}
 
 	// The Registration is keyed by the same store id as its EndDevice
@@ -433,6 +461,11 @@ const fsaDescription = "Bridge DER function set"
 // writes to, so a traversing client would follow the link, find a permanently
 // empty list, and never see a DERControl. The two must agree.
 //
+// The DERProgramList this points at is populated at boot by seedOne's
+// createDERProgram call, under that same fixed pair, so the link resolves to
+// a real program from the first GET rather than only after a control delta
+// has arrived.
+//
 // The mRID comes from deriveMRID keyed on the device LFDI, the same
 // derivation every other mRID this package mints uses, so FSA identity is a
 // function of the device identity rather than a second, unrelated numbering
@@ -454,6 +487,21 @@ func seedFSA(ctx context.Context, stores *assembly.Stores, edevID, lfdi string) 
 	fsa.Href = "/edev/" + edevID + "/fsa/" + controlFSAID
 	fsa.DERProgramListLink = &sep2.ListLink{
 		Href: derProgramListHref(edevID, controlFSAID),
+		// All is 1 because seedOne seeds exactly one DERProgram under this
+		// FSA, and it must be stated rather than left zero for two reasons.
+		//
+		// sep.xsd:5385 requires it: "This attribute SHALL be present if the
+		// href is a local or relative URI", and this href is relative. The
+		// Go field is `all,attr,omitempty`, so leaving it 0 does not emit
+		// all="0", it emits no all attribute at all, which is the
+		// non-conformant case rather than a merely understated one.
+		//
+		// And an advertised all="0" tells a link-traversing client the list
+		// is empty, so it may skip the GET entirely: the same reasoning that
+		// puts All: 1 on the EndDevice's FunctionSetAssignmentsListLink
+		// above. An advertised-but-uncounted program is as unreachable as an
+		// unadvertised one.
+		All: 1,
 	}
 
 	if err := stores.FSAs.Create(ctx, edevID, controlFSAID, fsa); err != nil {
