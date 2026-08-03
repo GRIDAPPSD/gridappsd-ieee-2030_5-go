@@ -120,7 +120,7 @@ func TestServedDERControlCarriesStampedResponseRequest(t *testing.T) {
 	// Create the control through the real DOWN path rather than by writing
 	// the store directly, so what is asserted below is the shape
 	// ApplyControlDelta actually produces in production.
-	if err := ApplyControlDelta(ctx, e.stores, nil, reg, testDefaultControl, diff.Difference{
+	if err := ApplyControlDelta(ctx, e.stores, nil, reg, testDefaultControl, testProgramSeed, diff.Difference{
 		Object:    "mrid-rspreq-a",
 		Attribute: "DERControl.DERControlBase.opModTargetW",
 		Value:     map[string]any{"multiplier": 0.0, "value": 5000.0},

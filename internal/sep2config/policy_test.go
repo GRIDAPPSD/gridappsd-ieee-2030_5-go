@@ -327,3 +327,89 @@ func TestDefaultPolicyConfiguresNoRegistrationPIN(t *testing.T) {
 }
 
 func u32(v uint32) *uint32 { return &v }
+
+// TestDefaultPolicyDERProgramIsSpecSaneAndServable pins the compiled-in
+// default DERProgram, the one an operator who configures nothing gets.
+//
+// Primacy 1 is asserted as the named constant rather than a bare literal so
+// the test states the standard's meaning, not just a number: sep.xsd's
+// PrimacyType documents 1 as "Contracted premises service provider", which
+// is what a utility platform operating the feeder is.
+func TestDefaultPolicyDERProgramIsSpecSaneAndServable(t *testing.T) {
+	t.Parallel()
+
+	p := DefaultPolicy()
+
+	if p.DefaultProgram.Primacy != PrimacyContractedServiceProvider {
+		t.Errorf("DefaultPolicy DefaultProgram.Primacy = %d, want %d (contracted premises service provider)",
+			p.DefaultProgram.Primacy, PrimacyContractedServiceProvider)
+	}
+	if p.DefaultProgram.Description == "" {
+		t.Error("DefaultPolicy DefaultProgram.Description is empty; the seeded program should name what serves it")
+	}
+	// The compiled-in default must itself pass the validator. A shipped
+	// default that its own validation rejects would fail every boot.
+	if err := p.ValidateDefaultProgram(); err != nil {
+		t.Errorf("DefaultPolicy does not satisfy ValidateDefaultProgram: %v", err)
+	}
+}
+
+// TestValidateDefaultProgramBoundsDescriptionAndPrimacy covers the two
+// sep.xsd rules this validator enforces. The description case is the exact
+// defect that made a conformant client reject the seeded
+// FunctionSetAssignments document: 42 characters against a String32 bound.
+func TestValidateDefaultProgramBoundsDescriptionAndPrimacy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		program DERProgramPolicy
+		wantErr bool
+		// wantIn, when set, must appear in the error so an operator is told
+		// the flag to change rather than a struct field they cannot reach.
+		wantIn string
+	}{
+		{"compiled-in default", DefaultPolicy().DefaultProgram, false, ""},
+		{"primacy 0 in-home EMS is assigned and legal", DERProgramPolicy{Primacy: 0}, false, ""},
+		{"primacy 2 non-contractual is assigned and legal", DERProgramPolicy{Primacy: 2}, false, ""},
+		{"primacy 65 lower edge of user-defined", DERProgramPolicy{Primacy: 65}, false, ""},
+		{"primacy 89 as used by the CSIP guide examples", DERProgramPolicy{Primacy: 89}, false, ""},
+		{"primacy 191 upper edge of user-defined", DERProgramPolicy{Primacy: 191}, false, ""},
+		{"primacy 3 lower edge of the first reserved band", DERProgramPolicy{Primacy: 3}, true, "-sep2-program-primacy"},
+		{"primacy 64 upper edge of the first reserved band", DERProgramPolicy{Primacy: 64}, true, "-sep2-program-primacy"},
+		{"primacy 192 lower edge of the second reserved band", DERProgramPolicy{Primacy: 192}, true, "-sep2-program-primacy"},
+		{"primacy 255 upper edge of the second reserved band", DERProgramPolicy{Primacy: 255}, true, "-sep2-program-primacy"},
+		{"description empty is legal and marshals as absent", DERProgramPolicy{Primacy: 1}, false, ""},
+		{
+			"description at exactly the String32 bound",
+			DERProgramPolicy{Primacy: 1, Description: strings.Repeat("x", 32)},
+			false, "",
+		},
+		{
+			"description one character over the String32 bound",
+			DERProgramPolicy{Primacy: 1, Description: strings.Repeat("x", 33)},
+			true, "-sep2-program-description",
+		},
+		{
+			"the 42-character description the reference client rejected",
+			DERProgramPolicy{Primacy: 1, Description: strings.Repeat("x", 42)},
+			true, "-sep2-program-description",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := SEP2Policy{DefaultProgram: tt.program}.ValidateDefaultProgram()
+			if tt.wantErr && err == nil {
+				t.Fatalf("ValidateDefaultProgram(%+v) = nil, want an error", tt.program)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateDefaultProgram(%+v) = %v, want nil", tt.program, err)
+			}
+			if tt.wantIn != "" && !strings.Contains(err.Error(), tt.wantIn) {
+				t.Errorf("error %q does not name %q; an operator needs the flag to change", err, tt.wantIn)
+			}
+		})
+	}
+}

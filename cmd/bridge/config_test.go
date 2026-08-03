@@ -950,3 +950,151 @@ func TestLoadConfigRegistrationPINBothFlagsTogether(t *testing.T) {
 		t.Errorf("SEP2RegistrationPINs: got %v, want {F0FA1AC6: 234564}", cfg.SEP2RegistrationPINs)
 	}
 }
+
+// writeProgramFile writes a -sep2-program-file document and returns its path.
+func writeProgramFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "program.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
+
+// TestLoadConfigDERProgramUnsetByDefault pins the no-op case: with no flag
+// and no file, both fields stay nil so buildSEP2Policy leaves the
+// compiled-in defaults alone. A non-nil zero here would silently serve
+// primacy 0 (the highest priority) to every deployment on upgrade.
+func TestLoadConfigDERProgramUnsetByDefault(t *testing.T) {
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2ProgramPrimacy != nil {
+		t.Errorf("SEP2ProgramPrimacy = %v, want nil", cfg.SEP2ProgramPrimacy)
+	}
+	if cfg.SEP2ProgramDescription != nil {
+		t.Errorf("SEP2ProgramDescription = %v, want nil", cfg.SEP2ProgramDescription)
+	}
+}
+
+// TestLoadConfigDERProgramFromFile covers the path an admin UI is expected
+// to write: a whole-object JSON file the operator restarts the bridge to
+// pick up.
+func TestLoadConfigDERProgramFromFile(t *testing.T) {
+	path := writeProgramFile(t, `{"primacy": 89, "description": "Feeder DER program"}`)
+
+	cfg, err := loadConfig([]string{"-sep2-program-file=" + path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2ProgramPrimacy == nil || *cfg.SEP2ProgramPrimacy != 89 {
+		t.Errorf("SEP2ProgramPrimacy = %v, want 89", cfg.SEP2ProgramPrimacy)
+	}
+	if cfg.SEP2ProgramDescription == nil || *cfg.SEP2ProgramDescription != "Feeder DER program" {
+		t.Errorf("SEP2ProgramDescription = %v, want %q", cfg.SEP2ProgramDescription, "Feeder DER program")
+	}
+}
+
+// TestLoadConfigDERProgramFilePartialLeavesOtherFieldNil is the invariant
+// that forces the pointer returns out of loadProgramFile: a file that sets
+// only description must not reset primacy, because the zero value it would
+// reset to (0) is a legal and higher-priority primacy, not an absent one.
+func TestLoadConfigDERProgramFilePartialLeavesOtherFieldNil(t *testing.T) {
+	path := writeProgramFile(t, `{"description": "Only a description"}`)
+
+	cfg, err := loadConfig([]string{"-sep2-program-file=" + path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2ProgramPrimacy != nil {
+		t.Errorf("SEP2ProgramPrimacy = %v, want nil; a file that omits primacy must leave the compiled-in default alone", cfg.SEP2ProgramPrimacy)
+	}
+	if cfg.SEP2ProgramDescription == nil || *cfg.SEP2ProgramDescription != "Only a description" {
+		t.Errorf("SEP2ProgramDescription = %v, want %q", cfg.SEP2ProgramDescription, "Only a description")
+	}
+}
+
+// TestLoadConfigDERProgramFlagOverridesFile pins the documented precedence:
+// flag beats file, matching the PIN flags.
+func TestLoadConfigDERProgramFlagOverridesFile(t *testing.T) {
+	path := writeProgramFile(t, `{"primacy": 89, "description": "From file"}`)
+
+	cfg, err := loadConfig([]string{
+		"-sep2-program-file=" + path,
+		"-sep2-program-primacy=2",
+		"-sep2-program-description=From flag",
+	})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2ProgramPrimacy == nil || *cfg.SEP2ProgramPrimacy != 2 {
+		t.Errorf("SEP2ProgramPrimacy = %v, want 2 (flag overrides file)", cfg.SEP2ProgramPrimacy)
+	}
+	if cfg.SEP2ProgramDescription == nil || *cfg.SEP2ProgramDescription != "From flag" {
+		t.Errorf("SEP2ProgramDescription = %v, want %q (flag overrides file)", cfg.SEP2ProgramDescription, "From flag")
+	}
+}
+
+// TestLoadConfigDERProgramPrimacyZeroIsCarried guards the ambiguity the
+// empty-string flag sentinel exists to resolve: 0 is a legal primacy, so an
+// explicit -sep2-program-primacy=0 must reach the policy as a configured 0
+// rather than being read as "unset".
+func TestLoadConfigDERProgramPrimacyZeroIsCarried(t *testing.T) {
+	cfg, err := loadConfig([]string{"-sep2-program-primacy=0"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2ProgramPrimacy == nil {
+		t.Fatal("SEP2ProgramPrimacy = nil for an explicit -sep2-program-primacy=0; 0 is a legal primacy and must be distinguishable from unset")
+	}
+	if *cfg.SEP2ProgramPrimacy != 0 {
+		t.Errorf("SEP2ProgramPrimacy = %d, want 0", *cfg.SEP2ProgramPrimacy)
+	}
+}
+
+// TestLoadConfigDERProgramFileRejectsBadInput covers the cases where the
+// file cannot be trusted. Each must be a load error naming the flag, never
+// a silently ignored setting: an operator who sees the bridge come up on
+// the default has no way to tell their value was dropped.
+func TestLoadConfigDERProgramFileRejectsBadInput(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"not JSON at all", `not json`},
+		{"top-level array rather than an object", `[1, 2]`},
+		{"misspelled member", `{"primacy_value": 1}`},
+		{"primacy as a string", `{"primacy": "1"}`},
+		{"primacy not an integer", `{"primacy": 1.5}`},
+		{"primacy above the PrimacyType range", `{"primacy": 256}`},
+		{"primacy below the PrimacyType range", `{"primacy": -1}`},
+		{"description as a number", `{"description": 7}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeProgramFile(t, tt.body)
+			_, err := loadConfig([]string{"-sep2-program-file=" + path})
+			if err == nil {
+				t.Fatalf("loadConfig(%s) = nil error, want a load failure", tt.body)
+			}
+			if !strings.Contains(err.Error(), "-sep2-program-file") {
+				t.Errorf("error %q does not name -sep2-program-file", err)
+			}
+		})
+	}
+}
+
+// TestLoadConfigDERProgramFileMissingIsAnError: a path the operator named
+// but that does not exist is a mistake, not a reason to fall back silently.
+func TestLoadConfigDERProgramFileMissingIsAnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "absent.json")
+	_, err := loadConfig([]string{"-sep2-program-file=" + path})
+	if err == nil {
+		t.Fatal("loadConfig with a nonexistent -sep2-program-file = nil error, want a load failure")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error %q does not say the file is missing", err)
+	}
+}

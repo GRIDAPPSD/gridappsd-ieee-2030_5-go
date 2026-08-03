@@ -83,16 +83,33 @@ type Config struct {
 	// and publishes from there. TestConfigCarriesNoBusPublishSurface
 	// guards this.
 
-	// DefaultControl is the DefaultDERControl GAGO-050 seeds onto every
-	// DERProgram's DefaultDERControlLink, at the same lazy-creation
-	// moment ensureDERProgram creates the program itself (first
-	// ApplyControlDelta for a device, not at New/seedStores time). The
-	// zero value (every DERControlBase field nil, including
-	// OpModConnect/OpModEnergize) is a valid but degenerate
-	// configuration: a CSIP client would find a well-formed but
-	// all-unset DefaultDERControl. Callers should source this from
-	// sep2config.SEP2Policy.DefaultControl rather than leaving it zero.
+	// DefaultControl is the DefaultDERControl seeded onto every
+	// DERProgram's DefaultDERControlLink. As of the default-program work
+	// this happens at New/seedStores time, for every registered device,
+	// rather than at the first ApplyControlDelta: see DefaultProgram below
+	// and seed.go's createDERProgram call. The zero value (every
+	// DERControlBase field nil, including OpModConnect/OpModEnergize) is a
+	// valid but degenerate configuration: a CSIP client would find a
+	// well-formed but all-unset DefaultDERControl. Callers should source
+	// this from sep2config.SEP2Policy.DefaultControl rather than leaving it
+	// zero.
 	DefaultControl sep2.DefaultDERControl
+
+	// DefaultProgram is the DERProgram seeded for every registered device
+	// at New time, the resource DefaultControl above hangs off.
+	//
+	// Seeding it, rather than creating it lazily on the first control
+	// delta, is what makes both the program and its default control
+	// reachable by a client that walks the tree once at startup. See
+	// sep2config.DERProgramPolicy for the full rationale and the standards
+	// citations behind the default values.
+	//
+	// The zero value serves primacy 0 and an absent description. Primacy 0
+	// is a real value (the highest priority), not a stand-in for unset, so
+	// callers should source this from
+	// sep2config.SEP2Policy.DefaultProgram rather than leaving it zero and
+	// getting a higher-priority program than they intended.
+	DefaultProgram DERProgramSeed
 
 	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
 	// the DERCapability New seeds for every registry entry (see
@@ -189,6 +206,7 @@ type Embed struct {
 	stores         *assembly.Stores
 	identity       sep2srv.Identity
 	defaultControl sep2.DefaultDERControl
+	defaultProgram DERProgramSeed
 }
 
 // New builds the resource stores, seeds EndDevices and DERs from reg,
@@ -224,6 +242,8 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		modesSupported:  cfg.ModesSupported,
 		resolvePIN:      cfg.ResolveRegistrationPIN,
 		resolvePollRate: cfg.ResolveRegistrationPollRate,
+		defaultControl:  cfg.DefaultControl,
+		defaultProgram:  cfg.DefaultProgram,
 	}
 	if err := seedStores(ctx, stores, reg, seeding); err != nil {
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)
@@ -287,7 +307,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			shutdownTimeout: shutdownTimeout,
 		}
 
-		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, defaultControl: cfg.DefaultControl}, nil
+		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, defaultControl: cfg.DefaultControl, defaultProgram: cfg.DefaultProgram}, nil
 	}
 
 	opts := sep2srv.Options{
@@ -309,7 +329,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return nil, fmt.Errorf("sep2embed: %w", err)
 	}
 
-	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, defaultControl: cfg.DefaultControl}, nil
+	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, defaultControl: cfg.DefaultControl, defaultProgram: cfg.DefaultProgram}, nil
 }
 
 // Addr returns the listener's actual bound address. Useful when
@@ -332,7 +352,7 @@ func (e *Embed) Identity() sep2srv.Identity {
 // package-private stores/notifier fields) uses, e.g. a future
 // GridAPPS-D control-delta subscriber in cmd/bridge.
 func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, delta ControlDelta) error {
-	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, e.defaultControl, delta)
+	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, e.defaultControl, e.defaultProgram, delta)
 }
 
 // Run starts the subscription notifier's worker pool and serves the

@@ -30,6 +30,15 @@ type SEP2Policy struct {
 	// comment for the specific field-by-field rationale.
 	DefaultControl sep2.DefaultDERControl
 
+	// DefaultProgram is the DERProgram seeded for every device at boot, the
+	// resource DefaultControl above hangs off. The two are companions and
+	// are deliberately adjacent: a DefaultDERControl is reachable only
+	// through its containing DERProgram's DefaultDERControlLink, so
+	// configuring one without the other is not a meaningful state.
+	//
+	// Validate with ValidateDefaultProgram before use.
+	DefaultProgram DERProgramPolicy
+
 	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
 	// each seeded DERCapability. Not derivable from CIM: no CIM class
 	// carries which control modes a device advertises over 2030.5.
@@ -321,6 +330,132 @@ func (p SEP2Policy) ValidateRates() error {
 	return nil
 }
 
+// DERProgramPolicy carries the operator-settable fields of the DERProgram
+// this bridge seeds for every device at boot.
+//
+// WHY A SEEDED PROGRAM AT ALL. The bridge used to create a device's
+// DERProgram lazily, on the first control delta to arrive for that device
+// (sep2embed's ensureDERProgram). Until then the device's DERProgramList was
+// legitimately empty, and that is a real interoperability defect for two
+// separate reasons:
+//
+//   - A client that walks the tree once at startup and does not re-poll the
+//     list sees no program and never comes back to look.
+//   - DefaultDERControl hangs off DERProgram. CSIP is explicit that "in the
+//     absence of any active events, the inverter executes the
+//     DefaultDERControl of the DERProgram with the highest priority" (CSIP
+//     Implementation Guide v2.0, section 8). An empty DERProgramList
+//     therefore makes the configured DefaultControl unreachable, so the
+//     no-active-control fallback the operator configured never applies.
+//
+// The program is the operator's control channel. It should exist whether or
+// not a control is currently active, so it is seeded rather than lazily
+// created.
+//
+// Only the fields an operator has a real decision to make about are carried
+// here. mRID is derived (see sep2embed's deriveMRID), and the links are
+// structural, so neither is configurable: an operator cannot usefully choose
+// them and letting them be set would only create ways to break traversal.
+type DERProgramPolicy struct {
+	// Primacy is the DERProgram's primacy value: sep.xsd's PrimacyType,
+	// which is a plain UInt8 with no facets, so the schema itself enforces
+	// nothing beyond the byte range and ValidateDefaultProgram carries the
+	// documented meaning.
+	//
+	// It is not a placeholder. Primacy governs precedence when more than one
+	// DERProgram applies to a device: "the priority of a DERControl is
+	// determined by the primacy setting of its containing DERProgram with a
+	// lower primacy value indicating higher priority" (CSIP Implementation
+	// Guide v2.0, section 8; the same rule appears at 5.2.4.2). It also
+	// selects which DefaultDERControl applies when several programs are in
+	// scope and no event is active.
+	//
+	// Not pointer-typed, unlike the poll and post rates: sep.xsd makes
+	// primacy minOccurs=1 on DERProgram, so there is no "absent" state to
+	// represent, and 0 is a meaningful value (the highest priority) rather
+	// than a stand-in for unset.
+	Primacy uint8
+
+	// Description is the DERProgram's human-readable description. sep.xsd
+	// types IdentifiedObject.description as String32, so values longer than
+	// 32 characters are rejected by ValidateDefaultProgram rather than
+	// truncated: an over-length value is not trimmed by the serializer, it
+	// goes out on the wire and a conformant client fails the whole document
+	// parse on it, losing every sibling field including the links.
+	//
+	// Empty is valid and marshals as absent: description is minOccurs=0.
+	Description string
+}
+
+// PrimacyContractedServiceProvider is sep.xsd's documented PrimacyType value
+// 1, "Contracted premises service provider".
+//
+// This is the default this bridge seeds, and the value it has always used
+// for the lazily-created program, so seeding does not change what an existing
+// deployment serves.
+//
+// It is the right reading of what this bridge is. The GridAPPS-D platform
+// operating a distribution feeder is the service provider the DER is
+// interconnected with under an agreement, which is what value 1 names. The
+// two neighbouring values are both worse fits: 0 is "In home energy
+// management system", a premises-side controller this bridge is not, and 2
+// is "Non-contractual service provider", which would rank the utility's own
+// program below any contracted aggregator sharing the device and is the
+// opposite of the intended precedence.
+const PrimacyContractedServiceProvider uint8 = 1
+
+// MaxDERProgramDescription is the inclusive maximum length of
+// DERProgram.description, from sep.xsd's String32 (xs:maxLength 32 on
+// IdentifiedObject.description).
+const MaxDERProgramDescription = 32
+
+// ValidateDefaultProgram reports whether the configured default DERProgram
+// can be served. Called at bridge boot, before anything is seeded, for the
+// same reason ValidateRates is: a bad value should stop the process rather
+// than reach a client as a document it silently refuses to parse.
+//
+// Two rules are enforced, both from sep.xsd:
+//
+//   - description fits String32. This is the exact defect that made a
+//     conformant client reject the seeded FunctionSetAssignments document
+//     outright, so it is checked rather than assumed.
+//   - primacy is not in a range the standard reserves. PrimacyType documents
+//     0 to 2 as assigned, 3 to 64 and 192 to 255 as Reserved, and 65 to 191
+//     as User-defined. Reserved means not available for use, so a value
+//     there is a configuration error, not a deployment choice. The
+//     user-defined band is permitted: CSIP's own worked examples sit in it
+//     (the Implementation Guide uses 80 through 89 for a program hierarchy),
+//     so rejecting it would refuse configurations the standard and the
+//     profile both endorse.
+//
+// This is deliberately narrower than "reject anything unusual". uint8
+// already bounds the range from above, and the assigned and user-defined
+// bands together are what an operator may legitimately choose from.
+//
+// Errors name the flag an operator would set rather than the struct field,
+// matching ValidateRates: the flag is what they can act on.
+func (p SEP2Policy) ValidateDefaultProgram() error {
+	if n := len(p.DefaultProgram.Description); n > MaxDERProgramDescription {
+		return fmt.Errorf(
+			"sep2config: -sep2-program-description is %d characters; sep.xsd bounds DERProgram.description at %d (String32)",
+			n, MaxDERProgramDescription)
+	}
+	if reservedPrimacy(p.DefaultProgram.Primacy) {
+		return fmt.Errorf(
+			"sep2config: -sep2-program-primacy %d is in a range IEEE 2030.5 reserves; "+
+				"use 0 (in-home energy management system), 1 (contracted premises service provider), "+
+				"2 (non-contractual service provider), or 65 to 191 (user-defined)",
+			p.DefaultProgram.Primacy)
+	}
+	return nil
+}
+
+// reservedPrimacy reports whether v falls in one of the two bands sep.xsd's
+// PrimacyType annotation marks "Reserved": 3 to 64 and 192 to 255.
+func reservedPrimacy(v uint8) bool {
+	return (v >= 3 && v <= 64) || v >= 192
+}
+
 // HasValidPINCheckDigit reports whether pin satisfies the IEEE 2030.5
 // section 6.3.5 checksum rule.
 //
@@ -375,6 +510,12 @@ func HasValidPINCheckDigit(pin uint32) bool {
 // would overwrite the device's own commissioned 1547 settings and risks
 // synchronized reconnection.
 //
+// DefaultProgram carries the program DefaultControl hangs off. Primacy is
+// PrimacyContractedServiceProvider (1), which is both the spec-correct
+// reading of what this bridge is and the value the lazily-created program
+// already used, so seeding changes no served value. See that constant and
+// DERProgramPolicy for the full rationale.
+//
 // ModesSupported and the poll/post rates default to nil (unset); GAGO-049
 // and any future FSA-seeding card supply real values once they exist.
 func DefaultPolicy() SEP2Policy {
@@ -386,6 +527,13 @@ func DefaultPolicy() SEP2Policy {
 				OpModConnect:  &connect,
 				OpModEnergize: &energize,
 			},
+		},
+		DefaultProgram: DERProgramPolicy{
+			Primacy: PrimacyContractedServiceProvider,
+			// 22 characters, inside String32. Names the bridge that
+			// serves it rather than the feeder or device, because one
+			// description is served for every device in the fleet.
+			Description: "GridAPPS-D DER program",
 		},
 	}
 }

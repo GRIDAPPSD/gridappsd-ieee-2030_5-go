@@ -326,3 +326,65 @@ func TestBuildSEP2PolicyRejectsBadCheckDigitPerDevice(t *testing.T) {
 type fakeBusPublisherForTest struct{}
 
 func (fakeBusPublisherForTest) Send(_ context.Context, _, _ string, _ []byte) error { return nil }
+
+// TestBuildSEP2PolicyDefaultProgramFlowsThroughAndValidates covers the
+// end-to-end config path for the seeded default DERProgram: an unset config
+// keeps the compiled-in default, a configured value replaces it, and a value
+// the standard forbids stops the bridge at boot rather than reaching a
+// client.
+func TestBuildSEP2PolicyDefaultProgramFlowsThroughAndValidates(t *testing.T) {
+	t.Parallel()
+
+	// Unconfigured: the compiled-in default survives untouched.
+	policy, err := buildSEP2Policy(config{})
+	if err != nil {
+		t.Fatalf("buildSEP2Policy(empty): %v", err)
+	}
+	if policy.DefaultProgram.Primacy != sep2config.PrimacyContractedServiceProvider {
+		t.Errorf("unconfigured DefaultProgram.Primacy = %d, want %d",
+			policy.DefaultProgram.Primacy, sep2config.PrimacyContractedServiceProvider)
+	}
+	if policy.DefaultProgram.Description == "" {
+		t.Error("unconfigured DefaultProgram.Description is empty, want the compiled-in default")
+	}
+
+	// Configured: both fields are replaced by the operator's values.
+	primacy := uint8(89)
+	description := "Feeder DER program"
+	policy, err = buildSEP2Policy(config{
+		SEP2ProgramPrimacy:     &primacy,
+		SEP2ProgramDescription: &description,
+	})
+	if err != nil {
+		t.Fatalf("buildSEP2Policy(configured): %v", err)
+	}
+	if policy.DefaultProgram.Primacy != 89 {
+		t.Errorf("configured DefaultProgram.Primacy = %d, want 89", policy.DefaultProgram.Primacy)
+	}
+	if policy.DefaultProgram.Description != description {
+		t.Errorf("configured DefaultProgram.Description = %q, want %q", policy.DefaultProgram.Description, description)
+	}
+
+	// An explicit primacy 0 must survive as a configured 0. It is a legal
+	// value (the highest priority), so it must not be mistaken for unset
+	// and quietly replaced by the compiled-in 1.
+	zero := uint8(0)
+	policy, err = buildSEP2Policy(config{SEP2ProgramPrimacy: &zero})
+	if err != nil {
+		t.Fatalf("buildSEP2Policy(primacy 0): %v", err)
+	}
+	if policy.DefaultProgram.Primacy != 0 {
+		t.Errorf("explicit primacy 0 became %d; 0 is a legal primacy and must not be read as unset", policy.DefaultProgram.Primacy)
+	}
+
+	// Rejected at boot: a reserved primacy and an over-length description
+	// each stop the bridge before it serves anything.
+	reserved := uint8(200)
+	if _, err := buildSEP2Policy(config{SEP2ProgramPrimacy: &reserved}); err == nil {
+		t.Error("buildSEP2Policy accepted a reserved primacy 200, want a boot-time refusal")
+	}
+	tooLong := strings.Repeat("x", 33)
+	if _, err := buildSEP2Policy(config{SEP2ProgramDescription: &tooLong}); err == nil {
+		t.Error("buildSEP2Policy accepted a 33-character description, want a boot-time refusal (sep.xsd String32)")
+	}
+}

@@ -69,6 +69,30 @@ var ErrUnknownControlDevice = errors.New("sep2embed: control delta targets an un
 // shape, or names a Field this bridge does not (yet) map.
 var ErrUnsupportedControlAttribute = errors.New("sep2embed: unsupported control delta attribute")
 
+// DERProgramSeed carries the operator-configurable fields of the DERProgram
+// this package seeds and lazily creates. It mirrors
+// sep2config.DERProgramPolicy, which is where the values and their rationale
+// live; the shape is duplicated here rather than imported for the same reason
+// Config mirrors the rest of SEP2Policy: sep2config is a policy-only package
+// that knows nothing about stores, and this package takes plain values so the
+// dependency does not run the wrong way.
+//
+// Only these two fields are carried. mRID is derived (deriveMRID) and every
+// link is structural, so neither is something an operator can usefully set.
+type DERProgramSeed struct {
+	// Primacy is DERProgram.primacy. sep.xsd makes it minOccurs=1, so there
+	// is no absent state, and the zero value is a real primacy (highest
+	// priority) rather than a stand-in for unset. Callers source it from
+	// sep2config.SEP2Policy.DefaultProgram.
+	Primacy uint8
+
+	// Description is DERProgram.description, bounded at 32 characters by
+	// sep.xsd's String32. Validated by
+	// sep2config.SEP2Policy.ValidateDefaultProgram at boot; empty is valid
+	// and marshals as absent.
+	Description string
+}
+
 // derProgramListHref returns the canonical href for the DERProgramList
 // scoped to (edev, fsa). Mirrors the server-of-record's own
 // derProgramListHref helper (internal/server/test_mutations.go) and
@@ -128,7 +152,13 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // (cmd/bridge/main.go), never hardcoded here: ApplyControlDelta itself
 // carries no opinion on the value, only the plumbing to seed it once
 // per (edevID, fsaID, derpID).
-func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, defaultControl sep2.DefaultDERControl, delta ControlDelta) error {
+//
+// programSeed is the matching operator policy for the DERProgram itself,
+// sourced from SEP2Policy.DefaultProgram. Since boot seeding now creates a
+// program for every registered device, ensureDERProgram below is a fallback
+// for a device seeding did not cover; it takes the same policy so the two
+// paths cannot serve different programs for the same fleet.
+func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, defaultControl sep2.DefaultDERControl, programSeed DERProgramSeed, delta ControlDelta) error {
 	field, ok := strings.CutPrefix(delta.Attribute, derControlAttributePrefix)
 	if !ok || field == "" {
 		return fmt.Errorf("%w: attribute %q (want prefix %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix)
@@ -163,7 +193,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 			ErrUnknownControlDevice, edevID, entry.MRID, err)
 	}
 
-	if err := ensureDERProgram(ctx, stores, edevID, entry.LFDI, controlFSAID, controlDERProgramID, defaultControl); err != nil {
+	if err := ensureDERProgram(ctx, stores, edevID, entry.LFDI, controlFSAID, controlDERProgramID, defaultControl, programSeed); err != nil {
 		return fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
 	}
 
@@ -191,7 +221,10 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 
 	control := sep2.DERControl{}
 	control.Href = "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
-	control.MRID = entry.LFDI + "-" + activeControlID
+	// Schema-valid hexBinary(16), not "<LFDI>-active": a conformant client
+	// aborts the whole DERControlList parse on a non-hex mRID and so never
+	// reads responseRequired or replyTo off this control. See deriveMRID.
+	control.MRID = deriveMRID(mridKindDERControl, entry.LFDI)
 	control.EventStatus = &sep2.EventStatus{
 		CurrentStatus: sep2.EventStatusActive,
 		DateTime:      time.Now().UTC().Unix(),
@@ -245,31 +278,66 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 // deliberately separate arguments: an MRID is an identity value that must not
 // become a URL-addressing artifact, and building one from the index would
 // make it collide across restarts once indices are reassigned.
-func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mridBase, fsaID, derpID string, defaultControl sep2.DefaultDERControl) error {
+func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mridBase, fsaID, derpID string, defaultControl sep2.DefaultDERControl, seed DERProgramSeed) error {
 	inner := stores.DERPrograms.ForParent(edevID)
 	if _, err := inner.Get(ctx, derpID); err == nil {
 		return nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("get der program: %w", err)
 	}
+	return createDERProgram(ctx, stores, edevID, mridBase, fsaID, derpID, defaultControl, seed)
+}
 
+// createDERProgram writes one DERProgram and its DefaultDERControl singleton
+// unconditionally, with no get-or-create check.
+//
+// This is the SINGLE construction site for both. seedStores calls it at boot
+// so every device has a program before any control arrives (GAGO default
+// program), and ensureDERProgram calls it on the lazy path for a device that
+// boot seeding did not cover. Both paths must produce byte-identical
+// resources: if they drifted, a device's served program would depend on
+// whether a control delta happened to arrive first, which is exactly the kind
+// of ordering-dependent wire difference no test would catch.
+//
+// Creating the DefaultDERControl here, rather than only on the lazy path, is
+// load-bearing rather than incidental. ensureDERProgram returns early when the
+// program already exists, so if boot seeding created the program alone the
+// lazy path would then short-circuit and the DefaultDERControl would never be
+// created at all. The program and its default control are one unit and are
+// written as one.
+func createDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mridBase, fsaID, derpID string, defaultControl sep2.DefaultDERControl, seed DERProgramSeed) error {
 	dderc := defaultControl.Copy()
 	dderc.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/dderc"
-	dderc.MRID = mridBase + "-dderc"
+	dderc.MRID = deriveMRID(mridKindDefaultDERControl, mridBase)
 
 	scope := derControlScope(edevID, fsaID, derpID)
 	if err := stores.DefaultDERControls.Create(ctx, scope, singletonKey, dderc); err != nil {
 		return fmt.Errorf("create default der control: %w", err)
 	}
 
-	program := sep2.DERProgram{Primacy: 1}
+	// DERProgram is an IdentifiedObject: sep.xsd makes mRID mandatory on it,
+	// and the bridge previously served it with no mRID at all. A client that
+	// parses the DERProgramList strictly cannot reach the DERControlListLink
+	// below without it.
+	//
+	// Primacy and Description come from operator policy
+	// (sep2config.DERProgramPolicy); everything else on the program is
+	// derived or structural and is stamped here. Primacy is NOT defaulted
+	// locally when the seed is zero: 0 is a meaningful primacy (the highest
+	// priority), so a zero value is served as configured rather than
+	// silently rewritten to 1.
+	program := sep2.DERProgram{
+		Primacy:     seed.Primacy,
+		Description: seed.Description,
+		MRID:        deriveMRID(mridKindDERProgram, mridBase),
+	}
 	program.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID
 	program.DERControlListLink = &sep2.ListLink{
 		Href: "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/derc",
 	}
 	program.DefaultDERControlLink = &sep2.Link{Href: dderc.Href}
 
-	if err := inner.Create(ctx, derpID, program); err != nil {
+	if err := stores.DERPrograms.ForParent(edevID).Create(ctx, derpID, program); err != nil {
 		return fmt.Errorf("create der program: %w", err)
 	}
 	return nil

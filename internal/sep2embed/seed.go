@@ -134,6 +134,16 @@ type seedPolicy struct {
 	// Keyed on LFDI so a per-device rate policy can be added without
 	// touching this file; see sep2config.SEP2Policy.PollRates.
 	resolvePollRate func(lfdi string) (uint32, bool)
+
+	// defaultControl and defaultProgram are the DefaultDERControl and the
+	// DERProgram seeded for every device, sourced from
+	// sep2config.SEP2Policy.DefaultControl and .DefaultProgram.
+	//
+	// Both zero values are valid but degenerate rather than fatal: a
+	// well-formed program carrying an all-unset default control. That is a
+	// different case from resolvePIN, where no value can be invented at all.
+	defaultControl sep2.DefaultDERControl
+	defaultProgram DERProgramSeed
 }
 
 // seedOne writes the EndDevice and its single child DER for one registry
@@ -226,6 +236,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	}
 
 	registrationHref := "/edev/" + id + "/rg"
+	fsaListHref := "/edev/" + id + "/fsa"
 
 	enabled := true
 	dev := sep2.EndDevice{
@@ -238,9 +249,45 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	dev.Href = "/edev/" + id
 	dev.DERListLink = &sep2.ListLink{Href: "/edev/" + id + "/der", All: 1}
 	dev.RegistrationLink = &sep2.Link{Href: registrationHref}
+	// A link-traversing client reaches the DERProgram (and therefore any
+	// DERControl this bridge writes) only through the EndDevice's
+	// FunctionSetAssignments. Core's own self-registration path stamps this
+	// link on every EndDevice it creates (handlers/enddevice/enddevice.go:202);
+	// the bridge seeds EndDevices directly rather than through that path, so
+	// without this the served EndDevice carries no FSA link at all and the
+	// entire DERControl function set is unreachable by traversal even though
+	// every resource under it is mounted and served. All is 1 because seedFSA
+	// below creates exactly one FunctionSetAssignments per device.
+	dev.FunctionSetAssignmentsListLink = &sep2.ListLink{Href: fsaListHref, All: 1}
 
 	if err := stores.EndDevices.Create(ctx, id, dev); err != nil {
 		return fmt.Errorf("create EndDevice: %w", err)
+	}
+
+	// Seeded, not created lazily, for the same reason the Registration below
+	// is: the EndDevice above already advertises the list, and an advertised
+	// link whose list is empty reads to a link-traversing client exactly like
+	// the missing-link failure this seeding exists to prevent.
+	if err := seedFSA(ctx, stores, id, e.LFDI); err != nil {
+		return err
+	}
+
+	// The DERProgram the FSA above advertises, plus its DefaultDERControl,
+	// created here at boot rather than lazily on the first control delta.
+	//
+	// This is the same argument one level down. The FSA advertises a
+	// DERProgramList; if that list stayed empty until a control arrived, a
+	// client that walks the tree once at startup would find nothing and never
+	// return. It also makes the operator's configured DefaultDERControl
+	// unreachable, because a DefaultDERControl is only ever reached through
+	// its containing DERProgram's DefaultDERControlLink, so the fallback that
+	// applies when no control is active would never apply.
+	//
+	// (controlFSAID, controlDERProgramID) is the same fixed pair
+	// ApplyControlDelta writes under, so the program seeded here is the exact
+	// resource the control path later adds DERControls to, not a parallel one.
+	if err := createDERProgram(ctx, stores, id, e.LFDI, controlFSAID, controlDERProgramID, policy.defaultControl, policy.defaultProgram); err != nil {
+		return fmt.Errorf("seed der program: %w", err)
 	}
 
 	// The Registration is keyed by the same store id as its EndDevice
@@ -395,6 +442,72 @@ func buildRTGMaxVar(maxQ *int64, deviceID string) (*sep2.ReactivePower, error) {
 		return nil, fmt.Errorf("device %q: %w", deviceID, err)
 	}
 	return &sep2.ReactivePower{Multiplier: mult, Value: value}, nil
+}
+
+// fsaDescription is the seeded FunctionSetAssignments description. sep.xsd
+// bounds this field at 32 characters (String32); TestSeedStoresFSADescription
+// FitsString32 pins that so a later edit cannot quietly exceed it.
+const fsaDescription = "Bridge DER function set"
+
+// seedFSA creates the single FunctionSetAssignments record that the
+// EndDevice's FunctionSetAssignmentsListLink points at, and links it to the
+// DERProgramList the control path writes under.
+//
+// The fsaID is controlFSAID, NOT a fresh identifier. That is load-bearing:
+// ApplyControlDelta writes its DERProgram, DefaultDERControl, and DERControls
+// under the fixed (controlFSAID, controlDERProgramID) pair (control.go:48 and
+// its derProgramListHref/derControlScope helpers). Seeding this FSA under any
+// other id would advertise a DERProgramList at a path the control path never
+// writes to, so a traversing client would follow the link, find a permanently
+// empty list, and never see a DERControl. The two must agree.
+//
+// The DERProgramList this points at is populated at boot by seedOne's
+// createDERProgram call, under that same fixed pair, so the link resolves to
+// a real program from the first GET rather than only after a control delta
+// has arrived.
+//
+// The mRID comes from deriveMRID keyed on the device LFDI, the same
+// derivation every other mRID this package mints uses, so FSA identity is a
+// function of the device identity rather than a second, unrelated numbering
+// scheme.
+func seedFSA(ctx context.Context, stores *assembly.Stores, edevID, lfdi string) error {
+	if stores.FSAs == nil {
+		return nil
+	}
+
+	fsa := sep2.FunctionSetAssignments{
+		MRID: deriveMRID(mridKindFSA, lfdi),
+		// sep.xsd types FunctionSetAssignments.description as String32, so
+		// this must stay at or under 32 characters. A conformant client
+		// (EPRI reference client, SE_String32_t) fails the whole document
+		// parse on an over-length value, exactly as it does on a bad mRID,
+		// so the length is a wire contract and not a style preference.
+		Description: fsaDescription,
+	}
+	fsa.Href = "/edev/" + edevID + "/fsa/" + controlFSAID
+	fsa.DERProgramListLink = &sep2.ListLink{
+		Href: derProgramListHref(edevID, controlFSAID),
+		// All is 1 because seedOne seeds exactly one DERProgram under this
+		// FSA, and it must be stated rather than left zero for two reasons.
+		//
+		// sep.xsd:5385 requires it: "This attribute SHALL be present if the
+		// href is a local or relative URI", and this href is relative. The
+		// Go field is `all,attr,omitempty`, so leaving it 0 does not emit
+		// all="0", it emits no all attribute at all, which is the
+		// non-conformant case rather than a merely understated one.
+		//
+		// And an advertised all="0" tells a link-traversing client the list
+		// is empty, so it may skip the GET entirely: the same reasoning that
+		// puts All: 1 on the EndDevice's FunctionSetAssignmentsListLink
+		// above. An advertised-but-uncounted program is as unreachable as an
+		// unadvertised one.
+		All: 1,
+	}
+
+	if err := stores.FSAs.Create(ctx, edevID, controlFSAID, fsa); err != nil {
+		return fmt.Errorf("create FunctionSetAssignments: %w", err)
+	}
+	return nil
 }
 
 // derivePlaceholderSFDI returns a syntactically valid (spec 6.3.3 shaped,

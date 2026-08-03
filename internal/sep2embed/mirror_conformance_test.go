@@ -148,6 +148,13 @@ func newMUPTestServer(t *testing.T, serials ...string) (string, []mupTestDevice)
 	e, err := New(ctx, Config{
 		Addr: "127.0.0.1:0", CertDir: certDir, ShutdownTimeout: time.Second,
 		ResolveRegistrationPIN: testResolvePIN,
+		// The seeded DERProgram policy is supplied here so this harness
+		// serves what a default deployment serves. Without it the served
+		// program would carry primacy 0 and no description, and the
+		// conformance tests over these bytes would be pinning a shape no
+		// operator ever sees.
+		DefaultControl: testDefaultControlSnapshot(),
+		DefaultProgram: testProgramSeed,
 	}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
