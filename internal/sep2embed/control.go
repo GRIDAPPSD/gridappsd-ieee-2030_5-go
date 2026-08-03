@@ -191,7 +191,10 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 
 	control := sep2.DERControl{}
 	control.Href = "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
-	control.MRID = entry.LFDI + "-" + activeControlID
+	// Schema-valid hexBinary(16), not "<LFDI>-active": a conformant client
+	// aborts the whole DERControlList parse on a non-hex mRID and so never
+	// reads responseRequired or replyTo off this control. See deriveMRID.
+	control.MRID = deriveMRID(mridKindDERControl, entry.LFDI)
 	control.EventStatus = &sep2.EventStatus{
 		CurrentStatus: sep2.EventStatusActive,
 		DateTime:      time.Now().UTC().Unix(),
@@ -255,14 +258,18 @@ func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mrid
 
 	dderc := defaultControl.Copy()
 	dderc.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/dderc"
-	dderc.MRID = mridBase + "-dderc"
+	dderc.MRID = deriveMRID(mridKindDefaultDERControl, mridBase)
 
 	scope := derControlScope(edevID, fsaID, derpID)
 	if err := stores.DefaultDERControls.Create(ctx, scope, singletonKey, dderc); err != nil {
 		return fmt.Errorf("create default der control: %w", err)
 	}
 
-	program := sep2.DERProgram{Primacy: 1}
+	// DERProgram is an IdentifiedObject: sep.xsd makes mRID mandatory on it,
+	// and the bridge previously served it with no mRID at all. A client that
+	// parses the DERProgramList strictly cannot reach the DERControlListLink
+	// below without it.
+	program := sep2.DERProgram{Primacy: 1, MRID: deriveMRID(mridKindDERProgram, mridBase)}
 	program.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID
 	program.DERControlListLink = &sep2.ListLink{
 		Href: "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID + "/derc",

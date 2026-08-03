@@ -770,3 +770,106 @@ func TestSeedRefusesDeviceWithNoConfiguredPIN(t *testing.T) {
 		})
 	}
 }
+
+// TestSeedStoresCreatesFSAAndLinkPerDevice pins the link chain a
+// link-traversing client walks to reach a DERControl:
+//
+//	EndDevice -> FunctionSetAssignmentsListLink -> FSA -> DERProgramListLink
+//
+// The EPRI reference client gates its entire DERControl and Response path on
+// this chain: oeg_client.c:457 looks up the EndDevice's FunctionSetAssignments
+// subordinate and skips the SCHEDULE_TEST block (and therefore schedule_der,
+// and therefore device_response) when it is absent. A missing link here is not
+// a cosmetic gap; it makes every DERControl the bridge writes unreachable.
+func TestSeedStoresCreatesFSAAndLinkPerDevice(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.New()
+	entries := []registry.Entry{
+		{MRID: "mrid-inv-1", Name: "Inverter 1", LFDI: "AAAA00000000000000000000000000000000AAAA", Placeholder: true},
+		{MRID: "mrid-bat-1", Name: "Battery 1", LFDI: "BBBB00000000000000000000000000000000BBBB", Placeholder: true},
+	}
+	if err := reg.AddBatch(entries); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+
+	stores := newStores()
+	ctx := context.Background()
+	if err := seedStores(ctx, stores, reg, seedPolicy{resolvePIN: testResolvePIN}); err != nil {
+		t.Fatalf("seedStores: %v", err)
+	}
+
+	for _, e := range entries {
+		id := urlIndexFor(t, stores, e.MRID)
+		wantListHref := "/edev/" + id + "/fsa"
+		wantFSAHref := "/edev/" + id + "/fsa/" + controlFSAID
+
+		dev, err := stores.EndDevices.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("EndDevices.Get(%q): %v", id, err)
+		}
+		if dev.FunctionSetAssignmentsListLink == nil {
+			t.Fatalf("dev.FunctionSetAssignmentsListLink is nil for LFDI %q; a link-traversing client can never reach a DERControl", e.LFDI)
+		}
+		if dev.FunctionSetAssignmentsListLink.Href != wantListHref {
+			t.Errorf("dev.FunctionSetAssignmentsListLink.Href = %q, want %q", dev.FunctionSetAssignmentsListLink.Href, wantListHref)
+		}
+		// All must match the number of records actually seeded below. An
+		// advertised all=0 tells a client the list is empty and it may skip
+		// the GET entirely.
+		if dev.FunctionSetAssignmentsListLink.All != 1 {
+			t.Errorf("dev.FunctionSetAssignmentsListLink.All = %d, want 1", dev.FunctionSetAssignmentsListLink.All)
+		}
+
+		// The advertised list must actually hold a record, keyed by the id
+		// the route's {id} segment carries and the fsaId the control path
+		// writes under.
+		got, err := stores.FSAs.Get(ctx, id, controlFSAID)
+		if err != nil {
+			t.Fatalf("FSAs.Get(%q, %q): %v (advertised link would resolve to an empty list)", id, controlFSAID, err)
+		}
+		if got.Href != wantFSAHref {
+			t.Errorf("FSA.Href = %q, want %q", got.Href, wantFSAHref)
+		}
+		// Schema validity, not a literal: sep.xsd types mRID as HexBinary128,
+		// so the only contract that matters on the wire is 32 hex characters.
+		assertValidMRID(t, "FSA.MRID", got.MRID)
+		if got.MRID != deriveMRID(mridKindFSA, e.LFDI) {
+			t.Errorf("FSA.MRID = %q, want %q (derived from the device LFDI)", got.MRID, deriveMRID(mridKindFSA, e.LFDI))
+		}
+		if got.DERProgramListLink == nil {
+			t.Fatalf("FSA.DERProgramListLink is nil; the chain to the DERProgram is broken at the FSA")
+		}
+		// This is the invariant that actually matters: the DERProgramList the
+		// FSA advertises must be the exact path ApplyControlDelta writes its
+		// DERProgram to. If these drift, the client follows a link to a list
+		// that is empty forever and no failure is visible on either side.
+		if got.DERProgramListLink.Href != derProgramListHref(id, controlFSAID) {
+			t.Errorf("FSA.DERProgramListLink.Href = %q, want %q (the path the control path writes under)",
+				got.DERProgramListLink.Href, derProgramListHref(id, controlFSAID))
+		}
+
+		// The seeded list must contain exactly the one record, so the
+		// advertised All above is truthful.
+		count, err := stores.FSAs.Count(ctx, id)
+		if err != nil {
+			t.Fatalf("FSAs.Count(%q): %v", id, err)
+		}
+		if count != 1 {
+			t.Errorf("FSAs.Count(%q) = %d, want 1 (must match the advertised All)", id, count)
+		}
+	}
+}
+
+// TestSeedStoresFSADescriptionFitsString32 pins the sep.xsd String32 bound on
+// FunctionSetAssignments.description. An over-length value is not truncated by
+// the serializer; it goes out on the wire and a conformant client fails the
+// entire document parse on it, losing every sibling field including the
+// DERProgramListLink. Observed directly against the EPRI reference client.
+func TestSeedStoresFSADescriptionFitsString32(t *testing.T) {
+	t.Parallel()
+
+	if n := len(fsaDescription); n > 32 {
+		t.Errorf("fsaDescription = %q: %d characters, want at most 32 (sep.xsd String32)", fsaDescription, n)
+	}
+}
