@@ -111,6 +111,26 @@ type Config struct {
 	// getting a higher-priority program than they intended.
 	DefaultProgram DERProgramSeed
 
+	// DERControl is the temporal shape stamped onto every DERControl this
+	// package issues from a control delta: the interval duration and the
+	// randomizeDuration served with it. Callers should source it from
+	// sep2config.SEP2Policy.DERControl.
+	//
+	// The zero value is NOT serviceable. A zero Duration produces an event
+	// whose interval ends the instant it starts, which a conformant client
+	// expires on arrival without ever actuating; that is the defect GAGO-131
+	// fixed. ApplyControlDelta refuses it with ErrDERControlDurationUnset
+	// rather than writing the control, so an unconfigured bridge fails
+	// loudly at the first delta instead of serving controls that are
+	// silently discarded.
+	//
+	// The refusal lives at the write site rather than in New because that is
+	// where the invalid document would be produced: constructing a server
+	// that never receives a control delta is not itself an error, and the
+	// production path is already gated earlier by
+	// sep2config.SEP2Policy.ValidateDERControl at boot.
+	DERControl DERControlSeed
+
 	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
 	// the DERCapability New seeds for every registry entry (see
 	// seedStores/seedOne). Typed as *sep2.DERControlType (IEEECORE-047),
@@ -201,12 +221,11 @@ type protocolServer interface {
 // stores, the subscription fan-out manager, and the mTLS listener from
 // core's pkg/sep2srv. Construct with New; start with Run.
 type Embed struct {
-	srv            protocolServer
-	notifier       *coresub.Manager
-	stores         *assembly.Stores
-	identity       sep2srv.Identity
-	defaultControl sep2.DefaultDERControl
-	defaultProgram DERProgramSeed
+	srv      protocolServer
+	notifier *coresub.Manager
+	stores   *assembly.Stores
+	identity sep2srv.Identity
+	policy   ControlPolicy
 }
 
 // New builds the resource stores, seeds EndDevices and DERs from reg,
@@ -237,13 +256,18 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return nil, fmt.Errorf("sep2embed: server identity: %w", err)
 	}
 
+	policy := ControlPolicy{
+		DefaultControl: cfg.DefaultControl,
+		Program:        cfg.DefaultProgram,
+		Control:        cfg.DERControl,
+	}
+
 	stores := newStores()
 	seeding := seedPolicy{
 		modesSupported:  cfg.ModesSupported,
 		resolvePIN:      cfg.ResolveRegistrationPIN,
 		resolvePollRate: cfg.ResolveRegistrationPollRate,
-		defaultControl:  cfg.DefaultControl,
-		defaultProgram:  cfg.DefaultProgram,
+		control:         policy,
 	}
 	if err := seedStores(ctx, stores, reg, seeding); err != nil {
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)
@@ -307,7 +331,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			shutdownTimeout: shutdownTimeout,
 		}
 
-		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, defaultControl: cfg.DefaultControl, defaultProgram: cfg.DefaultProgram}, nil
+		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy}, nil
 	}
 
 	opts := sep2srv.Options{
@@ -329,7 +353,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return nil, fmt.Errorf("sep2embed: %w", err)
 	}
 
-	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, defaultControl: cfg.DefaultControl, defaultProgram: cfg.DefaultProgram}, nil
+	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, policy: policy}, nil
 }
 
 // Addr returns the listener's actual bound address. Useful when
@@ -352,7 +376,7 @@ func (e *Embed) Identity() sep2srv.Identity {
 // package-private stores/notifier fields) uses, e.g. a future
 // GridAPPS-D control-delta subscriber in cmd/bridge.
 func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, delta ControlDelta) error {
-	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, e.defaultControl, e.defaultProgram, delta)
+	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, e.policy, delta)
 }
 
 // Run starts the subscription notifier's worker pool and serves the

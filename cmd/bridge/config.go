@@ -193,6 +193,43 @@ type config struct {
 	SEP2ProgramPrimacy     *uint8
 	SEP2ProgramDescription *string
 
+	// SEP2ControlDuration and SEP2ControlRandomizeDuration override the
+	// interval duration and the randomizeDuration served on every DERControl
+	// this bridge issues, from -sep2-control-duration and
+	// -sep2-control-randomize-duration. They become
+	// sep2config.SEP2Policy.DERControl.
+	//
+	// Pointer-typed for the same reason the program fields above are: both
+	// have a compiled-in default that nil must not clobber
+	// (sep2config.DefaultDERControlDuration, and 0 randomization), and 0 is
+	// a legal-looking value for each. For the randomization 0 is not merely
+	// legal but the shipped default, so it cannot double as an unset
+	// sentinel; for the duration 0 is illegal, and letting a bare uint32
+	// carry it would turn "operator said nothing" into the exact
+	// zero-length-interval defect these knobs exist to prevent.
+	//
+	// The IEEE 2030.5 domain checks (nonzero duration, the OneHourRangeType
+	// bound, and the two knobs' relationship) live in
+	// sep2config.SEP2Policy.ValidateDERControl, called from buildSEP2Policy,
+	// not here: this layer parses, that layer judges.
+	SEP2ControlDuration          *uint32
+	SEP2ControlRandomizeDuration *int32
+
+	// SEP2DefaultControlBase carries the operator's DefaultDERControl
+	// overrides, from -sep2-default-control-file. It becomes
+	// sep2config.SEP2Policy.DefaultControl's DERControlBase.
+	//
+	// Each member is a pointer, and an absent member leaves the compiled-in
+	// value alone rather than resetting it: the file is a set of overrides,
+	// not a replacement document. That distinction is the whole reason it is
+	// not decoded straight into a value type, because false is a meaningful
+	// setting for both members and could not otherwise be told from absent.
+	//
+	// The shipped default sets NEITHER, which is what makes it command
+	// nothing; see sep2config.DefaultPolicy.
+	SEP2DefaultControlOpModConnect  *bool
+	SEP2DefaultControlOpModEnergize *bool
+
 	// SEP2TelemetryInterval is the period of the DERStatus telemetry
 	// publisher (internal/telemetrypub), from -sep2-telemetry-interval
 	// (env SEP2_TELEMETRY_INTERVAL). It is a Go duration string ("15s",
@@ -397,9 +434,33 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&programFileFlag, "sep2-program-file", "",
 		"path to a JSON object configuring the seeded default DERProgram: {\"primacy\": 1, \"description\": \"...\"}; unset uses the compiled-in defaults")
 	fs.StringVar(&programPrimacyFlag, "sep2-program-primacy", "",
-		"primacy of the seeded default DERProgram, 0-2 or 65-191 (lower is higher priority); unset uses 1, contracted premises service provider")
+		"primacy of the seeded default DERProgram, 0-2 or 65-191 (lower is higher priority); "+
+			"unset uses 1, contracted premises service provider, which suits a co-simulation but NOT a field deployment, "+
+			"where 1 outranks a DSO program in the 65-191 band; set it per the interconnection agreement")
 	fs.StringVar(&programDescriptionFlag, "sep2-program-description", "",
 		"description of the seeded default DERProgram, at most 32 characters (sep.xsd String32); unset uses the compiled-in default")
+
+	// The issued-DERControl temporal surface. Both register an
+	// empty-string default for the reason every flag above does: 0 is the
+	// shipped randomization value and cannot be its own unset sentinel, and
+	// a registered numeric duration default would mask the compiled-in one.
+	var controlDurationFlag, controlRandomizeDurationFlag string
+	fs.StringVar(&controlDurationFlag, "sep2-control-duration", "",
+		"interval duration in seconds of every issued DERControl, after which the device falls back to DefaultDERControl; "+
+			"unset uses 1800, twice the sep.xsd default poll rate; set it above the configured poll rate or controls expire between polls")
+	fs.StringVar(&controlRandomizeDurationFlag, "sep2-control-randomize-duration", "",
+		"randomizeDuration in seconds served on every issued DERControl, -3600 to 3600, staggering when devices revert to DefaultDERControl; "+
+			"unset uses 0 for reproducible co-simulation runs; a field deployment should set a non-zero value")
+
+	// The DefaultDERControl operator surface. File-only, with no scalar
+	// convenience flags: unlike the program's primacy and description, these
+	// are the values a device applies when nothing else is commanding it, so
+	// the deliberate friction of writing a file is proportionate. It is also
+	// the shape an admin UI rewrites.
+	var defaultControlFileFlag string
+	fs.StringVar(&defaultControlFileFlag, "sep2-default-control-file", "",
+		"path to a JSON object configuring the seeded DefaultDERControl, e.g. {\"opModConnect\": true}; "+
+			"unset ships a control that commands nothing, leaving each DER on its own IEEE 1547 autonomous behavior")
 
 	// sep2-telemetry-interval registers with an empty-string default and
 	// is parsed by hand after Parse, matching the PIN and rate flags
@@ -520,6 +581,40 @@ func loadConfig(args []string) (config, error) {
 		// domain rule and lives in ValidateDefaultProgram with the rest of
 		// them, so there is one place an operator's value is judged.
 		cfg.SEP2ProgramDescription = &programDescriptionFlag
+	}
+
+	// Only representability is judged here, exactly as for the primacy flag
+	// above: whether the digits fit the wire type. Whether the VALUE is
+	// usable (a nonzero duration, a randomization inside OneHourRangeType
+	// and narrower than the duration) is an IEEE 2030.5 domain question and
+	// lives in ValidateDERControl, so an operator gets one message for it
+	// wherever the value came from.
+	if controlDurationFlag != "" {
+		v, err := strconv.ParseUint(controlDurationFlag, 10, 32)
+		if err != nil {
+			return config{}, fmt.Errorf(
+				"config: -sep2-control-duration value %q must be a base-10 integer in [0, 4294967295] seconds", controlDurationFlag)
+		}
+		duration := uint32(v)
+		cfg.SEP2ControlDuration = &duration
+	}
+	if controlRandomizeDurationFlag != "" {
+		v, err := strconv.ParseInt(controlRandomizeDurationFlag, 10, 32)
+		if err != nil {
+			return config{}, fmt.Errorf(
+				"config: -sep2-control-randomize-duration value %q must be a base-10 integer in seconds, negative permitted", controlRandomizeDurationFlag)
+		}
+		randomize := int32(v)
+		cfg.SEP2ControlRandomizeDuration = &randomize
+	}
+
+	if defaultControlFileFlag != "" {
+		connect, energize, err := loadDefaultControlFile(defaultControlFileFlag)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.SEP2DefaultControlOpModConnect = connect
+		cfg.SEP2DefaultControlOpModEnergize = energize
 	}
 
 	// The telemetry interval resolves flag, then env, then the
@@ -655,6 +750,87 @@ func loadProgramFile(path string) (*uint8, *string, error) {
 		description = &s
 	}
 	return primacy, description, nil
+}
+
+// loadDefaultControlFile reads -sep2-default-control-file: a single JSON
+// object holding the operator's overrides for the seeded DefaultDERControl,
+// the control a device applies when no DERControl is active.
+//
+//	{"opModConnect": true, "opModEnergize": true}
+//
+// Both members are optional and each returns nil when absent, so an
+// unmentioned member keeps the compiled-in value rather than being reset.
+// That is why the returns are pointers rather than bare bools: false is a
+// meaningful setting for both, so the zero value cannot double as "absent",
+// and a file setting only one member must not silently clear the other.
+//
+// WHY ONLY THESE TWO MEMBERS. The set is deliberately narrow, and the
+// omissions are decisions rather than unfinished work:
+//
+//   - opModTargetW and opModTargetVar are not exposed. Setting either in the
+//     FALLBACK puts the device into a fixed-power mode whenever nothing else
+//     is commanding it, which disables its own autonomous volt-var and
+//     curtailment behavior (IEEE 1547-2018 clause 5.3 mutual exclusivity).
+//     A fallback that suppresses the device's autonomy is not a fallback.
+//   - setGradW and the setES* family are not exposed. sep.xsd:3306 and
+//     sep.xsd:3271 say each SHALL update the corresponding DERSettings
+//     value, which is an installer-owned persistent write to the device's
+//     commissioned configuration, not a control-channel default.
+//
+// An unrecognized member is therefore an error rather than a silently
+// ignored setting, the same as in loadProgramFile: an operator who writes a
+// member this bridge does not honor should be told, not left to discover it
+// on the wire.
+//
+// Only syntax and JSON type are judged here.
+func loadDefaultControlFile(path string) (opModConnect, opModEnergize *bool, err error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, fmt.Errorf("config: -sep2-default-control-file %q does not exist", path)
+		}
+		return nil, nil, fmt.Errorf("config: -sep2-default-control-file %q is not readable: %w", path, err)
+	}
+
+	var members map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&members); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			return nil, nil, fmt.Errorf(
+				"config: -sep2-default-control-file %q is not a JSON object", path)
+		}
+		return nil, nil, fmt.Errorf("config: -sep2-default-control-file %q is not valid JSON: %w", path, err)
+	}
+
+	for k := range members {
+		if k != "opModConnect" && k != "opModEnergize" {
+			return nil, nil, fmt.Errorf(
+				"config: -sep2-default-control-file %q: unknown member %q (want \"opModConnect\" or \"opModEnergize\"); "+
+					"power targets and the setGradW/setES settings are deliberately not configurable here", path, k)
+		}
+	}
+
+	for _, m := range []struct {
+		name string
+		out  **bool
+	}{
+		{"opModConnect", &opModConnect},
+		{"opModEnergize", &opModEnergize},
+	} {
+		v, ok := members[m.name]
+		if !ok {
+			continue
+		}
+		b, ok := v.(bool)
+		if !ok {
+			return nil, nil, fmt.Errorf(
+				"config: -sep2-default-control-file %q: %q is not a JSON boolean", path, m.name)
+		}
+		*m.out = &b
+	}
+	return opModConnect, opModEnergize, nil
 }
 
 func parseRateFlag(raw, flagName string) (uint32, error) {

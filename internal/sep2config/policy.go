@@ -39,6 +39,18 @@ type SEP2Policy struct {
 	// Validate with ValidateDefaultProgram before use.
 	DefaultProgram DERProgramPolicy
 
+	// DERControl is the temporal shape stamped onto every DERControl this
+	// bridge issues from a GridAPPS-D control delta: how long the control
+	// applies, and how widely its expiry is staggered across the fleet.
+	//
+	// It is a third companion to the two fields above. DefaultControl is
+	// what a device falls back to when no control is active, DefaultProgram
+	// is the resource both hang off, and this is what decides WHEN that
+	// fallback takes over.
+	//
+	// Validate with ValidateDERControl before use.
+	DERControl DERControlPolicy
+
 	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
 	// each seeded DERCapability. Not derivable from CIM: no CIM class
 	// carries which control modes a device advertises over 2030.5.
@@ -370,6 +382,16 @@ type DERProgramPolicy struct {
 	// selects which DefaultDERControl applies when several programs are in
 	// scope and no event is active.
 	//
+	// FIELD DEPLOYMENTS MUST SET THIS. The compiled-in default of 1 is
+	// correct for a co-simulation, where this bridge is the only program
+	// any device sees and its rank relative to others is moot. It is wrong
+	// for a real interconnection. Lower values are higher priority
+	// (sep.xsd:6008), and the user-defined band a DSO or aggregator program
+	// occupies is 65 to 191, so a bridge left at 1 outranks every one of
+	// them and its controls win against a utility program that should have
+	// taken precedence. The right value comes from the interconnection
+	// agreement, not from this file.
+	//
 	// Not pointer-typed, unlike the poll and post rates: sep.xsd makes
 	// primacy minOccurs=1 on DERProgram, so there is no "absent" state to
 	// represent, and 0 is a meaningful value (the highest priority) rather
@@ -402,6 +424,14 @@ type DERProgramPolicy struct {
 // is "Non-contractual service provider", which would rank the utility's own
 // program below any contracted aggregator sharing the device and is the
 // opposite of the intended precedence.
+//
+// CO-SIMULATION DEFAULT, NOT A FIELD ONE. Everything above argues that 1 is
+// the right CATEGORY. It is still the wrong NUMBER for a deployment where
+// other programs are in scope, because primacy is a ranking and not a label:
+// lower is higher priority (sep.xsd:6008), and a program left at 1 outranks
+// the 65 to 191 user-defined band a DSO program sits in. See
+// DERProgramPolicy.Primacy; the field value is set per interconnection
+// agreement.
 const PrimacyContractedServiceProvider uint8 = 1
 
 // MaxDERProgramDescription is the inclusive maximum length of
@@ -456,6 +486,144 @@ func reservedPrimacy(v uint8) bool {
 	return (v >= 3 && v <= 64) || v >= 192
 }
 
+// DERControlPolicy carries the operator-settable temporal shape of every
+// DERControl this bridge issues in response to a GridAPPS-D control delta.
+//
+// WHY THE BRIDGE AUTHORS THESE VALUES AT ALL. sep.xsd:5584 makes interval
+// minOccurs=1 on Event, so a DERControl without one is not a gap in this
+// bridge's feature set, it is a non-conformant document. The GridAPPS-D
+// delta contract carries no temporal information: a delta says "opModTargetW
+// is now this", not "for the next N seconds". Something has to supply the
+// window, and the bridge is the correct author because it is the event
+// CREATOR. That distinction is load-bearing rather than pedantic: IEEE
+// 2030.5-2018 rule c) on p.90 forbids a server from editing an event it has
+// already issued ("Editing Events SHALL NOT be allowed except for updating
+// status"), so retrofitting an interval onto a received event would be
+// wrong, while minting one on an event this bridge originates is not.
+//
+// WHAT HAPPENS WHEN THE WINDOW ELAPSES. The control expires and the device
+// falls back to its DERProgram's DefaultDERControl, which is the standard's
+// own designed fallback (clause 10.10.4.2, p.120). There is deliberately no
+// heartbeat re-issue: a live platform holds a setpoint by superseding the
+// control with each new delta, and a bridge that has died should leave the
+// DER on a defined state rather than on the last thing it was told.
+type DERControlPolicy struct {
+	// Duration is the DateTimeInterval.duration, in seconds, stamped onto
+	// every issued DERControl. The matching start is the instant the bridge
+	// writes the control, so the window opens immediately.
+	//
+	// It must outlive the client's own discovery latency. A client learns of
+	// a new control by polling its DERProgram (or by subscription), so a
+	// duration shorter than that interval leaves the device on
+	// DefaultDERControl between deltas even while the platform is actively
+	// commanding it. Choosing it too long has the opposite cost: a bridge
+	// that dies holds its last setpoint for the remainder of the window.
+	//
+	// Not pointer-typed, unlike the poll and post rates: duration is
+	// minOccurs=1 inside DateTimeInterval (sep.xsd:5785), so there is no
+	// absent state to represent, and 0 is not a usable stand-in for unset.
+	// ValidateDERControl rejects 0 outright, because a zero-length window
+	// reproduces exactly the defect this field exists to fix: the reference
+	// client computes end = start + duration and expires any event whose end
+	// is already in the past.
+	Duration uint32
+
+	// RandomizeDuration is the RandomizableEvent.randomizeDuration, in
+	// seconds, served on every issued DERControl. sep.xsd:5650 defines it as
+	// the boundary inside which a client picks a random offset to apply to
+	// the interval duration, and states its purpose plainly: "to avoid
+	// sudden synchronized demand changes". Valid range is -3600 to 3600.
+	//
+	// It staggers EXPIRY, not start, which is precisely why it matters here.
+	// Every device in this fleet is served by ONE bridge and receives its
+	// controls with the same duration at nearly the same instant, so without
+	// randomization every DER in the model would revert to its
+	// DefaultDERControl in the same second.
+	//
+	// The compiled-in default is 0, and that is a co-simulation choice, not
+	// a field one. A co-simulation run must be reproducible: an offset the
+	// client picks at random makes two runs of the same scenario diverge in
+	// when each device reverts. A field deployment wants the opposite and
+	// should set a non-zero value.
+	//
+	// 0 is served explicitly rather than omitted. sep.xsd says an absent
+	// element defaults to 0, so the two are semantically identical, and
+	// stating it removes any dependence on the client applying that default.
+	RandomizeDuration int32
+}
+
+// DefaultDERControlDuration is the compiled-in DERControlPolicy.Duration:
+// 1800 seconds.
+//
+// It is twice sep.xsd's own documented default Registration pollRate of 900
+// seconds (sep.xsd:190, and RecommendedPollRate above). A client polling at
+// the schema default therefore gets two chances to see a superseding control
+// before the current one expires, so a single missed or failed poll does not
+// drop the device back to its DefaultDERControl mid-dispatch. The same
+// number bounds the other direction: a bridge that dies holds its last
+// commanded setpoint for at most half an hour before the DER lands on the
+// operator-configured fallback.
+//
+// An operator running a faster poll rate should shorten it to match. This is
+// a starting value with a stated derivation, not a constant with a hidden
+// one.
+const DefaultDERControlDuration uint32 = 1800
+
+// MaxRandomizeSeconds is the inclusive magnitude bound of
+// randomizeDuration, from sep.xsd's OneHourRangeType (sep.xsd:5929): "a
+// signed time offset ... with range -3600 to 3600".
+//
+// It is enforced here because the schema does not enforce it. Like PINType,
+// OneHourRangeType is a bare xs:extension of Int16 carrying NO facets, so
+// the range text in its xs:documentation is inert to any validator.
+const MaxRandomizeSeconds int32 = 3600
+
+// ValidateDERControl reports whether the configured DERControl temporal
+// policy can be served. Called at bridge boot alongside ValidateRates and
+// ValidateDefaultProgram, in the same before-we-dial-anything window, so an
+// unusable value stops the process rather than surfacing as a client that
+// silently discards every control it is sent.
+//
+// Errors name the flag an operator would set, not the struct field,
+// matching ValidateRates and ValidateDefaultProgram: the flag is what they
+// can act on.
+func (p SEP2Policy) ValidateDERControl() error {
+	if p.DERControl.Duration == 0 {
+		return fmt.Errorf(
+			"sep2config: -sep2-control-duration must be at least 1 second; " +
+				"a zero-length interval makes a client compute end = start + 0 and expire the control on arrival, " +
+				"which is the exact defect a served interval exists to fix")
+	}
+
+	// Widened to int64 before taking the magnitude: int32's most negative
+	// value has no positive counterpart, so negating it in int32 would
+	// silently yield a negative number and pass a bound check it should
+	// fail.
+	randomize := int64(p.DERControl.RandomizeDuration)
+	magnitude := randomize
+	if magnitude < 0 {
+		magnitude = -magnitude
+	}
+	if magnitude > int64(MaxRandomizeSeconds) {
+		return fmt.Errorf(
+			"sep2config: -sep2-control-randomize-duration %d is outside the sep.xsd OneHourRangeType range of -%d to %d seconds",
+			p.DERControl.RandomizeDuration, MaxRandomizeSeconds, MaxRandomizeSeconds)
+	}
+
+	// A randomization window at least as wide as the duration itself lets a
+	// client pick an offset that cancels or reverses the interval, which
+	// lands back on the zero-or-negative effective duration rejected above.
+	// Checked against the configured duration rather than a fixed ceiling,
+	// because the two knobs are only wrong in combination.
+	if magnitude >= int64(p.DERControl.Duration) {
+		return fmt.Errorf(
+			"sep2config: -sep2-control-randomize-duration %d is not smaller in magnitude than -sep2-control-duration %d; "+
+				"a client applying an offset that wide can reduce the interval to zero or less",
+			p.DERControl.RandomizeDuration, p.DERControl.Duration)
+	}
+	return nil
+}
+
 // HasValidPINCheckDigit reports whether pin satisfies the IEEE 2030.5
 // section 6.3.5 checksum rule.
 //
@@ -497,36 +665,66 @@ func HasValidPINCheckDigit(pin uint32) bool {
 // `go run ./cmd/bridge` boots with no config file, matching
 // cmd/bridge/config.go's own compiled-in-default convention.
 //
-// DefaultControl follows Vance's physics verdict (GAGO-050 alignment,
-// 2026-07-17): opModConnect and opModEnergize are true (the IEEE 1547
-// ride-through fail-safe: aggregate DER dropout is the bigger hazard than
-// a device staying connected and energized), and every other
-// DERControlBase field is left nil. In particular, opModTargetVar and
-// opModTargetW stay unset: setting either forces a fixed-power mode that
-// silently disables the device's own autonomous volt-var / curtailment
-// behavior (1547-2018 clause 5.3 mutual exclusivity). SetGradW and
-// SetSoftGradW (siblings of DERControlBase on DefaultDERControl) are also
-// left nil: a fixed ramp/enter-service override with no randomization
-// would overwrite the device's own commissioned 1547 settings and risks
-// synchronized reconnection.
+// THE SHIPPED DefaultControl COMMANDS NOTHING. Its DERControlBase is
+// present but empty: no active-power element, and in particular no
+// opModConnect and no opModEnergize. Every child of DERControlBase is
+// minOccurs=0 (sep.xsd:3757), so a near-empty base is schema-valid, and the
+// containing element itself stays non-nil because DERControlBase is
+// minOccurs=1 on DefaultDERControl (sep.xsd:3270).
+//
+// Omission is the only construction that commands nothing, which is why an
+// asserted "safe" value is not an acceptable substitute. opModConnect is
+// documented as connecting or disconnecting "from the grid" with the
+// annotation noting galvanic isolation (sep.xsd:3758), so serving true is a
+// commanded device closure, not a neutral statement. This is a fallback:
+// under the 2023 edition's per-mode fallback evaluation it is not a value
+// applied once at expiry but one asserted CONTINUOUSLY whenever no control
+// is active. A protocol flag never belongs in the isolation path.
+//
+// What the DER runs instead is its own IEEE 1547 autonomous baseline:
+// volt-var, volt-watt, frequency droop and ride-through, all of which
+// operate regardless of the control channel and none of which this bridge
+// has to (or should) restate. That baseline also carries no signed
+// quantity, so this default is unaffected by the open sign-convention
+// question tracked as GAGO-044.
+//
+// This REPLACES the earlier reading of Vance's GAGO-050 verdict, which set
+// opModConnect and opModEnergize true as an IEEE 1547 ride-through
+// fail-safe. The ride-through concern is real and unchanged; what changed is
+// where it is answered. Ride-through is the DER's own commissioned 1547
+// behavior, and asserting a connect flag from the control channel does not
+// improve it while it does put a remotely-set protocol value in the
+// isolation path.
+//
+// Everything else on the control stays nil for reasons that did not change.
+// opModTargetW and opModTargetVar unset, because setting either forces a
+// fixed-power mode that silently disables the device's autonomous volt-var
+// and curtailment behavior (1547-2018 clause 5.3 mutual exclusivity).
+// SetGradW and the SetES* family (siblings of DERControlBase on
+// DefaultDERControl) unset, because sep.xsd:3306 and sep.xsd:3271 say each
+// SHALL update the corresponding DERSettings value: that is an
+// installer-owned persistent write, not a fallback.
 //
 // DefaultProgram carries the program DefaultControl hangs off. Primacy is
 // PrimacyContractedServiceProvider (1), which is both the spec-correct
 // reading of what this bridge is and the value the lazily-created program
 // already used, so seeding changes no served value. See that constant and
-// DERProgramPolicy for the full rationale.
+// DERProgramPolicy for the full rationale, including why a field deployment
+// must choose its own number.
+//
+// DERControl carries the temporal shape of every issued control:
+// DefaultDERControlDuration with no expiry randomization, which is the
+// reproducible co-simulation setting. See DERControlPolicy.
 //
 // ModesSupported and the poll/post rates default to nil (unset); GAGO-049
 // and any future FSA-seeding card supply real values once they exist.
 func DefaultPolicy() SEP2Policy {
-	connect := true
-	energize := true
 	return SEP2Policy{
 		DefaultControl: sep2.DefaultDERControl{
-			DERControlBase: &sep2.DERControlBase{
-				OpModConnect:  &connect,
-				OpModEnergize: &energize,
-			},
+			// Non-nil and empty, deliberately. Nil would omit a
+			// minOccurs=1 element and make the document non-conformant;
+			// empty is what "no mode is commanded" looks like on the wire.
+			DERControlBase: &sep2.DERControlBase{},
 		},
 		DefaultProgram: DERProgramPolicy{
 			Primacy: PrimacyContractedServiceProvider,
@@ -534,6 +732,10 @@ func DefaultPolicy() SEP2Policy {
 			// serves it rather than the feeder or device, because one
 			// description is served for every device in the fleet.
 			Description: "GridAPPS-D DER program",
+		},
+		DERControl: DERControlPolicy{
+			Duration:          DefaultDERControlDuration,
+			RandomizeDuration: 0,
 		},
 	}
 }

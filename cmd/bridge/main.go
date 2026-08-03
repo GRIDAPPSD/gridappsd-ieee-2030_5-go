@@ -538,6 +538,36 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 		policy.DefaultProgram.Description = *cfg.SEP2ProgramDescription
 	}
 
+	// Same assigned-only-when-configured discipline, for the same reason: 0
+	// is the shipped randomizeDuration, so a bare value could not be told
+	// from "operator said nothing" and would silently look configured.
+	if cfg.SEP2ControlDuration != nil {
+		policy.DERControl.Duration = *cfg.SEP2ControlDuration
+	}
+	if cfg.SEP2ControlRandomizeDuration != nil {
+		policy.DERControl.RandomizeDuration = *cfg.SEP2ControlRandomizeDuration
+	}
+
+	// The DefaultDERControl is FILLED, not replaced. Each configured member
+	// is written onto the compiled-in control's own DERControlBase, so a
+	// file naming one member leaves the other at its shipped value instead
+	// of clearing it. DefaultPolicy always supplies a non-nil base
+	// (DERControlBase is minOccurs=1 on DefaultDERControl), but this checks
+	// rather than assumes: a nil base here would panic on the first
+	// assignment, and the failure would be a crash at boot for an operator
+	// who did nothing wrong.
+	if cfg.SEP2DefaultControlOpModConnect != nil || cfg.SEP2DefaultControlOpModEnergize != nil {
+		if policy.DefaultControl.DERControlBase == nil {
+			policy.DefaultControl.DERControlBase = &sep2.DERControlBase{}
+		}
+		if cfg.SEP2DefaultControlOpModConnect != nil {
+			policy.DefaultControl.DERControlBase.OpModConnect = cfg.SEP2DefaultControlOpModConnect
+		}
+		if cfg.SEP2DefaultControlOpModEnergize != nil {
+			policy.DefaultControl.DERControlBase.OpModEnergize = cfg.SEP2DefaultControlOpModEnergize
+		}
+	}
+
 	if err := policy.ValidateRegistrationPIN(); err != nil {
 		return sep2config.SEP2Policy{}, err
 	}
@@ -548,6 +578,14 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 	// description or a reserved primacy stops the bridge at boot rather
 	// than reaching a client as a document it refuses to parse.
 	if err := policy.ValidateDefaultProgram(); err != nil {
+		return sep2config.SEP2Policy{}, err
+	}
+	// Same window again. An unusable interval policy must stop the bridge
+	// here rather than at the first control delta, because a control served
+	// with a zero-length interval is discarded by the client silently: it
+	// still fetches, parses and acknowledges, so nothing downstream reports
+	// a failure and the only symptom is a device that never moves.
+	if err := policy.ValidateDERControl(); err != nil {
 		return sep2config.SEP2Policy{}, err
 	}
 	return policy, nil
@@ -601,6 +639,12 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 		DefaultProgram: sep2embed.DERProgramSeed{
 			Primacy:     policy.DefaultProgram.Primacy,
 			Description: policy.DefaultProgram.Description,
+		},
+		// Field by field for the same reason, and Now is left nil so the
+		// bridge reads the real clock; only tests supply one.
+		DERControl: sep2embed.DERControlSeed{
+			Duration:          policy.DERControl.Duration,
+			RandomizeDuration: policy.DERControl.RandomizeDuration,
 		},
 		ModesSupported:         policy.ModesSupported,
 		ResolveRegistrationPIN: policy.ResolveRegistrationPIN,

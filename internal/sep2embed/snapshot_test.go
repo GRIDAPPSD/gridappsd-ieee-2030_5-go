@@ -47,6 +47,7 @@ func newTestEmbed(t *testing.T) (*Embed, *registry.Registry) {
 		ShutdownTimeout:        time.Second,
 		DefaultControl:         testDefaultControlSnapshot(),
 		DefaultProgram:         testProgramSeed,
+		DERControl:             testControlSeed,
 	}, reg)
 	if err != nil {
 		t.Fatalf("New: %v", err)

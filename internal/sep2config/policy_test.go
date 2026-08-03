@@ -7,52 +7,75 @@ import (
 	"testing"
 )
 
-// TestDefaultPolicy_Connect_Energize asserts the two DefaultControl fields
-// DefaultPolicy sets: both must be non-nil and true. Per data-invariants,
-// a nil-check alone would not catch a present-but-false pointer, so both
-// the nil-check and the dereferenced value are asserted.
-func TestDefaultPolicy_Connect_Energize(t *testing.T) {
+// TestDefaultPolicy_CommandsNothing asserts the single most consequential
+// property of the shipped DefaultDERControl: it commands nothing.
+//
+// The two fields named here are called out separately from the reflective
+// sweep below because they are the ones that would do physical damage.
+// opModConnect is documented as connecting or disconnecting the DER "from
+// the grid", with the annotation invoking galvanic isolation
+// (sep.xsd:3758), so a non-nil pointer is a commanded device closure or
+// opening, not a neutral statement of intent. Under the 2023 edition's
+// per-mode fallback evaluation it would be asserted continuously whenever
+// no control is active, rather than once at expiry.
+//
+// Both halves of the assertion matter and neither substitutes for the
+// other: a present-but-false opModConnect is not "off", it is a commanded
+// DISCONNECT of every DER in the fleet, which is why the test demands nil
+// rather than merely a falsy value.
+func TestDefaultPolicy_CommandsNothing(t *testing.T) {
 	t.Parallel()
 
 	got := DefaultPolicy()
+
+	// Present but empty, not absent: DERControlBase is minOccurs=1 on
+	// DefaultDERControl (sep.xsd:3270), so a nil base would omit a required
+	// element and make the served document non-conformant.
 	base := got.DefaultControl.DERControlBase
 	if base == nil {
-		t.Fatal("DefaultControl.DERControlBase = nil, want a populated base")
+		t.Fatal("DefaultControl.DERControlBase = nil, want a present but empty base (minOccurs=1, sep.xsd:3270)")
 	}
 
-	if base.OpModConnect == nil || *base.OpModConnect != true {
-		t.Errorf("OpModConnect = %v, want true", base.OpModConnect)
+	if base.OpModConnect != nil {
+		t.Errorf("DefaultControl.DERControlBase.OpModConnect = %v, want nil; "+
+			"any non-nil value commands a grid connect or disconnect (galvanic isolation, sep.xsd:3758), "+
+			"and a fallback must command nothing", *base.OpModConnect)
 	}
-	if base.OpModEnergize == nil || *base.OpModEnergize != true {
-		t.Errorf("OpModEnergize = %v, want true", base.OpModEnergize)
+	if base.OpModEnergize != nil {
+		t.Errorf("DefaultControl.DERControlBase.OpModEnergize = %v, want nil; "+
+			"a fallback must not energize or de-energize a device, it must leave it on its own IEEE 1547 behavior", *base.OpModEnergize)
 	}
 }
 
-// exemptDERControlBaseFields are the only DERControlBase fields
-// DefaultPolicy is allowed to set. Every other field on the struct is
-// asserted nil by TestDefaultPolicy_EverythingElseUnset below, driven by
-// reflection rather than a hand-picked subset: DefaultControl is
-// GAGO-050's direct seed source, so a future stray assignment on ANY of
-// its ~19 fields (not just the handful reviewed today) must fail this
-// test, per data-invariants (present-but-wrong is worse than absent).
-var exemptDERControlBaseFields = map[string]bool{
-	"OpModConnect":  true,
-	"OpModEnergize": true,
-}
+// exemptDERControlBaseFields lists the DERControlBase fields DefaultPolicy is
+// allowed to set. It is EMPTY, and that is the point: the shipped default
+// commands nothing, so no field is exempt from the nil sweep below.
+//
+// It is kept as a declared empty map rather than deleted so that the sweep
+// keeps its shape and a future decision to ship a non-empty default has one
+// obvious place to record itself, next to the reasoning for why that is
+// normally wrong.
+var exemptDERControlBaseFields = map[string]bool{}
 
 // TestDefaultPolicy_EverythingElseUnset asserts the deliberate absence of
-// every DERControlBase field except OpModConnect/OpModEnergize, plus
-// DefaultDERControl's own two sibling ramp fields (SetGradW,
-// SetSoftGradW). Per Vance's GAGO-050 physics verdict, opModTargetVar in
-// particular must never be set here: it would silently disable the
-// device's autonomous volt-var (1547-2018 clause 5.3 mutual exclusivity).
+// EVERY DERControlBase field, plus DefaultDERControl's own two sibling ramp
+// fields (SetGradW, SetSoftGradW).
+//
+// Driven by reflection rather than a hand-picked list because DefaultControl
+// is the direct seed source for every device's fallback: a stray assignment
+// on ANY of the roughly nineteen fields must fail here, not just on the
+// handful anyone reviewed. Two of those fields have named reasons.
+// opModTargetVar would silently disable the device's autonomous volt-var
+// (1547-2018 clause 5.3 mutual exclusivity), and SetGradW SHALL update the
+// corresponding DERSettings value (sep.xsd:3306), which is an
+// installer-owned persistent write rather than a control-channel fallback.
 func TestDefaultPolicy_EverythingElseUnset(t *testing.T) {
 	t.Parallel()
 
 	got := DefaultPolicy()
 	base := got.DefaultControl.DERControlBase
 	if base == nil {
-		t.Fatal("DefaultControl.DERControlBase = nil, want a populated base")
+		t.Fatal("DefaultControl.DERControlBase = nil, want a present but empty base")
 	}
 
 	v := reflect.ValueOf(*base)
@@ -96,6 +119,145 @@ func TestDefaultPolicy_ModesAndRatesUnset(t *testing.T) {
 	}
 	if got.DefaultPostRate != nil {
 		t.Errorf("DefaultPostRate = %v, want nil (unset)", *got.DefaultPostRate)
+	}
+}
+
+// TestDefaultPolicy_DERControlIsServiceable asserts the shipped issued-control
+// temporal policy: a real non-zero window, no expiry randomization, and a
+// value the boot validator accepts.
+//
+// The zero-duration case is the one that matters. A DERControl whose interval
+// duration is 0 has an end equal to its start, so a conformant client marks it
+// expired the moment it arrives; it still fetches, parses and acknowledges the
+// event, so every observable signal short of the device itself reports
+// success. Shipping that as the compiled-in default would reintroduce the
+// exact defect this policy exists to prevent, which is why the default is
+// asserted usable rather than merely present.
+func TestDefaultPolicy_DERControlIsServiceable(t *testing.T) {
+	t.Parallel()
+
+	got := DefaultPolicy()
+
+	if got.DERControl.Duration != DefaultDERControlDuration {
+		t.Errorf("DERControl.Duration = %d, want %d (DefaultDERControlDuration)",
+			got.DERControl.Duration, DefaultDERControlDuration)
+	}
+	if got.DERControl.Duration == 0 {
+		t.Error("DERControl.Duration = 0: a zero-length interval is expired on arrival and never actuates")
+	}
+
+	// Zero, and asserted rather than assumed: a co-simulation must be
+	// reproducible, and a client-chosen random expiry offset makes two runs of
+	// the same scenario diverge. A field deployment sets this non-zero.
+	if got.DERControl.RandomizeDuration != 0 {
+		t.Errorf("DERControl.RandomizeDuration = %d, want 0 for reproducible co-simulation runs",
+			got.DERControl.RandomizeDuration)
+	}
+
+	if err := got.ValidateDERControl(); err != nil {
+		t.Errorf("DefaultPolicy().ValidateDERControl() = %v, want nil; the shipped default must pass its own boot gate", err)
+	}
+}
+
+// TestValidateDERControl covers the three domain rules on the issued-control
+// temporal policy. sep.xsd enforces none of them: OneHourRangeType
+// (sep.xsd:5929) is a bare xs:extension of Int16 carrying no facets, exactly
+// like PINType, so its documented -3600 to 3600 range is inert to a validator,
+// and nothing in the schema relates randomizeDuration to the duration it
+// perturbs.
+func TestValidateDERControl(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		control     DERControlPolicy
+		wantErr     bool
+		wantSubstrs []string
+	}{
+		{
+			name:    "compiled-in default is accepted",
+			control: DefaultPolicy().DERControl,
+		},
+		{
+			name:    "a duration of one second is accepted",
+			control: DERControlPolicy{Duration: 1},
+		},
+		{
+			name:    "randomization just inside the duration is accepted",
+			control: DERControlPolicy{Duration: 100, RandomizeDuration: 99},
+		},
+		{
+			name:    "negative randomization just inside the duration is accepted",
+			control: DERControlPolicy{Duration: 100, RandomizeDuration: -99},
+		},
+		{
+			name:    "the OneHourRangeType bound itself is accepted when the duration allows it",
+			control: DERControlPolicy{Duration: 7200, RandomizeDuration: 3600},
+		},
+		{
+			name:    "zero duration is refused",
+			control: DERControlPolicy{Duration: 0},
+			wantErr: true,
+			// The flag, not the struct field: the flag is what an operator
+			// can act on. Same convention as ValidateRates.
+			wantSubstrs: []string{"-sep2-control-duration"},
+		},
+		{
+			name:        "randomization above the OneHourRangeType bound is refused",
+			control:     DERControlPolicy{Duration: 100000, RandomizeDuration: 3601},
+			wantErr:     true,
+			wantSubstrs: []string{"-sep2-control-randomize-duration", "3601"},
+		},
+		{
+			name:        "randomization below the OneHourRangeType bound is refused",
+			control:     DERControlPolicy{Duration: 100000, RandomizeDuration: -3601},
+			wantErr:     true,
+			wantSubstrs: []string{"-sep2-control-randomize-duration", "-3601"},
+		},
+		{
+			// The most negative int32 has no positive counterpart, so
+			// negating it in int32 width wraps back to itself and stays
+			// negative. A magnitude check that did not widen first would
+			// compare a negative number against the bound and let this pass.
+			name:        "the most negative int32 randomization is refused rather than wrapping",
+			control:     DERControlPolicy{Duration: 100000, RandomizeDuration: -2147483648},
+			wantErr:     true,
+			wantSubstrs: []string{"-sep2-control-randomize-duration"},
+		},
+		{
+			name:        "randomization equal to the duration is refused",
+			control:     DERControlPolicy{Duration: 100, RandomizeDuration: 100},
+			wantErr:     true,
+			wantSubstrs: []string{"-sep2-control-randomize-duration", "-sep2-control-duration"},
+		},
+		{
+			name:        "randomization wider than the duration is refused",
+			control:     DERControlPolicy{Duration: 60, RandomizeDuration: -600},
+			wantErr:     true,
+			wantSubstrs: []string{"-sep2-control-randomize-duration", "-sep2-control-duration"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := SEP2Policy{DERControl: tt.control}.ValidateDERControl()
+			if tt.wantErr && err == nil {
+				t.Fatalf("ValidateDERControl(%+v) = nil, want an error", tt.control)
+			}
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("ValidateDERControl(%+v) = %v, want nil", tt.control, err)
+				}
+				return
+			}
+			for _, want := range tt.wantSubstrs {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("ValidateDERControl(%+v) error = %q, want it to name %q", tt.control, err, want)
+				}
+			}
+		})
 	}
 }
 
