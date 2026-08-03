@@ -338,6 +338,11 @@ type countingFakeBroker struct {
 	connectCount    atomic.Int64
 	disconnectCount atomic.Int64
 
+	// lastHeartBeat records the `heart-beat` header of the most recent
+	// CONNECT frame received, so a test can assert what the client
+	// actually put on the wire rather than inferring it from behaviour.
+	lastHeartBeat atomic.Value
+
 	tokenSeq atomic.Int64
 }
 
@@ -360,6 +365,13 @@ func startCountingFakeBroker(t *testing.T) *countingFakeBroker {
 func (b *countingFakeBroker) Addr() string           { return b.addr }
 func (b *countingFakeBroker) ConnectCount() int64    { return b.connectCount.Load() }
 func (b *countingFakeBroker) DisconnectCount() int64 { return b.disconnectCount.Load() }
+
+// LastHeartBeat returns the `heart-beat` header carried by the most
+// recent CONNECT frame, or "" if the client sent none.
+func (b *countingFakeBroker) LastHeartBeat() string {
+	v, _ := b.lastHeartBeat.Load().(string)
+	return v
+}
 
 func (b *countingFakeBroker) Stop() {
 	b.closeMu.Lock()
@@ -397,12 +409,19 @@ func (b *countingFakeBroker) handleConn(conn net.Conn) {
 	br := bufio.NewReader(conn)
 
 	// Read CONNECT (or STOMP) frame.
-	if !b.expectFrame(br, "CONNECT", "STOMP") {
+	cmd, connectHeaders, _, ok := b.readFrame(br)
+	if !ok || (cmd != "CONNECT" && cmd != "STOMP") {
 		return
 	}
+	b.lastHeartBeat.Store(connectHeaders["heart-beat"])
 	b.connectCount.Add(1)
 
-	// Send CONNECTED with heartbeat 0,0 to keep the test simple.
+	// Send CONNECTED declining heartbeats in both directions, which is a
+	// legal STOMP 1.2 answer and the one this fake gives so it never has
+	// to run a heartbeat ticker. The client must honour that answer and
+	// not run an inbound read deadline the broker never agreed to feed;
+	// TestConnect_DoesNotRequestInboundHeartbeats and
+	// TestIdleConnection_ClosesWithDisconnectFrame guard it.
 	if _, err := io.WriteString(conn, "CONNECTED\nversion:1.2\nheart-beat:0,0\nserver:counting-fake\n\n\x00"); err != nil {
 		return
 	}
@@ -480,19 +499,6 @@ func (b *countingFakeBroker) handleConn(conn net.Conn) {
 			// Unknown command: ignore but keep reading.
 		}
 	}
-}
-
-func (b *countingFakeBroker) expectFrame(br *bufio.Reader, want ...string) bool {
-	cmd, _, _, ok := b.readFrame(br)
-	if !ok {
-		return false
-	}
-	for _, w := range want {
-		if cmd == w {
-			return true
-		}
-	}
-	return false
 }
 
 // readFrame reads one STOMP frame: command line, headers, body up to NUL.
@@ -631,5 +637,94 @@ func TestReconnect_ConcurrentNoSessionLeak(t *testing.T) {
 		if gotConnects < 2 {
 			t.Fatalf("iteration %d: expected at least 2 CONNECTs (Connect + at least one Reconnect succeeded), got %d", iter, gotConnects)
 		}
+	}
+}
+
+// TestConnect_DoesNotRequestInboundHeartbeats asserts the wire-level
+// contract that keeps an idle connection alive: the CONNECT frame must
+// promise outbound heartbeats and request ZERO inbound ones.
+//
+// This is the fast guard for GAGO-112. Requesting a non-zero inbound
+// interval makes go-stomp arm a read deadline of that interval plus its
+// 5s DefaultHeartBeatError even when the broker answers `heart-beat:0,0`
+// to decline heartbeats (conn.go:212-223). When that deadline expires,
+// processLoop's `defer c.MustDisconnect()` closes the socket without
+// sending DISCONNECT and marks the conn closed, so every later
+// Disconnect returns a silent nil (conn.go:477-482): the broker session
+// is leaked and our own teardown reports success. Asserting the header
+// bytes catches a regression in milliseconds;
+// TestIdleConnection_ClosesWithDisconnectFrame proves the consequence.
+func TestConnect_DoesNotRequestInboundHeartbeats(t *testing.T) {
+	broker := startCountingFakeBroker(t)
+	defer broker.Stop()
+
+	c := NewClient(STOMPConfig{Address: broker.Addr(), User: "u", Password: "p"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	// STOMP encodes heart-beat as "<send>,<receive>" in milliseconds.
+	// send is our promise, receive is what we demand of the broker.
+	want := fmt.Sprintf("%d,0", heartbeat.Milliseconds())
+	if got := broker.LastHeartBeat(); got != want {
+		t.Errorf("CONNECT heart-beat header = %q, want %q (a non-zero receive interval arms go-stomp's silent read deadline)", got, want)
+	}
+}
+
+// TestIdleConnection_ClosesWithDisconnectFrame is the behavioural guard
+// for the same defect: a connection left idle past the deadline that a
+// symmetric heartbeat request used to arm must still be alive, and Close
+// must put a real DISCONNECT frame on the wire.
+//
+// Before the fix this failed with CONNECT=1, DISCONNECT=0 while Close
+// returned nil, which is the exact shape of the CI failure in
+// TestReconnect_ConcurrentNoSessionLeak: any iteration that ran longer
+// than the deadline lost connections silently and the leak assertion
+// fired on a leak the production code had not caused.
+//
+// The idle window must exceed the old deadline (the requested inbound
+// interval plus go-stomp's 5s DefaultHeartBeatError), which is what
+// makes this test slow. It is kept because the failure it guards is
+// silent in production: GAGO-107 is the same 15s read deadline killing
+// the bridge's bus with nothing logged.
+func TestIdleConnection_ClosesWithDisconnectFrame(t *testing.T) {
+	idle := heartbeat + 5*time.Second + 2*time.Second
+
+	broker := startCountingFakeBroker(t)
+	defer broker.Stop()
+
+	c := NewClient(STOMPConfig{Address: broker.Addr(), User: "u", Password: "p"})
+	ctx, cancel := context.WithTimeout(context.Background(), idle+30*time.Second)
+	defer cancel()
+
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if got := broker.ConnectCount(); got != 1 {
+		t.Fatalf("CONNECT count after Connect = %d, want 1", got)
+	}
+
+	time.Sleep(idle)
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close after %s idle: %v", idle, err)
+	}
+
+	// Close returns once go-stomp has the DISCONNECT receipt, but the
+	// broker's per-conn goroutine counts the frame on its own schedule.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if broker.DisconnectCount() == broker.ConnectCount() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if got, want := broker.DisconnectCount(), broker.ConnectCount(); got != want {
+		t.Errorf("after %s idle: DISCONNECT=%d, CONNECT=%d (want equal); the connection died without a DISCONNECT frame and Close reported success anyway", idle, got, want)
 	}
 }
