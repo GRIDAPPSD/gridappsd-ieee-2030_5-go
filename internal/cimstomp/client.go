@@ -37,8 +37,9 @@ const (
 	correlationIDHeader  = "correlation-id"
 )
 
-// heartbeat is the STOMP heartbeat interval in both directions. Matches the
-// existing Publisher.
+// heartbeat is the interval we promise the broker for OUTBOUND STOMP
+// heartbeats. Inbound heartbeats are deliberately NOT requested; see
+// dialAndBootstrap for why the request is asymmetric.
 const heartbeat = 10 * time.Second
 
 // Client is a STOMP request/response client for the GridAPPS-D message bus.
@@ -177,9 +178,35 @@ func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, err
 		return nil, "", err
 	}
 
+	// The heartbeat request is asymmetric on purpose: we promise to SEND
+	// one every `heartbeat`, and we request NONE inbound (the second
+	// argument is 0).
+	//
+	// A symmetric request is what GAGO-107 traced the bridge's 15-second
+	// silent bus death to. go-stomp floors its negotiated read timeout at
+	// whatever inbound interval we asked for even when the broker answers
+	// `heart-beat:0,0` to decline heartbeats outright (conn.go:212-223),
+	// then adds its 5s DefaultHeartBeatError. Asking for 10s inbound
+	// therefore arms a hard 15s "nothing arrived" deadline on an idle
+	// connection that the broker never agreed to feed. When it fires,
+	// processLoop's `defer c.MustDisconnect()` closes the socket WITHOUT
+	// sending DISCONNECT and marks the conn closed; every later
+	// Disconnect from Close or Reconnect then returns a silent nil
+	// (conn.go:477-482). No frame reaches the wire, no error is
+	// available to log, and the broker-side session is left to expire on
+	// its own. That is a leaked session that our own teardown reports as
+	// success.
+	//
+	// Requesting 0 inbound leaves go-stomp's options.ReadTimeout at 0, so
+	// it arms a read timer only when the broker VOLUNTEERS a send
+	// interval. That is what STOMP 1.2 specifies: a zero in either
+	// position disables that direction. Connection loss is still detected
+	// actively, which is the contract this package already documents:
+	// Request and Publish wrap transport errors as ErrConnectionLost, and
+	// gridappsdclient.Supervisor probes the bus on an interval.
 	conn, err := stomp.ConnectWithContext(ctx, tcp,
 		stomp.ConnOpt.Login(cfg.User, cfg.Password),
-		stomp.ConnOpt.HeartBeat(heartbeat, heartbeat),
+		stomp.ConnOpt.HeartBeat(heartbeat, 0),
 	)
 	if err != nil {
 		// stomp.ConnectWithContext failed before the STOMP frame layer was
