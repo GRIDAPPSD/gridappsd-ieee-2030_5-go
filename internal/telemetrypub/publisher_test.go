@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
 // newTestPublisher builds a Publisher over the given source and bus with
@@ -478,5 +480,56 @@ func TestPublisherNeverPublishesADeviceUnderAnotherIdentity(t *testing.T) {
 	}
 	if strings.Contains(string(bus.snapshot()[0].body), a.EDevID) || strings.Contains(string(bus.snapshot()[0].body), b.EDevID) {
 		t.Errorf("published payload leaks the server-assigned URL index instead of the CIM mRID.\nbody = %s", bus.snapshot()[0].body)
+	}
+}
+
+// TestPublishOnceDeviceWithNoMappedFieldSendsNothingAndSettles covers
+// the ErrNoContent branch: a device that stored a DERStatus carrying no
+// field the mapping reads is a change (it went from nothing to
+// something) but has nothing publishable. No envelope goes out, the
+// reason is logged, and the device settles rather than re-logging every
+// interval forever.
+func TestPublishOnceDeviceWithNoMappedFieldSendsNothingAndSettles(t *testing.T) {
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	src := &fakeSource{}
+	src.set(sep2embed.DERStatusSnapshot{MRID: "mrid-a", EDevID: "8", DERID: "1"})
+	bus := &fakeBus{}
+	p := newTestPublisher(t, src, bus, nil)
+
+	if err := p.publishOnce(context.Background()); err != nil {
+		t.Fatalf("publishOnce (first): %v", err)
+	}
+	if sends := bus.snapshot(); len(sends) != 0 {
+		t.Fatalf("bus Send called %d times, want 0", len(sends))
+	}
+	if !strings.Contains(logBuf.String(), "no mapped field") {
+		t.Errorf("log output = %q, want it to state that the device carried no mapped field", logBuf.String())
+	}
+
+	logBuf.Reset()
+	if err := p.publishOnce(context.Background()); err != nil {
+		t.Fatalf("publishOnce (second): %v", err)
+	}
+	if strings.Contains(logBuf.String(), "no mapped field") {
+		t.Errorf("the empty device was re-selected on an unchanged interval: %q", logBuf.String())
+	}
+
+	// A later DERStatus carrying a real field must still publish.
+	src.set(snapWithMode("mrid-a", 4))
+	if err := p.publishOnce(context.Background()); err != nil {
+		t.Fatalf("publishOnce (third): %v", err)
+	}
+	sends := bus.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("bus Send called %d times after the device reported a real field, want 1", len(sends))
+	}
+	view := decodeDiffMessage(t, sends[0].body)
+	if len(view.Input.Message.ForwardDifferences) != 1 ||
+		view.Input.Message.ForwardDifferences[0].Object != "mrid-a" ||
+		view.Input.Message.ForwardDifferences[0].Value != float64(4) {
+		t.Errorf("published %+v, want mrid-a operationalModeStatus 4", view.Input.Message.ForwardDifferences)
 	}
 }
