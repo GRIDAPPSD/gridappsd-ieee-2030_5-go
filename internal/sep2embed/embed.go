@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -226,6 +227,11 @@ type Embed struct {
 	stores   *assembly.Stores
 	identity sep2srv.Identity
 	policy   ControlPolicy
+
+	// ended holds the identity of every DERControl this Embed has taken out
+	// of service, for the retention window (see lifecycle.go). It is never
+	// nil on an Embed built by New.
+	ended *endedControlLedger
 }
 
 // New builds the resource stores, seeds EndDevices and DERs from reg,
@@ -331,7 +337,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			shutdownTimeout: shutdownTimeout,
 		}
 
-		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy}, nil
+		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger()}, nil
 	}
 
 	opts := sep2srv.Options{
@@ -353,7 +359,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return nil, fmt.Errorf("sep2embed: %w", err)
 	}
 
-	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, policy: policy}, nil
+	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, policy: policy, ended: newEndedControlLedger()}, nil
 }
 
 // Addr returns the listener's actual bound address. Useful when
@@ -375,8 +381,69 @@ func (e *Embed) Identity() sep2srv.Identity {
 // method is the entry point a caller holding an *Embed (rather than the
 // package-private stores/notifier fields) uses, e.g. a future
 // GridAPPS-D control-delta subscriber in cmd/bridge.
+//
+// Controls whose maximum Effective Scheduled Period has already closed are
+// swept out BEFORE the delta is applied (GAGO-134). Sweeping here as well as
+// on Run's timer is what keeps the exposure at a live delta cadence rather
+// than at controlSweepInterval, and it also keeps the supersession pass
+// honest: an event that is out of service is not a predecessor for the
+// incoming control to mark.
 func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, delta ControlDelta) error {
-	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, e.policy, delta)
+	// ONE clock read for the sweep and the write together, for the same
+	// reason ApplyControlDelta reads the clock once for creationTime,
+	// interval.start and EventStatus.dateTime: two reads could land on
+	// different seconds, and an event issued at a later instant than the one
+	// the sweep judged its predecessors by is a state nothing downstream can
+	// interpret. pinnedClockPolicy hands the same instant to both.
+	nowUnix := e.policy.Control.now().UTC().Unix()
+
+	if _, err := e.expireEndedControlsAt(ctx, nowUnix); err != nil {
+		return fmt.Errorf("sep2embed: control delta: %w", err)
+	}
+	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta)
+}
+
+// pinnedClockPolicy returns a copy of policy whose control clock reports
+// nowUnix on every read.
+//
+// ControlPolicy is a value, so this mutates nothing the Embed holds.
+func pinnedClockPolicy(policy ControlPolicy, nowUnix int64) ControlPolicy {
+	policy.Control.Now = func() time.Time { return time.Unix(nowUnix, 0).UTC() }
+	return policy
+}
+
+// expireEndedControls runs one lifecycle sweep over this Embed's fleet at the
+// policy clock's current instant, and returns how many controls it removed.
+//
+// The clock is DERControlSeed.Now, the same seam ApplyControlDelta stamps
+// creationTime and interval.start from. Reading the end of an event's window
+// from a different clock than the one that wrote its start would make the two
+// disagree under a test that pins one of them, and would be indefensible in
+// production for the same reason.
+func (e *Embed) expireEndedControls(ctx context.Context) (int, error) {
+	return e.expireEndedControlsAt(ctx, e.policy.Control.now().UTC().Unix())
+}
+
+// expireEndedControlsAt is expireEndedControls with the instant supplied by
+// the caller, for the delta path, which has already read the clock.
+func (e *Embed) expireEndedControlsAt(ctx context.Context, nowUnix int64) (int, error) {
+	return expireEndedControls(ctx, e.stores, e.notifier, e.ended, servedEventEdition, nowUnix)
+}
+
+// EndedControl resolves the mRID of a DERControl this server has taken out of
+// service to the record it retained for it, if the retention window is still
+// open.
+//
+// It is the server-side half of the removal in lifecycle.go: a client's
+// Response names the event by mRID (Response.subject), and 2018 Table 27 p.75
+// places the status 3 (Event completed) POST at EffectiveEndTime, which is
+// the same instant the event stops being served. Without this, a server that
+// removed the resource would be unable to say which control a late
+// EventCompleted reported on. See eventRetentionSeconds for how long the
+// record is kept and why that window is our decision rather than the
+// standard's.
+func (e *Embed) EndedControl(mrid string) (EndedControl, bool) {
+	return e.ended.lookup(mrid)
 }
 
 // Run starts the subscription notifier's worker pool and serves the
@@ -393,6 +460,11 @@ func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, d
 // `<-notifierDone`. A caller that observes Run return therefore knows
 // there is no goroutine left running on every path, not just the
 // ctx-cancel path.
+//
+// The DERControl lifecycle sweep (GAGO-134) runs on the same lifetime and
+// under the same discipline: it is started here, it is cancelled by the same
+// explicit cancel, and Run waits for it before returning, so no sweep is left
+// writing to the stores after the listener has stopped.
 func (e *Embed) Run(ctx context.Context) error {
 	notifyCtx, cancelNotify := context.WithCancel(ctx)
 	defer cancelNotify() // backstop: guarantees cancellation even if a future edit adds an early return above the explicit call below
@@ -401,6 +473,12 @@ func (e *Embed) Run(ctx context.Context) error {
 	go func() {
 		defer close(notifierDone)
 		e.notifier.Start(notifyCtx)
+	}()
+
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		e.runControlSweep(notifyCtx)
 	}()
 
 	err := e.srv.Run(ctx)
@@ -412,6 +490,54 @@ func (e *Embed) Run(ctx context.Context) error {
 	cancelNotify()
 
 	<-notifierDone
+	<-sweepDone
 
 	return err
+}
+
+// controlSweepInterval is how often runControlSweep re-checks the fleet for
+// DERControls whose maximum Effective Scheduled Period has closed.
+//
+// It bounds the residual exposure this lifecycle exists to remove: between an
+// event's end and the next sweep, that event is still served with a past
+// interval. Ten seconds against a default 1800-second control window means a
+// client can observe an ended event for at most about half a percent of the
+// window it was served in, and only when no control delta arrives in the
+// meantime, since Embed.ApplyControlDelta sweeps before it writes and a live
+// federation's delta cadence closes the gap further.
+//
+// It is a compiled-in constant rather than operator policy on purpose: it is
+// a sampling rate for an internal invariant, not a value a client ever
+// observes, and an operator who set it long would silently reintroduce the
+// defect.
+const controlSweepInterval = 10 * time.Second
+
+// runControlSweep expires ended DERControls on a fixed timer until ctx is
+// cancelled. It is the fleet-wide half of the lifecycle; the per-delta half
+// is in Embed.ApplyControlDelta.
+//
+// It has to exist independently of the delta path because a device's events
+// end on their own schedule whether or not another delta ever arrives. A
+// bridge whose platform side goes quiet must still take its last event out of
+// service at the end of that event's window, or it serves a past interval
+// until the process restarts, which is precisely the condition observed live
+// on 2026-08-03.
+//
+// A sweep error is logged and the loop continues. Stopping would leave every
+// subsequent event in service forever on the strength of one bad record, and
+// the error is surfaced rather than swallowed so an operator sees it.
+func (e *Embed) runControlSweep(ctx context.Context) {
+	ticker := time.NewTicker(controlSweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := e.expireEndedControls(ctx); err != nil {
+				log.Printf("sep2embed: control lifecycle sweep: %v", err)
+			}
+		}
+	}
 }

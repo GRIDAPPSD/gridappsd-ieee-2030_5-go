@@ -263,6 +263,12 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // controls to run (rule f) p.90: the larger creationTime is newer), and the
 // interval start is when the new setpoint takes effect.
 //
+// END OF LIFE (GAGO-134). The interval stamped here is also what takes the
+// control back OUT of service: lifecycle.go removes it at the close of its
+// maximum Effective Scheduled Period. That removal is what bounds the
+// collection this function appends to, and it is not performed here; the
+// callers that drive it are Embed.ApplyControlDelta and Embed.Run's sweep.
+//
 // policy carries all three operator-configured inputs. DefaultControl is
 // GAGO-050's seed value for the DERProgram's DefaultDERControl singleton,
 // forwarded unchanged to ensureDERProgram. Program is the matching policy
@@ -473,7 +479,12 @@ func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wa
 // Scheduled Period (rule r) p.91, and 2018 Annex B p.160, which makes
 // maintaining a Superseded event for that period a server responsibility).
 // Removing it when that period ends is a separate lifecycle concern and is
-// deliberately not done here (GAGO-134).
+// deliberately not done here: it lives in lifecycle.go (GAGO-134), which
+// keys on the interval alone. The two do not interact, because an event
+// whose window has closed overlaps nothing and so supersedes nothing, and a
+// superseded event that later ends keeps the status 4 it legitimately held.
+// TestSupersededControlEndsWithoutLosingItsSupersededStatus states that
+// rather than leaving it to be inferred.
 //
 // A control whose status the edition leaves unchanged is not written back at
 // all, which is why markSuperseded and markPotentiallySuperseded report
