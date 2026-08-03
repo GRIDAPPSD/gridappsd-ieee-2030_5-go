@@ -14,7 +14,7 @@ import (
 )
 
 // wantReplyTo and wantResponseRequired are the wire values core stamps onto
-// a DERControl that carries neither field (IEEECORE-067, core v0.12.0:
+// a DERControl that carries neither field (IEEECORE-067, core v0.12.1:
 // handlers/der.StampResponseRequest, whose default is
 // handlers/response.ListHref(DefaultSetID) and DefaultResponseRequired
 // 0x07).
@@ -26,9 +26,20 @@ import (
 // of the contract. 0x07 sets all three IEEE 2030.5 Table 32 bits (message
 // received, specific response, response on transition), which is the value
 // CSIP CTP CORE-022 names.
+//
+// Both are ATTRIBUTES, not child elements. sep.xsd declares them on
+// complexType RespondableResource as
+// `xs:attribute name="replyTo" type="xs:anyURI"` (sep.xsd:5435) and
+// `xs:attribute name="responseRequired" default="00" type="HexBinary8"`
+// (sep.xsd:5440). These literals were previously written in child-element
+// form, which pinned the core v0.12.0 serialization defect fixed by
+// IEEECORE-103 as though it were the contract: the suite stayed green
+// while every served DERControl was unparseable to a schema-following
+// client. The anchor for these strings is the XSD above, not core's
+// output.
 const (
-	wantReplyTo          = "<replyTo>/rsps/1/rsp</replyTo>"
-	wantResponseRequired = "<responseRequired>07</responseRequired>"
+	wantReplyTo          = `replyTo="/rsps/1/rsp"`
+	wantResponseRequired = `responseRequired="07"`
 )
 
 // TestServedDERControlCarriesStampedResponseRequest answers the question
