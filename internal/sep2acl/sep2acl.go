@@ -106,7 +106,19 @@ var families = []family{
 	{[]string{"edev", segWild, "fsa", segWild, "derp", segWild, "dderc"}, readWrite},
 	{[]string{"edev", segWild, "cfg"}, readWrite},
 	{[]string{"edev", segWild, "dstat"}, readWrite},
-	{[]string{"edev", segWild, "log"}, readCreate},
+	// LogEvent list and instance. The address is /lel, not /log: core
+	// v0.13.0 retired /edev/{id}/log and /edev/{id}/log/{logId} and mounts
+	// the WADL-declared /edev/{id}/lel and /edev/{id}/lel/{lelId} instead
+	// (2018 A.3.5.1, A.3.5.2; sep_wadl.xml:1358, 1404). /log was never a
+	// WADL address and was never advertised, so no entry for it is kept
+	// here: a rule matching a path nothing serves is dead configuration.
+	//
+	// Ordering rule (GAGO-111, Noor): this entry lands with or before the
+	// core change that moves the address, never after. A window where the
+	// table names the old address fails CLOSED and silently: /lel then
+	// matches only the /edev/{id} singleton entry, which has no POST, so
+	// every LogEvent report is refused with a 405 before dispatch.
+	{[]string{"edev", segWild, "lel"}, readCreate},
 	{[]string{"edev", segWild, "ps"}, readWrite},
 	{[]string{"edev", segWild, "frq"}, readCreate},
 	{[]string{"edev", segWild, "frp"}, readOnly},

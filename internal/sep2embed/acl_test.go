@@ -199,6 +199,63 @@ func TestACLMiddlewareDeniesNonOwnerDERInstanceWrite(t *testing.T) {
 	}
 }
 
+// TestACLMiddlewareAllowsOwnedLogEventPost is the GAGO-132 regression
+// test. Core v0.13.0 retired /edev/{id}/log and mounts the WADL address
+// /edev/{id}/lel instead (2018 A.3.5.1; sep_wadl.xml:1358), so a
+// LogEvent POST from the OWNING device must reach the handler at the new
+// address. This fails closed: with the ACL still keyed on the old
+// address, /lel matches only the /edev/{id} singleton entry, which does
+// not permit POST, and every LogEvent report is refused with a 405
+// before dispatch.
+func TestACLMiddlewareAllowsOwnedLogEventPost(t *testing.T) {
+	t.Parallel()
+
+	resolver := &spyResolver{owns: func(caller, edevID string) bool {
+		return caller == "CALLER-LFDI" && edevID == "DEV-A"
+	}}
+	next := &spyHandler{}
+	h := aclMiddleware(resolver)(next)
+
+	req := withIdentity(httptest.NewRequest(http.MethodPost, "/edev/DEV-A/lel", nil), "CALLER-LFDI", "CALLER-SFDI")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (owning device POSTing a LogEvent to its own list)", w.Code, http.StatusOK)
+	}
+	if !next.called {
+		t.Error("next handler was not called; want the owning device's LogEvent POST dispatched")
+	}
+}
+
+// TestACLMiddlewareDeniesNonOwnerLogEventPost pins the ownership
+// boundary that must NOT regress alongside the GAGO-132 address move: a
+// LogEvent POST to another device's list is still refused, before the
+// handler ever sees it. Asserting next.called separately from the status
+// keeps "denied before dispatch" distinguishable from a 403 some later
+// layer might produce on its own.
+func TestACLMiddlewareDeniesNonOwnerLogEventPost(t *testing.T) {
+	t.Parallel()
+
+	resolver := &spyResolver{owns: func(caller, edevID string) bool {
+		// CALLER-LFDI owns only DEV-A, never DEV-B.
+		return caller == "CALLER-LFDI" && edevID == "DEV-A"
+	}}
+	next := &spyHandler{}
+	h := aclMiddleware(resolver)(next)
+
+	req := withIdentity(httptest.NewRequest(http.MethodPost, "/edev/DEV-B/lel", nil), "CALLER-LFDI", "CALLER-SFDI")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d (non-owner LogEvent POST)", w.Code, http.StatusForbidden)
+	}
+	if next.called {
+		t.Error("next handler was called; want non-owner LogEvent POST denied before dispatch")
+	}
+}
+
 func TestACLMiddlewareDeniesCrossDeviceWrite(t *testing.T) {
 	t.Parallel()
 
