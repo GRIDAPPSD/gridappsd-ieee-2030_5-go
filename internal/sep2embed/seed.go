@@ -389,57 +389,6 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 //
 // A negative maxQ is malformed CIM data: maxQ is the positive
 // generation-side reactive rating (CIMHub's minQ carries the negative
-// seedFSA creates the single FunctionSetAssignments record that the
-// EndDevice's FunctionSetAssignmentsListLink points at, and links it to the
-// DERProgramList the control path writes under.
-//
-// The fsaID is controlFSAID, NOT a fresh identifier. That is load-bearing:
-// ApplyControlDelta writes its DERProgram, DefaultDERControl, and DERControls
-// under the fixed (controlFSAID, controlDERProgramID) pair (control.go:48 and
-// its derProgramListHref/derControlScope helpers). Seeding this FSA under any
-// other id would advertise a DERProgramList at a path the control path never
-// writes to, so a traversing client would follow the link, find a permanently
-// empty list, and never see a DERControl. The two must agree.
-//
-// The DERProgramList this points at is legitimately empty until the first
-// control delta arrives, because the bridge creates a DERProgram lazily on
-// that delta (ensureDERProgram). An empty list is a valid, well-formed
-// response that a polling client re-reads; an absent link is not.
-//
-// The mRID follows the same LFDI-plus-suffix scheme ensureDERProgram uses for
-// the DefaultDERControl it mints (control.go, mridBase+"-dderc"), so FSA
-// identity is derived from the same device identity rather than from a second,
-// unrelated numbering scheme.
-// fsaDescription is the seeded FunctionSetAssignments description. sep.xsd
-// bounds this field at 32 characters (String32); TestSeedStoresFSADescription
-// FitsString32 pins that so a later edit cannot quietly exceed it.
-const fsaDescription = "Bridge DER function set"
-
-func seedFSA(ctx context.Context, stores *assembly.Stores, edevID, lfdi string) error {
-	if stores.FSAs == nil {
-		return nil
-	}
-
-	fsa := sep2.FunctionSetAssignments{
-		MRID: deriveMRID(mridKindFSA, lfdi),
-		// sep.xsd types FunctionSetAssignments.description as String32, so
-		// this must stay at or under 32 characters. A conformant client
-		// (EPRI reference client, SE_String32_t) fails the whole document
-		// parse on an over-length value, exactly as it does on a bad mRID,
-		// so the length is a wire contract and not a style preference.
-		Description: fsaDescription,
-	}
-	fsa.Href = "/edev/" + edevID + "/fsa/" + controlFSAID
-	fsa.DERProgramListLink = &sep2.ListLink{
-		Href: derProgramListHref(edevID, controlFSAID),
-	}
-
-	if err := stores.FSAs.Create(ctx, edevID, controlFSAID, fsa); err != nil {
-		return fmt.Errorf("create FunctionSetAssignments: %w", err)
-	}
-	return nil
-}
-
 // absorption side), and the IEEE 2030.5 rtgMaxVar field expects the
 // delivered/positive rating. Rather than propagate a wrong-sign rating
 // or silently clamp it to a guessed magnitude, buildRTGMaxVar logs a
@@ -465,6 +414,52 @@ func buildRTGMaxVar(maxQ *int64, deviceID string) (*sep2.ReactivePower, error) {
 		return nil, fmt.Errorf("device %q: %w", deviceID, err)
 	}
 	return &sep2.ReactivePower{Multiplier: mult, Value: value}, nil
+}
+
+// fsaDescription is the seeded FunctionSetAssignments description. sep.xsd
+// bounds this field at 32 characters (String32); TestSeedStoresFSADescription
+// FitsString32 pins that so a later edit cannot quietly exceed it.
+const fsaDescription = "Bridge DER function set"
+
+// seedFSA creates the single FunctionSetAssignments record that the
+// EndDevice's FunctionSetAssignmentsListLink points at, and links it to the
+// DERProgramList the control path writes under.
+//
+// The fsaID is controlFSAID, NOT a fresh identifier. That is load-bearing:
+// ApplyControlDelta writes its DERProgram, DefaultDERControl, and DERControls
+// under the fixed (controlFSAID, controlDERProgramID) pair (control.go:48 and
+// its derProgramListHref/derControlScope helpers). Seeding this FSA under any
+// other id would advertise a DERProgramList at a path the control path never
+// writes to, so a traversing client would follow the link, find a permanently
+// empty list, and never see a DERControl. The two must agree.
+//
+// The mRID comes from deriveMRID keyed on the device LFDI, the same
+// derivation every other mRID this package mints uses, so FSA identity is a
+// function of the device identity rather than a second, unrelated numbering
+// scheme.
+func seedFSA(ctx context.Context, stores *assembly.Stores, edevID, lfdi string) error {
+	if stores.FSAs == nil {
+		return nil
+	}
+
+	fsa := sep2.FunctionSetAssignments{
+		MRID: deriveMRID(mridKindFSA, lfdi),
+		// sep.xsd types FunctionSetAssignments.description as String32, so
+		// this must stay at or under 32 characters. A conformant client
+		// (EPRI reference client, SE_String32_t) fails the whole document
+		// parse on an over-length value, exactly as it does on a bad mRID,
+		// so the length is a wire contract and not a style preference.
+		Description: fsaDescription,
+	}
+	fsa.Href = "/edev/" + edevID + "/fsa/" + controlFSAID
+	fsa.DERProgramListLink = &sep2.ListLink{
+		Href: derProgramListHref(edevID, controlFSAID),
+	}
+
+	if err := stores.FSAs.Create(ctx, edevID, controlFSAID, fsa); err != nil {
+		return fmt.Errorf("create FunctionSetAssignments: %w", err)
+	}
+	return nil
 }
 
 // derivePlaceholderSFDI returns a syntactically valid (spec 6.3.3 shaped,
