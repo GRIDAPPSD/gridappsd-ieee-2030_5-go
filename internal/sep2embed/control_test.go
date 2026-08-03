@@ -98,6 +98,55 @@ func twoDeviceFixtureWithPolicy(t *testing.T, policy seedPolicy) (reg *registry.
 	return reg, st
 }
 
+// soleControl returns the one DERControl stored under scope, failing the test
+// if the count is anything but one, and also returns the store key it is
+// held at.
+//
+// It replaces the fixed "active" key every test used before GAGO-133. A
+// device now accumulates one DERControl per issued control delta, so there is
+// no longer a well-known key to Get by; a test that wants "the control this
+// delta produced" has to say so, and has to state that it produced exactly
+// one. Asserting the count here rather than taking the first item is
+// deliberate: a change that started issuing two controls for one delta would
+// otherwise pass every test that only ever looked at item zero.
+func soleControl(t *testing.T, ctx context.Context, st *assembly.Stores, scope string) (sep2.DERControl, string) {
+	t.Helper()
+	list, err := st.DERControls.List(ctx, scope, store.ListOptions{Unbounded: true})
+	if err != nil {
+		t.Fatalf("DERControls.List(%q): %v", scope, err)
+	}
+	if len(list.Items) != 1 {
+		t.Fatalf("DERControl count under %q = %d, want exactly 1", scope, len(list.Items))
+	}
+	c := list.Items[0]
+	return c, derControlID(c.CreationTime, c.MRID)
+}
+
+// applyTestStoreDelta drives one control delta for device A through the
+// package-level ApplyControlDelta against a raw assembly.Stores, for the
+// tests that work at the store rather than over a real server.
+func applyTestStoreDelta(t *testing.T, ctx context.Context, st *assembly.Stores, reg *registry.Registry, field string, value float64) {
+	t.Helper()
+	err := ApplyControlDelta(ctx, st, nil, reg, testControlPolicy, diff.Difference{
+		Object:    "mrid-a",
+		Attribute: "DERControl.DERControlBase." + field,
+		Value:     map[string]any{"multiplier": 0.0, "value": value},
+	})
+	if err != nil {
+		t.Fatalf("ApplyControlDelta(%s=%v): %v", field, value, err)
+	}
+}
+
+// controlCount returns how many DERControls are stored under scope.
+func controlCount(t *testing.T, ctx context.Context, st *assembly.Stores, scope string) int {
+	t.Helper()
+	list, err := st.DERControls.List(ctx, scope, store.ListOptions{Unbounded: true})
+	if err != nil {
+		t.Fatalf("DERControls.List(%q): %v", scope, err)
+	}
+	return len(list.Items)
+}
+
 func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 	t.Parallel()
 
@@ -150,10 +199,7 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 
 	// Field fidelity: A's control carries exactly the delta's value.
 	scopeA := derControlScope(edevA, controlFSAID, controlDERProgramID)
-	control, err := st.DERControls.Get(ctx, scopeA, activeControlID)
-	if err != nil {
-		t.Fatalf("DERControls.Get(A): %v", err)
-	}
+	control, _ := soleControl(t, ctx, st, scopeA)
 	if control.DERControlBase == nil || control.DERControlBase.OpModTargetW == nil {
 		t.Fatalf("device A control has no OpModTargetW: %+v", control)
 	}
@@ -163,8 +209,8 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 
 	// Owner scoping: device B's own scope carries NO control at all.
 	scopeB := derControlScope(edevB, controlFSAID, controlDERProgramID)
-	if _, err := st.DERControls.Get(ctx, scopeB, activeControlID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("DERControls.Get(B) = (%v), want store.ErrNotFound (control must not leak to device B)", err)
+	if n := controlCount(t, ctx, st, scopeB); n != 0 {
+		t.Fatalf("device B holds %d DERControls, want 0 (control must not leak to device B)", n)
 	}
 
 	// Notifier scoping: only A's subscriber is notified.
@@ -209,8 +255,8 @@ func TestApplyControlDeltaRefusesUnknownDevice(t *testing.T) {
 	// Neither device's scope gained a control from the refused delta.
 	edevA := urlIndexFor(t, st, "mrid-a")
 	scopeA := derControlScope(edevA, controlFSAID, controlDERProgramID)
-	if _, err := st.DERControls.Get(ctx, scopeA, activeControlID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("DERControls.Get(A) after refused delta = (%v), want store.ErrNotFound", err)
+	if n := controlCount(t, ctx, st, scopeA); n != 0 {
+		t.Fatalf("device A holds %d DERControls after a refused delta, want 0", n)
 	}
 }
 
@@ -240,11 +286,26 @@ func TestApplyControlDeltaRefusesUnsupportedAttribute(t *testing.T) {
 	}
 }
 
-// TestApplyControlDeltaMergesSecondFieldNotDuplicate proves the
-// supersede semantics documented on ApplyControlDelta: two deltas for
-// the same device, touching two different DERControlBase fields, result
-// in ONE DERControl carrying BOTH fields, not two competing controls.
-func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
+// TestApplyControlDeltaIssuesIndependentControlPerMode replaces the former
+// TestApplyControlDeltaMergesSecondFieldNotDuplicate, whose premise this card
+// reversed.
+//
+// Two deltas on two DIFFERENT control modes used to produce ONE DERControl
+// carrying both fields. They now produce TWO DERControls, each carrying its
+// own single mode, and both remain in force. That is 2018 rule t) p.91:
+// "differing controls (e.g., opModTargetVar, opModTargetW) within DERControl
+// Events are independent and are allowed to overlap or nest without
+// superseding." CTP BASIC-024 through BASIC-026 (CTP v1.2 printed pp.130 to
+// 138) test the client half of the same rule by requiring both controls to
+// execute.
+//
+// The old model was not merely a different encoding of the same intent. Once
+// each delta's control set is the union of every mode seen so far, a delta on
+// a fresh mode produces an event whose control set is a strict superset of
+// the previous event's, which is partial rather than full supersession, and
+// the earlier setpoint is silently re-commanded by an event the operator
+// never issued for it.
+func TestApplyControlDeltaIssuesIndependentControlPerMode(t *testing.T) {
 	t.Parallel()
 
 	reg, st := twoDeviceFixture(t)
@@ -272,28 +333,61 @@ func TestApplyControlDeltaMergesSecondFieldNotDuplicate(t *testing.T) {
 	edevA := urlIndexFor(t, st, "mrid-a")
 	scope := derControlScope(edevA, controlFSAID, controlDERProgramID)
 
-	// Exactly one control exists at the active slot; List confirms no
-	// second entry was created alongside it.
-	list, err := st.DERControls.ForParent(scope).List(ctx, store.ListOptions{})
+	list, err := st.DERControls.List(ctx, scope, store.ListOptions{Unbounded: true})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if list.All != 1 {
-		t.Fatalf("DERControl count for device A = %d, want 1 (merge, not duplicate)", list.All)
+	if len(list.Items) != 2 {
+		t.Fatalf("DERControl count for device A = %d, want 2 (one independent event per control mode)", len(list.Items))
 	}
 
-	control, err := st.DERControls.Get(ctx, scope, activeControlID)
-	if err != nil {
-		t.Fatalf("DERControls.Get: %v", err)
+	byMode := map[string]sep2.DERControl{}
+	for _, c := range list.Items {
+		modes := controlModesOf(c.DERControlBase)
+		if len(modes) != 1 {
+			t.Fatalf("issued control %s carries modes %v, want exactly one (each delta issues its own single-mode event)", c.MRID, modes)
+		}
+		byMode[modes[0]] = c
 	}
-	if control.DERControlBase == nil {
-		t.Fatal("merged control has nil DERControlBase")
+
+	w, ok := byMode["opModTargetW"]
+	if !ok {
+		t.Fatal("no issued control carries opModTargetW")
 	}
-	if control.DERControlBase.OpModTargetW == nil || control.DERControlBase.OpModTargetW.Value != 3000 {
-		t.Errorf("merged control OpModTargetW = %+v, want Value=3000 (preserved from first delta)", control.DERControlBase.OpModTargetW)
+	if w.DERControlBase.OpModTargetW == nil || w.DERControlBase.OpModTargetW.Value != 3000 {
+		t.Errorf("opModTargetW control = %+v, want Value=3000", w.DERControlBase.OpModTargetW)
 	}
-	if control.DERControlBase.OpModTargetVar == nil || control.DERControlBase.OpModTargetVar.Value != 500 {
-		t.Errorf("merged control OpModTargetVar = %+v, want Value=500 (applied by second delta)", control.DERControlBase.OpModTargetVar)
+	if w.DERControlBase.OpModTargetVar != nil {
+		t.Errorf("opModTargetW control also carries OpModTargetVar = %+v, want nil: modes must not be merged into one event", w.DERControlBase.OpModTargetVar)
+	}
+
+	v, ok := byMode["opModTargetVar"]
+	if !ok {
+		t.Fatal("no issued control carries opModTargetVar")
+	}
+	if v.DERControlBase.OpModTargetVar == nil || v.DERControlBase.OpModTargetVar.Value != 500 {
+		t.Errorf("opModTargetVar control = %+v, want Value=500", v.DERControlBase.OpModTargetVar)
+	}
+
+	// Neither superseded the other: rule t) p.91.
+	for _, c := range []sep2.DERControl{w, v} {
+		if c.EventStatus == nil {
+			t.Fatalf("control %s has no EventStatus", c.MRID)
+		}
+		if c.EventStatus.CurrentStatus != sep2.EventStatusActive {
+			t.Errorf("control %s currentStatus = %d, want %d (Active): differing control modes overlap without superseding",
+				c.MRID, c.EventStatus.CurrentStatus, sep2.EventStatusActive)
+		}
+	}
+
+	// Distinct identities. Two events sharing an mRID would be read as
+	// duplicates of one another by a conformant client (2018 clause 10.2.5.6
+	// p.95), which is the defect this card exists to remove.
+	if w.MRID == v.MRID {
+		t.Errorf("both issued controls carry mRID %s; each DERControl instance SHALL be uniquely identified by an mRID (2018 clause 10.10.4.2 p.120)", w.MRID)
+	}
+	if w.Href == v.Href {
+		t.Errorf("both issued controls are served at %s; each must be fetchable at its own href", w.Href)
 	}
 }
 
@@ -404,8 +498,8 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 	if programB.MRID == program.MRID {
 		t.Errorf("device B's DERProgram.MRID = %q, the same as device A's; each device's program must have its own identity", programB.MRID)
 	}
-	if _, err := st.DERControls.Get(ctx, derControlScope(edevB, controlFSAID, controlDERProgramID), activeControlID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("DERControls.Get(B) = (%v), want store.ErrNotFound (A's control must not leak to device B)", err)
+	if n := controlCount(t, ctx, st, derControlScope(edevB, controlFSAID, controlDERProgramID)); n != 0 {
+		t.Fatalf("device B holds %d DERControls, want 0 (A's control must not leak to device B)", n)
 	}
 }
 
@@ -613,8 +707,8 @@ func TestApplyControlDeltaRefusesPercentModeAttributes(t *testing.T) {
 
 	edevA := urlIndexFor(t, st, "mrid-a")
 	scopeA := derControlScope(edevA, controlFSAID, controlDERProgramID)
-	if _, err := st.DERControls.Get(ctx, scopeA, activeControlID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("DERControls.Get(A) after refused percent-mode deltas = (%v), want store.ErrNotFound", err)
+	if n := controlCount(t, ctx, st, scopeA); n != 0 {
+		t.Fatalf("device A holds %d DERControls after refused percent-mode deltas, want 0", n)
 	}
 }
 

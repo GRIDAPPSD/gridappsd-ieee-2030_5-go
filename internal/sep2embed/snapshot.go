@@ -248,10 +248,13 @@ func (e *Embed) DefaultDERControl(ctx context.Context, edevID, fsaID, derpID str
 }
 
 // DERControls returns a read only snapshot of every DERControl scoped to
-// (edevID, fsaID, derpID). This bridge's own control.go writes at most
-// one, keyed activeControlID ("active"); this method still lists rather
-// than Get-by-key so it reflects whatever is actually stored, including
-// a future multi control bridge.
+// (edevID, fsaID, derpID).
+//
+// The list is genuinely a list: since GAGO-133 each control delta issues its
+// own DERControl rather than rewriting one, so a device carries every control
+// issued within its Effective Scheduled Period, superseded ones included.
+// Superseded entries are visible as CurrentStatus 4 under the 2018 semantics
+// this server presents (see supersede.go).
 func (e *Embed) DERControls(ctx context.Context, edevID, fsaID, derpID string) ([]DERControlSnapshot, error) {
 	scope := derControlScope(edevID, fsaID, derpID)
 	result, err := e.stores.DERControls.List(ctx, scope, store.ListOptions{Limit: snapshotListLimit})
@@ -269,7 +272,10 @@ func (e *Embed) DERControls(ctx context.Context, edevID, fsaID, derpID string) (
 		}
 
 		snaps = append(snaps, DERControlSnapshot{
-			ID:            activeControlID,
+			// Recomputed from the record, for the reason given on
+			// supersedePriorControls: derControlID produced the key, and
+			// store.ListResult carries items without their keys.
+			ID:            derControlID(c.CreationTime, c.MRID),
 			Href:          c.Href,
 			MRID:          c.MRID,
 			CurrentStatus: status,

@@ -236,12 +236,18 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 		t.Fatalf("DERControls returned %d items, want 1", len(controls))
 	}
 	got := controls[0]
-	if got.ID != activeControlID {
-		t.Errorf("DERControls[0].ID = %q, want %q", got.ID, activeControlID)
+	// The snapshot's ID is the store key the control is actually held at,
+	// which since GAGO-133 is per-event rather than the fixed "active" slot.
+	// The href is asserted to END with that id rather than to equal a literal:
+	// the id embeds the event's own creation instant and mRID, so a literal
+	// would have to be recomputed here and would then agree with the
+	// implementation by construction.
+	if got.ID == "" {
+		t.Error("DERControls[0].ID is empty, want the control's store key")
 	}
-	wantControlHref := "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + activeControlID
-	if got.Href != wantControlHref {
-		t.Errorf("DERControls[0].Href = %q, want %q", got.Href, wantControlHref)
+	wantControlPrefix := "/edev/" + edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/"
+	if got.Href != wantControlPrefix+got.ID {
+		t.Errorf("DERControls[0].Href = %q, want %q", got.Href, wantControlPrefix+got.ID)
 	}
 	if got.CurrentStatus != 1 { // sep2.EventStatusActive
 		t.Errorf("DERControls[0].CurrentStatus = %d, want 1 (EventStatusActive)", got.CurrentStatus)
