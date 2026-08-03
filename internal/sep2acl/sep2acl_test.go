@@ -80,8 +80,20 @@ func TestMethodAllowedFamilyMatrix(t *testing.T) {
 		{"fsa/.../dderc DELETE denied", "/edev/DEV-A/fsa/1/derp/2/dderc", http.MethodDelete, false, true},
 		{"cfg PUT allowed", "/edev/DEV-A/cfg", http.MethodPut, true, true},
 		{"dstat PUT allowed", "/edev/DEV-A/dstat", http.MethodPut, true, true},
-		{"log POST allowed", "/edev/DEV-A/log", http.MethodPost, true, true},
-		{"log PUT denied", "/edev/DEV-A/log", http.MethodPut, false, true},
+		// LogEvent list, at the WADL address /edev/{id}/lel (GAGO-132).
+		// Core v0.13.0 moved the list here from /edev/{id}/log, which was
+		// never a WADL address and is no longer served, so the table must
+		// classify the new address and no longer the old one.
+		{"lel POST allowed", "/edev/DEV-A/lel", http.MethodPost, true, true},
+		{"lel GET allowed", "/edev/DEV-A/lel", http.MethodGet, true, true},
+		{"lel PUT denied", "/edev/DEV-A/lel", http.MethodPut, false, true},
+		{"lel/{lelId} GET allowed (prefix)", "/edev/DEV-A/lel/1", http.MethodGet, true, true},
+		// The retired /log address must fall through to the /edev/{id}
+		// singleton entry rather than keep its own family: it matches as a
+		// prefix (matched=true) but earns only that entry's GET/PUT/DELETE,
+		// proving no dead readCreate rule survives for a path core no
+		// longer serves.
+		{"retired log POST no longer allowed", "/edev/DEV-A/log", http.MethodPost, false, true},
 		{"ps PUT allowed", "/edev/DEV-A/ps", http.MethodPut, true, true},
 		{"frq POST allowed", "/edev/DEV-A/frq", http.MethodPost, true, true},
 		{"frp GET allowed", "/edev/DEV-A/frp", http.MethodGet, true, true},
