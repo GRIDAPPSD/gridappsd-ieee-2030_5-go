@@ -80,6 +80,27 @@ var ErrUnsupportedControlAttribute = errors.New("sep2embed: unsupported control 
 // never moved. Refusing puts the error where an operator can see it.
 var ErrDERControlDurationUnset = errors.New("sep2embed: DERControl interval duration is not configured")
 
+// ErrControlDeltaRateUnrepresentable is returned by ApplyControlDelta when
+// stamping a creationTime strictly newer than every overlapping same-mode
+// control already issued would push the stamp more than
+// maxCreationTimeLeadSeconds ahead of the wall clock.
+//
+// It is a refusal rather than a clamp for the reason ErrUnknownControlDevice
+// is a refusal: the two alternatives both corrupt something silently. Clamping
+// the stamp to the bound would make it EQUAL to a control already issued, and
+// equal creationTimes compare false in both directions under the client's
+// strict-greater comparison (2018 rule f) p.90), so the incoming control would
+// be served and then discarded by every conformant client: the exact defect
+// the tie-break exists to prevent. Letting the stamp run would keep the server
+// issuing events whose creationTime drifts arbitrarily far from the instant
+// they were created. Refusing puts the condition where an operator can see it.
+//
+// The condition it reports is real and not a bug in the caller: IEEE 2030.5
+// orders events by a one-second TimeType (sep.xsd:6382), so more than one
+// CHANGED setpoint per second per control mode is not a rate this protocol can
+// express. See maxCreationTimeLeadSeconds.
+var ErrControlDeltaRateUnrepresentable = errors.New("sep2embed: control delta rate exceeds the one-second event ordering IEEE 2030.5 can represent")
+
 // DERProgramSeed carries the operator-configurable fields of the DERProgram
 // this package seeds and lazily creates. It mirrors
 // sep2config.DERProgramPolicy, which is where the values and their rationale
@@ -264,6 +285,13 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // controls to run (rule f) p.90: the larger creationTime is newer), and the
 // interval start is when the new setpoint takes effect.
 //
+// creationTime is also the ONE field the same-second tie-break moves. The
+// interval start and EventStatus.dateTime are the wall clock as read, never
+// the bumped stamp, so no event is ever served with a start in the future or
+// with a status timestamp that has not happened yet. See
+// nextEventCreationTime for why the bump exists and what bounds it, and
+// newEventStatus for the two clauses that fix the other two fields.
+//
 // CHANGE BOUND (GAGO-136). A delta whose payload is byte-for-byte the payload
 // already in force for its own control modes issues NOTHING: no event, no
 // store write, no subscriber notification. Without that test the bound is a
@@ -371,10 +399,11 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		return fmt.Errorf("sep2embed: control delta: list existing controls: %w", err)
 	}
 
-	// One clock read for the whole event. creationTime, EventStatus.dateTime
-	// and interval.start are three views of the same instant, and reading
-	// the clock three times could land them on different seconds, which a
-	// client comparing them has no way to interpret.
+	// ONE clock read for the whole event. interval.start and
+	// EventStatus.dateTime are both this instant, and reading the clock twice
+	// could land them on different seconds, which a client comparing them has
+	// no way to interpret. creationTime is derived from it below and is the
+	// only one of the three that may differ, by the bounded tie-break.
 	wallUnix := policy.Control.now().UTC().Unix()
 
 	// GAGO-136. Nothing is written for a delta that restates the setpoint
@@ -391,13 +420,16 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		return nil
 	}
 
-	nowUnix := nextEventCreationTime(priorList.Items, base, wallUnix)
-
-	mrid, err := deriveEventMRID(mridKindDERControl, entry.LFDI, nowUnix, &base)
+	creationTime, err := nextEventCreationTime(priorList.Items, base, wallUnix)
 	if err != nil {
 		return fmt.Errorf("sep2embed: control delta: %w", err)
 	}
-	controlID := derControlID(nowUnix, mrid)
+
+	mrid, err := deriveEventMRID(mridKindDERControl, entry.LFDI, creationTime, &base)
+	if err != nil {
+		return fmt.Errorf("sep2embed: control delta: %w", err)
+	}
+	controlID := derControlID(creationTime, mrid)
 
 	control := sep2.DERControl{}
 	control.Href = derControlListHref(edevID, controlFSAID, controlDERProgramID) + "/" + controlID
@@ -410,15 +442,19 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// controls of equal primacy (rule f) p.90), which is the mechanism this
 	// whole path depends on now that a setpoint change is a second event
 	// rather than a rewrite of the first.
-	control.CreationTime = nowUnix
-	control.EventStatus = newEventStatus(servedEventEdition, nowUnix)
-	// Required element. start is now because the platform's delta means
-	// "this setpoint, from here"; duration is operator policy, because the
+	control.CreationTime = creationTime
+	// Required element. start is the wall clock, NOT the possibly-bumped
+	// creationTime, because the platform's delta means "this setpoint, from
+	// here" and a tie-break between two events issued in one second says
+	// nothing about when either setpoint was asked for. Keeping it here is
+	// also what makes the Active below correct by construction rather than by
+	// luck (sep.xsd:5603). duration is operator policy, because the
 	// GridAPPS-D delta contract carries no window of its own.
 	control.Interval = &sep2.DateTimeInterval{
-		Start:    nowUnix,
+		Start:    wallUnix,
 		Duration: policy.Control.Duration,
 	}
+	control.EventStatus = newEventStatus(servedEventEdition, control.Interval.Start, wallUnix)
 	// Served explicitly, including at 0. The value is addressable rather
 	// than inlined because the field is a pointer whose nil means "element
 	// absent"; a pointer to 0 still reaches the wire as
@@ -480,12 +516,20 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 //
 // The standard does not say what to do when two events would share a
 // creationTime; it simply assumes they do not. Advancing the stamp is OUR
-// decision, and it is the conservative one, because the alternative is
-// serving a control the client is required to ignore. The cost is that the
-// interval start moves with it, so a burst of same-second deltas issues
-// controls that start up to a few seconds out; the window is not shortened,
-// only shifted.
-func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wallUnix int64) int64 {
+// decision, and it is the conservative one, because the alternative is serving
+// a control the client is required to ignore. The bump lands on creationTime
+// ALONE: interval.start and EventStatus.dateTime stay on the wall clock, so a
+// burst of same-second deltas still issues controls that take effect
+// immediately, and no window is shifted or shortened.
+//
+// BOUNDED (GAGO-137). The advance is capped at maxCreationTimeLeadSeconds
+// ahead of the wall clock and a delta that would exceed it is refused with
+// ErrControlDeltaRateUnrepresentable. Without the cap the stamp drifts forward
+// without limit under sustained same-mode deltas above one per second, and the
+// lead never decays; with it, the lead decays on its own as soon as the delta
+// rate falls back under one per second, because the wall clock catches up and
+// this function returns it unmodified again.
+func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wallUnix int64) (int64, error) {
 	incomingModes := controlModesOf(&base)
 	next := wallUnix
 	for _, p := range prior {
@@ -497,8 +541,49 @@ func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wa
 		}
 		next = p.CreationTime + 1
 	}
-	return next
+	if lead := next - wallUnix; lead > maxCreationTimeLeadSeconds {
+		return 0, fmt.Errorf("%w: stamping a control newer than every overlapping same-mode control already issued would put creationTime %ds ahead of the wall clock, over the %ds bound",
+			ErrControlDeltaRateUnrepresentable, lead, maxCreationTimeLeadSeconds)
+	}
+	return next, nil
 }
+
+// maxCreationTimeLeadSeconds is how far ahead of the wall clock
+// nextEventCreationTime may stamp a control's creationTime.
+//
+// THIS NUMBER IS OUR DECISION, NOT THE STANDARD'S, in the same way
+// eventRetentionSeconds is. sep.xsd:5578 defines creationTime only as "the
+// time at which the Event was created" and fixes nothing else about it; no
+// clause in 2013, 2018 or 2023 says what a server should do when two events
+// would share one, which is why the tie-break exists at all.
+//
+// WHY A CEILING IS NEEDED. The lead is a falsification of a wire-visible
+// timestamp, and left unbounded it grows for as long as the delta rate stays
+// above one per second per control mode. Two consequences make that worse than
+// cosmetic:
+//
+//   - It survives nothing. A bridge restart stamps from the true wall clock
+//     again, so the first controls issued after a restart carry creationTimes
+//     LOWER than the drifted ones a client is still holding. Under rule f)
+//     p.90 the client keeps running the stale event and discards the new one,
+//     which is exactly the defect the tie-break was added to prevent, arriving
+//     by the other door.
+//   - It hides the condition. A server quietly stamping events hours ahead is
+//     reporting nothing an operator can act on, while the platform's real
+//     problem, a delta rate the protocol cannot express, goes unnamed.
+//
+// WHY TEN SECONDS. It is a burst tolerance, not a rate: eleven changed
+// setpoints inside one wall second are absorbed, and any backlog drains as
+// soon as the rate falls back under one per second. That is far above the
+// cadence this bridge is driven at in practice (Hale's co-simulation run 14:
+// fifteen deltas at ten-second spacing), and small enough that a drifted stamp
+// cannot survive a restart gap. Above it the request is not a burst but a
+// sustained demand for sub-second event ordering, which IEEE 2030.5 has no way
+// to express: TimeType is whole seconds (sep.xsd:6382).
+//
+// The GAGO-136 change bound sits in front of this one, so only a delta that
+// actually CHANGES the commanded value can consume any of this budget.
+const maxCreationTimeLeadSeconds int64 = 10
 
 // restatesControlInForce reports whether base is a byte-for-byte restatement
 // of the control this device is already running for base's own control modes.

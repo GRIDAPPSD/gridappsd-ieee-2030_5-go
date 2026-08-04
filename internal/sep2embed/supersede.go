@@ -247,10 +247,34 @@ func supersedes(existing, incoming sep2.DERControl) modeRelation {
 }
 
 // newEventStatus builds the EventStatus stamped on a freshly issued
-// DERControl, per edition.
+// DERControl, per edition, for an event starting at startUnix and issued at
+// wall-clock instant wallUnix.
 //
-// The control is Active in both editions: it is issued with an interval
-// starting now, so it is in force on arrival.
+// currentStatus is EVALUATED against the two instants rather than assumed
+// (GAGO-137). sep.xsd:5603 fixes both directions:
+//
+//   - start at or before now: "this status SHALL never be indicated, the event
+//     SHALL start with a status of Active". A server that stamped 0 Scheduled
+//     on an event already in force would violate that SHALL outright.
+//   - start after now: the event "has been scheduled and ... has not yet
+//     started", which is what value 0 means. Stamping 1 Active on it tells
+//     every client the event is running when it is not, and a client acting on
+//     it actuates early.
+//
+// The write path in control.go stamps interval.start from the wall clock, so
+// the Scheduled branch is not reachable from today's ApplyControlDelta. It is
+// written and tested anyway, because the alternative is a hardcoded Active
+// whose correctness rests on a property of a DIFFERENT file. That is precisely
+// how the defect arrived: the tie-break moved interval.start forward without
+// the status following, and a hardcoded Active does not fail when its
+// precondition stops holding. Note that reaching the Scheduled branch would
+// bring a second duty with it, since sep.xsd:5606 requires the server to move
+// the event to Active "when the event reaches its earliest Effective Start
+// Time" and nothing in this package does that today.
+//
+// dateTime is the WALL clock, never a bumped or otherwise adjusted stamp.
+// sep.xsd:5623: it "MUST be set to the time at which the status change
+// occurred, not a time in the future or past".
 //
 // potentiallySuperseded is where the editions part. Under 2013 and 2018 it
 // carries PARTIAL supersession and a fresh event has nothing to be partly
@@ -260,10 +284,14 @@ func supersedes(existing, incoming sep2.DERControl) modeRelation {
 // served true unconditionally. potentiallySupersededTime is absent in both:
 // under 2018 because nothing has set the flag, under 2023 because it "SHALL
 // NOT be included by servers" (2023 printed p.170).
-func newEventStatus(ed eventEdition, nowUnix int64) *sep2.EventStatus {
+func newEventStatus(ed eventEdition, startUnix, wallUnix int64) *sep2.EventStatus {
+	currentStatus := sep2.EventStatusActive
+	if startUnix > wallUnix {
+		currentStatus = sep2.EventStatusScheduled
+	}
 	return &sep2.EventStatus{
-		CurrentStatus:         sep2.EventStatusActive,
-		DateTime:              nowUnix,
+		CurrentStatus:         currentStatus,
+		DateTime:              wallUnix,
 		PotentiallySuperseded: ed == edition2023,
 	}
 }

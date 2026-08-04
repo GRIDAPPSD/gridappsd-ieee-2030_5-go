@@ -1,6 +1,7 @@
 package sep2embed
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -294,7 +295,7 @@ func TestEventStatusPerEdition(t *testing.T) {
 	const supersededAt = int64(1600)
 
 	t.Run("2018 fresh event", func(t *testing.T) {
-		got := newEventStatus(edition2018, created)
+		got := newEventStatus(edition2018, created, created)
 		if got.CurrentStatus != sep2.EventStatusActive || got.DateTime != created {
 			t.Errorf("newEventStatus(2018) = %+v, want Active at %d", got, created)
 		}
@@ -307,7 +308,7 @@ func TestEventStatusPerEdition(t *testing.T) {
 	})
 
 	t.Run("2023 fresh event", func(t *testing.T) {
-		got := newEventStatus(edition2023, created)
+		got := newEventStatus(edition2023, created, created)
 		if got.CurrentStatus != sep2.EventStatusActive {
 			t.Errorf("newEventStatus(2023).CurrentStatus = %d, want %d", got.CurrentStatus, sep2.EventStatusActive)
 		}
@@ -320,7 +321,7 @@ func TestEventStatusPerEdition(t *testing.T) {
 	})
 
 	t.Run("2018 marks superseded", func(t *testing.T) {
-		es := newEventStatus(edition2018, created)
+		es := newEventStatus(edition2018, created, created)
 		if !markSuperseded(edition2018, es, supersededAt) {
 			t.Fatal("markSuperseded(2018) reported no change on an Active event")
 		}
@@ -347,7 +348,7 @@ func TestEventStatusPerEdition(t *testing.T) {
 	})
 
 	t.Run("2023 does not mark superseded", func(t *testing.T) {
-		es := newEventStatus(edition2023, created)
+		es := newEventStatus(edition2023, created, created)
 		if markSuperseded(edition2023, es, supersededAt) {
 			t.Error("markSuperseded(2023) reported a change")
 		}
@@ -361,7 +362,7 @@ func TestEventStatusPerEdition(t *testing.T) {
 	})
 
 	t.Run("2018 flags partial supersession", func(t *testing.T) {
-		es := newEventStatus(edition2018, created)
+		es := newEventStatus(edition2018, created, created)
 		if !markPotentiallySuperseded(edition2018, es, supersededAt) {
 			t.Fatal("markPotentiallySuperseded(2018) reported no change")
 		}
@@ -387,7 +388,7 @@ func TestEventStatusPerEdition(t *testing.T) {
 	})
 
 	t.Run("2023 does not flag partial supersession", func(t *testing.T) {
-		es := newEventStatus(edition2023, created)
+		es := newEventStatus(edition2023, created, created)
 		if markPotentiallySuperseded(edition2023, es, supersededAt) {
 			t.Error("markPotentiallySuperseded(2023) reported a change")
 		}
@@ -419,15 +420,22 @@ func TestServedEventEditionIsPinnedTo2018(t *testing.T) {
 }
 
 // TestNextEventCreationTimeBreaksSameSecondTies covers the write path's clock
-// guard.
+// guard and the ceiling on it.
 //
 // creationTime is the only discriminator between two overlapping controls of
 // equal primacy (2018 rule f) p.90), TimeType has one-second resolution
 // (sep.xsd:6382), and the client comparison is strictly greater. Two deltas
 // for one device inside one second would otherwise produce two controls
 // neither of which supersedes the other, and the client would keep running
-// the older one: this card's defect arriving through the clock instead of
+// the older one: GAGO-133's defect arriving through the clock instead of
 // through the mRID.
+//
+// The refusal cases are GAGO-137. The advance was unbounded, so a sustained
+// same-mode delta rate above one per second drifted the stamp forward with no
+// ceiling and no decay. The bound is stated in maxCreationTimeLeadSeconds and
+// the excess is refused rather than clamped, because a clamped stamp equals
+// one already issued and equal stamps are the very thing this function exists
+// to prevent.
 func TestNextEventCreationTimeBreaksSameSecondTies(t *testing.T) {
 	t.Parallel()
 
@@ -442,12 +450,13 @@ func TestNextEventCreationTimeBreaksSameSecondTies(t *testing.T) {
 	}
 
 	tests := []struct {
-		name  string
-		prior []sep2.DERControl
-		base  sep2.DERControlBase
-		wall  int64
-		want  int64
-		why   string
+		name    string
+		prior   []sep2.DERControl
+		base    sep2.DERControlBase
+		wall    int64
+		want    int64
+		wantErr bool
+		why     string
 	}{
 		{
 			name: "no prior controls", prior: nil, base: wattBase, wall: 1000, want: 1000,
@@ -459,9 +468,33 @@ func TestNextEventCreationTimeBreaksSameSecondTies(t *testing.T) {
 			why: "equal creationTimes compare false in both directions under a strict-greater client comparison, so the incoming control would be discarded",
 		},
 		{
-			name:  "prior control on the same mode in a later second",
-			prior: []sep2.DERControl{issued(1500, wattBase)}, base: wattBase, wall: 1000, want: 1501,
-			why: "a clock that went backwards must not produce a control the client ranks as older than one it already holds",
+			name:  "prior control on the same mode in a later second, inside the bound",
+			prior: []sep2.DERControl{issued(1005, wattBase)}, base: wattBase, wall: 1000, want: 1006,
+			why: "a clock that went backwards a few seconds must not produce a control the client ranks as older than one it already holds",
+		},
+		{
+			name:  "prior control on the same mode past the bound",
+			prior: []sep2.DERControl{issued(1500, wattBase)}, base: wattBase, wall: 1000, wantErr: true,
+			why: "a 501-second lead is not a burst; stamping it would leave every subsequent control that far ahead of the clock, and a restart would then stamp controls the client ranks as older than the ones it holds",
+		},
+		{
+			name:  "lead exactly at the bound is allowed",
+			prior: []sep2.DERControl{issued(1000+maxCreationTimeLeadSeconds-1, wattBase)},
+			base:  wattBase, wall: 1000, want: 1000 + maxCreationTimeLeadSeconds,
+			why: "the bound is the largest permitted lead, not the first refused one",
+		},
+		{
+			name:  "one second past the bound is refused",
+			prior: []sep2.DERControl{issued(1000+maxCreationTimeLeadSeconds, wattBase)},
+			base:  wattBase, wall: 1000, wantErr: true,
+			why: "the excess is refused rather than clamped: a clamped stamp would equal the prior control's and neither would supersede the other",
+		},
+		{
+			name:  "the lead decays once the clock catches up",
+			prior: []sep2.DERControl{issued(1000+maxCreationTimeLeadSeconds, wattBase)},
+			base:  wattBase, wall: 1000 + maxCreationTimeLeadSeconds + 1,
+			want: 1000 + maxCreationTimeLeadSeconds + 1,
+			why:  "the same prior control that was refused above is no constraint at all once the wall clock passes it, so nothing has to be reset for the lead to fall back to zero",
 		},
 		{
 			name:  "prior control on the same mode, already older",
@@ -486,7 +519,17 @@ func TestNextEventCreationTimeBreaksSameSecondTies(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := nextEventCreationTime(tt.prior, tt.base, tt.wall); got != tt.want {
+			got, err := nextEventCreationTime(tt.prior, tt.base, tt.wall)
+			if tt.wantErr {
+				if !errors.Is(err, ErrControlDeltaRateUnrepresentable) {
+					t.Fatalf("nextEventCreationTime error = %v, want ErrControlDeltaRateUnrepresentable; %s", err, tt.why)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("nextEventCreationTime: unexpected error %v; %s", err, tt.why)
+			}
+			if got != tt.want {
 				t.Errorf("nextEventCreationTime = %d, want %d; %s", got, tt.want, tt.why)
 			}
 		})
