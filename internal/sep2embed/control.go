@@ -1,6 +1,7 @@
 package sep2embed
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -263,6 +264,24 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // controls to run (rule f) p.90: the larger creationTime is newer), and the
 // interval start is when the new setpoint takes effect.
 //
+// CHANGE BOUND (GAGO-136). A delta whose payload is byte-for-byte the payload
+// already in force for its own control modes issues NOTHING: no event, no
+// store write, no subscriber notification. Without that test the bound is a
+// bound on the delta RATE rather than on CHANGE, because a restatement one
+// second later derives a different creationTime, hence a different mRID and a
+// different store id, so the store's own ErrAlreadyExists dedup never sees it.
+// A platform restating its setpoints every timestep, which is the likely
+// production cadence, then minted one event per timestep: at the shipped
+// 1800-second duration and one delta per second, 1800 resident controls per
+// device, with each delta paying an unbounded List plus an O(n) classify.
+//
+// The bound is scoped to the control still IN FORCE, not to every control the
+// device has ever held. A restatement arriving after the previous control's
+// window has closed is not redundant: the device has already reverted to the
+// DefaultDERControl, so suppressing it would leave the platform's standing
+// setpoint uncommanded for as long as it kept restating it. See
+// restatesControlInForce.
+//
 // END OF LIFE (GAGO-134). The interval stamped here is also what takes the
 // control back OUT of service: lifecycle.go removes it at the close of its
 // maximum Effective Scheduled Period. That removal is what bounds the
@@ -356,7 +375,23 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// and interval.start are three views of the same instant, and reading
 	// the clock three times could land them on different seconds, which a
 	// client comparing them has no way to interpret.
-	nowUnix := nextEventCreationTime(priorList.Items, base, policy.Control.now().UTC().Unix())
+	wallUnix := policy.Control.now().UTC().Unix()
+
+	// GAGO-136. Nothing is written for a delta that restates the setpoint
+	// already in force. This runs BEFORE the creation instant is chosen and
+	// before anything is written, so a restatement costs one List and one
+	// comparison and leaves the served collection byte-identical: the event
+	// the client already holds keeps its own mRID, its own window and its own
+	// response cycle, which is the whole point of not re-issuing it.
+	restatement, err := restatesControlInForce(priorList.Items, &base, wallUnix)
+	if err != nil {
+		return fmt.Errorf("sep2embed: control delta: %w", err)
+	}
+	if restatement {
+		return nil
+	}
+
+	nowUnix := nextEventCreationTime(priorList.Items, base, wallUnix)
 
 	mrid, err := deriveEventMRID(mridKindDERControl, entry.LFDI, nowUnix, &base)
 	if err != nil {
@@ -463,6 +498,79 @@ func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wa
 		next = p.CreationTime + 1
 	}
 	return next
+}
+
+// restatesControlInForce reports whether base is a byte-for-byte restatement
+// of the control this device is already running for base's own control modes.
+//
+// It is the change bound GAGO-136 adds: an issued DERControl is an Event, and
+// re-issuing one that commands what is already commanded is not a change the
+// standard has any notion of. 2018 clause 10.2.5.6 p.95 has a client discard a
+// duplicate Event outright, and CSIP v2.0 section 4.4.1 lines 282 to 283
+// scopes issuing a new DERControl to changing the setting. What a redundant
+// re-issue DOES produce is a new mRID and a new response cycle for a setpoint
+// the device never stopped running.
+//
+// WHICH control it compares against is the whole of the logic:
+//
+//   - Same modes, exactly. classifyModes must report modesIdentical. A control
+//     on an independent mode is not a candidate at all (2018 rule t) p.91
+//     makes the two independent), and a partial overlap leaves the older
+//     control still partly in force, so neither can stand in for the incoming
+//     one.
+//   - Still in force. A control whose window has closed has already been
+//     replaced by the DefaultDERControl on the device, so a delta restating
+//     its value is a real command and not a restatement of anything. The test
+//     is against minEffectiveScheduledEnd, the EARLIEST instant any device
+//     could have finished, because a device that randomized its duration
+//     downward is already off the event while one that did not is still on it,
+//     and suppressing on the strength of the slowest device would leave the
+//     fastest uncommanded.
+//   - The newest of them. With several same-mode controls resident, the one
+//     the client is executing is the one with the largest creationTime (rule
+//     f) p.90). Comparing against an older one would suppress a delta that
+//     reverts to a previous setpoint, which is a genuine change.
+//
+// Equality is decided on the serialized payload (canonicalControlPayload),
+// which is both what the client observes and what the event's own identity is
+// derived from, so "same payload" here and "same mRID" in deriveEventMRID
+// cannot mean two different things.
+func restatesControlInForce(prior []sep2.DERControl, base *sep2.DERControlBase, wallUnix int64) (bool, error) {
+	incomingModes := controlModesOf(base)
+
+	var inForce *sep2.DERControl
+	for i := range prior {
+		p := &prior[i]
+		// The interval test comes first because it is two integer
+		// comparisons, while classifyModes builds a mode set per control.
+		if end, ok := minEffectiveScheduledEnd(*p); !ok || wallUnix >= end {
+			continue
+		}
+		if classifyModes(controlModesOf(p.DERControlBase), incomingModes) != modesIdentical {
+			continue
+		}
+		// The mRID breaks a creationTime tie so the choice cannot depend on
+		// store iteration order. Two same-mode controls sharing a creationTime
+		// are what nextEventCreationTime exists to prevent, so this is a
+		// determinism guard rather than a case that should occur.
+		if inForce == nil || p.CreationTime > inForce.CreationTime ||
+			(p.CreationTime == inForce.CreationTime && p.MRID > inForce.MRID) {
+			inForce = p
+		}
+	}
+	if inForce == nil {
+		return false, nil
+	}
+
+	incoming, err := canonicalControlPayload(base)
+	if err != nil {
+		return false, err
+	}
+	existing, err := canonicalControlPayload(inForce.DERControlBase)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(incoming, existing), nil
 }
 
 // supersedePriorControls marks every already-issued control that the newly

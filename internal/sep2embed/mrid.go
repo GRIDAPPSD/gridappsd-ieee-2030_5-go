@@ -117,17 +117,12 @@ func deriveMRID(kind, lfdi string) string {
 // Fields are NUL-separated so that no combination of inputs can be
 // reinterpreted as a different combination with the same concatenation.
 func deriveEventMRID(kind, lfdi string, creationTime int64, base *sep2.DERControlBase) (string, error) {
-	var payload []byte
-	if base != nil {
-		var err error
-		payload, err = xml.Marshal(base)
-		if err != nil {
-			// Refused, never defaulted: an mRID derived from a payload we
-			// could not serialize would not be a function of the bytes the
-			// client receives, which is the whole property this identity
-			// rests on.
-			return "", fmt.Errorf("sep2embed: canonicalize DERControlBase for mRID: %w", err)
-		}
+	payload, err := canonicalControlPayload(base)
+	if err != nil {
+		// Refused, never defaulted: an mRID derived from a payload we could
+		// not serialize would not be a function of the bytes the client
+		// receives, which is the whole property this identity rests on.
+		return "", fmt.Errorf("for mRID: %w", err)
 	}
 
 	h := sha256.New()
@@ -141,6 +136,35 @@ func deriveEventMRID(kind, lfdi string, creationTime int64, base *sep2.DERContro
 		h.Write([]byte{0})
 	}
 	return strings.ToUpper(hex.EncodeToString(h.Sum(nil)[:16])), nil
+}
+
+// canonicalControlPayload returns the XML serialization of a DERControlBase,
+// which is the byte sequence a client actually receives for it. A nil base
+// yields nil, which is distinct from the serialization of an empty base.
+//
+// It is the single definition of "the same control payload" in this package,
+// and it has two callers that must not drift apart: deriveEventMRID, which
+// makes an event's identity a function of these bytes, and the change
+// detection in ApplyControlDelta (GAGO-136), which refuses to issue a second
+// event for a payload already in force. If those two used different notions of
+// sameness, a delta could be judged a restatement while deriving a different
+// mRID, or judged a change while deriving the same one; either way the store
+// id and the identity would disagree about what a client is holding.
+//
+// The serialization is used rather than a hand-rolled field comparison for the
+// reason deriveEventMRID gives: it is the same byte sequence the client
+// receives, so two controls that are indistinguishable on the wire compare
+// equal and two that differ anywhere compare unequal, with no separate notion
+// of "significant field" to drift out of step with the schema.
+func canonicalControlPayload(base *sep2.DERControlBase) ([]byte, error) {
+	if base == nil {
+		return nil, nil
+	}
+	payload, err := xml.Marshal(base)
+	if err != nil {
+		return nil, fmt.Errorf("sep2embed: canonicalize DERControlBase: %w", err)
+	}
+	return payload, nil
 }
 
 // derControlID returns the store key, and therefore the final href segment,
