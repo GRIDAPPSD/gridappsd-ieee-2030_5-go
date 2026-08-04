@@ -156,6 +156,48 @@ func maxEffectiveScheduledEnd(c sep2.DERControl) (int64, bool) {
 	return end, true
 }
 
+// minEffectiveScheduledEnd returns the EARLIEST instant at which a device
+// executing the control could already have finished with it, and whether it
+// could be determined. It is maxEffectiveScheduledEnd's mirror and the two are
+// deliberately not one function with a flag: they answer opposite questions
+// and each is safe only for its own caller.
+//
+// "Minimum" is load-bearing in the same way "maximum" is over there.
+// randomizeStart and randomizeDuration each shift a device's actual window by
+// up to the configured magnitude in EITHER direction, so the first instant at
+// which SOME device may already have reverted is the nominal end plus the
+// NEGATIVE part of each. Positive randomization is ignored here for the
+// reason negative randomization is ignored there: it can only make a device
+// finish later, and sizing on the latest possible finish would report a
+// control as still in force while a device that randomized the other way has
+// already dropped it.
+//
+// The caller is the GAGO-136 change bound, which suppresses a delta only while
+// the control it restates is certainly still running on every device. Taking
+// the earliest end is what makes "certainly" true: between the earliest and
+// the latest possible finish the fleet is split, and a restatement in that
+// window is a real command to the devices that have already reverted.
+//
+// A control with no interval yields false, and the change bound then treats it
+// as not in force, so a delta is issued rather than suppressed. That is the
+// safe direction here: an extra event is a client re-actuating a setpoint it
+// is already running, while a wrongly suppressed one is a device left
+// uncommanded. (maxEffectiveScheduledEnd's false is safe in ITS direction for
+// the opposite reason, which is why the two are separate.)
+func minEffectiveScheduledEnd(c sep2.DERControl) (int64, bool) {
+	if c.Interval == nil {
+		return 0, false
+	}
+	end := c.Interval.Start + int64(c.Interval.Duration)
+	if c.RandomizeStart != nil && *c.RandomizeStart < 0 {
+		end += int64(*c.RandomizeStart)
+	}
+	if c.RandomizeDuration != nil && *c.RandomizeDuration < 0 {
+		end += int64(*c.RandomizeDuration)
+	}
+	return end, true
+}
+
 // markEnded records the terminal status of an event whose maximum Effective
 // Scheduled Period has closed, per edition. It reports whether it changed
 // anything.
