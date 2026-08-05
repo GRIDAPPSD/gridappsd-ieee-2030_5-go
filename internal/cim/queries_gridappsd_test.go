@@ -1,6 +1,6 @@
 //go:build gridappsd
 
-// Integration tests for the four GAGO-026 SPARQL templates against the
+// Integration tests for the four SPARQL templates against the
 // real GridAPPS-D platform stack (gridappsd-docker via
 // `pixi run gridappsd-start` from sentient_gridappsd_integration).
 //
@@ -79,7 +79,7 @@ func newGridAPPSDClient(t *testing.T) *Client {
 	return NewClient(cs)
 }
 
-// TestGridAPPSD_QueryInverter_IEEE123pv asserts the GAGO-026 template
+// TestGridAPPSD_QueryInverter_IEEE123pv asserts the template
 // returns the expected 14 PowerElectronicsConnection rows against the
 // IEEE 123pv feeder in gridappsd-docker:develop. The pre-fix template
 // returned 0 rows because the inner join on

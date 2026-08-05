@@ -4,10 +4,8 @@
 // GridAPPS-D expects on the simulation input topic.
 //
 // Pure construction: no broker IO, no goroutines, no auth. The bridge's
-// pub/sub layer (GAGO-011) consumes Builder.Bytes and sends the payload
-// to /topic/goss.gridappsd.simulation.input.<sim_id>. See research-stomp-
-// cim-catalog.md section 1 in the project knowledge for destination
-// semantics.
+// pub/sub layer consumes Builder.Bytes and sends the payload
+// to /topic/goss.gridappsd.simulation.input.<sim_id>.
 //
 // The wire shape mirrors the Python upstream byte-for-byte:
 //
@@ -21,7 +19,7 @@
 //
 // Message, MessageNow, Bytes, and BytesNow all return an error
 // (wrapping ErrRandFailure on the entropy-read path) instead of
-// panicking on a crypto/rand failure (GAGO-020). A failed publish is
+// panicking on a crypto/rand failure. A failed publish is
 // the caller's normal not-crash-the-bridge failure mode; see
 // newUUIDv4's doc comment in diff.go for the full rationale.
 //

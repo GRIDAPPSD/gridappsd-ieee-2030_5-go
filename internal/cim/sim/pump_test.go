@@ -191,7 +191,7 @@ func TestPump_RunSubscribeError(t *testing.T) {
 // TestPump_RunOnHandlerErrorStopsWhenPolicyReturnsFalse verifies that
 // WithOnHandlerError lets a caller stop Run on a handler error, in
 // contrast to the default log-and-continue behavior covered by
-// TestPump_RunHandlerErrorContinuesLoop (GAGO-023 Dutch M4).
+// TestPump_RunHandlerErrorContinuesLoop (Dutch M4).
 func TestPump_RunOnHandlerErrorStopsWhenPolicyReturnsFalse(t *testing.T) {
 	frames := [][]byte{
 		[]byte(`{"simulation_id":"x","message":{"timestamp":1,"measurements":{}}}`),
@@ -265,7 +265,7 @@ func TestPump_RunOnHandlerErrorContinuesWhenPolicyReturnsTrue(t *testing.T) {
 }
 
 // TestPump_RunCtxCancelDuringDispatchStopsPromptly is a regression test
-// for the Run-level ctx.Done() select arm added for GAGO-023 Dutch M3.
+// for the Run-level ctx.Done() select arm (Dutch M3).
 // The fake never closes its subscription on its own (closeAfterFrames:
 // false with an empty frame list means it just blocks on ctx.Done()), so
 // this proves Run's own ctx-aware select, not the subscription's closing,
@@ -293,7 +293,7 @@ func TestPump_RunCtxCancelDuringDispatchStopsPromptly(t *testing.T) {
 	}
 }
 
-// TestPump_RunRateLimitsMalformedFrameLogging pins the GAGO-023 Leon L1
+// TestPump_RunRateLimitsMalformedFrameLogging pins the Leon L1
 // rate limit: with malformedFrameLogEvery+5 consecutive malformed frames,
 // only the first frame and the malformedFrameLogEvery-th frame log a
 // line, not all of them. This proves the counter-with-periodic-log

@@ -1,4 +1,4 @@
-# GAGO-051 discovery count
+# PEC discovery count
     PREFIX c:  <http://iec.ch/TC57/CIM100#>
     SELECT (COUNT(DISTINCT ?pec) as ?count) WHERE {
     VALUES ?fdrid {"DEADBEEF-0000-0000-0000-000000000123"}

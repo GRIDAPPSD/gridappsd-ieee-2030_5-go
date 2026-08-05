@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestQueryPECCountRendersMinimalTemplate pins the GAGO-051 discovery-count
+// TestQueryPECCountRendersMinimalTemplate pins the discovery-count
 // template shape: it must carry the same identity-plus-feeder-membership
 // triples the device-enumeration templates (QuerySolar/QueryBattery/
 // QueryInverter) use, but MUST NOT carry any of their additional mandatory
