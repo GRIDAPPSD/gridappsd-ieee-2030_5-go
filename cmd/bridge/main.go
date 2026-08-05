@@ -239,7 +239,7 @@ func run(ctx context.Context, cfg config) error {
 
 	// The embed seeds its EndDevice/DER stores from reg, so it must be
 	// built after bootstrapRegistry above, not before.
-	embed, err := newSEP2Embed(ctx, cfg, reg, policy, &connHook)
+	embed, err := newSEP2Embed(ctx, cfg, reg, policy, &connHook, mode)
 	if err != nil {
 		return fmt.Errorf("sep2 embed: %w", err)
 	}
@@ -626,10 +626,19 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 // non-nil *connobs.Hook (its own connHook), so observation is always
 // on for this bridge; a nil value here is only ever exercised by
 // sep2embed's own tests that leave Config.Observer unset.
-func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs.Hook) sep2embed.Config {
+func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs.Hook, mode sep2embed.DeviceCertMode) sep2embed.Config {
 	return sep2embed.Config{
-		Addr:           cfg.SEP2ServerAddr,
-		CertDir:        cfg.SEP2ServerCertDir,
+		Addr:    cfg.SEP2ServerAddr,
+		CertDir: cfg.SEP2ServerCertDir,
+		// The SAME mode bootstrapRegistry sourced device certs with, by
+		// construction: run parses it once and passes that one value to
+		// both. It decides which files the server's own identity set must
+		// contain, and a preprovisioned deployment correctly withholds the
+		// CA private key, so passing DevMint here against such a directory
+		// would make sep2embed.New refuse to start (it is the stricter
+		// required set). Threading the real mode is what keeps a
+		// preprovisioned bridge startable and its material untouched.
+		DeviceCertMode: mode,
 		DefaultControl: policy.DefaultControl,
 		// Projected field by field rather than by struct conversion: the
 		// two types are deliberately separate (sep2config knows nothing
@@ -675,8 +684,8 @@ func adminUIConfig(cfg config) adminui.Config {
 // newSEP2Embed builds, seeds, and binds the in-process IEEE 2030.5
 // protocol server from the bridge's registry. It does not start
 // serving; the caller starts embed.Run once this returns successfully.
-func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, policy sep2config.SEP2Policy, connHook *connobs.Hook) (*sep2embed.Embed, error) {
-	return sep2embed.New(ctx, sep2EmbedConfig(cfg, policy, connHook), reg)
+func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, policy sep2config.SEP2Policy, connHook *connobs.Hook, mode sep2embed.DeviceCertMode) (*sep2embed.Embed, error) {
+	return sep2embed.New(ctx, sep2EmbedConfig(cfg, policy, connHook, mode), reg)
 }
 
 // telemetryPublisherConfig projects the bridge's config onto

@@ -201,19 +201,23 @@ func EnsureDeviceIdentities(dir string, mode DeviceCertMode, mrids []string) (ma
 // idempotent no-op.
 //
 // Preprovisioned mode never signs anything here, so it deliberately
-// does NOT call ensureServerIdentity (whose all-four-files-present
-// check would require ca-key.pem to exist on disk purely to satisfy
-// that check, even though the key's bytes are never read on the
-// all-four-present load path) and does NOT read the CA private key at
-// all. The CA signing key is the highest-value secret in this trust
-// chain; a production bridge host that only ever LOADS operator-issued
-// device certs has no legitimate need for it on the box (least
-// privilege). Preprovisioned mode reads ca.pem directly and requires it
-// to exist; a missing CA cert is a fail-closed error naming the
-// expected path.
+// does NOT call ensureServerIdentity and does NOT read the CA private
+// key at all. The CA signing key is the highest-value secret in this
+// trust chain; a production bridge host that only ever LOADS
+// operator-issued device certs has no legitimate need for it on the box
+// (least privilege). Preprovisioned mode reads ca.pem directly and
+// requires it to exist; a missing CA cert is a fail-closed error naming
+// the expected path.
+//
+// The CA certificate is re-read from disk on every call rather than
+// held from a prior one. That is not a caching oversight: it is what
+// lets a bridge started against a read-only preprovisioned directory
+// pick up material an operator adds later, without a restart. It does
+// NOT make the running server's own identity mutable; that is fixed at
+// startup by New and never re-read (see ensureServerIdentity).
 func loadDeviceSigningCA(dir string, mode DeviceCertMode) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	if mode == DeviceCertModeDevMint {
-		_, _, caFile, err := ensureServerIdentity(dir)
+		_, _, caFile, err := ensureServerIdentity(dir, mode)
 		if err != nil {
 			return nil, nil, fmt.Errorf("sep2embed: device identities: server CA: %w", err)
 		}

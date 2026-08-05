@@ -42,13 +42,41 @@ type Config struct {
 
 	// CertDir is the directory holding (or receiving) the embedded
 	// server's CA and leaf certificate/key material: ca.pem, ca-key.pem,
-	// server.pem, server-key.pem. When all four files already exist they
-	// are loaded as-is (the production, preprovisioned-material path).
-	// When any is missing, fresh dev-mint material is generated and
-	// written here with 0600 (files) / 0700 (dir) permissions. Required.
+	// server.pem, server-key.pem. Required.
+	//
+	// New classifies it once, at startup, per ensureServerIdentity: a set
+	// that is complete for DeviceCertMode is loaded as-is and nothing is
+	// written (so a read-only bind mount is supported); an empty writable
+	// directory receives fresh dev-mint material at 0600 (dir 0700); an
+	// empty unwritable one, or a partially populated one, is a fatal
+	// startup error. No existing file is ever overwritten.
+	//
 	// CertDir is never committed; the caller owns keeping it out of
 	// version control.
 	CertDir string
+
+	// DeviceCertMode selects how device identity certificates are sourced
+	// AND, because the two questions have one answer, which files the
+	// embedded server's own identity set must contain.
+	//
+	// DeviceCertModeDevMint (the zero value) signs in this process: it
+	// mints device certificates against the CA under CertDir, so the CA
+	// private key must be present there. DeviceCertModePreprovisioned
+	// never signs; it reads only the CA's public certificate, so
+	// ca-key.pem is not required and should not be on the host at all
+	// (least privilege: see loadDeviceSigningCA).
+	//
+	// Threading it here is load bearing, not cosmetic. While New
+	// classified CertDir with no mode, it demanded all four files
+	// unconditionally, so a correctly deployed non-signing bridge that
+	// withheld the CA private key was treated as incomplete and had its
+	// real server certificate and key replaced with self-signed
+	// development material.
+	//
+	// The zero value is the stricter of the two required sets, so a
+	// caller that forgets to set this fails loudly on a preprovisioned
+	// directory rather than quietly minting over it.
+	DeviceCertMode DeviceCertMode
 
 	// ExtraClientCAs names additional client-CA bundles trusted
 	// alongside the CertDir CA, for multi-root device trust.
@@ -255,7 +283,15 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return nil, errors.New("sep2embed: registry is required")
 	}
 
-	certFile, keyFile, caFile, err := ensureServerIdentity(cfg.CertDir)
+	// The one and only read of the server's own certificate directory.
+	// Everything downstream (the listener's TLS config, the identity
+	// reported by Identity()) is built from what these paths hold at this
+	// instant and is never refreshed: the CA certificate is the trust
+	// anchor already-registered clients chained to, and the server key
+	// backs live TLS sessions, so both are fixed for the process
+	// lifetime. Per-device certificates are the material that IS
+	// re-evaluated later; see ensureDeviceCert.
+	certFile, keyFile, caFile, err := ensureServerIdentity(cfg.CertDir, cfg.DeviceCertMode)
 	if err != nil {
 		return nil, fmt.Errorf("sep2embed: server identity: %w", err)
 	}

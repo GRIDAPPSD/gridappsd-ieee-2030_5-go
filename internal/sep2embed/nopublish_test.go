@@ -49,7 +49,7 @@ func TestDERStatusPUTStoresAndDoesNotPublish(t *testing.T) {
 	t.Parallel()
 
 	certDir := t.TempDir()
-	_, _, caFile, err := ensureServerIdentity(certDir)
+	_, _, caFile, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("ensureServerIdentity: %v", err)
 	}
