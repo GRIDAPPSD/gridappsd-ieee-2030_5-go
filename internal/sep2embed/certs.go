@@ -153,6 +153,12 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 // before the rename leaves path exactly as it was (untouched, or absent);
 // a crash after the rename leaves the complete new file. There is no
 // window in which path exists but holds a partial write.
+//
+// It REPLACES an existing file at path: os.Rename does not ask. That is
+// acceptable only where the caller has already established the target is
+// its own to write, which is why the server-identity mint path uses
+// writeFileNoClobber instead. Reach for that one for anything an
+// operator may have placed.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
