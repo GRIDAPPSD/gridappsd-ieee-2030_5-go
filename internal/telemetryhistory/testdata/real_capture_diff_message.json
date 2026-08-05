@@ -1,0 +1,30 @@
+{
+  "command": "update",
+  "input": {
+    "simulation_id": "gago094p2e",
+    "message": {
+      "timestamp": 1785390891,
+      "difference_mrid": "c1974060-4a78-4c9f-930f-b2404525b85b",
+      "reverse_differences": [
+        {
+          "object": "50B15A48-9611-40DF-983E-93679DA72871",
+          "attribute": "DERControl.DERControlBase.opModTargetW",
+          "value": {
+            "multiplier": 0,
+            "value": 0
+          }
+        }
+      ],
+      "forward_differences": [
+        {
+          "object": "50B15A48-9611-40DF-983E-93679DA72871",
+          "attribute": "DERControl.DERControlBase.opModTargetW",
+          "value": {
+            "multiplier": 0,
+            "value": 5000
+          }
+        }
+      ]
+    }
+  }
+}

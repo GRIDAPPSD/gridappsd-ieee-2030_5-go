@@ -1,0 +1,30 @@
+{
+  "command": "update",
+  "input": {
+    "simulation_id": "synthetic",
+    "message": {
+      "timestamp": 1785390891,
+      "difference_mrid": "00000000-0000-4000-8000-000000000001",
+      "reverse_differences": [
+        {
+          "object": "50B15A48-9611-40DF-983E-93679DA72871",
+          "attribute": "DERControl.DERControlBase.opModTargetW",
+          "value": {
+            "multiplier": 2,
+            "value": 0
+          }
+        }
+      ],
+      "forward_differences": [
+        {
+          "object": "50B15A48-9611-40DF-983E-93679DA72871",
+          "attribute": "DERControl.DERControlBase.opModTargetW",
+          "value": {
+            "multiplier": 2,
+            "value": 5000
+          }
+        }
+      ]
+    }
+  }
+}
