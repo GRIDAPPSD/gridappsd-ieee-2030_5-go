@@ -11,7 +11,7 @@ import (
 // counterpart of TestConnect_DoesNotRequestInboundHeartbeats
 // (reconnect_test.go). Publisher.Connect (publisher.go) had the identical
 // defect Client.dialAndBootstrap had before its fix: a symmetric
-// stomp.ConnOpt.HeartBeat(heartbeat, heartbeat) request (GAGO-112). It
+// stomp.ConnOpt.HeartBeat(heartbeat, heartbeat) request. It
 // must promise outbound heartbeats and request ZERO inbound ones, the
 // same wire-level contract as the Client dial site, so this asserts the
 // same header shape.
@@ -37,7 +37,7 @@ func TestPublisherConnect_DoesNotRequestInboundHeartbeats(t *testing.T) {
 }
 
 // TestIdleConnection_ClosesWithDisconnectFrame_BothDialSites is the
-// behavioural guard for GAGO-112 across BOTH dial sites, sharing a
+// behavioural guard for the symmetric-heartbeat defect across BOTH dial sites, sharing a
 // single idle sleep instead of duplicating
 // TestIdleConnection_ClosesWithDisconnectFrame (reconnect_test.go) for
 // the Publisher alone. That test's idle window already pushed this
@@ -50,7 +50,7 @@ func TestPublisherConnect_DoesNotRequestInboundHeartbeats(t *testing.T) {
 //
 // Before the Publisher fix this failed with pubBroker's
 // CONNECT=1, DISCONNECT=0 while Publisher.Close returned nil: the same
-// silent-session-leak shape GAGO-107 traced on the client side, just on
+// silent-session-leak shape traced on the client side, just on
 // the publish leg of the bus instead of the request/reply leg.
 func TestIdleConnection_ClosesWithDisconnectFrame_BothDialSites(t *testing.T) {
 	idle := heartbeat + 5*time.Second + 2*time.Second

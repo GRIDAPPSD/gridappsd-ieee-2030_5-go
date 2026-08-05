@@ -115,7 +115,7 @@ func TestClose_IdempotentBeforeConnect(t *testing.T) {
 	}
 }
 
-// TestClose_ZeroesCachedPassword locks in the GAGO-015 hardening: Close is
+// TestClose_ZeroesCachedPassword locks in the hardening: Close is
 // terminal (Connect/Reconnect cannot run afterward), so it is safe to zero
 // c.cfg.Password symmetrically with the existing c.token clearing. Both
 // zeroings are best-effort defense-in-depth per the Close doc comment, not
@@ -209,7 +209,7 @@ func TestConnect_ContextAlreadyCancelled(t *testing.T) {
 
 // TestNewCorrelationID_FormatAndUnique verifies that newCorrelationID
 // returns a 32-char hex string and that two calls do not collide. The
-// header is defense-in-depth (Leon M2 / GAGO-013 item G).
+// header is defense-in-depth (Leon M2).
 func TestNewCorrelationID_FormatAndUnique(t *testing.T) {
 	a, err := newCorrelationID()
 	if err != nil {

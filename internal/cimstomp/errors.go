@@ -40,7 +40,7 @@ var (
 	//
 	// v0 detects connection loss actively: callers observe the error
 	// from a Request/Publish call. Passive heartbeat-driven detection
-	// is a future enhancement (see GAGO-012 follow-ups).
+	// is a future enhancement.
 	ErrConnectionLost = errors.New("cimstomp: connection lost")
 )
 
@@ -58,8 +58,8 @@ var (
 // stomp.Error frame errors (those are application-layer broker
 // rejections, not transport drops).
 //
-// ErrAlreadyClosed's inclusion here is deliberate, not loose (GAGO-024
-// Dutch M4). It reads like a pure programmer-error sentinel ("you called
+// ErrAlreadyClosed's inclusion here is deliberate, not loose (Dutch
+// M4). It reads like a pure programmer-error sentinel ("you called
 // Send after Close"), but go-stomp's *Conn also sets its internal
 // closed flag, and therefore returns ErrAlreadyClosed, when the read
 // loop observes a broker ERROR frame or a concurrent goroutine calls

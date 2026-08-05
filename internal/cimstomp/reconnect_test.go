@@ -16,7 +16,7 @@ import (
 	"github.com/go-stomp/stomp/v3"
 )
 
-// These tests cover GAGO-012: explicit Reconnect, TOCTOU fix on the
+// These tests cover explicit Reconnect, TOCTOU fix on the
 // Connect/Close lock state machine, the ErrConnectionLost sentinel,
 // and the token-bootstrap queue drain. They run without a live broker
 // where possible; the few cases that need a STOMP wire-format peer
@@ -24,7 +24,7 @@ import (
 
 // TestReconnect_AfterCloseReturnsErrClosed locks in the contract that
 // Reconnect on a Closed Client refuses with ErrClosed (the security and
-// lifecycle invariant from the GAGO-012 spec).
+// lifecycle invariant).
 func TestReconnect_AfterCloseReturnsErrClosed(t *testing.T) {
 	c := NewClient(STOMPConfig{Address: "127.0.0.1:1", User: "u", Password: "p"})
 	if err := c.Close(); err != nil {
@@ -172,7 +172,7 @@ func (s *stallingListener) Close() {
 // either Connect returns ErrClosed and the just-dialed conn is cleaned
 // up, or Connect returns its own context error. Either way, Close must
 // not allow the Client to settle into "closed=true with a live conn"
-// (Leon GAGO-013 review M-1, deferred to GAGO-012).
+// (Leon review M-1).
 //
 // The test runs the inner scenario many times under -race so the
 // scheduler explores both interleavings. A pass under -race is the
@@ -644,7 +644,7 @@ func TestReconnect_ConcurrentNoSessionLeak(t *testing.T) {
 // contract that keeps an idle connection alive: the CONNECT frame must
 // promise outbound heartbeats and request ZERO inbound ones.
 //
-// This is the fast guard for GAGO-112. Requesting a non-zero inbound
+// This is the fast guard for the symmetric-heartbeat defect. Requesting a non-zero inbound
 // interval makes go-stomp arm a read deadline of that interval plus its
 // 5s DefaultHeartBeatError even when the broker answers `heart-beat:0,0`
 // to decline heartbeats (conn.go:212-223). When that deadline expires,
@@ -689,7 +689,7 @@ func TestConnect_DoesNotRequestInboundHeartbeats(t *testing.T) {
 // The idle window must exceed the old deadline (the requested inbound
 // interval plus go-stomp's 5s DefaultHeartBeatError), which is what
 // makes this test slow. It is kept because the failure it guards is
-// silent in production: GAGO-107 is the same 15s read deadline killing
+// silent in production: the same 15s read deadline killed
 // the bridge's bus with nothing logged.
 func TestIdleConnection_ClosesWithDisconnectFrame(t *testing.T) {
 	idle := heartbeat + 5*time.Second + 2*time.Second

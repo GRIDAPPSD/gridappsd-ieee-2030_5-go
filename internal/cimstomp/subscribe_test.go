@@ -130,7 +130,7 @@ func TestNewTestSubscription_HelperDeliversFramesAndErr(t *testing.T) {
 	}
 }
 
-// TestIsOversizedFrame_DropsAboveCapKeepsAtOrBelow pins the GAGO-023
+// TestIsOversizedFrame_DropsAboveCapKeepsAtOrBelow pins the
 // Leon M1 frame-size cap: a body at or under the cap is kept (not
 // oversized), a body over the cap is reported oversized (and dropped by
 // the caller, runSubscription).
@@ -156,7 +156,7 @@ func TestIsOversizedFrame_DropsAboveCapKeepsAtOrBelow(t *testing.T) {
 	}
 }
 
-// TestIsOversizedFrame_RateLimitsDropLogging pins the GAGO-023 follow-up
+// TestIsOversizedFrame_RateLimitsDropLogging pins the
 // oversized-frame log rate limit: with oversizedFrameLogEvery+5
 // consecutive oversized frames sharing one counter, only the first call
 // and the oversizedFrameLogEvery-th call log a line, not all of them.
@@ -218,7 +218,7 @@ func TestWithMaxFrameBodyBytes_OverridesDefault(t *testing.T) {
 }
 
 // TestSendOrCancel_CtxDoneWinsOverFullChannel pins the claim behind
-// runSubscription's send arm (GAGO-023 Dutch M1): when the consumer is
+// runSubscription's send arm (Dutch M1): when the consumer is
 // slow and out.msgs is already full, a cancelled ctx must win rather than
 // sendOrCancel blocking forever. The 1-buffered channel is pre-filled so
 // the send case can never proceed; if sendOrCancel blocked instead of

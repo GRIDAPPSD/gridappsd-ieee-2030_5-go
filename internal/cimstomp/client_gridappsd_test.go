@@ -138,12 +138,12 @@ func TestGridAPPSD_RequestRoundTrip(t *testing.T) {
 
 // TestGridAPPSD_CorrelationIDAccepted exercises the Client.Request path
 // repeatedly against the real platform to verify the correlation-id
-// header (added in GAGO-013, Leon M2) is not rejected by the broker.
+// header (Leon M2) is not rejected by the broker.
 //
 // The bare-ActiveMQ test (TestIntegration_RequestHappyPath) already
 // asserts the header is on the wire. This test asserts the platform's
 // real broker accepts it: a request that round-trips successfully proves
-// the header is at minimum tolerated. Closes GAGO-016 by direct
+// the header is at minimum tolerated, confirmed by direct
 // observation against the production-equivalent stack.
 func TestGridAPPSD_CorrelationIDAccepted(t *testing.T) {
 	c := newGridAPPSDClient(t)
