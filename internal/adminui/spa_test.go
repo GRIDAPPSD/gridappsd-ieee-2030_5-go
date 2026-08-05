@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// TestSPARouteRequiresBearerAuth is the GAGO-060 posture-preservation
+// TestSPARouteRequiresBearerAuth is the posture-preservation
 // acceptance test: the SPA route sits behind the exact same
-// bearerAuth middleware as the /api/... routes (GAGO-058), so a
+// bearerAuth middleware as the /api/... routes, so a
 // missing or wrong token on "/" must still 401, not serve index.html.
 func TestSPARouteRequiresBearerAuth(t *testing.T) {
 	t.Parallel()

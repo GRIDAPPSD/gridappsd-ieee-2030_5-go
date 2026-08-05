@@ -1,4 +1,4 @@
-// DiscoveredDers.svelte.test.ts exercises GAGO-063/GAGO-077: exact
+// DiscoveredDers.svelte.test.ts exercises exact
 // field-value rendering for a populated DER list including the now
 // available feederMrid column, and the empty state for a feeder with
 // no PowerElectronicsConnection. Mocked at the fetchJSON boundary.

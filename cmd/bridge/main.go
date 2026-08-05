@@ -7,16 +7,15 @@
 // topic and logs each MeasurementFrame.
 //
 // The embedded IEEE 2030.5 server speaks real mTLS with real,
-// certificate-derived device identity (GAGO-033): the LFDI on every
-// EndDevice is per spec section 6.3.4 and the SFDI is per section
-// 6.3.3, both derived from each device's own certificate rather than a
-// placeholder hash of the CIM mRID. The listener still has no
-// per-device ACL (GAGO-043 follow-up), which is why it binds to
-// loopback by default. Bidirectional control flow (device writes
-// reaching the CIM side) is a further follow-up.
+// certificate-derived device identity: the LFDI on every EndDevice is
+// per spec section 6.3.4 and the SFDI is per section 6.3.3, both
+// derived from each device's own certificate rather than a placeholder
+// hash of the CIM mRID. The listener still has no per-device ACL,
+// which is why it binds to loopback by default. Bidirectional control
+// flow (device writes reaching the CIM side) is a further follow-up.
 //
 // The GridAPPS-D connection rides github.com/GRIDAPPSD/gridappsd-go's
-// fieldbus.MessageBus (GAGO-039), adapted to this bridge's own
+// fieldbus.MessageBus, adapted to this bridge's own
 // internal/cim.Requester and internal/cim/sim.SubscribeClient
 // interfaces via internal/gridappsdclient. internal/cimstomp, this
 // repo's own STOMP implementation, stays in the tree for its
@@ -106,8 +105,8 @@ func main() {
 }
 
 // safeFatal formats msg the same as log.Fatalf, then strips any
-// credential-shaped substring before logging it and exiting (GAGO-028
-// Leon L3). Neither cfg.STOMPPassword nor cfg.SEP2AdminUIKey is
+// credential-shaped substring before logging it and exiting (Leon
+// L3). Neither cfg.STOMPPassword nor cfg.SEP2AdminUIKey is
 // expected to appear in a formatted error today (connectClient's own
 // wrap at "connect %s: %w" only interpolates cfg.STOMPAddr, never the
 // credential fields), but nothing upstream guarantees that stays true
@@ -126,8 +125,8 @@ func safeFatal(cfg config, format string, args ...any) {
 // blob the GOSS auth-token bootstrap sends over the wire (see
 // internal/cimstomp's fetchAuthToken and gridappsd-go's internal/auth),
 // since that encoded form shares no substring with the raw password and
-// would otherwise slip past the two checks above undetected (GAGO-028
-// follow-up). This is still not exhaustive: any credential-shaped value
+// would otherwise slip past the two checks above undetected. This is
+// still not exhaustive: any credential-shaped value
 // that is not cfg.STOMPPassword, cfg.SEP2AdminUIKey, or their base64
 // pairing is out of scope, so this remains a defense-in-depth catch, not
 // a guarantee that no credential can ever appear in a log line. Split
@@ -176,13 +175,13 @@ func run(ctx context.Context, cfg config) error {
 	// function of cfg (matching this bridge's other config sources), so
 	// running it first means an operator-supplied registration PIN that
 	// is out of range or fails the IEEE 2030.5 section 6.3.5 check digit
-	// (-sep2-registration-pin, -sep2-registration-pin-file, GAGO-PIN)
+	// (-sep2-registration-pin, -sep2-registration-pin-file)
 	// stops the bridge immediately: before it dials anything, not merely
-	// before it seeds or serves a device. GAGO-050 consumes
-	// policy.DefaultControl and GAGO-049 consumes policy.ModesSupported,
-	// both threaded through newSEP2Embed below; DefaultPolicy leaves
-	// ModesSupported nil, so the DERCapability GAGO-049 seeds is still
-	// nil-safe until a real policy value is configured.
+	// before it seeds or serves a device. buildSEP2Policy fills
+	// policy.DefaultControl and policy.ModesSupported, both threaded
+	// through newSEP2Embed below; DefaultPolicy leaves ModesSupported
+	// nil, so the DERCapability it seeds is still nil-safe until a real
+	// policy value is configured.
 	policy, err := buildSEP2Policy(cfg)
 	if err != nil {
 		return err
@@ -227,15 +226,15 @@ func run(ctx context.Context, cfg config) error {
 		log.Printf("bridge: -publish-on-start requested; DifferenceBuilder envelope publish is filed as Stage 2 follow-up; skipping")
 	}
 
-	// connHook is the GAGO-090/GAGO-091 read-only observation point over
-	// the embedded mTLS listener's connection surface: every
-	// authenticated request's LFDI (sep2embed's connObserveMiddleware)
-	// and every mTLS handshake attempt, accepted or rejected
-	// (sep2embed's additive VerifyPeerCertificate wrapper), is recorded
-	// here. Must be constructed before newSEP2Embed below, since
-	// sep2EmbedConfig threads its address into sep2embed.Config.Observer
-	// for New to wire into the listener it builds. The future admin UI
-	// /api/clients endpoint (GAGO-091) is its only reader.
+	// connHook is a read-only observation point over the embedded mTLS
+	// listener's connection surface: every authenticated request's LFDI
+	// (sep2embed's connObserveMiddleware) and every mTLS handshake
+	// attempt, accepted or rejected (sep2embed's additive
+	// VerifyPeerCertificate wrapper), is recorded here. Must be
+	// constructed before newSEP2Embed below, since sep2EmbedConfig
+	// threads its address into sep2embed.Config.Observer for New to wire
+	// into the listener it builds. The admin UI /api/clients endpoint is
+	// its only reader.
 	var connHook connobs.Hook
 
 	// The embed seeds its EndDevice/DER stores from reg, so it must be
@@ -248,17 +247,17 @@ func run(ctx context.Context, cfg config) error {
 	log.Printf("bridge: sep2 embed listening addr=%s sfdi=%s lfdi=%s",
 		embed.Addr(), id.SFDI, id.LFDI)
 
-	// controlHook is the GAGO-057 read-only observation point over the
+	// controlHook is a read-only observation point over the
 	// control-delta down path (and the sim-output/control-input topic
-	// pair): runSimSide's two loops are its only writers, and the future
-	// admin UI controlflow endpoint (GAGO-059) is its only reader. It is
-	// safe to construct unconditionally, even when SimulationID is
-	// empty and stompRun never touches it: the zero value is a valid,
-	// all-empty observation state.
+	// pair): runSimSide's two loops are its only writers, and the admin
+	// UI controlflow endpoint is its only reader. It is safe to
+	// construct unconditionally, even when SimulationID is empty and
+	// stompRun never touches it: the zero value is a valid, all-empty
+	// observation state.
 	var controlHook controlobs.Hook
 
 	// stompRun adapts the SimulationID branch (idle-wait, or the
-	// measurement pump plus the GAGO-034 control-delta subscriber) to
+	// measurement pump plus the control-delta subscriber) to
 	// the func(context.Context) error shape runEmbedAndStomp expects
 	// for its second seam.
 	stompRun := func(runCtx context.Context) error {
@@ -273,8 +272,8 @@ func run(ctx context.Context, cfg config) error {
 		// signal to fieldbus.MessageBus callers (upstream gap GAG-009;
 		// see the relay doc comment in
 		// internal/gridappsdclient/subscriber.go), so a mid-run broker
-		// disconnect does NOT independently wake either loop. GAGO-107:
-		// that is why the subscribe path goes through a Supervisor
+		// disconnect does NOT independently wake either loop. That is
+		// why the subscribe path goes through a Supervisor
 		// rather than a bare Subscriber. The Supervisor polls the bus
 		// for liveness, and on a dead connection reconnects it (which
 		// re-runs the GOSS token bootstrap) and resubscribes BOTH
@@ -293,14 +292,14 @@ func run(ctx context.Context, cfg config) error {
 		return runSimSide(runCtx, subs, embed, reg, cfg.SimulationID, &controlHook)
 	}
 
-	// adminSrv is the GAGO-058/GAGO-059 read only operator HTTP API. It
-	// is off by default: adminui.New returns ErrDisabled when
+	// adminSrv is the read only operator HTTP API. It is off by
+	// default: adminui.New returns ErrDisabled when
 	// SEP2_ADMIN_UI_KEY is unset, in which case no listener is opened and
 	// no runner goroutine is started at all, matching the "off by
 	// default" hard rule. Any other error from New (an invalid Addr, or
 	// a non-loopback Addr without the explicit opt-in) is a genuine
 	// startup failure, not the disabled state.
-	// telemetryRun is the GAGO-121 UP path: an independent timer-driven
+	// telemetryRun is the UP path: an independent timer-driven
 	// publisher that reads the embed's DERStatus store and sends one
 	// aggregate per interval. It is a peer of the embed and the admin UI,
 	// not a hook inside the protocol request path, which is the whole
@@ -412,7 +411,7 @@ func runEmbedAndStomp(ctx context.Context, embedRun, stompRun func(context.Conte
 // shutdown of embedRun/stompRun tears the admin UI down too: all three
 // share one derived context, following the same cancel on any exit,
 // join errors on independent failure pattern as runEmbedAndStomp.
-// telemetryRun (GAGO-121) is nil when no simulation id is configured, in
+// telemetryRun is nil when no simulation id is configured, in
 // which case no publisher goroutine is started at all, exactly as a nil
 // adminUIRun starts no admin goroutine. When supplied it is a peer of
 // the other three: one shared derived context, cancel on any exit, join
@@ -486,7 +485,7 @@ func runEmbedStompAdmin(ctx context.Context, embedRun, stompRun, adminUIRun func
 
 // buildSEP2Policy assembles the runtime SEP2Policy from the compiled-in
 // defaults plus any operator-supplied registration PIN configuration,
-// then validates every configured PIN before returning (GAGO-PIN).
+// then validates every configured PIN before returning.
 //
 // cfg.SEP2RegistrationPIN (from -sep2-registration-pin) becomes the
 // fleet-wide DefaultRegistrationPIN fallback; cfg.SEP2RegistrationPINs
@@ -596,16 +595,16 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 // asserted by a unit test without minting real certificate material or
 // binding a listener.
 //
-// No bus, destination or simulation id is threaded here (GAGO-121). The
+// No bus, destination or simulation id is threaded here. The
 // embedded 2030.5 server stores DERStatus and stops there; the
 // GridAPPS-D publish is internal/telemetrypub's, driven by its own
 // timer off that store. See telemetryPublisher below for that wiring.
 //
-// policy is threaded through as sep2embed.Config.DefaultControl
-// (GAGO-050): the fallback DefaultDERControl this bridge seeds onto
+// policy is threaded through as sep2embed.Config.DefaultControl:
+// the fallback DefaultDERControl this bridge seeds onto
 // every DERProgram is sourced from policy.DefaultControl, never
 // hardcoded at this layer. policy.ModesSupported is threaded through the
-// same way (GAGO-049): the DERControlType bitmap seeded onto every
+// same way: the DERControlType bitmap seeded onto every
 // device's DERCapability is sourced from policy, never hardcoded here;
 // DefaultPolicy leaves it nil, so seeding is nil-safe until a real
 // policy value is configured.
@@ -620,8 +619,8 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 // schema's own 900-second default. Neither is hardcoded at this layer,
 // and the PIN is never logged.
 //
-// connHook is threaded through as sep2embed.Config.Observer
-// (GAGO-090/GAGO-091): a non-nil connHook opts this bridge into the
+// connHook is threaded through as sep2embed.Config.Observer:
+// a non-nil connHook opts this bridge into the
 // additive request- and handshake-observation path sep2embed.New
 // builds when Config.Observer is set. cmd/bridge always passes a
 // non-nil *connobs.Hook (its own connHook), so observation is always
@@ -683,7 +682,7 @@ func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, polic
 // telemetryPublisherConfig projects the bridge's config onto
 // telemetrypub.Config: the timer-driven GridAPPS-D publisher that reads
 // the embedded 2030.5 server's DERStatus store and sends one aggregate
-// per interval (GAGO-121). Split out from run() so the field mapping can
+// per interval. Split out from run() so the field mapping can
 // be asserted by a unit test with no broker and no listener.
 //
 // Destination is the ONLY place this bridge names the telemetry topic.
@@ -767,7 +766,7 @@ func fmtU32Ptr(v *uint32) string {
 	return fmt.Sprintf("%d", *v)
 }
 
-// fmtDERControlTypePtr renders a *sep2.DERControlType (IEEECORE-047's
+// fmtDERControlTypePtr renders a *sep2.DERControlType (the core's
 // hexBinary bitmap family) as hex, or "unset" for nil, matching how the
 // value actually appears on the wire (sep2.HexBinary32.MarshalXML's
 // uppercase, minimal even-padded hex form) rather than decimal. This is
@@ -803,7 +802,7 @@ func parsePECCount(res *cim.QueryDataResult) (int, bool) {
 	return n, true
 }
 
-// pecCountLogLine renders the GAGO-051 discover-vs-project drop-visibility
+// pecCountLogLine renders the discover-vs-project drop-visibility
 // message for feederMRID, given the QueryPECCount discovery result
 // (discovered, discoveredOK) and the post-dedupe projected device count
 // projected. It returns the message text and whether the caller should
@@ -816,15 +815,12 @@ func parsePECCount(res *cim.QueryDataResult) (int, bool) {
 //     WARNING-level, states both counts and the drop count.
 //   - discoveredOK && discovered < projected: some PowerElectronicsConnection
 //     objects were counted MORE than once by the enumeration queries
-//     (GAGO-104: a PowerElectronicsUnit child bound under a different mRID
-//     than its own parent PowerElectronicsConnection, producing a second,
+//     (a PowerElectronicsUnit child bound under a different mRID than
+//     its own parent PowerElectronicsConnection produces a second,
 //     spurious device identity for the same physical converter);
 //     WARNING-level, states both counts and the over-projection count.
-//     This branch used to be silently folded into the counts-match path
-//     under the theory that the two queries running queryTimeout apart
-//     could only ever make discovered lag a moving dataset, never lead
-//     it. That theory was the exact blind spot GAGO-104 exposed: a
-//     9-PEC feeder minted 18 devices and this guard logged "no drops."
+//     This branch used to be silently folded into the counts-match path,
+//     which let a 9-PEC feeder mint 18 devices while logging "no drops."
 //     Over-projection is now surfaced, not clamped away.
 //   - !discoveredOK: the true discovered count could not be determined
 //     (QueryPECCount failed, or returned an unparsable/missing count);
@@ -850,7 +846,7 @@ func pecCountLogLine(feederMRID string, discovered int, discoveredOK bool, proje
 	default:
 		over := projected - discovered
 		return fmt.Sprintf(
-			"feeder %s: discovered %d PowerElectronicsConnection object(s) but %d were projected as devices (%d over-projected; a PowerElectronicsConnection likely surfaced under more than one identity, see GAGO-104)",
+			"feeder %s: discovered %d PowerElectronicsConnection object(s) but %d were projected as devices (%d over-projected; a PowerElectronicsConnection likely surfaced under more than one identity)",
 			feederMRID, discovered, projected, over), true
 	}
 }
@@ -870,7 +866,7 @@ func deviceCertMode(s string) (sep2embed.DeviceCertMode, error) {
 // bootstrapRegistry runs the three CIM enumeration queries against the
 // feeder, dedupes by mRID (a single device may surface in multiple
 // queries when the upstream filter is open), derives each device's real
-// IEEE 2030.5 identity from its certificate (GAGO-033, spec sections
+// IEEE 2030.5 identity from its certificate (spec sections
 // 6.3.4 LFDI / 6.3.3 SFDI, via sep2embed.EnsureDeviceIdentities), and
 // populates a fresh registry from the result. Returns the populated
 // registry; the caller does not need a separate add step.
@@ -905,12 +901,12 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 		feederMRID, len(inverters), len(solar), len(battery))
 
 	// Dedupe across the three lists, keyed on d.MRID (the
-	// PowerElectronicsConnection's own ?pecid, GAGO-104). A single PEC
+	// PowerElectronicsConnection's own ?pecid). A single PEC
 	// shows up under QueryInverter (open filter) and QuerySolar because
 	// both bind the same child PhotovoltaicUnit; the registry must only
 	// carry one entry per PEC. Anchoring d.MRID on ?pecid rather than the
 	// COALESCE(unitID, pecid) ?id binding is what makes this collapse
-	// correct: before GAGO-104, a PEC with a bound child Unit produced a
+	// correct: a PEC with a bound child Unit otherwise produces a
 	// unit-mRID identity from the inverter/solar rows and a separate
 	// pecid-mRID identity from the battery row (whose Unit-type filter
 	// never matched a PhotovoltaicUnit), so the same physical converter
@@ -930,7 +926,7 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 		}
 	}
 
-	// GAGO-028 Dutch M4: without this line, a reader sees the two log
+	// Without this line, a reader sees the two log
 	// lines "N inverters / N solar / N battery" above and "registry
 	// populated: N entries" below and does the (wrong) math of summing
 	// the three counts, expecting 3N. The three queries use open
@@ -942,7 +938,7 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 	log.Printf("bridge: deduped by mRID across inverter/solar/battery queries (open filters can overlap); %d unique devices",
 		len(devices))
 
-	// GAGO-051: the empty-fleet fail-loud guard. Model-only device
+	// This is the empty-fleet fail-loud guard. Model-only device
 	// discovery (queryDevices above) finds devices exclusively via
 	// PowerElectronicsConnection (PEC) CIM objects. A load-modeled
 	// feeder (DERs represented as named EnergyConsumer loads instead of
@@ -967,7 +963,7 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 			feederMRID)
 	}
 
-	// GAGO-051: discover-vs-project drop visibility (Cyrus's finding).
+	// Discover-vs-project drop visibility (Cyrus's finding).
 	// The three device-enumeration queries above use several mandatory
 	// (INNER-join-equivalent) attribute triples (ratedS, ratedU,
 	// maxIFault, p, q, plus the Terminal/ConnectivityNode bus lookup);
@@ -1050,14 +1046,14 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 }
 
 // cimDevice is the slim projection of a SPARQL binding row this bridge
-// needs at Stage 1: identity, name, and now MaxQ (GAGO-049 follow-up),
+// needs at Stage 1: identity, name, and MaxQ,
 // the one PowerElectronicsConnection rated-maximum value that has a
 // model-correct target in the vendored core library's DERCapability
 // type (RTGMaxVar). Other richer attributes (ratedS, ratedU, phases)
 // stay in the raw QueryDataResult and can be lifted into typed structs
 // when downstream code consumes them.
 //
-// GAGO-104: MRID is anchored on ?pecid, the PowerElectronicsConnection's
+// MRID is anchored on ?pecid, the PowerElectronicsConnection's
 // own mRID, never on the optional child PowerElectronicsUnit's mRID. A
 // PowerElectronicsUnit (PhotovoltaicUnit, BatteryUnit) has no Terminal
 // and no ConnectivityNode attachment in CIM100: it is not the
@@ -1081,7 +1077,7 @@ type cimDevice struct {
 
 // queryDevices runs one of the cim.Client Query* wrappers, projects each
 // binding row down to a cimDevice, and skips rows whose ?pecid binding
-// is missing or empty (GAGO-104: identity is anchored on the
+// is missing or empty (identity is anchored on the
 // PowerElectronicsConnection's own mRID, not the optional child
 // PowerElectronicsUnit's; see cimDevice's doc comment). kind is used
 // only for log/error readability; query is the bound *cim.Client
@@ -1091,7 +1087,7 @@ type cimDevice struct {
 // ?maxQ is OPTIONAL: an empty Binding.Value means "absent" and leaves
 // cimDevice.MaxQ nil, never a fabricated zero. Live CIMHub CIM100 stores
 // PowerElectronicsConnection.maxQ as CIM ReactivePower (xsd:float), so a
-// present binding is lexically "125000.0", not "125000" (GAGO-082); other
+// present binding is lexically "125000.0", not "125000"; other
 // PEC attributes (ratedS, ratedU, p, q) share that float-lexical shape
 // but stay unparsed in the raw QueryDataResult today.
 //
@@ -1180,7 +1176,7 @@ func runPump(ctx context.Context, subs sim.SubscribeClient, reg *registry.Regist
 	// pump handler is invoked serially so the mutex is cheap insurance
 	// against a future parallel-handler change rather than current need.
 	//
-	// maxSeenMRIDs bounds the map (GAGO-028 Dutch L1). Without a bound,
+	// maxSeenMRIDs bounds the map. Without a bound,
 	// seen grows for the lifetime of the simulation: at Stage 1 the
 	// measurement mRIDs are a stable per-point set from the platform's
 	// fixed device fleet, so in the common case this never approaches
@@ -1227,7 +1223,7 @@ func runPump(ctx context.Context, subs sim.SubscribeClient, reg *registry.Regist
 	return nil
 }
 
-// runSimSide runs the measurement pump (runPump) and the GAGO-034
+// runSimSide runs the measurement pump (runPump) and the
 // control-delta subscriber (runControlSubscriber) concurrently under
 // ctx, and returns once BOTH have finished. Splitting the two loops out
 // as a pair (rather than folding control consumption into runPump
@@ -1240,7 +1236,7 @@ func runPump(ctx context.Context, subs sim.SubscribeClient, reg *registry.Regist
 // returned; if both failed independently, both are preserved via
 // errors.Join.
 //
-// hook is the GAGO-057 read-only observation point (see controlHook's
+// hook is a read-only observation point (see controlHook's
 // doc comment in run): runSimSide records both subscription
 // destinations on it up front, before either loop starts, since both
 // destinations are known unconditionally from simID and recording them
@@ -1280,7 +1276,7 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // as a diff.Message, and applies every forward difference to embed via
 // sep2embed.Embed.ApplyControlDelta.
 //
-// Topic-convention caveat (GAGO-034 follow-up): the Python upstream
+// Topic-convention caveat: the Python upstream
 // reference this bridge reproduces
 // (ieee_2030_5/adapters/gridappsd_adapter.py:_input_detected, in the
 // gridappsd-2030_5 project) subscribes to a dedicated
@@ -1294,7 +1290,7 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // card; this loop is written so only the destination string need change
 // once that is settled.
 //
-// LOAD-BEARING INVARIANT (Leon INFO / Pike LOW, GAGO-034 PR #9 review):
+// LOAD-BEARING INVARIANT (Leon INFO / Pike LOW, PR #9 review):
 // this DOWN-path subscriber and the UP-path telemetry publisher
 // (internal/telemetrypub, which publishes its aggregates to this same
 // destination) are safe to share sim.InputTopic ONLY because
@@ -1318,7 +1314,7 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // continues, matching runPump's resilience style (a malformed or
 // inapplicable frame must not take down the whole subscriber).
 //
-// hook, when non-nil, is the GAGO-057 read-only observation point: this
+// hook, when non-nil, is a read-only observation point: this
 // function is the down path's only writer, so it is the only place that
 // calls hook.Applied / hook.Skipped. A malformed frame that never
 // resolves to a delta is not counted at all (there is no delta to

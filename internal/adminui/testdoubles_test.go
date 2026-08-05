@@ -54,7 +54,7 @@ type fakeFlow struct {
 
 func (f *fakeFlow) Snapshot() controlobs.Snapshot { return f.snap }
 
-// fakeIdentity is a minimal IdentitySource test double (GAGO-074).
+// fakeIdentity is a minimal IdentitySource test double.
 type fakeIdentity struct {
 	addr     string
 	identity sep2srv.Identity
@@ -63,15 +63,14 @@ type fakeIdentity struct {
 func (f *fakeIdentity) Addr() string               { return f.addr }
 func (f *fakeIdentity) Identity() sep2srv.Identity { return f.identity }
 
-// fakeStomp is a minimal StompSource test double (GAGO-074).
+// fakeStomp is a minimal StompSource test double.
 type fakeStomp struct {
 	connected bool
 }
 
 func (f *fakeStomp) IsConnected() bool { return f.connected }
 
-// fakeClientObserver is a minimal ClientObserverSource test double
-// (GAGO-091).
+// fakeClientObserver is a minimal ClientObserverSource test double.
 type fakeClientObserver struct {
 	snap connobs.Snapshot
 }
@@ -83,7 +82,7 @@ func (f *fakeClientObserver) Snapshot() connobs.Snapshot { return f.snap }
 // ephemeral loopback port, for tests that only need s.Handler() via
 // httptest and never call Run. Most existing tests do not care about
 // identity/STOMP/client-observer state, so this keeps their call sites
-// unchanged (additive only, per GAGO-074's and GAGO-091's hard rules);
+// unchanged (additive only, per this package's hard rules);
 // tests that DO need to control those sources use
 // newTestServerWithSources below instead.
 func newTestServer(t *testing.T, key string, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource) *Server {
@@ -93,8 +92,7 @@ func newTestServer(t *testing.T, key string, reg RegistrySource, devices EndDevi
 
 // newTestServerWithSources is newTestServer plus explicit control over
 // the IdentitySource, StompSource, and ClientObserverSource fakes, for
-// tests that assert on /api/health's GAGO-074 fields or /api/clients'
-// GAGO-091 fields.
+// tests that assert on /api/health's or /api/clients' extended fields.
 func newTestServerWithSources(t *testing.T, key string, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource, clients ClientObserverSource) *Server {
 	t.Helper()
 	s, err := New(Config{Addr: "127.0.0.1:0", Key: key}, reg, devices, programs, flow, identity, stomp, clients)

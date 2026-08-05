@@ -1,5 +1,5 @@
 <script lang="ts">
-  // ServedResources renders GAGO-064's read only view of what the
+  // ServedResources renders a read only view of what the
   // embedded server actually serves: EndDevices+DERs from
   // GET /api/served/edev (handlers.go's handleServedEndDevices,
   // endDeviceResponse) and DERPrograms from
@@ -7,9 +7,9 @@
   // derProgramResponse). NO write controls: this panel has no form, no
   // button, no mutating fetch call.
   //
-  // GAGO-077: derProgramResponse now serializes defaultDerControlLink
-  // (GAGO-074 added the field server side, sourced straight from
-  // sep2embed.DERProgramSnapshot.DefaultDERControlLink). This panel
+  // derProgramResponse serializes defaultDerControlLink, sourced
+  // straight from
+  // sep2embed.DERProgramSnapshot.DefaultDERControlLink. This panel
   // shows the real value: a non-empty link renders the href itself, an
   // empty value renders "absent" explicitly, since the API now exposes
   // this as real data rather than an unknown gap.

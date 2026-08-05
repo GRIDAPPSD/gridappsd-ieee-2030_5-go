@@ -162,7 +162,7 @@ func TestRunEmbedAndStompBothFailJoinsErrors(t *testing.T) {
 }
 
 // TestRunBridgeRunnersNilAdminDelegatesToRunEmbedAndStomp is the
-// GAGO-058 "admin UI disabled" acceptance test at the orchestration
+// "admin UI disabled" acceptance test at the orchestration
 // layer: a nil adminUIRun (the disabled state run() produces) must not
 // start a third goroutine at all, and must behave exactly like
 // runEmbedAndStomp on the same embed/stomp pair.

@@ -1,4 +1,4 @@
-// ConnectedClients.svelte.test.ts exercises GAGO-092: exact field-value
+// ConnectedClients.svelte.test.ts exercises exact field-value
 // rendering for connected clients and mTLS handshake attempts from
 // GET /api/clients, plus the served-vs-connected cross-reference
 // against GET /api/served/edev (a served EndDevice that has never

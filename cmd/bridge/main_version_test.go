@@ -10,7 +10,7 @@ import (
 )
 
 // TestHandleVersionFlagPrintsVersionAndReportsHandled locks in the
-// GAGO-036 -version contract: when loadConfig's error is
+// -version contract: when loadConfig's error is
 // errVersionRequested, handleVersionFlag writes buildinfo.Version to
 // its writer and reports true, and it does so as a pure function with
 // no side effect beyond that write (no ctx, no listener bind, no CIM

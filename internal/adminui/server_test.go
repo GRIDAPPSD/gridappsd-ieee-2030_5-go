@@ -7,7 +7,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 )
 
-// TestNewReturnsErrDisabledWhenKeyEmpty is the GAGO-058 fail closed
+// TestNewReturnsErrDisabledWhenKeyEmpty is the fail closed
 // acceptance test: an unset SEP2_ADMIN_UI_KEY (an empty Config.Key)
 // must produce ErrDisabled, not a listening server, so cmd/bridge never
 // starts an unauthenticated admin UI runner by accident.
@@ -117,7 +117,7 @@ func TestBearerAuthAcceptsExactToken(t *testing.T) {
 	assertGETWithHost(t, s.Handler(), "/api/health", "Bearer correct-token", "localhost", 200)
 }
 
-// TestBearerAuthRejectsMissingOrWrongToken is the GAGO-058 "401 on bad
+// TestBearerAuthRejectsMissingOrWrongToken is the "401 on bad
 // token" acceptance test, covering both a wrong token and a completely
 // absent Authorization header.
 func TestBearerAuthRejectsMissingOrWrongToken(t *testing.T) {
@@ -142,7 +142,7 @@ func TestBearerAuthRejectsMissingOrWrongToken(t *testing.T) {
 	}
 }
 
-// TestHostAllowlistAcceptsDefaultsAndConfiguredHosts is the GAGO-058
+// TestHostAllowlistAcceptsDefaultsAndConfiguredHosts is the
 // host allowlist acceptance test: the built in defaults are always
 // accepted, and a name added via Config.AllowedHosts is also accepted.
 func TestHostAllowlistAcceptsDefaultsAndConfiguredHosts(t *testing.T) {
@@ -175,7 +175,7 @@ func TestHostAllowlistRejectsUnrecognizedHost(t *testing.T) {
 	assertGETWithHost(t, s.Handler(), "/api/health", "Bearer secret", "evil.example.com", 403)
 }
 
-// TestRequireGETRejectsNonGETMethods is the GAGO-058 "GET only, 405 on
+// TestRequireGETRejectsNonGETMethods is the "GET only, 405 on
 // others" acceptance test.
 func TestRequireGETRejectsNonGETMethods(t *testing.T) {
 	t.Parallel()

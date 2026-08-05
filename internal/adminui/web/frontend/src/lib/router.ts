@@ -1,5 +1,5 @@
 // router.ts is a minimal client side router for the admin UI SPA. It
-// exists so future panels (GAGO-061..066) can register a route without
+// exists so future panels can register a route without
 // pulling in a routing library: the admin UI is a small, single
 // operator surface, not a general purpose web app, so the History API
 // plus a Svelte store is enough surface.

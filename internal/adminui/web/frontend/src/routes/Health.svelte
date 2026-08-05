@@ -1,6 +1,5 @@
 <script lang="ts">
-  // Health is the admin UI's landing panel (GAGO-061, enriched by
-  // GAGO-077). GET /api/health (handlers.go's handleHealth,
+  // Health is the admin UI's landing panel. GET /api/health (handlers.go's handleHealth,
   // healthResponse) now carries STOMP connection state, the mTLS
   // listener address, this server's own SFDI/LFDI identity, the feeder
   // mRID, the simulation ID, the registry/placeholder/certificate
@@ -29,7 +28,7 @@
 
   const POLL_INTERVAL_MS = 5000
 
-  // ALLOWED_SOR_SCHEMES is the GAGO-066 fail-closed allowlist: only
+  // ALLOWED_SOR_SCHEMES is the fail-closed allowlist: only
   // http and https render as a link. Every other scheme (javascript:,
   // data:, or anything the URL parser rejects outright) renders no
   // link at all. Svelte's text interpolation auto-escapes rendered

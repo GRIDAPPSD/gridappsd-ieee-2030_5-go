@@ -1,7 +1,7 @@
-// Package adminui is the bridge's read only operator HTTP API (GAGO-058,
-// GAGO-059). It serves a small set of GET only, Bearer gated JSON
+// Package adminui is the bridge's read only operator HTTP API. It
+// serves a small set of GET only, Bearer gated JSON
 // endpoints over the bridge's own in process state (the registry, the
-// embedded IEEE 2030.5 server's snapshot accessors, and the GAGO-057
+// embedded IEEE 2030.5 server's snapshot accessors, and the
 // control flow observation hook). It never mutates bridge state: every
 // handler is a pure reader, and the mux this package builds rejects any
 // non GET method before a handler ever runs.
@@ -96,7 +96,7 @@ type Config struct {
 	SimulationID string
 
 	// SORLink is an optional, operator supplied URL to a server of
-	// record dashboard for this bridge (GAGO-075, SEP2_ADMIN_UI_SOR_LINK).
+	// record dashboard for this bridge (SEP2_ADMIN_UI_SOR_LINK).
 	// It is a URL, not a secret, and is safe to expose over /api/health
 	// unlike Key. Empty means unset: no link, no error.
 	SORLink string
@@ -131,7 +131,7 @@ type ControlFlowSource interface {
 
 // IdentitySource is the minimal read surface Server needs from
 // *sep2embed.Embed for the health endpoint's server identity and mTLS
-// listener address fields (GAGO-074). *sep2embed.Embed already exposes
+// listener address fields. *sep2embed.Embed already exposes
 // both methods publicly, so this interface needs no changes on that
 // side; it exists here, at the consumer, per the workspace Go standard.
 type IdentitySource interface {
@@ -140,16 +140,16 @@ type IdentitySource interface {
 }
 
 // StompSource is the minimal read surface Server needs from
-// fieldbus.MessageBus for the health endpoint's connectivity field
-// (GAGO-074). Defined narrowly at the consumer rather than importing
+// fieldbus.MessageBus for the health endpoint's connectivity field.
+// Defined narrowly at the consumer rather than importing
 // the full fieldbus.MessageBus interface at every call site.
 type StompSource interface {
 	IsConnected() bool
 }
 
 // ClientObserverSource is the minimal read surface Server needs from
-// *connobs.Hook for the GAGO-091 /api/clients endpoint: the per-LFDI
-// connection activity and mTLS handshake log GAGO-090 records.
+// *connobs.Hook for the /api/clients endpoint: the per-LFDI
+// connection activity and mTLS handshake log it records.
 type ClientObserverSource interface {
 	Snapshot() connobs.Snapshot
 }
@@ -236,7 +236,7 @@ func (s *Server) Addr() string {
 
 // Handler returns the fully built, middleware wrapped read only
 // handler, with no listener involved. Tests exercise this directly via
-// httptest, so the GAGO-059 endpoints are testable against injected
+// httptest, so the endpoints are testable against injected
 // fakes with no live broker and no live listener.
 func (s *Server) Handler() http.Handler {
 	return s.handler

@@ -16,8 +16,8 @@ import (
 // field already established.
 const timeFormat = "2006-01-02T15:04:05.000Z07:00"
 
-// mux registers the GAGO-059 read only JSON endpoints, plus the
-// GAGO-060 SPA handler on "/". Every /api/... handler here is a pure
+// mux registers the read only JSON endpoints, plus the
+// SPA handler on "/". Every /api/... handler here is a pure
 // reader over the sources injected into Server by New: none of them
 // ever writes to the registry, the embedded server, or the control
 // observation hook. requireGET (in the outer middleware chain built by
@@ -45,14 +45,13 @@ func (s *Server) mux() *http.ServeMux {
 	return mux
 }
 
-// healthResponse is GAGO-074's enriched /api/health payload. Every
+// healthResponse is the enriched /api/health payload. Every
 // field is sourced from state this Server already holds (the registry,
 // the injected identity/STOMP sources, and its own config/startedAt);
 // no field here is fabricated. Fields that are genuinely not reachable
 // from this Server's current dependencies are simply absent from this
-// struct rather than filled with an invented value; see the card
-// report for the one field (DER kind/type) that stays out of scope for
-// this reason.
+// struct rather than filled with an invented value; DER kind/type is
+// one such field, out of scope for this reason.
 type healthResponse struct {
 	// Status is the fixed, pre-existing "ok" liveness value. Kept as
 	// the first field, unchanged, so an existing consumer that only
@@ -93,8 +92,8 @@ type healthResponse struct {
 	// was constructed (New's startedAt), truncated, not rounded.
 	UptimeSeconds int64 `json:"uptimeSeconds"`
 
-	// SORLink is the optional server-of-record dashboard URL (GAGO-075,
-	// SEP2_ADMIN_UI_SOR_LINK). Serialized as an empty string, never
+	// SORLink is the optional server-of-record dashboard URL
+	// (SEP2_ADMIN_UI_SOR_LINK). Serialized as an empty string, never
 	// omitted, when unset: a future frontend reads an always-present
 	// field rather than having to distinguish "absent" from "present
 	// but empty" for a value where those two states carry no different
@@ -174,13 +173,13 @@ type derResponse struct {
 // (edevId) alongside the DER's own ID and Href, since a DER's identity
 // is only meaningful relative to the device that serves it.
 //
-// FeederMRID (GAGO-074) is the bridge's own configured feeder mRID
+// FeederMRID is the bridge's own configured feeder mRID
 // (s.cfg.FeederMRID), stamped onto every entry: it is not a per-DER
 // value, since this bridge enumerates every DER from a single
 // configured feeder. A DER kind/type field (inverter, solar, battery)
-// was scoped for this endpoint too, but is not added here: see the
-// card report's Finding, it is not reachable from this Server's
-// current dependencies without a CIM query change.
+// was scoped for this endpoint too, but is not added here: it is not
+// reachable from this Server's current dependencies without a CIM
+// query change.
 type derWithOwnerResponse struct {
 	EndDeviceID string `json:"edevId"`
 	ID          string `json:"id"`
@@ -253,7 +252,7 @@ func (s *Server) handleServedEndDevices(w http.ResponseWriter, r *http.Request) 
 // fields, plus the owning EndDevice's ID, since a DERProgram is scoped
 // to the device serving it.
 //
-// DefaultDERControlLink (GAGO-074) is the CSIP-critical addition: the
+// DefaultDERControlLink is the CSIP-critical addition: the
 // href of this program's DefaultDERControl singleton (spec section
 // CSIP profile requires every DERProgram to carry one). It is sourced
 // straight from sep2embed.DERProgramSnapshot.DefaultDERControlLink,
@@ -313,7 +312,7 @@ type lastDeltaResponse struct {
 }
 
 // controlFlowResponse mirrors controlobs.Snapshot's exported fields.
-// Every field here traces to the GAGO-057 hook's own recorded state
+// Every field here traces to the control-flow hook's own recorded state
 // (applied/skipped counters, the last applied delta, and the two STOMP
 // topic strings): none of it is, or ever derives from, a credential.
 type controlFlowResponse struct {
@@ -372,7 +371,7 @@ type clientsResponse struct {
 	Handshakes []handshakeAttemptResponse `json:"handshakes"`
 }
 
-// handleClients reports the GAGO-090 per-LFDI connection observer's
+// handleClients reports the per-LFDI connection observer's
 // current state: which LFDIs have issued requests (and what they
 // touched), plus the recent mTLS handshake attempt log, accepted and
 // rejected alike. Every field traces to the connobs.Hook's own recorded

@@ -1,12 +1,11 @@
 <script lang="ts">
-  // DiscoveredDers renders GAGO-063's discovered-DER list from
+  // DiscoveredDers renders the discovered-DER list from
   // GET /api/ders (internal/adminui/handlers.go's handleDERs,
-  // derWithOwnerResponse). GAGO-074/077: the response now also carries
-  // feederMrid, the bridge's own configured feeder mRID stamped onto
-  // every entry, and this panel renders it as a column. DER type
-  // (inverter/solar/battery) is still NOT carried on the wire (GAGO-076
-  // pending, needs a CIM query change); the gap note below is kept for
-  // that field only, not fabricated here.
+  // derWithOwnerResponse), including feederMrid, the bridge's own
+  // configured feeder mRID stamped onto every entry, rendered here as a
+  // column. DER type (inverter/solar/battery) is still NOT carried on
+  // the wire (pending, needs a CIM query change); the gap note below is
+  // kept for that field only, not fabricated here.
   import { onMount } from 'svelte'
   import { fetchJSON } from '../lib/api'
 

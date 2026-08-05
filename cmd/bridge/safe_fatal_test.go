@@ -7,7 +7,7 @@ import (
 )
 
 // TestRedactCredsStripsPassword is the data-invariants required VALUE
-// assertion for GAGO-028 Leon L3: a message that contains the
+// assertion (Leon L3): a message that contains the
 // configured STOMPPassword verbatim must have every occurrence
 // replaced with the fixed placeholder, and the placeholder must not
 // leak any fragment of the original secret.
@@ -103,7 +103,7 @@ func TestRedactCredsNoMatchNoOp(t *testing.T) {
 	}
 }
 
-// TestRedactCredsStripsBase64AuthBlob is the GAGO-028 follow-up VALUE
+// TestRedactCredsStripsBase64AuthBlob is a follow-up VALUE
 // assertion: the GOSS auth-token bootstrap sends
 // base64(STOMPUser:STOMPPassword) over the wire (internal/cimstomp's
 // fetchAuthToken), a form that shares no substring with the raw
