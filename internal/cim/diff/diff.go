@@ -26,7 +26,7 @@ var ErrInvalidDifference = errors.New("diff: invalid difference: object and attr
 // ErrRandFailure is returned by Message and MessageNow when the
 // underlying crypto/rand read needed to mint a fresh difference_mrid
 // fails. See newUUIDv4's doc comment for why this is threaded through as
-// an error instead of a panic (GAGO-020).
+// an error instead of a panic.
 var ErrRandFailure = errors.New("diff: crypto/rand failed")
 
 // Difference is one forward-or-reverse change to a CIM object's
@@ -134,7 +134,7 @@ func (b *Builder) Len() int {
 // copies, marshal to JSON via Bytes.
 //
 // Message returns an error, wrapping ErrRandFailure, when the
-// crypto/rand read behind the fresh difference_mrid fails (GAGO-020).
+// crypto/rand read behind the fresh difference_mrid fails.
 // This is the caller-visible half of newUUIDv4's fail-closed contract:
 // see that function's doc comment for why a panic is no longer the
 // right failure mode here.
@@ -193,7 +193,7 @@ func (b *Builder) BytesNow() ([]byte, error) {
 // Layout (RFC 4122 section 4.4): 16 random bytes with two fixed bits in
 // byte 6 (version=4) and byte 8 (variant=10).
 //
-// GAGO-020: a crypto/rand read failure is threaded through as an error
+// A crypto/rand read failure is threaded through as an error
 // (wrapping ErrRandFailure) rather than a panic. crypto/rand.Read on
 // Linux is documented as effectively never failing in practice
 // (urandom backed), but "effectively never" is not "never": a fresh

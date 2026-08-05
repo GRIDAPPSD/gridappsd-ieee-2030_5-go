@@ -1,4 +1,4 @@
-// ControlFlow.svelte.test.ts exercises GAGO-065: exact field-value
+// ControlFlow.svelte.test.ts exercises exact field-value
 // rendering for a populated last-delta snapshot, the explicit idle
 // state when last is null (a real, distinct third state per
 // handleControlFlow's doc comment, not a present-but-empty delta), and

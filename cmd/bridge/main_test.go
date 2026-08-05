@@ -14,7 +14,7 @@ import (
 // that AllowPlaintext passes through unmodified in both directions
 // rather than being silently forced to a fixed value in the wiring
 // step. This is what stands in for a live-broker connect test at this
-// layer; the end-to-end proof against a real broker is GAGO-040's job.
+// layer; the end-to-end proof against a real broker is a separate job.
 func TestBusConfigMapsFields(t *testing.T) {
 	t.Parallel()
 
@@ -104,13 +104,13 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 		t.Errorf("Addr: got %q, want %q", got.Addr, cfg.SEP2ServerAddr)
 	}
 	if got.Observer != &connHook {
-		t.Errorf("Observer: got %p, want the passed-in connHook %p (GAGO-090/091 wiring)", got.Observer, &connHook)
+		t.Errorf("Observer: got %p, want the passed-in connHook %p", got.Observer, &connHook)
 	}
 	if got.CertDir != cfg.SEP2ServerCertDir {
 		t.Errorf("CertDir: got %q, want %q", got.CertDir, cfg.SEP2ServerCertDir)
 	}
 
-	// GAGO-050: DefaultControl passes through from policy verbatim,
+	// DefaultControl passes through from policy verbatim,
 	// never hardcoded at the sep2EmbedConfig mapping layer. The shipped
 	// policy commands nothing, so verbatim means both mode flags arrive
 	// nil; a non-nil value here would mean this layer invented one.
@@ -125,7 +125,7 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 		t.Errorf("DefaultControl.DERControlBase.OpModEnergize = %v, want nil (the policy commands nothing)", *base.OpModEnergize)
 	}
 
-	// GAGO-131: the issued-control interval policy maps through too. A zero
+	// The issued-control interval policy maps through too. A zero
 	// Duration here would mean the mapping layer dropped the field, and
 	// ApplyControlDelta would then refuse every delta the bridge received.
 	if got.DERControl.Duration != policy.DERControl.Duration {
@@ -148,8 +148,8 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 // TestAdminUIConfigMapsFields verifies adminUIConfig's field-by-field
 // mapping from the bridge's own config onto adminui.Config, mirroring
 // TestSEP2EmbedConfigMapsFields for the embedded IEEE 2030.5 side. This
-// is the pure-mapping unit test GAGO-058 asks for: no listener bound,
-// no admin token required.
+// is the pure-mapping unit test for the admin UI config: no listener
+// bound, no admin token required.
 func TestAdminUIConfigMapsFields(t *testing.T) {
 	t.Parallel()
 
@@ -210,7 +210,7 @@ func TestAdminUIConfigZeroValueMapsToDisabledShape(t *testing.T) {
 }
 
 // TestBuildSEP2PolicyNeitherFlagSetMatchesDefaultPolicy verifies the
-// GAGO-PIN no-op contract at the policy layer: a zero-value config (no
+// no-op contract at the policy layer: a zero-value config (no
 // -sep2-registration-pin, no -sep2-registration-pin-file) produces a
 // policy whose registration-PIN fields are exactly
 // sep2config.DefaultPolicy()'s own unset state, so the fail-closed

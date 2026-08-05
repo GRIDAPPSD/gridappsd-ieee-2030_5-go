@@ -13,14 +13,14 @@ import (
 //
 //	go test ./internal/cim/... -run TestSPARQLQueriesGolden -update
 //
-// This is the deliberate refresh path for an intentional template change
-// (GAGO-017): render, inspect the diff, re-run with -update, commit the
+// This is the deliberate refresh path for an intentional template
+// change: render, inspect the diff, re-run with -update, commit the
 // new golden alongside the template edit.
 var update = flag.Bool("update", false, "update golden files")
 
 // goldenQueryCase names a SPARQL template wrapper and the golden file
 // that pins its exact rendered output (byte-for-byte, not substring).
-// This closes the Dutch GAGO-010 M2 gap: substring assertions in
+// This closes the Dutch M2 gap: substring assertions in
 // TestSPARQLQueriesEnvelope missed a trailing-whitespace divergence
 // because they only check that expected fragments are present, never
 // that nothing else in the template drifted.

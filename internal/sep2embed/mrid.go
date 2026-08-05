@@ -47,8 +47,8 @@ const (
 // For a DERControl that means the client never sees responseRequired or
 // replyTo, so it never posts a Response: the served bytes look plausible in a
 // log while being unusable on the wire. Refusing to emit an invalid identifier
-// is required here rather than optional (see .claude/rules/data-invariants.md
-// Rule 2: do not paper over an identity that cannot be represented validly).
+// is required here rather than optional: do not paper over an identity
+// that cannot be represented validly.
 //
 // PROPERTIES. The digest is SHA-256 over "<kind>:<lfdi>", truncated to the
 // first 16 bytes and hex encoded uppercase. That gives:
@@ -145,7 +145,7 @@ func deriveEventMRID(kind, lfdi string, creationTime int64, base *sep2.DERContro
 // It is the single definition of "the same control payload" in this package,
 // and it has two callers that must not drift apart: deriveEventMRID, which
 // makes an event's identity a function of these bytes, and the change
-// detection in ApplyControlDelta (GAGO-136), which refuses to issue a second
+// detection in ApplyControlDelta, which refuses to issue a second
 // event for a payload already in force. If those two used different notions of
 // sameness, a delta could be judged a restatement while deriving a different
 // mRID, or judged a change while deriving the same one; either way the store
@@ -179,7 +179,7 @@ func canonicalControlPayload(base *sep2.DERControlBase) ([]byte, error) {
 // href.
 //
 // The descending-time half exists because of paging, and dropping it
-// reintroduces this card's defect by another route. Core lists a scoped
+// reintroduces the same defect by another route. Core lists a scoped
 // collection in ascending id byte order (store.SortByIDAsc) and defaults an
 // unpaged GET to ten items (sep2srv/paging.DefaultLimit). Keying on the mRID
 // alone would order the DERControlList by what is effectively a random hash,

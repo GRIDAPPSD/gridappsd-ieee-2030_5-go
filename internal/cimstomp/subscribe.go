@@ -10,7 +10,7 @@ import (
 )
 
 // defaultMaxFrameBodyBytes is the default cap on an incoming subscription
-// frame's body, applied in runSubscription (GAGO-023 Leon M1). It exists
+// frame's body, applied in runSubscription (Leon M1). It exists
 // to bound memory from a broker bug, a misbehaving publisher, or a
 // misrouted destination that floods the subscription with unexpectedly
 // large payloads; ~16MiB comfortably covers the largest legitimate
@@ -20,8 +20,8 @@ import (
 const defaultMaxFrameBodyBytes = 16 * 1024 * 1024
 
 // oversizedFrameLogEvery bounds the oversized-frame drop log rate,
-// mirroring the malformed-frame rate limit in internal/cim/sim.Pump
-// (GAGO-023 follow-up). Without a limit, a steady stream of oversized
+// mirroring the malformed-frame rate limit in internal/cim/sim.Pump.
+// Without a limit, a steady stream of oversized
 // frames from a misbehaving publisher turns the memory-DoS defense
 // isOversizedFrame provides into a log-DoS: one unbounded log line per
 // dropped frame. The first oversized frame on a given subscription
@@ -152,7 +152,7 @@ func (c *Client) Subscribe(ctx context.Context, destination string, opts ...Subs
 	// value: it absorbs a short burst from the broker (e.g. simulation
 	// output ticks arriving faster than a slow handler drains them)
 	// without the sender blocking on every frame. It is not exposed as a
-	// per-call option (GAGO-023 Dutch M2) because no caller in this
+	// per-call option (Dutch M2) because no caller in this
 	// codebase has needed a different value; sendOrCancel already keeps
 	// ctx-cancel responsive even when the buffer is full, so a caller
 	// with a genuinely slower consumer is not at risk of a stuck
@@ -176,8 +176,8 @@ func (c *Client) Subscribe(ctx context.Context, destination string, opts ...Subs
 //     Err and exits; subsequent frames (if any) are not forwarded.
 //
 // A frame whose Body exceeds maxFrameBodyBytes is dropped instead of
-// forwarded: logged, and the loop continues with the next frame (GAGO-023
-// Leon M1). This is a deliberate drop-and-continue, not a subscription
+// forwarded: logged, and the loop continues with the next frame (Leon
+// M1). This is a deliberate drop-and-continue, not a subscription
 // teardown: an oversized frame does not by itself mean the connection or
 // broker session is unhealthy, so the cap protects memory without
 // escalating to Err/close on what may be one bad publisher.
@@ -243,14 +243,14 @@ func runSubscription(ctx context.Context, stompSub *stomp.Subscription, out *Sub
 
 // isOversizedFrame reports whether bodyLen exceeds maxFrameBodyBytes, and
 // if so logs the drop. Split out from runSubscription's size check
-// (GAGO-023 Leon M1) so the cap decision itself is directly unit-testable
+// (Leon M1) so the cap decision itself is directly unit-testable
 // without needing a real *stomp.Subscription to drive a frame through
 // the goroutine.
 //
 // count is the caller's running oversized-frame counter for this
 // subscription; isOversizedFrame increments it on every drop and only
 // logs on the first drop and every oversizedFrameLogEvery-th drop after
-// that (GAGO-023 follow-up), mirroring the malformed-frame rate limit in
+// that, mirroring the malformed-frame rate limit in
 // internal/cim/sim.Pump.dispatch. count is nil-safe: passing nil (as
 // existing unit tests do) skips the counting and always logs, which
 // keeps TestIsOversizedFrame_DropsAboveCapKeepsAtOrBelow's per-case
@@ -278,7 +278,7 @@ func isOversizedFrame(destination string, bodyLen, maxFrameBodyBytes int, count 
 // out.setErr(ctx.Err()) has already been called and the caller should stop
 // forwarding).
 //
-// Split out from runSubscription's send arm (GAGO-023 Dutch M1) so the
+// Split out from runSubscription's send arm (Dutch M1) so the
 // ctx-vs-full-channel race can be unit-tested directly without a real
 // *stomp.Subscription: subscribe_test.go fills a 1-buffered Subscription,
 // cancels ctx, and asserts this returns false without blocking.

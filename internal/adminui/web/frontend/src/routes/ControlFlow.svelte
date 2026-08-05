@@ -1,5 +1,5 @@
 <script lang="ts">
-  // ControlFlow renders GAGO-065's control-flow observation panel from
+  // ControlFlow renders the control-flow observation panel from
   // GET /api/controlflow (handlers.go's handleControlFlow,
   // controlFlowResponse). Read only: this panel has no form, no
   // button, no mutating fetch call. `last: null` is a real, distinct

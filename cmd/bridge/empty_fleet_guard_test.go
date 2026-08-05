@@ -74,7 +74,7 @@ func countEnvelope(t *testing.T, count int) []byte {
 	return b
 }
 
-// routedMockCIMRequester discriminates between the GAGO-051 discovery
+// routedMockCIMRequester discriminates between the discovery
 // count query and the three device-enumeration queries by inspecting
 // the request body for the count template's distinctive
 // "COUNT(DISTINCT" fragment, and returns a different canned envelope for
@@ -97,7 +97,7 @@ func (m *routedMockCIMRequester) Request(_ context.Context, _ string, body []byt
 	return out, nil
 }
 
-// TestBootstrapRegistryEmptyFleetFailsLoud is the GAGO-051 core
+// TestBootstrapRegistryEmptyFleetFailsLoud is the core
 // assertion: a feeder that returns zero PowerElectronicsConnection rows
 // from every enumeration query (the load-modeled-feeder symptom) must
 // make bootstrapRegistry return a non-nil error naming the feeder mRID
@@ -135,8 +135,8 @@ func TestBootstrapRegistryEmptyFleetFailsLoud(t *testing.T) {
 	}
 }
 
-// TestBootstrapRegistryHappyPathNoSpuriousWarning confirms the GAGO-051
-// diagnostics add no new noise on a normal boot: a feeder whose
+// TestBootstrapRegistryHappyPathNoSpuriousWarning confirms the
+// discover-vs-project diagnostics add no new noise on a normal boot: a feeder whose
 // discovered PEC count matches its fully-projected device count must
 // boot with no error and must not log a WARNING-level line.
 func TestBootstrapRegistryHappyPathNoSpuriousWarning(t *testing.T) {
@@ -325,7 +325,7 @@ func TestPECCountLogLine(t *testing.T) {
 			rejectSubs:   []string{"0 dropped"},
 		},
 		{
-			// GAGO-104 supersedes the earlier "clamp discovered <
+			// This supersedes the earlier "clamp discovered <
 			// projected to no-drops" assumption: that assumption was
 			// exactly the blind spot that let a 9-PEC feeder mint 18
 			// devices with a clean "no drops" log line. discovered <

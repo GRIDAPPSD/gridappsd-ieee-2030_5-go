@@ -11,7 +11,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
-// testDefaultControlSnapshot is the GAGO-050 seed value newTestEmbed
+// testDefaultControlSnapshot is the seed value newTestEmbed
 // configures every Embed with in this file: a realistic, non-zero
 // DefaultDERControl (opModConnect and opModEnergize true, everything
 // else nil), mirroring sep2config.DefaultPolicy()'s own value without
@@ -180,7 +180,7 @@ func TestDefaultDERControlIsReachableBeforeAnyDeltaApplied(t *testing.T) {
 // TestDERProgramsAndDERControlsReflectAppliedDelta drives one real
 // control delta through ApplyControlDelta (the same DOWN path
 // runControlSubscriber will call in cmd/bridge), then asserts the
-// GAGO-056 accessors report exactly the field values that delta wrote:
+// accessors report exactly the field values that delta wrote:
 // not just non-nil, per data-invariants.
 func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 	t.Parallel()
@@ -220,7 +220,7 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 	if programs[0].Primacy != testProgramSeed.Primacy {
 		t.Errorf("DERPrograms[0].Primacy = %d, want %d (the configured DefaultProgram.Primacy)", programs[0].Primacy, testProgramSeed.Primacy)
 	}
-	// GAGO-050: every DERProgram carries a non-empty DefaultDERControlLink,
+	// Every DERProgram carries a non-empty DefaultDERControlLink,
 	// and it resolves to the seeded DefaultDERControl below (asserted
 	// after the dderc fetch, so the same href is checked from both the
 	// program's own link and the singleton's own Href field).
@@ -237,7 +237,7 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 	}
 	got := controls[0]
 	// The snapshot's ID is the store key the control is actually held at,
-	// which since GAGO-133 is per-event rather than the fixed "active" slot.
+	// which is per-event rather than the fixed "active" slot.
 	// The href is asserted to END with that id rather than to equal a literal:
 	// the id embeds the event's own creation instant and mRID, so a literal
 	// would have to be recomputed here and would then agree with the
@@ -271,7 +271,7 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 		t.Errorf("DERControls[0].Base.OpModTargetVar = %+v, want nil (delta never touched this field)", got.Base.OpModTargetVar)
 	}
 
-	// GAGO-050: ensureDERProgram seeds the DefaultDERControl singleton at
+	// ensureDERProgram seeds the DefaultDERControl singleton at
 	// the same moment it lazily creates the DERProgram itself (the first
 	// ApplyControlDelta for this device, above), from the Embed's own
 	// configured DefaultControl (testDefaultControlSnapshot, set in
@@ -302,7 +302,7 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 		t.Errorf("DefaultDERControl.Base.OpModEnergize = %+v, want true", dderc.Base.OpModEnergize)
 	}
 
-	// Negative invariant (the actual hazard this card guards against):
+	// Negative invariant (the actual hazard guarded against here):
 	// opModTargetW and opModTargetVar must stay nil on the seeded
 	// default. A stray value here would silently disable the device's
 	// own autonomous volt-var / curtailment behavior per IEEE 1547-2018

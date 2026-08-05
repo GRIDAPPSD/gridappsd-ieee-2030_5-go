@@ -18,8 +18,8 @@
 #   1. Override STOMP_PORT / CONSOLE_PORT and the ACTIVEMQ_CONNECTION_*
 #      values via a separate .env file (see .env.example) or your
 #      orchestrator's secret manager.
-#   2. Configure ActiveMQ for STOMP+SSL (port 61614) with mTLS. See
-#      GAGO-014; the cimstomp.STOMPConfig.TLS field accepts the
+#   2. Configure ActiveMQ for STOMP+SSL (port 61614) with mTLS. The
+#      cimstomp.STOMPConfig.TLS field accepts the
 #      *tls.Config the bridge uses to dial the broker.
 #   3. Do not expose the web console on a public interface.
 # =====================================================================

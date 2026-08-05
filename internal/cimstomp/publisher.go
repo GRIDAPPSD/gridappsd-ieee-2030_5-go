@@ -32,8 +32,7 @@ type Publisher struct {
 }
 
 // New creates a Publisher from STOMP config. When cfg.TLS is non-nil the
-// dial path uses crypto/tls; nil keeps the existing plain-TCP behavior
-// (GAGO-014).
+// dial path uses crypto/tls; nil keeps the existing plain-TCP behavior.
 func New(cfg STOMPConfig) *Publisher {
 	return &Publisher{cfg: cfg}
 }
@@ -45,7 +44,7 @@ func New(cfg STOMPConfig) *Publisher {
 // so we dial ourselves with net.DialContext to honor ctx, then hand the
 // live conn to stomp.ConnectWithContext for the STOMP handshake. When the
 // originating STOMPConfig had a non-nil TLS field, the dial wraps the TCP
-// connection with crypto/tls (GAGO-014).
+// connection with crypto/tls.
 func (p *Publisher) Connect(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -60,7 +59,7 @@ func (p *Publisher) Connect(ctx context.Context) error {
 	// Client.dialAndBootstrap: we promise to SEND one every `heartbeat`,
 	// and we request NONE inbound (the second argument is 0). A
 	// symmetric request had this same dial site dying silently after an
-	// idle period, the Publisher-side half of the GAGO-112 defect: see
+	// idle period, the Publisher-side half of the same defect: see
 	// Client.dialAndBootstrap's comment in client.go for the full
 	// go-stomp read-deadline mechanics.
 	conn, err := stomp.ConnectWithContext(ctx, tcp,
@@ -89,7 +88,7 @@ func (p *Publisher) Connect(ctx context.Context) error {
 //   - Wrapped ErrConnectionLost if the broker dropped the connection.
 //
 // Publisher has NO Reconnect primitive (unlike Client), and none is
-// planned for v0 (GAGO-012; reaffirmed GAGO-024 Leon L2). On
+// planned for v0 (reaffirmed by Leon L2). On
 // ErrConnectionLost, the recovery path is: call Close on the old
 // Publisher, then construct a fresh Publisher via New and Connect it.
 // Publisher's smaller lifecycle (no mutex, no atomics, no in-flight
@@ -132,7 +131,7 @@ func (p *Publisher) Close() error {
 //
 // The logged err can carry a broker-controlled string (an ERROR frame's
 // body, surfaced through go-stomp's error chain) verbatim into
-// log.Printf (GAGO-024 Leon L1, note-only: no operator-facing log
+// log.Printf (Leon L1, note-only: no operator-facing log
 // infrastructure exists yet for this bridge, so there is nothing to
 // sanitize against today). If the bridge later gains a structured or
 // forwarded logging path (a log aggregator, an operator-facing

@@ -67,7 +67,7 @@ type STOMPConfig struct {
 	// package. Note that Clone is a shallow copy: Certificates and
 	// RootCAs are shared by reference; crypto/tls treats these as
 	// read-after-handshake so the sharing is safe in practice
-	// (GAGO-022 L2 / Leon L1).
+	// (Leon L1).
 	TLS *tls.Config `json:"-"`
 }
 

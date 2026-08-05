@@ -15,8 +15,8 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
-// TestConfigCarriesNoBusPublishSurface is the layering regression guard
-// for GAGO-121. Receiving an IEEE 2030.5 request must not cause a
+// TestConfigCarriesNoBusPublishSurface is the layering regression guard:
+// receiving an IEEE 2030.5 request must not cause a
 // GridAPPS-D bus publish, so this package must not take a bus, a bus
 // destination, or a simulation id at all. Publishing is
 // internal/telemetrypub's job, driven by its own timer off this
@@ -39,8 +39,8 @@ func TestConfigCarriesNoBusPublishSurface(t *testing.T) {
 	}
 }
 
-// TestDERStatusPUTStoresAndDoesNotPublish is the request-path contract
-// after GAGO-121: a device's DERStatus PUT is answered and stored, and
+// TestDERStatusPUTStoresAndDoesNotPublish is the request-path contract:
+// a device's DERStatus PUT is answered and stored, and
 // that is the entire server-side effect. The values asserted here are
 // the ones internal/telemetrypub will later read and publish, so this
 // also pins that the store, not the request, is the seam between the

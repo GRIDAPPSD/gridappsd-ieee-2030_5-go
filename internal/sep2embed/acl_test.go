@@ -146,7 +146,7 @@ func TestACLMiddlewareDeniesCrossDeviceOwnership(t *testing.T) {
 	}
 }
 
-// TestACLMiddlewareAllowsOwnedDERInstanceWrite is the GAGO-111
+// TestACLMiddlewareAllowsOwnedDERInstanceWrite is a
 // regression test: a PUT to the DER instance path
 // (/edev/{id}/der/{derId}) from the OWNING device must reach the
 // handler, not be refused by the method-family table (the defect this
@@ -173,7 +173,7 @@ func TestACLMiddlewareAllowsOwnedDERInstanceWrite(t *testing.T) {
 }
 
 // TestACLMiddlewareDeniesNonOwnerDERInstanceWrite pins the ownership
-// boundary that must NOT regress alongside the GAGO-111 method-table
+// boundary that must NOT regress alongside the method-table
 // widening: a PUT to the DER instance path from a device that does not
 // own the target EndDevice is still refused, before the handler ever
 // sees it.
@@ -199,7 +199,7 @@ func TestACLMiddlewareDeniesNonOwnerDERInstanceWrite(t *testing.T) {
 	}
 }
 
-// TestACLMiddlewareAllowsOwnedLogEventPost is the GAGO-132 regression
+// TestACLMiddlewareAllowsOwnedLogEventPost is a regression
 // test. Core v0.13.0 retired /edev/{id}/log and mounts the WADL address
 // /edev/{id}/lel instead (2018 A.3.5.1; sep_wadl.xml:1358), so a
 // LogEvent POST from the OWNING device must reach the handler at the new
@@ -229,7 +229,7 @@ func TestACLMiddlewareAllowsOwnedLogEventPost(t *testing.T) {
 }
 
 // TestACLMiddlewareDeniesNonOwnerLogEventPost pins the ownership
-// boundary that must NOT regress alongside the GAGO-132 address move: a
+// boundary that must NOT regress alongside the address move: a
 // LogEvent POST to another device's list is still refused, before the
 // handler ever sees it. Asserting next.called separately from the status
 // keeps "denied before dispatch" distinguishable from a 403 some later

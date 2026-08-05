@@ -69,7 +69,7 @@ type config struct {
 
 	// SEP2ServerAddr is the "host:port" the embedded IEEE 2030.5 mTLS
 	// listener (internal/sep2embed) binds. Defaults to loopback only:
-	// the embed has no per-device ACL yet (GAGO-043 follow-up), so a
+	// the embed has no per-device ACL yet, so a
 	// loopback default keeps that unfinished access-control story from
 	// being reachable off-box out of the box. Binding to a non-loopback
 	// address is an explicit operator choice made by overriding
@@ -111,7 +111,7 @@ type config struct {
 	// SEP2AdminUIKey is the Bearer token the admin UI requires on every
 	// request. Deliberately NOT validated as required by config.validate:
 	// an empty key is the intentional "admin UI disabled" state per
-	// adminui.New's fail closed ErrDisabled contract (GAGO-058). An
+	// adminui.New's fail closed ErrDisabled contract. An
 	// operator opts in to the admin UI by setting this explicitly.
 	SEP2AdminUIKey string
 
@@ -123,7 +123,7 @@ type config struct {
 
 	// SEP2AdminUISORLink is an optional, operator supplied URL to a
 	// server of record dashboard, exposed read only via the admin UI's
-	// /api/health endpoint (GAGO-075). Not a credential: unlike
+	// /api/health endpoint. Not a credential: unlike
 	// SEP2AdminUIKey, this value is safe to return in an API response
 	// and is never scrubbed from the environment or logged specially.
 	// Empty means unset: no link, no error, no admin UI behavior
@@ -290,7 +290,7 @@ const (
 
 	// defaultSEP2ServerAddr binds the embedded IEEE 2030.5 mTLS listener
 	// to loopback only by default; see config.SEP2ServerAddr's doc
-	// comment for why (GAGO-043, no per-device ACL yet).
+	// comment for why: no per-device ACL yet.
 	defaultSEP2ServerAddr = "127.0.0.1:8443"
 
 	// defaultSEP2ServerCertDir is where dev-mint mTLS material is
@@ -396,7 +396,7 @@ func loadConfig(args []string) (config, error) {
 
 	// sep2-registration-pin and sep2-registration-pin-file register with
 	// an empty string default, then are parsed and validated by hand
-	// after Parse below (GAGO-PIN). A registered numeric flag default
+	// after Parse below. A registered numeric flag default
 	// cannot represent "unset" here, because 0 is itself a schema-legal
 	// PIN (see SEP2RegistrationPIN's doc comment above); the empty
 	// string sentinel resolves that ambiguity the same way the
@@ -968,7 +968,7 @@ func resolveCred(flagVal, envKey, fallback string) string {
 // SimulationID is allowed: the bridge still validates connect plus CIM
 // query plus registry; the Pump will just sit idle. SEP2AdminUIKey is
 // deliberately NOT checked here: an empty key is the intentional
-// "admin UI disabled" state (GAGO-058's fail closed contract), not a
+// "admin UI disabled" state (adminui.New's fail closed contract), not a
 // missing-required-field error.
 func (c config) validate() error {
 	if c.STOMPAddr == "" {

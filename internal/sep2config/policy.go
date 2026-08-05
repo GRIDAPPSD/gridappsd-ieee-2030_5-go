@@ -22,10 +22,9 @@ import (
 )
 
 // SEP2Policy is loaded once at bridge boot. Nothing in this package reads
-// or seeds any store: consuming SEP2Policy is the job of later cards
-// (GAGO-049 for ModesSupported, GAGO-050 for DefaultControl).
+// or seeds any store: consuming SEP2Policy is the caller's job.
 type SEP2Policy struct {
-	// DefaultControl is the DefaultDERControl fallback GAGO-050 seeds onto
+	// DefaultControl is the DefaultDERControl fallback seeded onto
 	// every DERProgram's DefaultDERControlLink. See DefaultPolicy's doc
 	// comment for the specific field-by-field rationale.
 	DefaultControl sep2.DefaultDERControl
@@ -51,11 +50,11 @@ type SEP2Policy struct {
 	// Validate with ValidateDERControl before use.
 	DERControl DERControlPolicy
 
-	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
+	// ModesSupported is the DERControlType bitmap stamped into
 	// each seeded DERCapability. Not derivable from CIM: no CIM class
 	// carries which control modes a device advertises over 2030.5.
-	// Typed as *sep2.DERControlType (an alias for *sep2.HexBinary32,
-	// IEEECORE-047), matching sep2.DERCapability.ModesSupported's own
+	// Typed as *sep2.DERControlType (an alias for *sep2.HexBinary32),
+	// matching sep2.DERCapability.ModesSupported's own
 	// field type exactly, so the type that owns the hexBinary wire
 	// encoding flows end to end rather than being carried as a plain
 	// integer and converted at the seeding boundary. Pointer-typed so a
@@ -97,14 +96,13 @@ type SEP2Policy struct {
 	// override or the default. Populating these maps is therefore a change
 	// to this package alone.
 	//
-	// Where they will eventually be populated FROM is a separate decision
-	// already pointed at by IEEECORE-050, which settled that registration
-	// PINs are auto-generated per device and persisted to an
+	// Where they will eventually be populated FROM is a separate decision:
+	// registration PINs are auto-generated per device and persisted to an
 	// operator-editable file that is the source of truth, with the UI as an
 	// editor over it. Per-device rates belong in that same per-device
 	// provisioning record rather than a parallel store, so that two files
-	// can never disagree about the same device. Building that record is not
-	// this card's work.
+	// can never disagree about the same device. Building that record is
+	// a separate piece of work, out of scope here.
 	PollRates map[string]uint32
 	PostRates map[string]uint32
 
@@ -686,9 +684,9 @@ func HasValidPINCheckDigit(pin uint32) bool {
 // operate regardless of the control channel and none of which this bridge
 // has to (or should) restate. That baseline also carries no signed
 // quantity, so this default is unaffected by the open sign-convention
-// question tracked as GAGO-044.
+// question.
 //
-// This REPLACES the earlier reading of Vance's GAGO-050 verdict, which set
+// This REPLACES the earlier reading of Vance's verdict, which set
 // opModConnect and opModEnergize true as an IEEE 1547 ride-through
 // fail-safe. The ride-through concern is real and unchanged; what changed is
 // where it is answered. Ride-through is the DER's own commissioned 1547
@@ -716,8 +714,8 @@ func HasValidPINCheckDigit(pin uint32) bool {
 // DefaultDERControlDuration with no expiry randomization, which is the
 // reproducible co-simulation setting. See DERControlPolicy.
 //
-// ModesSupported and the poll/post rates default to nil (unset); GAGO-049
-// and any future FSA-seeding card supply real values once they exist.
+// ModesSupported and the poll/post rates default to nil (unset); a
+// future FSA-seeding change supplies real values once they exist.
 func DefaultPolicy() SEP2Policy {
 	return SEP2Policy{
 		DefaultControl: sep2.DefaultDERControl{

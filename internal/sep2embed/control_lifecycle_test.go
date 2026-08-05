@@ -14,12 +14,12 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 )
 
-// Wire-level tests for the end of an issued DERControl's life (GAGO-134).
+// Wire-level tests for the end of an issued DERControl's life.
 //
 // Everything here asserts the BYTES the embedded server writes to a client,
 // never a round trip through this project's own marshaller, for the reason
-// spelled out at the top of control_interval_test.go and demonstrated by
-// IEEECORE-103: marshal-then-unmarshal is symmetric, so it agrees with itself
+// spelled out at the top of control_interval_test.go:
+// marshal-then-unmarshal is symmetric, so it agrees with itself
 // in the correct and the incorrect encoding alike.
 //
 // The defect these tests exist to prevent was observed live on 2026-08-03,
@@ -30,7 +30,7 @@ import (
 // LATER, is REQUIRED to discard the event (2018 rule l) p.90, Specified End
 // Time in the past) and POSTs status 254 (Table 27 p.76). That is the third
 // distinct route to a status-254 rejection found in two days, after an absent
-// interval (GAGO-131) and a wrong wire encoding (IEEECORE-103).
+// interval and a wrong wire encoding.
 
 // movableClock is a test clock whose instant the test moves explicitly.
 //
@@ -312,7 +312,7 @@ func TestSupersededControlEndsWithoutLosingItsSupersededStatus(t *testing.T) {
 	}
 	superseded := derControlElementWith(t, body, wantOld)
 	if !bytes.Contains(superseded, []byte(wantSupersededStatusAtSecond)) {
-		t.Fatalf("the older control is not marked superseded before its window closes; this test needs GAGO-133's behavior intact to mean anything\nelement=%s", superseded)
+		t.Fatalf("the older control is not marked superseded before its window closes; this test needs supersession behavior intact to mean anything\nelement=%s", superseded)
 	}
 	supersededMRID := elementText(t, superseded, "mRID")
 
@@ -372,10 +372,10 @@ func TestSupersededControlEndsWithoutLosingItsSupersededStatus(t *testing.T) {
 }
 
 // TestIssuedControlCountIsBoundedByOneScheduledPeriod states the operational
-// property this card buys, and the one that made it urgent enough to follow
-// GAGO-133 immediately.
+// property this change buys, and the one that made it urgent enough to
+// follow supersession immediately.
 //
-// GAGO-133 made every control delta issue its own DERControl. Nothing then
+// Supersession made every control delta issue its own DERControl. Nothing then
 // removed any of them, so a device's list grew for the life of the process:
 // at a live delta cadence, hundreds of events per device inside one default
 // 1800-second window and no ceiling at all beyond it. Removal at the end of
@@ -560,7 +560,7 @@ func derControlWithInterval(start int64, duration uint32, randomizeDuration, ran
 // that was cancelled rather than completed.
 //
 // Both editions are exercised even though only 2018 is served today
-// (servedEventEdition), for the reason GAGO-133 gave: an untested branch is
+// (servedEventEdition), for the reason supersession's design gave: an untested branch is
 // not a mechanism, it is a comment.
 func TestMarkEndedPerEdition(t *testing.T) {
 	t.Parallel()

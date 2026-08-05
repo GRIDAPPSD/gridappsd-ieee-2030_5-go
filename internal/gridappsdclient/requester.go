@@ -24,7 +24,7 @@ const requestContentType = "application/json"
 // The wrapped MessageBus must already be connected (the caller calls
 // bus.Connect before constructing a Requester); Requester performs no
 // dialing, TLS/plaintext selection, or reconnect logic of its own. That
-// wiring is GAGO-039's concern.
+// wiring is out of scope for this package.
 type Requester struct {
 	bus fieldbus.MessageBus
 }

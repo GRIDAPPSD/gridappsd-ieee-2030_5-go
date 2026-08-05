@@ -1,8 +1,8 @@
-// Health.svelte.test.ts exercises GAGO-061/GAGO-077's landing panel:
+// Health.svelte.test.ts exercises the landing panel:
 // the reachable/disconnected branches driven by /api/health, the
 // enriched field rendering (stompConnected, mtlsListener,
 // serverSfdi/Lfdi, feederMrid, simulationId, the registry tally,
-// uptimeSeconds), and GAGO-066's SOR link fail-closed scheme guard.
+// uptimeSeconds), and the SOR link fail-closed scheme guard.
 // Mocked at the fetchJSON boundary (src/lib/api.ts).
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/svelte'
@@ -95,7 +95,7 @@ describe('Health', () => {
     )
   })
 
-  it('renders the SOR link when sorLink is a valid https URL (GAGO-066)', async () => {
+  it('renders the SOR link when sorLink is a valid https URL', async () => {
     vi.spyOn(api, 'fetchJSON').mockResolvedValue({
       ok: true,
       data: healthPayload({ sorLink: 'https://sor.example.org/dashboard' }),
@@ -107,7 +107,7 @@ describe('Health', () => {
     expect(link).toHaveAttribute('href', 'https://sor.example.org/dashboard')
   })
 
-  it('renders the SOR link when sorLink is a valid http URL (GAGO-066)', async () => {
+  it('renders the SOR link when sorLink is a valid http URL', async () => {
     vi.spyOn(api, 'fetchJSON').mockResolvedValue({
       ok: true,
       data: healthPayload({ sorLink: 'http://sor.internal/dashboard' }),
@@ -128,7 +128,7 @@ describe('Health', () => {
     expect(screen.queryByTestId('sor-link')).toBeNull()
   })
 
-  it('renders NO href when sorLink carries a javascript: scheme (fail closed, GAGO-066)', async () => {
+  it('renders NO href when sorLink carries a javascript: scheme (fail closed)', async () => {
     vi.spyOn(api, 'fetchJSON').mockResolvedValue({
       ok: true,
       data: healthPayload({ sorLink: 'javascript:alert(1)' }),
@@ -140,7 +140,7 @@ describe('Health', () => {
     expect(screen.queryByTestId('sor-link')).toBeNull()
   })
 
-  it('renders NO href when sorLink carries a data: scheme (fail closed, GAGO-066)', async () => {
+  it('renders NO href when sorLink carries a data: scheme (fail closed)', async () => {
     vi.spyOn(api, 'fetchJSON').mockResolvedValue({
       ok: true,
       data: healthPayload({ sorLink: 'data:text/html,<script>alert(1)</script>' }),
@@ -152,7 +152,7 @@ describe('Health', () => {
     expect(screen.queryByTestId('sor-link')).toBeNull()
   })
 
-  it('renders NO href when sorLink is not a parseable URL at all (fail closed, GAGO-066)', async () => {
+  it('renders NO href when sorLink is not a parseable URL at all (fail closed)', async () => {
     vi.spyOn(api, 'fetchJSON').mockResolvedValue({
       ok: true,
       data: healthPayload({ sorLink: 'not a url' }),

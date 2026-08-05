@@ -207,8 +207,8 @@ func TestSeedStoresWrapsCreateErrorWithMRID(t *testing.T) {
 
 // TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil confirms
 // seedStores threads a non-nil modesSupported bitmap into every seeded
-// DERCapability, exactly (no truncation, no reinterpretation), per
-// GAGO-049. A battery-flavored registry.Entry (Name mentions "Battery")
+// DERCapability, exactly (no truncation, no reinterpretation). A
+// battery-flavored registry.Entry (Name mentions "Battery")
 // is included to exercise the tolerance that seeding a DERCapability
 // never requires or inspects any battery-specific rating (ratedE,
 // storedE): registry.Entry carries none of that, and this test is the
@@ -263,7 +263,7 @@ func TestSeedStoresStampsModesSupportedFromPolicyWhenNonNil(t *testing.T) {
 
 // TestSeedStoresStampsRTGMaxVarFromEntryMaxQ confirms seedOne builds
 // DERCapability.RTGMaxVar from registry.Entry.MaxQ (the CIM
-// PowerElectronicsConnection maxQ attribute) via computePowerOfTen (GAGO-083:
+// PowerElectronicsConnection maxQ attribute) via computePowerOfTen:
 // Value is now int16, so a real fleet's unscaled maxQ needs the multiplier
 // computed, not hardcoded at 0), asserting the exact scaled value and
 // multiplier plus the reconstructed effective VAr, and leaves RTGMaxVar nil
@@ -322,7 +322,7 @@ func TestSeedStoresStampsRTGMaxVarFromEntryMaxQ(t *testing.T) {
 // der.DERCapabilityLink onto the seeded DER so a client GETting the DER
 // can discover its capability resource, and that the link resolves to
 // the exact href the seeded DERCapability was created under (Dutch LOW
-// #1, GAGO-049 follow-up).
+// #1).
 func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 	t.Parallel()
 
@@ -363,7 +363,7 @@ func TestSeedStoresStampsDERCapabilityLinkOnDER(t *testing.T) {
 
 // TestSeedStoresStampsAllFourDERLinksOnDER confirms seedOne stamps all
 // four of DERCapabilityLink, DERSettingsLink, DERStatusLink, and
-// DERAvailabilityLink onto the seeded DER (GAGO-DERLINKS). Each is
+// DERAvailabilityLink onto the seeded DER. Each is
 // asserted against its exact expected href, not merely non-nil, per
 // [[data-invariants]] Rule 1.
 //
@@ -420,9 +420,9 @@ func TestSeedStoresStampsAllFourDERLinksOnDER(t *testing.T) {
 // asserting the returned struct's field values plus the reconstructed
 // effective VAr (not just non-nil), per [[data-invariants]]. Covers: nil
 // input (absent CIM binding), zero, a magnitude that fits int16 unscaled,
-// a realistic fleet magnitude that needs computePowerOfTen's scaling
-// (GAGO-083), the GAGO-068 negative-maxQ guard (Cyrus's GAGO-049 review
-// LOW finding), and the over-range refusal.
+// a realistic fleet magnitude that needs computePowerOfTen's scaling,
+// the negative-maxQ guard (Cyrus's review LOW finding), and the
+// over-range refusal.
 func TestBuildRTGMaxVar(t *testing.T) {
 	t.Parallel()
 
@@ -444,8 +444,8 @@ func TestBuildRTGMaxVar(t *testing.T) {
 		{name: "nil maxQ stays nil (absent CIM binding)", maxQ: nil, wantNil: true},
 		{name: "zero maxQ passes through unchanged", maxQ: &zeroMaxQ, wantVal: 0, wantMult: 0, wantRecon: 0},
 		{name: "small maxQ fits int16 without scaling", maxQ: &smallMaxQ, wantVal: 5000, wantMult: 0, wantRecon: 5000},
-		{name: "fleet maxQ needs computed multiplier (GAGO-083)", maxQ: &fleetMaxQ, wantVal: 25000, wantMult: 1, wantRecon: 250000},
-		{name: "negative maxQ is dropped to nil (GAGO-068 guard)", maxQ: &negMaxQ, wantNil: true},
+		{name: "fleet maxQ needs computed multiplier", maxQ: &fleetMaxQ, wantVal: 25000, wantMult: 1, wantRecon: 250000},
+		{name: "negative maxQ is dropped to nil (negative-maxQ guard)", maxQ: &negMaxQ, wantNil: true},
 		{name: "over-range maxQ is refused, not truncated", maxQ: &overRangeMaxQ, wantErr: true},
 	}
 
@@ -524,7 +524,7 @@ func TestBuildRTGMaxVarLogsNegativeMaxQWithDeviceID(t *testing.T) {
 // wired end-to-end through seedStores: a registry.Entry carrying a
 // negative MaxQ produces a seeded DERCapability with RTGMaxVar nil, the
 // same outcome as an absent MaxQ, rather than a wrong-sign rating
-// reaching the wire (GAGO-068).
+// reaching the wire.
 func TestSeedStoresDropsNegativeMaxQToNilRTGMaxVar(t *testing.T) {
 	t.Parallel()
 

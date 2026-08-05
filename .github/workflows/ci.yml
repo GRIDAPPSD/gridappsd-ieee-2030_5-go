@@ -3,9 +3,8 @@ name: CI
 # GitHub-hosted runners are acceptable here: both jobs are read-only
 # verification (build, vet, test, and a local frontend rebuild diffed
 # against the committed bundle), and neither job deploys, pushes to a
-# registry, or writes anything. See .claude/rules/devops.md "GitHub
-# Actions" in the Knowledge workspace for the posture this exception
-# follows. The build-and-test job does read one secret pair (the CI
+# registry, or writes anything: self-hosted runners are reserved for
+# deploy-bearing jobs. The build-and-test job does read one secret pair (the CI
 # GitHub App credentials) purely to resolve private module
 # dependencies; it is not an infrastructure credential and grants no
 # deploy reach.
@@ -39,7 +38,7 @@ jobs:
     name: Build, vet, and test
     runs-on: ubuntu-latest
     env:
-      # GAGO-079: required so `go` resolves github.com/GRIDAPPSD/* over
+      # Required so `go` resolves github.com/GRIDAPPSD/* over
       # the token-authenticated git insteadOf rewrite configured below,
       # instead of attempting an anonymous proxy.golang.org and
       # sum.golang.org lookup that cannot see a private repo. GOPRIVATE
@@ -53,7 +52,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Mint GitHub App installation token
-        # GAGO-079: this repo depends on two PRIVATE modules,
+        # This repo depends on two PRIVATE modules,
         # github.com/GRIDAPPSD/gridappsd-go and
         # github.com/GRIDAPPSD/ieee-2030_5-core-go, which the default
         # GITHUB_TOKEN cannot read (it is scoped to this repository
@@ -112,7 +111,7 @@ jobs:
             "https://github.com/GRIDAPPSD/"
 
       - name: Disable git background maintenance
-        # GAGO-079: prevents "fatal: shallow file has changed since we
+        # Prevents "fatal: shallow file has changed since we
         # read it", which failed the Build step of run 30384382776 once
         # per import site of the private core-go module.
         #

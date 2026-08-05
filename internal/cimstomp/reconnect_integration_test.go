@@ -54,7 +54,7 @@ drained:
 }
 
 // TestIntegration_Reconnect_RefreshesToken verifies the security
-// invariant from the GAGO-012 spec: every Reconnect refetches the auth
+// invariant: every Reconnect refetches the auth
 // token; reuse across reconnects is forbidden. The fakeServer rotates
 // the token it serves on each token-topic SEND so the assertion is
 // straightforward.
@@ -87,7 +87,7 @@ func TestIntegration_Reconnect_RefreshesToken(t *testing.T) {
 		t.Fatalf("token after Reconnect is empty")
 	}
 	if tokenA == tokenB {
-		t.Fatalf("token reused across Reconnect: %q (Reconnect must refetch per GAGO-012 security sub-requirement)", tokenA)
+		t.Fatalf("token reused across Reconnect: %q (Reconnect must refetch)", tokenA)
 	}
 }
 

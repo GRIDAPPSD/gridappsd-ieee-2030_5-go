@@ -1,4 +1,4 @@
-// Registry.svelte.test.ts exercises GAGO-062's registry table: exact
+// Registry.svelte.test.ts exercises the registry table: exact
 // field-value rendering per row, the placeholder-vs-certificate visual
 // distinction, and the empty state. Mocked at the fetchJSON boundary.
 import { describe, expect, it, vi } from 'vitest'

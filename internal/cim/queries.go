@@ -170,7 +170,7 @@ const (
     ORDER by ?name
     `
 
-	// sparqlQueryPECCount is the GAGO-051 discovery-count template. It
+	// sparqlQueryPECCount is the discovery-count template. It
 	// counts every PowerElectronicsConnection in the feeder using only
 	// the identity-plus-feeder-membership triples every PEC is
 	// guaranteed to carry (a c:PowerElectronicsConnection type triple
@@ -185,7 +185,7 @@ const (
 	// to detect. See bootstrapRegistry and pecCountLogLine in
 	// cmd/bridge/main.go for how the discovered-vs-projected comparison
 	// uses this count.
-	sparqlQueryPECCount = `# GAGO-051 discovery count
+	sparqlQueryPECCount = `# PEC discovery count
     PREFIX c:  <http://iec.ch/TC57/CIM100#>
     SELECT (COUNT(DISTINCT ?pec) as ?count) WHERE {
     VALUES ?fdrid {"%s"}
@@ -226,8 +226,8 @@ const (
     `
 )
 
-// feederIDPattern is an ALLOWLIST for the shape of a CIM feeder mRID
-// (GAGO-018): an optional single leading underscore, followed by 8 or
+// feederIDPattern is an ALLOWLIST for the shape of a CIM feeder mRID:
+// an optional single leading underscore, followed by 8 or
 // more hex digits and/or dashes. This matches both forms real call
 // sites produce: a bare uppercase UUID as stored by gridappsd-docker's
 // c:IdentifiedObject.mRID ("E407CBB6-8C8D-9BC9-589C-AB83FBF0826D") and
@@ -240,7 +240,7 @@ const (
 // (quotes, angle brackets, newlines, backslashes) and control bytes,
 // not enforcing a specific hex case.
 //
-// This supersedes the prior denylist (Leon GAGO-010 M1: reject C0
+// This supersedes the prior denylist (Leon M1: reject C0
 // control bytes; M2: reject the four SPARQL-syntax characters
 // explicitly). An allowlist subsumes both: every C0 control byte and
 // every one of "<>\n\r\ falls outside [0-9A-Fa-f-], so there is no
@@ -341,7 +341,7 @@ func (c *Client) QueryAllDERGroups(ctx context.Context, feederID string) (*Query
 	return c.queryFeederTemplate(ctx, sparqlQueryAllDERGroups, feederID)
 }
 
-// QueryPECCount runs the GAGO-051 discovery-count SPARQL against the
+// QueryPECCount runs the discovery-count SPARQL against the
 // powergrid-model service, scoped to feederID, and returns a single-row
 // result whose "count" binding is the number of distinct
 // PowerElectronicsConnection objects in the feeder, counted without any

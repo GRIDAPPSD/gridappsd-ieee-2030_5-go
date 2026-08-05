@@ -10,7 +10,6 @@
 // cimstomp package focused on the STOMP request/reply primitive while
 // CIM-shaped concerns evolve here independently.
 //
-// Wire format follows research-stomp-cim-catalog.md sections 2 and 3.
-// See plans/plan-1-design/ in the project knowledge for the source of
-// truth on envelopes and response shapes.
+// Wire format matches the GridAPPS-D platform's own STOMP request/reply
+// envelope and response shapes.
 package cim

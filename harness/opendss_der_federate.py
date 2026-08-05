@@ -1,4 +1,4 @@
-"""GAGO-044 HELICS federate: the OpenDSS DER physics.
+"""Sign loopback HELICS federate: the OpenDSS DER physics.
 
 This value federate is the grid physics end of the co-simulation. It
 subscribes to a commanded p/q setpoint published by the control shim

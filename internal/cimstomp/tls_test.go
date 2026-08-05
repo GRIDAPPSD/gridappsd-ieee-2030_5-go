@@ -7,7 +7,7 @@ import (
 
 // TestSTOMPConfig_TLSFieldNilByDefault locks in the backward-compatibility
 // contract: a freshly constructed STOMPConfig has no TLS configured, and
-// the nil sentinel is the documented signal for "use plain TCP" (GAGO-014).
+// the nil sentinel is the documented signal for "use plain TCP".
 func TestSTOMPConfig_TLSFieldNilByDefault(t *testing.T) {
 	cfg := STOMPConfig{Address: "127.0.0.1:61613", User: "u", Password: "p"}
 	if cfg.TLS != nil {

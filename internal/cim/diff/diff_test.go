@@ -213,7 +213,7 @@ func TestWithDifference_PanicsOnInvalid(t *testing.T) {
 }
 
 // failingReader is a test-only io.Reader that always fails, used to
-// exercise Message's crypto/rand failure path (GAGO-020) without
+// exercise Message's crypto/rand failure path without
 // depending on crypto/rand.Reader itself ever actually failing.
 type failingReader struct{}
 

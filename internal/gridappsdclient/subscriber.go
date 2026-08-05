@@ -18,7 +18,7 @@ import (
 const subscriptionMsgBuf = 16
 
 // unsubscribeTimeout bounds relay's shutdown call to bus.Unsubscribe. An
-// unresponsive broker must not stall teardown past SIGINT: see GAGO-041.
+// unresponsive broker must not stall teardown past SIGINT.
 const unsubscribeTimeout = 5 * time.Second
 
 // subscription adapts gridappsd-go's callback-based
@@ -59,7 +59,7 @@ var _ sim.Subscription = (*subscription)(nil)
 // Subscriber adapts a fieldbus.MessageBus to sim.SubscribeClient. The
 // wrapped MessageBus must already be connected (the caller calls
 // bus.Connect before constructing a Subscriber); Subscriber performs no
-// dialing of its own. That wiring is GAGO-039's concern.
+// dialing of its own. That wiring is out of scope for this package.
 type Subscriber struct {
 	bus fieldbus.MessageBus
 }
@@ -115,7 +115,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, destination string) (sim.Sub
 // relay is the sole owner and closer of sub.msgs. It forwards raw to
 // msgs with a blocking, ctx-guarded send until ctx is done, then
 // unsubscribes (bounded by unsubscribeTimeout so an unresponsive
-// broker cannot stall teardown past SIGINT, see GAGO-041), records an
+// broker cannot stall teardown past SIGINT), records an
 // error on sub (once: the Unsubscribe failure if there was one,
 // otherwise ctx.Err()), and closes msgs.
 //
@@ -135,12 +135,12 @@ func (s *Subscriber) Subscribe(ctx context.Context, destination string) (sim.Sub
 //
 // There is currently no broker-teardown signal surfaced by
 // gridappsd-go's router.Router to fieldbus.MessageBus callers (readLoop
-// only reports to an internal errSink; see gridappsd-go GAG-009).
+// only reports to an internal errSink; this is an upstream gap).
 // sub.Err() therefore only ever reports ctx.Err() or a bounded
 // Unsubscribe failure at shutdown, never a broker-side drop mid-stream,
 // unlike cimstomp.Subscription which can also report a wrapped
-// ErrConnectionLost. Revisit this comment and Err's doc once GAG-009
-// exposes an Errors() channel upstream.
+// ErrConnectionLost. Revisit this comment and Err's doc once upstream
+// exposes an Errors() channel.
 func (s *Subscriber) relay(ctx context.Context, dest string, tok fieldbus.Token, raw <-chan cimstomp.Message, sub *subscription) {
 	defer close(sub.msgs)
 
@@ -166,7 +166,7 @@ func (s *Subscriber) relay(ctx context.Context, dest string, tok fieldbus.Token,
 		// goroutine and race it against unsubCtx.Done() instead of
 		// waiting on the call directly. resultCh is buffered so the
 		// goroutine's send never blocks even after we've stopped
-		// waiting on it (GAGO-041 CRITICAL 2).
+		// waiting on it (CRITICAL 2).
 		resultCh := make(chan error, 1)
 		go func() {
 			resultCh <- s.bus.Unsubscribe(unsubCtx, dest, tok)

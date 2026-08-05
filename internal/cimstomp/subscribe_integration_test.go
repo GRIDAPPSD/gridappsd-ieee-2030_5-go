@@ -262,7 +262,7 @@ func TestIntegration_SubscribeNoGoroutineLeak(t *testing.T) {
 	}
 }
 
-// TestIntegration_SubscribeDropsOversizedFrame proves the GAGO-023
+// TestIntegration_SubscribeDropsOversizedFrame proves the
 // Leon M1 cap end to end over a live broker: a frame over the configured
 // cap is dropped (never delivered on Messages), while a frame under the
 // cap on the same subscription is delivered normally afterward. This

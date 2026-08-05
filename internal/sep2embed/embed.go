@@ -5,8 +5,6 @@
 // server-of-record: per Noor's 2026-07-02 assessment, the reusable
 // surface already lives in core, so no server-side promotion is
 // required to stand up a working embedded server.
-//
-// GAGO-030 builds this package; GAGO-031 wires it into cmd/bridge.
 package sep2embed
 
 import (
@@ -76,8 +74,8 @@ type Config struct {
 	NotifyWorkers   int
 	NotifyQueueSize int
 
-	// There is deliberately no bus, destination or simulation id here
-	// (GAGO-121). This package serves the IEEE 2030.5 protocol and owns
+	// There is deliberately no bus, destination or simulation id here.
+	// This package serves the IEEE 2030.5 protocol and owns
 	// the resource stores; it does not publish to the GridAPPS-D bus,
 	// because a protocol request must never cause a platform-side send.
 	// internal/telemetrypub reads DERStatusSnapshots on its own timer
@@ -119,8 +117,8 @@ type Config struct {
 	//
 	// The zero value is NOT serviceable. A zero Duration produces an event
 	// whose interval ends the instant it starts, which a conformant client
-	// expires on arrival without ever actuating; that is the defect GAGO-131
-	// fixed. ApplyControlDelta refuses it with ErrDERControlDurationUnset
+	// expires on arrival without ever actuating. ApplyControlDelta
+	// refuses it with ErrDERControlDurationUnset
 	// rather than writing the control, so an unconfigured bridge fails
 	// loudly at the first delta instead of serving controls that are
 	// silently discarded.
@@ -132,9 +130,9 @@ type Config struct {
 	// sep2config.SEP2Policy.ValidateDERControl at boot.
 	DERControl DERControlSeed
 
-	// ModesSupported is the DERControlType bitmap GAGO-049 stamps into
+	// ModesSupported is the DERControlType bitmap stamped into
 	// the DERCapability New seeds for every registry entry (see
-	// seedStores/seedOne). Typed as *sep2.DERControlType (IEEECORE-047),
+	// seedStores/seedOne). Typed as *sep2.DERControlType,
 	// matching sep2.DERCapability.ModesSupported's own field type
 	// exactly. Nil (the zero value) leaves every seeded
 	// DERCapability.ModesSupported nil: callers should source this from
@@ -189,7 +187,7 @@ type Config struct {
 	// at creation, inside core's handler.
 	ResolvePostRate func(lfdi string) (uint32, bool)
 
-	// Observer is the GAGO-090/GAGO-091 per-LFDI connection observer.
+	// Observer is the per-LFDI connection observer.
 	// Nil (the zero value) disables observation entirely: New falls back
 	// to delegating listener construction to sep2srv.New exactly as
 	// before, and buildHandler wires a nil-safe pass-through in place of
@@ -304,9 +302,8 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	// Observer wired: build the mTLS listener ourselves, with the
 	// additive handshake-observation wrapper (see mtls.go's doc comment
 	// for why core's sep2srv.New cannot be used for this path). Observer
-	// unset (the common case today: cmd/bridge only wires it once
-	// GAGO-091 lands): fall through unchanged to the pre-GAGO-090
-	// sep2srv.New path below.
+	// unset: fall through unchanged to the
+	// prior sep2srv.New path below.
 	if cfg.Observer != nil {
 		if cfg.EnableCCM {
 			return nil, errObserverRequiresGCM
@@ -375,7 +372,7 @@ func (e *Embed) Identity() sep2srv.Identity {
 }
 
 // ApplyControlDelta maps one GridAPPS-D control delta onto this Embed's
-// own resource stores and subscription notifier (GAGO-034 DOWN path).
+// own resource stores and subscription notifier (the DOWN path).
 // See the package-level ApplyControlDelta function for the full
 // contract (owner scoping, field mapping, supersede semantics); this
 // method is the entry point a caller holding an *Embed (rather than the
@@ -383,7 +380,7 @@ func (e *Embed) Identity() sep2srv.Identity {
 // GridAPPS-D control-delta subscriber in cmd/bridge.
 //
 // Controls whose maximum Effective Scheduled Period has already closed are
-// swept out BEFORE the delta is applied (GAGO-134). Sweeping here as well as
+// swept out BEFORE the delta is applied. Sweeping here as well as
 // on Run's timer is what keeps the exposure at a live delta cadence rather
 // than at controlSweepInterval, and it also keeps the supersession pass
 // honest: an event that is out of service is not a predecessor for the
@@ -461,7 +458,7 @@ func (e *Embed) EndedControl(mrid string) (EndedControl, bool) {
 // there is no goroutine left running on every path, not just the
 // ctx-cancel path.
 //
-// The DERControl lifecycle sweep (GAGO-134) runs on the same lifetime and
+// The DERControl lifecycle sweep runs on the same lifetime and
 // under the same discipline: it is started here, it is cancelled by the same
 // explicit cancel, and Run waits for it before returning, so no sweep is left
 // writing to the stores after the listener has stopped.

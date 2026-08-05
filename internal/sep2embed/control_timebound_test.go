@@ -13,8 +13,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
-// Wire-level tests for the bound on the same-second creationTime tie-break
-// (GAGO-137).
+// Wire-level tests for the bound on the same-second creationTime tie-break.
 //
 // WHAT THEY EXIST TO CATCH. The tie-break advances creationTime past a
 // same-mode control issued in the same second, because TimeType has one-second
@@ -92,8 +91,8 @@ func assertNoActiveEventStartsInTheFuture(t *testing.T, body []byte, wallUnix in
 	}
 }
 
-// TestSameSecondControlsAreNeverServedActiveWithAFutureStart is the wire half
-// of GAGO-137, and it is the half that reaches a client.
+// TestSameSecondControlsAreNeverServedActiveWithAFutureStart is the wire
+// half of the creationTime tie-break bound, and it is the half that reaches a client.
 //
 // Two deltas inside one wall-clock second are the case the creationTime
 // tie-break exists to handle: TimeType has one-second resolution
@@ -171,7 +170,8 @@ func TestSameSecondControlsAreNeverServedActiveWithAFutureStart(t *testing.T) {
 	}
 }
 
-// TestCreationTimeLeadIsBoundedAndDecays is the magnitude half of GAGO-137.
+// TestCreationTimeLeadIsBoundedAndDecays is the magnitude half of the
+// creationTime tie-break bound.
 //
 // The tie-break advances creationTime past a same-mode control issued in the
 // same second, which is right; it did so with no ceiling against the wall
@@ -200,7 +200,7 @@ func TestCreationTimeLeadIsBoundedAndDecays(t *testing.T) {
 	d := devices[0]
 	scope := derControlScope(d.edevID, controlFSAID, controlDERProgramID)
 
-	// Every value distinct, so the GAGO-136 change bound never applies and
+	// Every value distinct, so the change bound never applies and
 	// each delta genuinely asks for a new event. All of them land inside ONE
 	// wall second, which is the condition the tie-break absorbs.
 	absorbed := int(maxCreationTimeLeadSeconds) + 1
@@ -243,8 +243,8 @@ func TestCreationTimeLeadIsBoundedAndDecays(t *testing.T) {
 	}
 }
 
-// TestNewEventStatusEvaluatesWhetherTheEventHasStarted pins the status half of
-// GAGO-137 at the one site that decides it.
+// TestNewEventStatusEvaluatesWhetherTheEventHasStarted pins the status
+// half of the creationTime tie-break bound at the one site that decides it.
 //
 // newEventStatus used to hardcode Active on the strength of a property of a
 // DIFFERENT file: that control.go stamped interval.start at the wall clock.

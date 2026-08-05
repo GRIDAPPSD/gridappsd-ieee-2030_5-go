@@ -81,7 +81,7 @@ func waitFor(timeout time.Duration, check func() bool) {
 	}
 }
 
-// TestRunControlSubscriberAppliesDeltaToOwningDevice is the GAGO-034
+// TestRunControlSubscriberAppliesDeltaToOwningDevice is the
 // end-to-end wiring test: a diff.Message delivered on the control
 // subscriber's destination is decoded, and its single forward
 // difference is applied via embed.ApplyControlDelta, landing a real
@@ -182,7 +182,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	var hook controlobs.Hook
 	// The unsupervised gridappsdclient.Subscriber is deliberate here:
 	// this test covers control-delta decode and apply, not subscription
-	// health. GAGO-107's supervision is covered by the Supervisor tests
+	// health. Supervisor behavior is covered by the Supervisor tests
 	// in internal/gridappsdclient.
 	go func() {
 		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "sim-1", &hook)
@@ -225,7 +225,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	baseURL := "https://" + embed.Addr()
 
 	// Resource URLs address a device by its opaque server-assigned index
-	// rather than by its LFDI (IEEECORE-URLINDEX), so the {id} segment has to
+	// rather than by its LFDI, so the {id} segment has to
 	// be discovered rather than built from deviceLFDI. The EndDevices
 	// snapshot is the supported way out of this package: it carries the
 	// device's addressing ID alongside its identity LFDI.
@@ -272,7 +272,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 		t.Errorf("applied control OpModTargetW = %+v, want Value=4200", base)
 	}
 
-	// GAGO-057: the observation hook must have recorded this same delta
+	// The observation hook must have recorded this same delta
 	// as applied, with zero skips, since the delta is well formed and
 	// targets a real, registered device.
 	snap := hook.Snapshot()

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Registry renders GAGO-062's mRID <-> LFDI/SFDI/Name table from
+  // Registry renders the mRID <-> LFDI/SFDI/Name table from
   // GET /api/registry (internal/adminui/handlers.go's handleRegistry,
   // registryEntryResponse). Placeholder is a first class column with
   // its own visual treatment (a badge plus a row class), never a

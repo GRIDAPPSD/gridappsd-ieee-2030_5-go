@@ -1,4 +1,4 @@
-// ServedResources.svelte.test.ts exercises GAGO-064/GAGO-077: exact
+// ServedResources.svelte.test.ts exercises exact
 // field-value rendering for served EndDevices+DERs and DERPrograms,
 // plus the DefaultDERControl column now rendering the real
 // defaultDerControlLink value (present shows the link, absent shows
@@ -60,7 +60,7 @@ describe('ServedResources', () => {
     )
   })
 
-  it('shows the DefaultDERControl column with the real link value when present (GAGO-077)', async () => {
+  it('shows the DefaultDERControl column with the real link value when present', async () => {
     vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
       if (path === '/api/served/edev') return { ok: true, data: [] }
       return {
@@ -85,7 +85,7 @@ describe('ServedResources', () => {
     expect(cell).toHaveTextContent('/edev/edev-1/fsa/1/derp/1/dderc')
   })
 
-  it('shows the DefaultDERControl column as absent when defaultDerControlLink is empty (GAGO-077)', async () => {
+  it('shows the DefaultDERControl column as absent when defaultDerControlLink is empty', async () => {
     vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
       if (path === '/api/served/edev') return { ok: true, data: [] }
       return {

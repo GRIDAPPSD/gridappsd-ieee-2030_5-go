@@ -1,13 +1,13 @@
 <script lang="ts">
-  // ConnectedClients renders GAGO-092's operator view over GAGO-090's
-  // per-LFDI connection observer and GAGO-091's mTLS handshake log,
+  // ConnectedClients renders the operator view over the
+  // per-LFDI connection observer and the mTLS handshake log,
   // both served from GET /api/clients (handlers.go's handleClients,
   // clientsResponse). Read only: this panel has no form, no button, no
   // mutating fetch call.
   //
-  // The served-vs-connected distinction (this card's third
-  // requirement) is built by cross-referencing the already-existing
-  // GET /api/served/edev roster (GAGO-064, also used by
+  // The served-vs-connected distinction is built by cross-referencing
+  // the already-existing
+  // GET /api/served/edev roster (also used by
   // ServedResources.svelte) against the /api/clients snapshot by LFDI:
   // a served EndDevice whose LFDI never appears in clients.Clients has
   // never issued an authenticated request, and reads as "never

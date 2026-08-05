@@ -12,8 +12,8 @@ import (
 )
 
 func TestLoadConfigDefaults(t *testing.T) {
-	// t.Setenv(key, "") clears each override for this test (GAGO-028
-	// Dutch L3), not because t.Setenv treats an empty value specially,
+	// t.Setenv(key, "") clears each override for this test (Dutch
+	// L3), not because t.Setenv treats an empty value specially,
 	// but because loadConfig itself reads os.Getenv and branches on
 	// `== ""` to decide "not set" (see e.g. getenvList in config.go):
 	// there is no distinction in this codebase between "unset" and "set
@@ -113,7 +113,7 @@ func TestLoadConfigSEP2DeviceCertModeRejectsUnknownValue(t *testing.T) {
 
 // TestLoadConfigSEP2ServerAddrDefaultsToLoopback verifies the embedded
 // IEEE 2030.5 listener's default bind host is a loopback address. The
-// embed has no per-device ACL yet (GAGO-043 follow-up), so a default
+// embed has no per-device ACL yet, so a default
 // that is reachable off-box would silently widen the exposure of that
 // unfinished access-control story; only an explicit override should do
 // that. See config.SEP2ServerAddr's doc comment.
@@ -410,7 +410,7 @@ func TestLoadConfigCredentialPrecedence(t *testing.T) {
 	})
 }
 
-// TestLoadConfigSEP2AdminUIDisabledByDefault is the GAGO-058 "admin UI
+// TestLoadConfigSEP2AdminUIDisabledByDefault is the "admin UI
 // disabled by default" acceptance test at the config layer: with no
 // SEP2_ADMIN_UI_KEY override, the resolved key is empty (the intentional
 // disabled state adminui.New's ErrDisabled contract reads), the addr
@@ -451,7 +451,7 @@ func TestLoadConfigSEP2AdminUIDisabledByDefault(t *testing.T) {
 	}
 }
 
-// TestLoadConfigSEP2AdminUISORLinkReadsThrough is the GAGO-075 positive
+// TestLoadConfigSEP2AdminUISORLinkReadsThrough is the positive
 // value acceptance test at the config layer: an operator supplied
 // SEP2_ADMIN_UI_SOR_LINK value passes through loadConfig unchanged, with
 // no transformation and no validation error, mirroring
@@ -637,7 +637,7 @@ func TestLoadConfigSEP2AdminUIKeyNotRequiredByValidate(t *testing.T) {
 }
 
 // TestLoadConfigVersionFlagReturnsBeforeValidate locks in -version as a
-// pure query flag (GAGO-036): loadConfig must return
+// pure query flag: loadConfig must return
 // errVersionRequested even when every other required field is left
 // unset (SEP2_STOMP_ADDR, SEP2_FEEDER_MRID, etc. all empty, which would
 // otherwise fail config.validate). If -version ever regressed to run
@@ -657,7 +657,7 @@ func TestLoadConfigVersionFlagReturnsBeforeValidate(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRegistrationPINUnsetByDefault is the GAGO-PIN no-op
+// TestLoadConfigRegistrationPINUnsetByDefault is the no-op
 // contract for an operator who never passes either PIN flag: neither
 // SEP2RegistrationPIN nor SEP2RegistrationPINs is populated, so
 // buildSEP2Policy in main.go leaves sep2config.DefaultPolicy()'s own

@@ -9,12 +9,11 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 )
 
-// Wire-level tests for the CHANGE bound on the delta-application path
-// (GAGO-136).
+// Wire-level tests for the CHANGE bound on the delta-application path.
 //
-// WHAT THEY EXIST TO CATCH. GAGO-133 made every delta mint its own event and
-// GAGO-134 bounded the resulting collection in TIME. Neither bounded it in
-// SIZE, because nothing compared an incoming delta against the control already
+// WHAT THEY EXIST TO CATCH. Every delta mints its own event, and a
+// separate time bound bounds the resulting collection in TIME. Neither
+// bounded it in SIZE, because nothing compared an incoming delta against the control already
 // in force: a platform restating an unchanged setpoint every timestep minted
 // one event per timestep. The store's own ErrAlreadyExists dedup could not
 // catch it, because the creation instant is an input to both the mRID and the
@@ -56,12 +55,12 @@ func targetWElement(value int) string {
 	return fmt.Sprintf(`<opModTargetW><multiplier>0</multiplier><value>%d</value></opModTargetW>`, value)
 }
 
-// TestRestatedControlDeltaDoesNotMintASecondEvent is the wire-level statement
-// of GAGO-136.
+// TestRestatedControlDeltaDoesNotMintASecondEvent is the wire-level
+// statement of the change bound.
 //
 // A platform that restates the SAME setpoint every timestep is the likely
 // production cadence, and every restatement used to mint its own DERControl.
-// The bound GAGO-134 added is a bound in time, not in size: at one delta per
+// The time bound is a bound in time, not in size: at one delta per
 // second against the shipped 1800-second window it caps the collection at 1800
 // resident controls per device rather than at one.
 //
@@ -121,11 +120,11 @@ func TestRestatedControlDeltaDoesNotMintASecondEvent(t *testing.T) {
 }
 
 // TestChangedSetpointStillMintsAfterRestatements is the guard that keeps
-// GAGO-136's change bound from swallowing a real change.
+// the change bound from swallowing a real change.
 //
 // The sequence is the production one: a setpoint restated, then changed, then
 // restated again. The change MUST still issue its own event and supersede the
-// one before it (GAGO-133), and the restatements on either side of it must
+// one before it, and the restatements on either side of it must
 // still mint nothing.
 func TestChangedSetpointStillMintsAfterRestatements(t *testing.T) {
 	t.Parallel()

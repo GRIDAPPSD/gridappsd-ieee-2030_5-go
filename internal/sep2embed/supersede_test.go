@@ -427,10 +427,10 @@ func TestServedEventEditionIsPinnedTo2018(t *testing.T) {
 // (sep.xsd:6382), and the client comparison is strictly greater. Two deltas
 // for one device inside one second would otherwise produce two controls
 // neither of which supersedes the other, and the client would keep running
-// the older one: GAGO-133's defect arriving through the clock instead of
+// the older one: the same defect class arriving through the clock instead of
 // through the mRID.
 //
-// The refusal cases are GAGO-137. The advance was unbounded, so a sustained
+// The refusal cases guard the lead bound. The advance was unbounded, so a sustained
 // same-mode delta rate above one per second drifted the stamp forward with no
 // ceiling and no decay. The bound is stated in maxCreationTimeLeadSeconds and
 // the excess is refused rather than clamped, because a clamped stamp equals

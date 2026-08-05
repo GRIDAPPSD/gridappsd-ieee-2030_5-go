@@ -16,7 +16,7 @@ import (
 
 const testKey = "test-admin-token"
 
-// TestHandleHealthReturnsAllEnrichedFieldValues is the GAGO-074
+// TestHandleHealthReturnsAllEnrichedFieldValues is the
 // field-value test for /api/health: every enriched field must round
 // trip through JSON exactly, sourced from the injected registry,
 // identity, and STOMP fakes plus the Server's own Config, per
@@ -96,7 +96,7 @@ func TestHandleHealthReturnsAllEnrichedFieldValues(t *testing.T) {
 	}
 }
 
-// TestHandleHealthSORLinkEmptyStringWhenUnset locks in the GAGO-075
+// TestHandleHealthSORLinkEmptyStringWhenUnset locks in the
 // serialization contract chosen for SORLink: the field is always
 // present in the JSON body, serialized as an empty string, never
 // omitted, when Config.SORLink is unset. This mirrors
@@ -113,7 +113,7 @@ func TestHandleHealthSORLinkEmptyStringWhenUnset(t *testing.T) {
 	}
 }
 
-// TestHandleRegistryReturnsExactEntryFieldValues is the GAGO-059
+// TestHandleRegistryReturnsExactEntryFieldValues is the
 // field-value test for /api/registry: every field of every registry
 // entry must round trip through JSON exactly, per data-invariants
 // (assert field values, not just non-nil / non-crash).
@@ -182,7 +182,7 @@ func TestHandleServedEndDevicesReturnsExactFieldValues(t *testing.T) {
 
 // TestHandleDERsFlattensDERsWithOwningEndDeviceID asserts /api/ders
 // reports each DER's own field values alongside its owning device's ID
-// and the bridge's own configured FeederMRID (GAGO-074), stamped onto
+// and the bridge's own configured FeederMRID, stamped onto
 // every entry. FeederMRID is set to a real, non-empty value here
 // (rather than the zero-value Config a plain newTestServer would give)
 // so this test actually proves the field passes through from
@@ -228,7 +228,7 @@ func TestHandleDERsFlattensDERsWithOwningEndDeviceID(t *testing.T) {
 // correctly, with the owning device's ID attached, and every
 // DERProgramSnapshot field preserved exactly, including Primacy (a
 // numeric field easy to accidentally drop or zero during a JSON
-// round trip) and DefaultDERControlLink (GAGO-074's CSIP-critical
+// round trip) and DefaultDERControlLink (the CSIP-critical
 // addition), seeded here to a distinct, non-empty value per device so
 // this test actually proves the field round trips rather than both
 // sides vacuously defaulting to empty.
@@ -344,7 +344,7 @@ func TestHandleControlFlowOmitsLastWhenNil(t *testing.T) {
 	}
 }
 
-// TestHandleClientsReturnsExactSnapshotFieldValues is the GAGO-091
+// TestHandleClientsReturnsExactSnapshotFieldValues is the
 // field-value test for /api/clients: every field on both the clients
 // array and the handshakes array must round trip through JSON exactly,
 // sourced from the injected connobs.Snapshot, per data-invariants
@@ -447,7 +447,7 @@ func TestHandleClientsReturnsEmptyArraysNotNullWhenNoState(t *testing.T) {
 	}
 }
 
-// TestNoResponseBodyEverContainsTheAdminToken is the CRITICAL GAGO-059
+// TestNoResponseBodyEverContainsTheAdminToken is the CRITICAL
 // no-secret acceptance test: it drives every registered endpoint with a
 // realistic, populated set of fakes, then asserts the admin Bearer
 // token string never appears anywhere in any response body. This is

@@ -1,5 +1,5 @@
 # Regenerable co-simulation artifacts: the bridge capture is produced by
-# the Go test TestGAGO044CaptureBridgeSetpoints, the result blob by
+# the Go test TestSignLoopbackCaptureBridgeSetpoints, the result blob by
 # run_federation.py. The harness code, README, and requirements.txt stay
 # tracked; only these generated outputs are ignored so a plain
 # git add harness/ cannot accidentally commit regenerable output.

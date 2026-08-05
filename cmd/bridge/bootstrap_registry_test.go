@@ -44,7 +44,7 @@ func (m *mockCIMRequester) Request(_ context.Context, _ string, _ []byte) ([]byt
 // internal/cim.QueryDataResult.Results.Bindings decodes into. maxQ is
 // omitted (OPTIONAL binding absent), matching the current threeDevice*
 // fixtures' scope; see deviceBindingWithMaxQ for a row that carries it.
-// pecid is set equal to mrid: GAGO-104 anchors device identity on
+// pecid is set equal to mrid: device identity is anchored on
 // ?pecid, so these fixtures (which are not exercising the
 // unit-vs-PEC-identity split; see
 // TestBootstrapRegistryCollapsesUnitAndPECIdentityToOnePEC for that)
@@ -94,7 +94,7 @@ func threeDeviceEnvelope(t *testing.T) []byte {
 
 // pecUnitBinding builds a single SPARQL binding row with independently
 // controllable ?id (the COALESCE(unitID, pecid) result) and ?pecid
-// bindings, exercising GAGO-104's device-identity-anchoring fix
+// bindings, exercising the device-identity-anchoring fix
 // directly: two rows sharing the same pecid but carrying different id
 // values must still dedupe to one device once identity is anchored on
 // ?pecid.
@@ -127,14 +127,14 @@ func singleRowEnvelope(t *testing.T, row map[string]any) []byte {
 
 // kindRoutedMockCIMRequester discriminates between the four SPARQL
 // templates bootstrapRegistry issues (inverter, solar, battery, and the
-// GAGO-051 discovery count) by inspecting the request body for each
+// discovery count) by inspecting the request body for each
 // template's distinctive substring (matching the discrimination
 // approach routedMockCIMRequester in empty_fleet_guard_test.go already
 // uses for the count-vs-device split), and returns an independently
 // controllable canned envelope for each. Unlike mockCIMRequester's
 // single canned response, this lets a test drive a scenario where the
 // SAME PowerElectronicsConnection surfaces under a different ?id
-// binding depending on which query produced the row (GAGO-104's
+// binding depending on which query produced the row (the
 // diagnosed failure mode): the inverter and solar templates' OPTIONAL
 // Unit blocks bind a PhotovoltaicUnit and yield its mRID, while the
 // battery template's BatteryUnit type filter never matches that same
@@ -163,8 +163,8 @@ func (m *kindRoutedMockCIMRequester) Request(_ context.Context, _ string, body [
 	return out, nil
 }
 
-// TestBootstrapRegistryAnchorsIdentityOnPECNotUnit is the GAGO-104 core
-// regression. A single PowerElectronicsConnection ("PEC-MRID-1") with a
+// TestBootstrapRegistryAnchorsIdentityOnPECNotUnit is the core PEC
+// identity-anchoring regression test. A single PowerElectronicsConnection ("PEC-MRID-1") with a
 // bound child PhotovoltaicUnit ("UNIT-MRID-1") surfaces:
 //
 //   - a unit-mRID identity from the inverter and solar queries, whose
@@ -174,7 +174,7 @@ func (m *kindRoutedMockCIMRequester) Request(_ context.Context, _ string, body [
 //     type filter never matches a PhotovoltaicUnit, so its OPTIONAL
 //     never binds and COALESCE falls back to ?pecid.
 //
-// Before GAGO-104, dedupe keyed on that ?id value, so this ONE physical
+// Before this fix, dedupe keyed on that ?id value, so this ONE physical
 // converter dedupe-collapsed to TWO registry entries (this is the exact
 // shape of the live-run defect: 9 PECs minted 18 devices). After the
 // fix, dedupe is keyed on ?pecid for every row regardless of which
@@ -209,7 +209,7 @@ func TestBootstrapRegistryAnchorsIdentityOnPECNotUnit(t *testing.T) {
 	}
 
 	if got := reg.Len(); got != 1 {
-		t.Fatalf("registry.Len() = %d, want 1 (one PEC surfaced under a unit identity from inverter/solar and a pecid identity from battery; GAGO-104 requires these to dedupe to one device)", got)
+		t.Fatalf("registry.Len() = %d, want 1 (one PEC surfaced under a unit identity from inverter/solar and a pecid identity from battery; identity anchoring requires these to dedupe to one device)", got)
 	}
 
 	entry, ok := reg.Get(pecMRID)
@@ -224,12 +224,12 @@ func TestBootstrapRegistryAnchorsIdentityOnPECNotUnit(t *testing.T) {
 	}
 
 	if _, ok := reg.Get(unitMRID); ok {
-		t.Errorf("registry has a spurious entry keyed on the child PowerElectronicsUnit's mRID %q; GAGO-104 requires identity to be PEC-anchored only", unitMRID)
+		t.Errorf("registry has a spurious entry keyed on the child PowerElectronicsUnit's mRID %q; identity must be PEC-anchored only", unitMRID)
 	}
 
 	logged := buf.String()
 	if strings.Contains(logged, "bridge: WARNING") {
-		t.Errorf("discovered(1) == projected(1) after the GAGO-104 fix; want no WARNING, got:\n%s", logged)
+		t.Errorf("discovered(1) == projected(1) after the identity-anchoring fix; want no WARNING, got:\n%s", logged)
 	}
 	if !strings.Contains(logged, "no drops") {
 		t.Errorf("expected the discover-vs-project log line to confirm the match; got:\n%s", logged)
@@ -237,7 +237,7 @@ func TestBootstrapRegistryAnchorsIdentityOnPECNotUnit(t *testing.T) {
 }
 
 // TestQueryDevicesAnchorsMRIDOnPECIDAndPreservesUnitMRID is the
-// GAGO-104 unit-level VALUE assertion at the queryDevices layer:
+// unit-level VALUE assertion at the queryDevices layer:
 // cimDevice.MRID must come from ?pecid (the PowerElectronicsConnection's
 // own mRID), and the ?id binding queries.go COALESCEs (the unit mRID
 // when a child Unit bound, the pecid again when it did not) must
@@ -269,16 +269,16 @@ func TestQueryDevicesAnchorsMRIDOnPECIDAndPreservesUnitMRID(t *testing.T) {
 
 	got := devices[0]
 	if got.MRID != "PEC-MRID-1" {
-		t.Errorf("devices[0].MRID = %q, want %q (the PowerElectronicsConnection's own mRID, GAGO-104)", got.MRID, "PEC-MRID-1")
+		t.Errorf("devices[0].MRID = %q, want %q (the PowerElectronicsConnection's own mRID)", got.MRID, "PEC-MRID-1")
 	}
 	if got.UnitMRID != "UNIT-MRID-1" {
 		t.Errorf("devices[0].UnitMRID = %q, want %q (the ?id COALESCE result, preserved not discarded)", got.UnitMRID, "UNIT-MRID-1")
 	}
 }
 
-// TestQueryDevicesSkipsRowsWithEmptyPECID confirms the GAGO-104 skip
-// condition moved from ?id to ?pecid: a row whose ?pecid binding is
-// missing or empty is skipped, matching the pre-GAGO-104 behavior of
+// TestQueryDevicesSkipsRowsWithEmptyPECID confirms the skip
+// condition is on ?pecid, not ?id: a row whose ?pecid binding is
+// missing or empty is skipped, matching the prior behavior of
 // skipping rows with a missing identity binding (previously ?id).
 func TestQueryDevicesSkipsRowsWithEmptyPECID(t *testing.T) {
 	t.Parallel()
@@ -315,7 +315,7 @@ func TestQueryDevicesSkipsRowsWithEmptyPECID(t *testing.T) {
 }
 
 // TestQueryDevicesBatteryPathStillAnchorsOnPECWhenBatteryUnitBound
-// confirms GAGO-104 does not regress a feeder that genuinely has
+// confirms PEC-identity anchoring does not regress a feeder that genuinely has
 // BatteryUnit children: when the battery query's BatteryUnit type
 // filter DOES match (unlike the PV-only-feeder case exercised by
 // TestBootstrapRegistryAnchorsIdentityOnPECNotUnit, where it never
@@ -391,7 +391,7 @@ func TestBootstrapRegistryDerivesRealCertBackedIdentities(t *testing.T) {
 			t.Fatalf("registry missing entry for mRID %q", mrid)
 		}
 		if entry.Placeholder {
-			t.Errorf("mRID %q: Placeholder = true, want false (GAGO-033 retires the placeholder path)", mrid)
+			t.Errorf("mRID %q: Placeholder = true, want false (certificate-derived identity retires the placeholder path)", mrid)
 		}
 
 		certFile := deviceCertFileForTest(t, certDir, mrid)
@@ -551,7 +551,7 @@ func TestQueryDevicesRejectsMalformedMaxQ(t *testing.T) {
 	}
 }
 
-// TestQueryDevicesParsesFloatMaxQ is the GAGO-082 regression: live
+// TestQueryDevicesParsesFloatMaxQ is a regression test: live
 // CIMHub CIM100 stores PowerElectronicsConnection.maxQ as a
 // float-lexical string ("125000.0", not "125000"), and this bridge
 // used to reject every such binding with strconv.ParseInt's "invalid

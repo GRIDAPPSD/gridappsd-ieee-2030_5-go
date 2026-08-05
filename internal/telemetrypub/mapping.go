@@ -8,8 +8,8 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 )
 
-// This file moved here from internal/sep2embed/telemetry.go unchanged
-// (GAGO-121). The mapping itself is deliberately untouched: only its
+// This file moved here from internal/sep2embed/telemetry.go unchanged.
+// The mapping itself is deliberately untouched: only its
 // home moved, so that the embedded IEEE 2030.5 server carries no
 // GridAPPS-D wire-shape code at all and the whole projection from
 // protocol resource to platform message lives in one package.
@@ -24,7 +24,7 @@ import (
 const derStatusAttributePrefix = "DERStatus."
 
 // derStatusStateOfChargeAttribute names the stateOfChargeStatus
-// difference. Reversed from the GAGO-110 raw-passthrough choice: this
+// difference. Reversed from an earlier raw-passthrough choice: this
 // field publishes a SCALED value, in percent, under the plain sep.xsd
 // element name, and every other mapped field keeps publishing raw.
 //
@@ -41,9 +41,9 @@ const derStatusAttributePrefix = "DERStatus."
 //
 // Integer division would have been the wrong way to convert (it silently
 // discards the two fractional digits the type exists to carry), which is
-// why GAGO-110 rejected conversion outright and published the raw
-// hundredths-of-a-percent integer instead, named accordingly. A float64
-// division is not lossy the same way: it carries the fractional digits,
+// why the original design rejected conversion outright and published
+// the raw hundredths-of-a-percent integer instead, named accordingly.
+// A float64 division is not lossy the same way: it carries the fractional digits,
 // and diff.Difference.Value is already `any`, so no plumbing changes.
 // 6500 (hundredths of a percent) becomes 65.0 (percent) here.
 const derStatusStateOfChargeAttribute = derStatusAttributePrefix + "stateOfChargeStatus"
@@ -60,9 +60,10 @@ const derStatusStateOfChargePerCentScale = 100.0
 //
 // Coverage: every field core's sep2.DERStatus models is mapped
 // (readingTime, genConnectStatus, inverterStatus, operationalModeStatus,
-// stateOfChargeStatus, storageModeStatus, alarmStatus). Before GAGO-110
-// only the middle three of those existed here, which made a DERStatus
-// populating none of them a total silent no-op: the publish path's
+// stateOfChargeStatus, storageModeStatus, alarmStatus). Before this
+// mapping's coverage was extended, only the middle three of those
+// existed here, which made a DERStatus populating none of them a
+// total silent no-op: the publish path's
 // empty-slice short-circuit returned nil with nothing published and
 // nothing logged. That was not theoretical: the EPRI client sends
 // readingTime plus stateOfChargeStatus and nothing else, so e2e run 10
@@ -76,7 +77,7 @@ const derStatusStateOfChargePerCentScale = 100.0
 // separately. This mapping is complete with respect to core, not with
 // respect to sep.xsd.
 //
-// Field order: the three pre-GAGO-110 attributes keep their exact
+// Field order: the three original attributes keep their exact
 // relative order at the head of the slice, ahead of the four added here,
 // rather than being re-sorted into sep.xsd sequence order. The order is
 // observable in the published forward_differences array, so preserving
@@ -118,20 +119,19 @@ const derStatusStateOfChargePerCentScale = 100.0
 // silently reusing diff.Builder's undo-oriented contract without
 // comment.
 //
-// Raw passthrough, unbounded (Leon LOW, GAGO-034 PR #9 review): every
+// Raw passthrough, unbounded (Leon LOW, PR #9 review): every
 // value below is carried through exactly as the device reported it, at
 // its full wire type range (genConnectStatus is sep2.HexBinary8,
 // alarmStatus is sep2.HexBinary32; operationalModeStatus,
 // inverterStatus and storageModeStatus are plain uint8; readingTime is
-// int64; IEEECORE-047 moved genConnectStatus and alarmStatus onto the
+// int64; genConnectStatus and alarmStatus moved onto the
 // hexBinary family, operationalModeStatus was and stays a plain UInt8
 // per sep.xsd), with no plausibility or range check against what a real
 // device could sanely report. stateOfChargeStatus is the one exception:
 // its wire type (PerCent, sep.xsd:5945-5952) fixes its scale by
 // definition, so it is published scaled to percent rather than raw; see
 // derStatusStateOfChargeAttribute's doc comment. This is a deliberate
-// discovery-stage choice (GAGO-046 tracks the enum/bitmap passthrough
-// broadly), not an oversight: these are device-SUPPLIED values from an
+// discovery-stage choice, not an oversight: these are device-SUPPLIED values from an
 // already ACL-scoped, mTLS-authenticated caller, so an out-of-range
 // value is a malfunctioning-or-malicious device signal worth seeing
 // unmodified on the bus rather than silently clamped. Adding a runtime
@@ -167,7 +167,7 @@ func MapDERStatusToDifferences(mrid string, status sep2.DERStatus) ([]diff.Diffe
 		})
 	}
 
-	// Fields added by GAGO-110, appended after the three above so the
+	// Fields added later, appended after the three above so the
 	// pre-existing output stays byte-identical. See the doc comment for
 	// why readingTime's guard is a zero check rather than a nil check,
 	// and for the units and dateTime decisions.

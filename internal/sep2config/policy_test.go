@@ -104,8 +104,7 @@ func TestDefaultPolicy_EverythingElseUnset(t *testing.T) {
 
 // TestDefaultPolicy_ModesAndRatesUnset asserts the remaining SEP2Policy
 // fields default to nil (unset): ModesSupported and the poll/post rates
-// have no spec-sane compiled-in default yet (GAGO-049 and any future
-// FSA-seeding card own supplying real values). Pointer-typed to match the
+// have no spec-sane compiled-in default yet. Pointer-typed to match the
 // core convention, so nil (not a real 0) is the unset sentinel.
 func TestDefaultPolicy_ModesAndRatesUnset(t *testing.T) {
 	t.Parallel()

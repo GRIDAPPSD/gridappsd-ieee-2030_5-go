@@ -45,9 +45,9 @@ func TestSetTopicsRecordsExactStrings(t *testing.T) {
 }
 
 // TestAppliedRecordsCounterAndLastDeltaFieldValues drives one synthetic
-// delta through Applied and asserts the recorded snapshot values, per the
-// GAGO-057 acceptance criteria: "a synthetic delta drives the hook, a
-// unit test asserts the recorded snapshot values."
+// delta through Applied and asserts the recorded snapshot values: a
+// synthetic delta drives the hook, a unit test asserts the recorded
+// snapshot values.
 func TestAppliedRecordsCounterAndLastDeltaFieldValues(t *testing.T) {
 	t.Parallel()
 

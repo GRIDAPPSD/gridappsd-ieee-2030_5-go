@@ -29,7 +29,6 @@ const tokenTopic = "/topic/pnnl.goss.token.topic"
 // gossHasSubjectHeader and gossSubjectHeader are the GridAPPS-D-specific
 // headers that every request SEND must carry. They are not part of the
 // STOMP spec; without them the broker rejects or filters our SENDs.
-// See: plans/plan-1-design/research-stomp-cim-catalog.md sections 2 and 7.
 const (
 	gossHasSubjectHeader = "GOSS_HAS_SUBJECT"
 	gossSubjectHeader    = "GOSS_SUBJECT"
@@ -85,7 +84,7 @@ const unsubscribeGrace = 2 * time.Second
 // transport-level errors (go-stomp ErrAlreadyClosed,
 // ErrClosedUnexpectedly, io.EOF, net.ErrClosed) as ErrConnectionLost so
 // callers can errors.Is and call Reconnect. Passive heartbeat-driven
-// reconnection is a future enhancement; see GAGO-012 follow-ups.
+// reconnection is a future enhancement.
 type Client struct {
 	cfg STOMPConfig
 
@@ -110,13 +109,13 @@ func NewClient(cfg STOMPConfig) *Client {
 // Connect should be called at most once per Client; calling it twice on
 // a Client that has not been Closed is a programmer error and is not
 // guarded against here. To reconnect after a transport failure, use
-// Reconnect (GAGO-012).
+// Reconnect.
 //
 // TOCTOU: Connect's outer closed.Load() is a fast-path early return.
 // The authoritative check happens under c.mu after the dial completes:
 // if Close ran while we were dialing, the just-dialed conn is closed
 // and ErrClosed is returned. The Client never settles into "closed=true
-// with a live conn" (Leon GAGO-013 review M-1).
+// with a live conn" (Leon review M-1).
 func (c *Client) Connect(ctx context.Context) error {
 	if c.closed.Load() {
 		return ErrClosed
@@ -161,12 +160,11 @@ func (c *Client) Connect(ctx context.Context) error {
 // c.cfg is snapshotted (a full struct copy) into a local under c.mu
 // before any lock-free work begins, and every subsequent use in this
 // function reads the local, not c.cfg. Close zeroes c.cfg.Password
-// under c.mu (GAGO-015); without this snapshot, the lock-free dial
+// under c.mu; without this snapshot, the lock-free dial
 // section below would race that write every time a Connect or
 // Reconnect overlaps a Close, because a bare `c.cfg` reference (even
 // one only used to pass the struct by value to another function)
-// touches every field, Password included (GAGO-015 follow-up,
-// Leon/Dutch race finding on the polish sweep).
+// touches every field, Password included (Leon/Dutch race finding).
 func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, error) {
 	c.mu.Lock()
 	cfg := c.cfg
@@ -177,7 +175,7 @@ func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, err
 	// net.DialContext to honor ctx, then hand the live conn to
 	// stomp.ConnectWithContext which observes ctx for the STOMP handshake.
 	// When cfg.TLS is non-nil, wrap the TCP connection with crypto/tls
-	// before handing it to stomp.ConnectWithContext (GAGO-014).
+	// before handing it to stomp.ConnectWithContext.
 	tcp, err := dialSTOMPTransport(ctx, cfg)
 	if err != nil {
 		return nil, "", err
@@ -187,8 +185,9 @@ func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, err
 	// one every `heartbeat`, and we request NONE inbound (the second
 	// argument is 0).
 	//
-	// A symmetric request is what GAGO-107 traced the bridge's 15-second
-	// silent bus death to. go-stomp floors its negotiated read timeout at
+	// Tracing the bridge's 15-second silent bus death led here: a
+	// symmetric heartbeat request is the cause. go-stomp floors its
+	// negotiated read timeout at
 	// whatever inbound interval we asked for even when the broker answers
 	// `heart-beat:0,0` to decline heartbeats outright (conn.go:212-223),
 	// then adds its 5s DefaultHeartBeatError. Asking for 10s inbound
@@ -264,15 +263,15 @@ func (c *Client) dialAndBootstrap(ctx context.Context) (*stomp.Conn, string, err
 // caller that dials a new conn either installs it or, if a sibling
 // Reconnect installed one first, Disconnects its own redundant conn
 // under the mutex (see the supersede loop below) so exactly one
-// broker session survives and no session leaks (GAGO-012 Dutch C1 /
-// Leon H1, reworded for GAGO-024 Dutch L1 once that fix had settled).
+// broker session survives and no session leaks (Dutch C1 /
+// Leon H1, reworded for Dutch L1 once that fix had settled).
 //
 // Transport-level failures during the dial or token bootstrap are
 // wrapped so callers can errors.Is(err, ErrConnectionLost) and drive
 // retry policy. ErrClosed remains its own sentinel for the
 // Closed-Client case.
 //
-// SECURITY INVARIANT (per GAGO-012 spec): the cached auth token is
+// SECURITY INVARIANT: the cached auth token is
 // discarded before reconnect; the new connection re-fetches via the
 // /topic/pnnl.goss.token.topic dance. Token reuse across reconnects
 // is forbidden.
@@ -290,7 +289,7 @@ func (c *Client) Reconnect(ctx context.Context) error {
 
 	// Swap out the existing connection fields under the mutex first, so
 	// that concurrent Request callers see ErrNotConnected during the
-	// dial rather than a closed go-stomp handle (GAGO-024 Dutch L3: the
+	// dial rather than a closed go-stomp handle (Dutch L3: the
 	// mutex covers only this field swap, not the Disconnect call below,
 	// which runs after c.mu.Unlock so the actual teardown round-trip
 	// with the broker does not hold the lock). Holding c.mu across the
@@ -468,7 +467,7 @@ func (c *Client) Request(ctx context.Context, destination string, body []byte) (
 
 	// Send the request. The broker still correlates the response via the
 	// per-request /temp-queue/... reply-to; the correlation-id header is
-	// defense-in-depth (Leon M2 / GAGO-013). If a future ticket
+	// defense-in-depth (Leon M2). If a future ticket
 	// consolidates onto a shared reply queue, the demux code on the
 	// receive side can then key on this id without a wire-format change.
 	corrID, err := newCorrelationID()
@@ -535,7 +534,7 @@ func fetchAuthToken(ctx context.Context, conn *stomp.Conn, user, password string
 	// temp.token_resp.<user>.* queues on the broker; draining is good
 	// hygiene but does not delete the queue. Operational mitigation
 	// (broker-side TTL on temp.token_resp.* pattern) lives in
-	// CLAUDE.md (GAGO-012).
+	// CLAUDE.md.
 	//
 	// The Unsubscribe is bounded rather than awaited outright. go-stomp's
 	// Subscription.Unsubscribe blocks until the broker's RECEIPT flips the
@@ -594,7 +593,7 @@ func fetchAuthToken(ctx context.Context, conn *stomp.Conn, user, password string
 			// makes the auth header useless on every later Request.
 			// Surface as a Connect/Reconnect failure so the caller
 			// sees it immediately rather than at first Request time.
-			// GAGO-022 L2 / Pike note: reconnect-loop on this is a
+			// Pike note: reconnect-loop on this is a
 			// caller decision; cimstomp does not retry internally.
 			return "", fmt.Errorf("empty token in broker response")
 		}
@@ -607,12 +606,12 @@ func fetchAuthToken(ctx context.Context, conn *stomp.Conn, user, password string
 // frames consumed. Used before Unsubscribe on the token-bootstrap
 // path: the channel is drained, then Unsubscribe drops the consumer.
 //
-// This is good client-side hygiene only (GAGO-024 Dutch L2): it does
+// This is good client-side hygiene only (Dutch L2): it does
 // NOT reduce broker-side queue accumulation. Unsubscribe drops the
 // consumer but ActiveMQ keeps the (now empty) temp.token_resp.<user>.*
 // queue; draining just avoids leaving unread frames orphaned in the
 // local channel. See fetchAuthToken's doc comment for the accurate
-// broker-side story and the operational mitigation (GAGO-012).
+// broker-side story and the operational mitigation.
 //
 // drainStompChan does not close the channel and does not block. It is
 // safe to call on an empty channel (returns 0) and on a channel still
@@ -652,7 +651,7 @@ func drainStompChan(ch <-chan *stomp.Message) int {
 // "cimstomp.Client:" or "cimstomp.Publisher:" because both Client.Connect
 // and Publisher.Connect share this code path; tagging it with one
 // caller's name would be misleading when read in a stack trace from the
-// other (GAGO-022 L3).
+// other.
 func dialSTOMPTransport(ctx context.Context, cfg STOMPConfig) (net.Conn, error) {
 	var dialer net.Dialer
 	if cfg.TLS == nil {

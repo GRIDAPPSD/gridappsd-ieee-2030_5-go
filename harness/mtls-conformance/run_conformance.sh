@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# GAGO-093 mTLS interop / conformance harness.
+# mTLS interop / conformance harness.
 #
 # This script is the SOURCE OF TRUTH that the admin UI /api/clients panel
-# (GAGO-092, Maya) is meant to reflect. It drives at least two mTLS clients
+# (Maya) is meant to reflect. It drives at least two mTLS clients
 # against the running bridge (one VALID device cert that chains to the
 # bridge CA, one BAD-CHAIN cert signed by a rogue CA) and asserts, on the
 # ACTUAL field values returned by GET /api/clients, that:
@@ -204,7 +204,7 @@ drive_valid_client() {
 		x509_candidates+=("${f}")
 	done < <(find "${CERT_DIR}/devices" -maxdepth 1 -name '*.x509' -print0 | sort -z)
 	if [ "${#x509_candidates[@]}" -eq 0 ]; then
-		die "no device .x509 cert found under ${CERT_DIR}/devices; device-cert emission (GAGO-052) did not run"
+		die "no device .x509 cert found under ${CERT_DIR}/devices; device-cert emission did not run"
 	fi
 	x509="${x509_candidates[0]}"
 	if [ "${#x509_candidates[@]}" -gt 1 ]; then
@@ -386,17 +386,17 @@ write_matrix() {
 	local verdict="PASS"
 	[ "${FAILED}" -eq 0 ] || verdict="FAIL"
 	{
-		printf '# GAGO-093 mTLS interop / conformance matrix\n\n'
+		printf '# mTLS interop / conformance matrix\n\n'
 		printf 'Date: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		printf 'Engineer: Devi (interoperability / conformance)\n'
 		printf 'Verdict: %s\n\n' "${verdict}"
 		printf '## Environment\n\n'
-		printf -- '- Bridge built from the GAGO-093 worktree (stacked on Kira'\''s feat/gago-090-connection-observer).\n'
+		printf -- '- Bridge built from the mTLS interop / conformance worktree.\n'
 		printf -- '- Live platform: gridappsd-docker Southern stack. Feeder mRID %s, registry populated with %s devices.\n' \
 			"${FEEDER_MRID}" "${REGISTRY_COUNT:-?}"
 		printf -- '- Broker %s (plaintext dev stack). mTLS listener %s. Admin UI %s.\n' \
 			"${STOMP_ADDR}" "${SEP2_ADDR}" "${ADMIN_ADDR}"
-		printf -- '- Cert material dev-minted into a fresh dir: a self-signed CA plus one device cert per device (GAGO-052). The valid client presents a bridge-emitted device cert; the bad-chain client presents a leaf signed by a rogue CA the bridge does not trust.\n\n'
+		printf -- '- Cert material dev-minted into a fresh dir: a self-signed CA plus one device cert per device. The valid client presents a bridge-emitted device cert; the bad-chain client presents a leaf signed by a rogue CA the bridge does not trust.\n\n'
 		printf '## Observed identities\n\n'
 		printf -- '- Valid device LFDI (openssl over the .x509 DER, spec 6.3.4): `%s`\n' "${VALID_LFDI}"
 		printf -- '- Bad-chain leaf LFDI (openssl): `%s`\n' "${BAD_LFDI}"

@@ -52,7 +52,7 @@ type DERProgramSnapshot struct {
 	Primacy     uint8
 
 	// DefaultDERControlLink is the href of this program's
-	// DefaultDERControl singleton (GAGO-050), or empty if the program
+	// DefaultDERControl singleton, or empty if the program
 	// somehow has none (should not happen post-ensureDERProgram: every
 	// program this bridge creates seeds its default control in the same
 	// call). A caller resolves it by GET against the embedded server, or
@@ -101,8 +101,8 @@ type DERControlSnapshot struct {
 // edevIDFromHref recovers the EndDevice store id (the opaque URL index) from
 // a served EndDevice href of the canonical shape "/edev/{id}".
 //
-// It exists because store List returns values without their keys, and since
-// IEEECORE-URLINDEX the key is no longer derivable from any field on the
+// It exists because store List returns values without their keys, and the
+// key is no longer derivable from any field on the
 // value: the LFDI is identity, not addressing.
 //
 // It is deliberately strict. A malformed or absent href is an error rather
@@ -140,7 +140,7 @@ func (e *Embed) EndDevices(ctx context.Context) ([]EndDeviceSnapshot, error) {
 	snaps := make([]EndDeviceSnapshot, 0, len(result.Items))
 	for _, dev := range result.Items {
 		// The store key is the opaque URL index, NOT the LFDI
-		// (IEEECORE-URLINDEX). List returns values without their keys, so
+		// List returns values without their keys, so
 		// recover the key from the device's own canonical href, which seeding
 		// stamped as "/edev/" + id. Using dev.LFDI here would silently scope
 		// every child lookup to a key that no longer exists and report every
@@ -250,7 +250,7 @@ func (e *Embed) DefaultDERControl(ctx context.Context, edevID, fsaID, derpID str
 // DERControls returns a read only snapshot of every DERControl scoped to
 // (edevID, fsaID, derpID).
 //
-// The list is genuinely a list: since GAGO-133 each control delta issues its
+// The list is genuinely a list: each control delta issues its
 // own DERControl rather than rewriting one, so a device carries every control
 // issued within its Effective Scheduled Period, superseded ones included.
 // Superseded entries are visible as CurrentStatus 4 under the 2018 semantics

@@ -10,8 +10,8 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
 )
 
-// malformedFrameLogEvery bounds the malformed-frame log rate (GAGO-023
-// Leon L1): a misbehaving publisher sending a steady stream of
+// malformedFrameLogEvery bounds the malformed-frame log rate (Leon
+// L1): a misbehaving publisher sending a steady stream of
 // undecodable frames would otherwise flood the log at broker frame rate.
 // The first malformed frame on a given Pump always logs (so a one-off
 // bad frame is never silent); after that, only every malformedFrameLogEvery-th
@@ -53,8 +53,8 @@ type PumpOption func(*Pump)
 // log-and-continue contract) or false to stop Run, which then returns a
 // wrapped version of that error to the caller.
 //
-// This gives a caller a caller-controlled handler-error policy (GAGO-023
-// Dutch M4) instead of only "cancel ctx yourself from inside handler",
+// This gives a caller a caller-controlled handler-error policy (Dutch
+// M4) instead of only "cancel ctx yourself from inside handler",
 // without changing the default fire-and-continue behavior for existing
 // callers that do not set it.
 func WithOnHandlerError(f func(error) bool) PumpOption {
@@ -78,8 +78,8 @@ type Pump struct {
 	onHandlerError func(error) bool
 
 	// malformedFrameCount tracks malformed frames seen so dispatch can
-	// rate-limit its log line per malformedFrameLogEvery (GAGO-023
-	// Leon L1). atomic because Pump is documented single-use/single-Run,
+	// rate-limit its log line per malformedFrameLogEvery (Leon
+	// L1). atomic because Pump is documented single-use/single-Run,
 	// but atomic costs nothing here and removes any future temptation to
 	// call dispatch from more than one goroutine.
 	malformedFrameCount atomic.Uint64
@@ -126,7 +126,7 @@ func (p *Pump) Run(ctx context.Context, handler func(MeasurementFrame) error) er
 			// Symmetric with cimstomp's own ctx-aware send arm
 			// (sendOrCancel in internal/cimstomp/subscribe.go): Run
 			// gets its own direct ctx.Done() exit rather than relying
-			// solely on the Subscription closing (GAGO-023 Dutch M3).
+			// solely on the Subscription closing (Dutch M3).
 			// This is a second line of defense for a
 			// SubscribeClient/Subscription implementation that does
 			// not itself close msgs promptly on ctx cancel; cimstomp's

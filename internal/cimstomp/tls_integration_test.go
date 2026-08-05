@@ -120,7 +120,7 @@ func (s *tlsTestServer) ServerCAPool() *x509.CertPool {
 // acceptErrs and logs them via t.Logf. The drain-and-log (rather than a
 // bare drop) makes an unexpected accept-loop failure visible in a test's
 // -v output instead of it silently vanishing when the buffered channel
-// is garbage collected (GAGO-022 Dutch M3 / Leon L4).
+// is garbage collected (Dutch M3 / Leon L4).
 func (s *tlsTestServer) Stop() {
 	s.stopMu.Lock()
 	if s.closed {
@@ -244,7 +244,7 @@ func (s *tlsTestServer) handleConn(conn net.Conn) {
 	// (releasing handleConn's own wg slot) while this inner goroutine is
 	// still blocked in br.ReadString on a conn Stop is about to close
 	// out from under it, which is exactly the kind of racy conn access
-	// -race is built to catch (GAGO-022 Leon L2).
+	// -race is built to catch (Leon L2).
 	done := make(chan struct{})
 	s.wg.Add(1)
 	go func() {
@@ -392,7 +392,7 @@ func TestTLS_ClientConnectsOverTLS(t *testing.T) {
 
 // assertTLSDialSucceededTokenFetchFailed encodes the shared assertion used
 // by both TestTLS_ClientConnectsOverTLS and TestTLS_ClientReconnectOverTLS
-// (GAGO-024 Dutch M3): the test server never replies to the token topic, so
+// (Dutch M3): the test server never replies to the token topic, so
 // both Connect and Reconnect are expected to fail at fetchAuthToken. What
 // each test wants to prove is that the failure is NOT a TLS handshake
 // failure: the dial path through TLS completed and STOMP CONNECTED was
@@ -405,7 +405,7 @@ func assertTLSDialSucceededTokenFetchFailed(t *testing.T, op string, err error) 
 		// a nil error is also acceptable, but log it: a silent early
 		// return here would otherwise hide the fact that the call
 		// succeeded (which the caller's doc comment says it does not
-		// expect) from -v output (GAGO-022 Dutch L1).
+		// expect) from -v output (Dutch L1).
 		t.Logf("%s over TLS returned nil error (fetchAuthToken unexpectedly succeeded or was bypassed)", op)
 		return
 	}
@@ -423,7 +423,7 @@ func assertTLSDialSucceededTokenFetchFailed(t *testing.T, op string, err error) 
 	}
 }
 
-// TestTLS_ClientReconnectOverTLS closes the GAGO-024 Dutch M3 gap: none of
+// TestTLS_ClientReconnectOverTLS closes a gap: none of
 // the existing TLS tests exercise Client.Reconnect. This proves Reconnect
 // re-dials through the same TLS path Connect used (a second TLS handshake
 // against the same tlsTestServer, which its serve() Accept loop already
@@ -482,7 +482,7 @@ func TestTLS_ClientPlainTCPAgainstTLSServerFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("Connect with TLS=nil against TLS-only server: expected error, got nil")
 	}
-	// Soft substring check (GAGO-022 Dutch M4): the plain-TCP client
+	// Soft substring check (Dutch M4): the plain-TCP client
 	// should fail either at the STOMP-frame layer (the server reads TLS
 	// record bytes as garbage and never sends CONNECTED) or via context
 	// deadline; a bare assertion of "any non-nil error" cannot tell a
@@ -578,7 +578,7 @@ func TestTLS_ClientMissingClientCertFails(t *testing.T) {
 // happy path: a successful TLS Connect followed by Close must complete
 // the STOMP DISCONNECT/RECEIPT round trip cleanly rather than only being
 // covered indirectly via a deferred cleanup call whose result nothing
-// checks (GAGO-022 Dutch M5).
+// checks (Dutch M5).
 func TestTLS_PublisherConnectsOverTLS(t *testing.T) {
 	srv := startTLSTestServer(t, true)
 	defer srv.Stop()
@@ -625,7 +625,7 @@ func TestTLS_PublisherPlainTCPAgainstTLSServerFails(t *testing.T) {
 		t.Fatal("Publisher.Connect with TLS=nil against TLS-only server: expected error, got nil")
 	}
 	// Soft substring check mirroring the Client negative test above
-	// (GAGO-022 Dutch M4).
+	// (Dutch M4).
 	msg := strings.ToLower(err.Error())
 	if !errors.Is(err, context.DeadlineExceeded) &&
 		!strings.Contains(msg, "eof") &&

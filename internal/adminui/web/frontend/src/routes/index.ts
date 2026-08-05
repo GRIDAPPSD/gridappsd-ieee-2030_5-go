@@ -8,7 +8,7 @@
 // the server side SPA fallback (internal/adminui) already serves
 // index.html for any unknown non-/api path, every client side path the
 // SPA itself does not recognize should land here rather than a bare
-// blank page. Health ("/") is the default/landing route per GAGO-061.
+// blank page. Health ("/") is the default/landing route.
 
 import type { Component } from 'svelte'
 import type { Route } from '../lib/router'

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// queryFn names the four GAGO-010 wrappers in a table-driven shape.
+// queryFn names the four device-query wrappers in a table-driven shape.
 // Each entry binds a wrapper method to (a) the expected SPARQL substrings
 // that prove the query template was selected and the feederID substituted,
 // and (b) a representative requestType field on the JSON envelope.

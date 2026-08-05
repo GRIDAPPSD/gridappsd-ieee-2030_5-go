@@ -14,7 +14,7 @@ import (
 )
 
 // wantReplyTo and wantResponseRequired are the wire values core stamps onto
-// a DERControl that carries neither field (IEEECORE-067, core v0.12.1:
+// a DERControl that carries neither field (core v0.12.1:
 // handlers/der.StampResponseRequest, whose default is
 // handlers/response.ListHref(DefaultSetID) and DefaultResponseRequired
 // 0x07).
@@ -32,8 +32,8 @@ import (
 // `xs:attribute name="replyTo" type="xs:anyURI"` (sep.xsd:5435) and
 // `xs:attribute name="responseRequired" default="00" type="HexBinary8"`
 // (sep.xsd:5440). These literals were previously written in child-element
-// form, which pinned the core v0.12.0 serialization defect fixed by
-// IEEECORE-103 as though it were the contract: the suite stayed green
+// form, which pinned an earlier core serialization defect as though it
+// were the contract: the suite stayed green
 // while every served DERControl was unparseable to a schema-following
 // client. The anchor for these strings is the XSD above, not core's
 // output.
@@ -43,7 +43,7 @@ const (
 )
 
 // TestServedDERControlCarriesStampedResponseRequest answers the question
-// IEEECORE-067's card left open for this bridge: whether the bridge's own
+// left open for this bridge: whether the bridge's own
 // DERControl seeding has to carry replyTo and responseRequired itself, or
 // whether core stamping them at serve time is sufficient.
 //

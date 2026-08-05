@@ -5,6 +5,7 @@ bin/
 *.out
 coverage.out
 coverage.html
+/bridge
 
 # Editor / OS
 .DS_Store
