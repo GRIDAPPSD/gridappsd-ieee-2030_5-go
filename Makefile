@@ -151,7 +151,7 @@ test-gridappsd:
 # `bridge` still has to opt in explicitly.
 #
 # The probe hard-fails when `nc` is missing, matching test-gridappsd's
-# behavior above (GAGO-028 Dutch M2): the two targets previously
+# behavior above (Dutch M2): the two targets previously
 # diverged (test-gridappsd failed on missing nc, bridge-e2e warned and
 # proceeded to `go run` anyway), which let a developer run this target
 # without a working port probe and get a confusing bridge-side connect

@@ -51,7 +51,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       is_dry_run: ${{ steps.mode.outputs.is_dry_run }}
     env:
-      # GAGO-080: same requirement as ci.yml's build-and-test job. The
+      # Same requirement as ci.yml's build-and-test job. The
       # bridge depends on two PRIVATE GRIDAPPSD modules, so `go` must
       # resolve them direct-to-git over the token-authenticated insteadOf
       # rewrite configured below, instead of attempting an anonymous
@@ -78,7 +78,7 @@ jobs:
           fetch-depth: 0
 
       - name: Mint GitHub App installation token
-        # GAGO-080: ported from ci.yml, where this pattern is proven green
+        # Ported from ci.yml, where this pattern is proven green
         # (run 30388359508). release.yml carried the same defect and was a
         # latent release blocker: it would have failed the moment a v* tag
         # was pushed, because the default GITHUB_TOKEN is scoped to this
@@ -138,7 +138,7 @@ jobs:
             "https://github.com/GRIDAPPSD/"
 
       - name: Disable git background maintenance
-        # GAGO-080: the auth step above is necessary but NOT sufficient.
+        # The auth step above is necessary but NOT sufficient.
         # Once git can actually reach the private repos, the Build step
         # hits the second failure diagnosed in ci.yml: "fatal: shallow
         # file has changed since we read it".
@@ -225,7 +225,7 @@ jobs:
           # This is the version-smoke-test gate from
           # .claude/rules/releasing.md Section 4: unit tests never
           # receive the -ldflags build-time injection, so a typo in
-          # the injection symbol path (the GAGO-036 failure mode)
+          # the injection symbol path (an earlier failure mode)
           # would ship a silently wrong version while every unit test
           # stays green. Assert the built binary's -version output
           # contains the exact resolved version string; fail closed

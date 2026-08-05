@@ -5,7 +5,6 @@
 // server-of-record: per Noor's 2026-07-02 assessment, the reusable
 // surface already lives in core, so no server-side promotion is
 // required to stand up a working embedded server.
-//
 package sep2embed
 
 import (

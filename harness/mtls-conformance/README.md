@@ -1,7 +1,7 @@
-# GAGO-093 mTLS interop / conformance harness
+# mTLS interop / conformance harness
 
 A scripted interop harness that is the SOURCE OF TRUTH the admin UI
-`/api/clients` panel (GAGO-092) reflects. It drives multiple mTLS clients
+`/api/clients` panel reflects. It drives multiple mTLS clients
 against the running bridge and asserts that the connection observer's state
 matches the expected connected and rejected LFDIs on the wire.
 
