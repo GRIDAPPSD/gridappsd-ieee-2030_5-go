@@ -1,6 +1,6 @@
 # Docker
 
-## Two different compose files, two different jobs
+## Three compose files, three different jobs
 
 `docker-compose.yml` at the repo root brings up a bare ActiveMQ Classic
 broker for local testing, nothing more:
@@ -16,13 +16,87 @@ run against; see the root README's Testing section and
 [cmd/bridge/README.md](../cmd/bridge/README.md). Do not expose this
 broker beyond loopback: the credentials are dev-only and public.
 
-`docker-compose.bridge.yml`, also at the repo root, is a deployment
-fragment for the bridge image itself, meant to be composed alongside a
-GridAPPS-D platform stack such as `gridappsd-docker`, not alongside
-this repository's own dev broker. It is not brought up by a bare
-`docker compose up` in this checkout; read it directly, or reference it
-with an explicit `-f` flag against the platform compose stack you are
-deploying to.
+The other two, `docker-compose-gridappsd-ieee-2030_5.yml` and
+`docker-compose.bridge.yml`, both deploy the published bridge image.
+Neither is brought up by a bare `docker compose up` in this checkout;
+each is for a different deployment shape, described below. Getting
+this choice wrong produces a bridge that cannot see the broker and no
+obvious reason why, so read this section before picking one.
+
+## Which one: platform-integrated, or standalone
+
+**`docker-compose-gridappsd-ieee-2030_5.yml` (recommended for a
+GridAPPS-D deployment).** Drop it, unmodified, into a `gridappsd-docker`
+clone's `docker-compose.d/` directory and it runs inside that platform's
+own compose project: same Docker network as `gridappsd`, `blazegraph`,
+`mysql`, and every other platform service, reached and reaching them by
+service name.
+
+**`docker-compose.bridge.yml` (standalone).** Use this only when the
+bridge is not being composed together with a `gridappsd-docker`
+checkout at all: a dedicated host, a different orchestrator, anything
+where the bridge is its own compose project. It talks to the platform
+broker at whatever host-published address you tell it, because it has
+no shared network to use instead.
+
+### How the platform-integrated path actually works, verified against gridappsd-docker
+
+Read directly from `GRIDAPPSD/gridappsd-docker` (`main` at `4b526bb`),
+not inferred from file naming:
+
+> "The `docker-compose.d/` directory allows you to extend the base
+> docker-compose configuration with additional services. Any `.yml`
+> file in this directory is automatically included when running
+> `./run.sh`... 1. The `run.sh` script scans `docker-compose.d/` for
+> files ending in `.yml` 2. Each `.yml` file is added to the
+> docker-compose command with `-f`"
+> (`README.md`, "docker-compose.d Directory" section)
+
+Confirmed against `utils.sh`'s `get_compose_files()`, which the
+README's prose describes: `ls -1 docker-compose.d/*yml`, so a file
+ending in `.yml` is picked up automatically and a file ending in
+`.yml.dist` (every shipped optional-service template in that directory)
+is not, until an operator copies it to a name ending in `.yml`. Our
+file already ends in `.yml`, not `.yml.dist`, so it needs no
+copy-and-rename step the way `docker-compose_pyvvo.yml.dist` and its
+siblings do: once it is in `docker-compose.d/`, the next `./run.sh`
+includes it.
+
+Because it is merged into the same `docker compose` invocation as
+`gridappsd-docker`'s own `docker-compose.yml`, our service joins the
+same network every platform service is on. Neither file in
+`gridappsd-docker` declares an explicit `networks:` key anywhere
+(checked directly: none exists in the repository), so this is Compose's
+own implicit default per-project network, the same mechanism the
+shipped `docker-compose_der-dispatch.yml.dist` fragment already relies
+on for its own `GRIDAPPSD_URI: tcp://gridappsd:61613`.
+
+**Service name and port, inside that network: `gridappsd:61613`.**
+Not a host-published address: `docker-compose.yml`'s `61613:61613`
+mapping is for reaching the broker from outside the compose project,
+which does not apply to a service inside it. `61613` is the platform's
+plain STOMP port (not `61614`, STOMP+SSL); `docker-compose_der-dispatch.yml.dist`
+and the README's own "Creating Custom Services" example both connect
+the same way, to the same address.
+
+### The exposure decision
+
+The platform-integrated fragment still publishes `8443:8443` to the
+host by default. Reasoned explicitly, not left as a leftover from the
+standalone fragment: the bridge's DER clients (real devices, the EPRI
+reference client, or any other IEEE 2030.5 client) are not, today,
+containers on the platform's compose network, so a same-network client
+is the case this default does NOT need to serve, and a host-reachable
+client is the case it does. `docker-compose_der-dispatch.yml.dist`
+follows the same pattern for its own consumer, publishing `9001:9001`.
+If a DER client is itself a container on the same compose project, it
+already reaches the bridge at `ieee-2030_5-bridge:8443` with no
+published port at all; the fragment's comments say so and show how to
+drop the `ports:` line for that case, as the explicit opt-out rather
+than a default an operator has to notice and remove.
+
+The admin UI stays off in both fragments; enabling it is a separate,
+commented-out block in each, per [CONFIGURATION.md](CONFIGURATION.md).
 
 ## The bridge image
 
@@ -59,52 +133,29 @@ Design:
   `CMD-SHELL` or `CMD` probe needs something to exec, and distroless
   has nothing. A healthcheck that cannot run is worse than none.
 - **The 2030.5 listener is meant to be exposed**; it is mTLS with a
-  per-device access check, so publishing it on the compose network is
-  the intended use. **The admin UI is not.** It defaults to loopback
-  and disabled, and that default should not be widened casually inside
-  a container: see [CONFIGURATION.md](CONFIGURATION.md) before
-  changing it. The image sets no `ENV` for either bind address, on
-  purpose: that decision belongs in the compose fragment an operator
-  reads and edits, not in the least visible layer of the system.
+  per-device access check. See "The exposure decision" above for
+  exactly when and why each fragment publishes it.
 - **Certificate material is always a runtime mount, never baked in.**
-  `docker-compose.bridge.yml` mounts `SEP2_SERVER_CERT_DIR`
-  READ-WRITE from an operator-supplied path outside any repository or
-  workspace, matching [CERTIFICATES.md](CERTIFICATES.md). Writable is
-  what the shipped fragment uses: `dev-mint` mode needs to persist
-  what it generates across restarts, or every restart mints a new CA
-  and invalidates every device's identity. For a `preprovisioned`
-  deployment, a **read-only** mount is now also genuinely supported,
-  not merely tolerated: `preprovisioned` mode writes nothing to that
-  directory in any circumstance, so `:ro` costs nothing and turns any
-  future accidental write attempt into a hard failure instead of a
-  silent one. See [CERTIFICATES.md](CERTIFICATES.md) for the exact
-  per-mode behavior.
+  Both fragments mount `SEP2_SERVER_CERT_DIR` READ-WRITE from an
+  operator-supplied path outside any repository or workspace, matching
+  [CERTIFICATES.md](CERTIFICATES.md). Writable is what both ship with:
+  `dev-mint` mode needs to persist what it generates across restarts,
+  or every restart mints a new CA and invalidates every device's
+  identity. For a `preprovisioned` deployment, a **read-only** mount is
+  now also genuinely supported, not merely tolerated: `preprovisioned`
+  mode writes nothing to that directory in any circumstance, so `:ro`
+  costs nothing and turns any future accidental write attempt into a
+  hard failure instead of a silent one.
 
-An illustrative excerpt (see `docker-compose.bridge.yml` for the full,
-commented fragment):
-
-```yaml
-services:
-  ieee-2030_5-bridge:
-    image: gridappsd/gridappsd-ieee-2030_5:${SEP2_IMAGE_TAG:?set SEP2_IMAGE_TAG}
-    restart: unless-stopped
-    ports:
-      - "8443:8443"   # 2030.5 mTLS listener, authenticated, safe to expose
-    environment:
-      SEP2_STOMP_ADDR: gridappsd:61613
-      SEP2_SERVER_ADDR: "0.0.0.0:8443"
-      SEP2_SERVER_CERT_DIR: /var/lib/sep2/certs
-      SEP2_DEVICE_CERT_MODE: dev-mint
-      # Admin UI stays off by default. Read CONFIGURATION.md before enabling it.
-    volumes:
-      - "${SEP2_CERT_DIR:?set SEP2_CERT_DIR}:/var/lib/sep2/certs"
-```
-
-`SEP2_CERT_DIR` above is a host path the operator sets, outside any
-repository or workspace checkout; the fragment intentionally has no
-default for it, so a missing value fails the `docker compose`
-invocation rather than silently creating a directory somewhere
-convenient and wrong.
+**`SEP2_CERT_DIR` must be outside every git checkout, including a
+`gridappsd-docker` clone.** A `gridappsd-docker` clone is a checkout
+like any other; a path such as `./sep2-certs` inside it resolves
+relative to that clone and would land private key material in exactly
+the kind of working tree this repository's own `.gitignore` fix exists
+to keep it out of. Both fragments fail `docker compose` closed with no
+default if `SEP2_CERT_DIR` is unset, and both fragments' comments say
+this explicitly. Use a path with nothing to do with any repository,
+for example `/srv/gridappsd/sep2-certs`.
 
 ## Publishing
 

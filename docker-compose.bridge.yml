@@ -1,12 +1,27 @@
 # =====================================================================
-# Bridge deployment fragment. NOT auto-composed by `docker compose up`
-# in this repository: this file describes how to run the PUBLISHED
-# gridappsd/gridappsd-ieee-2030_5 image against a GridAPPS-D platform
-# stack (e.g. gridappsd-docker), not a service of this repository's own
-# dev docker-compose.yml (which only brings up a bare ActiveMQ broker
-# for `make test-integration`). Copy this fragment into the platform
-# compose stack you are deploying against, or reference it directly
-# with `docker compose -f docker-compose.yml -f docker-compose.bridge.yml`.
+# Standalone deployment. Use this ONLY when the bridge runs as its OWN
+# docker compose project, separate from any gridappsd-docker checkout
+# (a dedicated host, a different orchestrator, or any setup where you
+# are not composing this file together with gridappsd-docker's own
+# docker-compose.yml in the same invocation).
+#
+# RECOMMENDED for most deployments: docker-compose-gridappsd-ieee-2030_5.yml
+# at this repository's root instead. That file runs the bridge INSIDE
+# the platform's own compose project, on the platform's own network,
+# reaching the broker by service name with no host-published broker
+# port involved. This file cannot do that: as its own separate compose
+# project, it is on a different Docker network than gridappsd-docker's
+# services, "gridappsd" resolves to nothing here, and there is no
+# "gridappsd" service in this file's project for `depends_on` to name.
+# See docs/DOCKER.md for the full comparison of the two paths.
+#
+# This file exists for the case where the platform-integrated path
+# genuinely does not apply: the broker must be reached at whatever
+# HOST-PUBLISHED address the platform stack exposes it at
+# (gridappsd-docker's own docker-compose.yml maps the platform's STOMP
+# port to the host as 61613:61613), and the operator is responsible for
+# the platform being up before starting this fragment; nothing here can
+# express that dependency the way an in-project depends_on can.
 #
 # Read docs/CERTIFICATES.md and docs/CONFIGURATION.md before deploying.
 # =====================================================================
@@ -23,10 +38,12 @@ services:
     user: "${SEP2_UID:?set SEP2_UID, e.g. $$(id -u)}:${SEP2_GID:?set SEP2_GID, e.g. $$(id -g)}"
 
     ports:
-      # IEEE 2030.5 mTLS listener. Client-certificate authenticated with
-      # a per-device access-control check, so publishing it on the
-      # compose network (and, via this port mapping, on the host) is
-      # the intended service surface, not an accidental exposure.
+      # IEEE 2030.5 mTLS listener, client-certificate authenticated with
+      # a per-device access-control check. In this standalone project
+      # there is no shared network for a same-project client to use
+      # instead, so publishing is not optional here the way it is in
+      # the platform-integrated fragment: this is the only way anything
+      # reaches the bridge.
       - "8443:8443"
       #
       # The admin UI is OFF by default (no SEP2_ADMIN_UI_KEY* below) and
@@ -36,8 +53,19 @@ services:
       # - "127.0.0.1:8444:8444"
 
     environment:
-      SEP2_STOMP_ADDR: gridappsd:61613
-      SEP2_STOMP_ALLOW_PLAINTEXT: "true"    # dev stack broker is plain TCP; set "false" and configure TLS for production
+      # Not a service name: this project shares no network with
+      # gridappsd-docker, so "gridappsd" would not resolve. Point this
+      # at wherever the platform's broker is actually reachable from
+      # this host, for example the platform host's address and its
+      # HOST-PUBLISHED STOMP port (gridappsd-docker's own
+      # docker-compose.yml publishes 61613:61613 on its "gridappsd"
+      # service): "192.0.2.10:61613", or "host.docker.internal:61613"
+      # if the platform runs on the same machine under Docker Desktop.
+      # There is no default: guessing wrong here fails silently as a
+      # connection-refused loop, not a configuration error, so an unset
+      # value stops compose instead.
+      SEP2_STOMP_ADDR: "${SEP2_STOMP_ADDR:?set SEP2_STOMP_ADDR to the platform broker's HOST-PUBLISHED address, e.g. 192.0.2.10:61613}"
+      SEP2_STOMP_ALLOW_PLAINTEXT: "true"    # the platform's published 61613 is plain STOMP; set "false" and configure TLS for a hardened deployment
       SEP2_FEEDER_MRID: "${SEP2_FEEDER_MRID}"
       SEP2_SIMULATION_ID: "${SEP2_SIMULATION_ID:-}"
 
@@ -59,7 +87,7 @@ services:
       # For a deployment where certificate issuance is owned elsewhere,
       # set this to "preprovisioned" and place ca.pem, server.pem, and
       # server-key.pem (NOT ca-key.pem: preprovisioned mode never signs
-      # and does not need it) in the mounted directory yourself before
+      # and does not read it) in the mounted directory yourself before
       # first start. See docs/CERTIFICATES.md.
       SEP2_DEVICE_CERT_MODE: dev-mint
 
@@ -88,36 +116,26 @@ services:
       # trust anchor every client was configured against and changes
       # every device's LFDI.
       #
-      # A read-write mount also means an incomplete or partial
-      # certificate set in the directory can, in principle, be written
-      # over rather than rejected. Read docs/CERTIFICATES.md for the
-      # current state of that safeguard before using preprovisioned
-      # mode against real certificate material. A directory that
-      # already holds a COMPLETE preprovisioned set (ca.pem, server.pem,
-      # server-key.pem, no ca-key.pem) and is never expected to change
-      # can instead be mounted read-only by appending ":ro" below; do
-      # that only once docs/CERTIFICATES.md confirms preprovisioned
-      # mode is load-only in this version.
+      # For a preprovisioned deployment, a read-only mount (append
+      # ":ro" below) is now genuinely supported, not merely tolerated:
+      # preprovisioned mode never writes to this directory in any
+      # circumstance. See docs/CERTIFICATES.md.
       #
       # Create the host directory before first start, owned by the uid
       # above:
       #     mkdir -p /srv/gridappsd/sep2-certs
       #     chmod 700 /srv/gridappsd/sep2-certs
       #
-      # SEP2_CERT_DIR must be an absolute path OUTSIDE any git checkout.
-      # A relative path here would resolve against the directory
-      # holding this compose file, which is a repository; private key
-      # material must never land in one. There is deliberately no
-      # default so an unset value stops `docker compose` instead of
+      # SEP2_CERT_DIR must be an absolute path OUTSIDE any git
+      # checkout, and that includes this repository's own checkout: a
+      # relative path here would resolve against the directory holding
+      # this compose file, which is a repository. There is deliberately
+      # no default so an unset value stops `docker compose` instead of
       # silently choosing somewhere convenient and wrong.
       - "${SEP2_CERT_DIR:?set SEP2_CERT_DIR to an absolute path outside any git checkout, e.g. /srv/gridappsd/sep2-certs}:/var/lib/sep2/certs"
 
     secrets:
       - stomp_password
-
-    depends_on:
-      gridappsd:
-        condition: service_healthy
 
 secrets:
   stomp_password:
