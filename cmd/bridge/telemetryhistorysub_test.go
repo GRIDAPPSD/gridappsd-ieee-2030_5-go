@@ -226,8 +226,8 @@ func TestRunHistorySubscriberOneFailureDoesNotBlockOthers(t *testing.T) {
 
 // TestRunHistorySubscriberEmptyDestinationsStartsNoGoroutine: an empty
 // destination list must return immediately on ctx cancel with zero
-// Subscribe calls, matching GAGO-143's "fully off unless configured"
-// acceptance criterion.
+// Subscribe calls, matching the "fully off unless configured"
+// acceptance criterion for this feature.
 func TestRunHistorySubscriberEmptyDestinationsStartsNoGoroutine(t *testing.T) {
 	t.Parallel()
 
@@ -251,8 +251,8 @@ func TestRunHistorySubscriberEmptyDestinationsStartsNoGoroutine(t *testing.T) {
 }
 
 // TestRunHistorySubscriberExitsCleanlyOnCtxCancel is the goroutine-leak
-// guard (GAGO-143's "leaks no goroutine" acceptance criterion, run under
-// -race by the caller): every per-destination goroutine must have
+// guard (this feature's "leaks no goroutine" acceptance criterion, run
+// under -race by the caller): every per-destination goroutine must have
 // actually returned by the time runHistorySubscriber itself returns, not
 // merely be "about to".
 func TestRunHistorySubscriberExitsCleanlyOnCtxCancel(t *testing.T) {
