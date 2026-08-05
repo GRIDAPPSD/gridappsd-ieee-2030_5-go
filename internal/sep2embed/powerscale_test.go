@@ -92,7 +92,7 @@ func TestComputePowerOfTen(t *testing.T) {
 			wantRecon: -32770,
 		},
 		{
-			name:      "large realistic fleet value (125 kVAr inverter, GAGO-083 example)",
+			name:      "large realistic fleet value (125 kVAr inverter example)",
 			vAr:       125000,
 			wantValue: 12500,
 			wantMult:  1,

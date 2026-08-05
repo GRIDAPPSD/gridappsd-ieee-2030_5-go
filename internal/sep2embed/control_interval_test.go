@@ -17,7 +17,7 @@ import (
 // creationTime, interval, and randomizeDuration. They assert on the bytes the
 // embedded server actually writes to a client, never on a round trip through
 // this project's own marshaller, for the reason spelled out at the top of
-// derprogram_conformance_test.go and demonstrated by IEEECORE-103: marshal
+// derprogram_conformance_test.go: marshal
 // then unmarshal is symmetric, so it agrees with itself in the correct and
 // the incorrect encoding alike. Two suites in two repos stayed green while
 // every served document was unparseable to a schema-following client.
@@ -93,8 +93,8 @@ func applyTestControlDeltaValue(t *testing.T, e *Embed, reg *registry.Registry, 
 // soleServedControlID returns the store key of the one DERControl the given
 // device holds, failing the test if it holds any other number.
 //
-// Tests addressed the single-resource route by the fixed "active" key before
-// GAGO-133. There is no fixed key now: an issued control is addressed by an
+// Tests used to address the single-resource route by the fixed "active"
+// key. There is no fixed key now: an issued control is addressed by an
 // id derived from its own creation instant and mRID, so a test that wants to
 // GET "the control this delta produced" has to ask which one that is.
 func soleServedControlID(t *testing.T, e *Embed, edevID string) string {
@@ -164,7 +164,7 @@ func TestServedDERControlCarriesIntervalAndCreationTime(t *testing.T) {
 				"<DERControlBase>",
 			)
 
-			// ELEMENTS, not attributes. This is the IEEECORE-103 defect class
+			// ELEMENTS, not attributes. This is the same defect class
 			// in the direction that applies here, and it is checked per field
 			// against the XSD rather than inferred from a neighbour: on this
 			// same type replyTo and responseRequired genuinely ARE attributes

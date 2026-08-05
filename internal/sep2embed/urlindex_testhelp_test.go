@@ -12,7 +12,7 @@ import (
 // urlIndexFor returns the store id, and therefore the {id} URL segment, that
 // seeding assigned to the device with the given CIM mRID.
 //
-// Since IEEECORE-URLINDEX that id is an opaque server-chosen index rather
+// That id is an opaque server-chosen index rather
 // than the device's LFDI, so a test must ASK for it rather than construct it
 // from device identity. Constructing it would reintroduce exactly the
 // LFDI-in-URL coupling this change removed, and would let the tests keep

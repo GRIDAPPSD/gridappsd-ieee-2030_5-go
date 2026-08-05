@@ -14,12 +14,12 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 )
 
-// Wire-level tests for supersession (GAGO-133).
+// Wire-level tests for supersession.
 //
 // Everything here asserts the BYTES the embedded server writes to a client,
 // never a round trip through this project's own marshaller, for the reason
-// spelled out at the top of control_interval_test.go and demonstrated by
-// IEEECORE-103: marshal-then-unmarshal is symmetric, so it agrees with itself
+// spelled out at the top of control_interval_test.go:
+// marshal-then-unmarshal is symmetric, so it agrees with itself
 // in the correct and the incorrect encoding alike. Two suites in two repos
 // stayed green while every served document was unparseable to a
 // schema-following client.

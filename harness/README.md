@@ -1,4 +1,4 @@
-# GAGO-044 DERControl sign loopback harness
+# DERControl sign loopback harness
 
 A HELICS plus OpenDSS co-simulation that physically verifies the bridge's
 DERControl active and reactive sign convention: it drives the bridge's
@@ -14,15 +14,15 @@ virtualenv, not system wide.
 
 The GridAPPS-D platform's own REQUEST_SIMULATION / GridLAB-D path is dead
 on this stack (every start fails with "no substation source", tracked
-separately as GAGO-042). This harness therefore closes the loop WITHOUT
+separately). This harness therefore closes the loop WITHOUT
 the platform's GridLAB-D simulation: it couples the bridge output to an
 OpenDSS solve we drive directly.
 
 ## Unit under test vs harness
 
 The bridge control path is the unit under test and is NOT reimplemented
-here. The Go test `TestGAGO044CaptureBridgeSetpoints`
-(`internal/sep2embed/control_gago044_test.go`) runs the genuine
+here. The Go test `TestSignLoopbackCaptureBridgeSetpoints`
+(`internal/sep2embed/control_sign_loopback_test.go`) runs the genuine
 `ApplyControlDelta` for each commanded 2030.5 intent, reads the resulting
 `DERControlBase` target values back out of the store, and writes them to
 `bridge_capture.json`. The Python `control_shim` federate loads that file
@@ -86,17 +86,17 @@ asserts coupled-solver agreement on three axes:
 ## Run
 
 ```
-cd /home/debian/repos/gridappsd-ieee-2030_5-go-gago044
-python3 -m venv /tmp/gago044-venv
-/tmp/gago044-venv/bin/pip install -r harness/requirements.txt
+cd gridappsd-ieee-2030_5-go
+python3 -m venv /tmp/sign-loopback-venv
+/tmp/sign-loopback-venv/bin/pip install -r harness/requirements.txt
 
 # Regenerate the bridge capture from the real control path:
-GAGO044_CAPTURE_OUT=$PWD/harness/bridge_capture.json \
-  go test ./internal/sep2embed/ -run TestGAGO044CaptureBridgeSetpoints
+SIGN_LOOPBACK_CAPTURE_OUT=$PWD/harness/bridge_capture.json \
+  go test ./internal/sep2embed/ -run TestSignLoopbackCaptureBridgeSetpoints
 
 # Run the federation and print the directional verdict:
 cd harness
-/tmp/gago044-venv/bin/python run_federation.py
+/tmp/sign-loopback-venv/bin/python run_federation.py
 ```
 
 `helics_broker` must be on `PATH` (HELICS runtime 3.6.x).

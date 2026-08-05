@@ -18,7 +18,7 @@ import (
 // through this project's own marshaller cannot see the class of defect that
 // matters here: core shipped a wire regression in which replyTo and
 // responseRequired were emitted as ELEMENTS where sep.xsd declares them
-// ATTRIBUTES (IEEECORE-103). Marshal-then-unmarshal is symmetric, so it
+// ATTRIBUTES. Marshal-then-unmarshal is symmetric, so it
 // round-tripped perfectly while every conformant client rejected the
 // document. Only bytes catch that.
 //
@@ -69,7 +69,7 @@ func elementText(t *testing.T, body []byte, local string) string {
 
 // assertNoAttribute fails when any element in the served bytes carries an
 // attribute with the given name. This is the direct guard against the
-// IEEECORE-103 defect class in the other direction: a value sep.xsd declares
+// same defect class in the other direction: a value sep.xsd declares
 // as an element must not be emitted as an attribute.
 func assertNoAttribute(t *testing.T, body []byte, attr string) {
 	t.Helper()
@@ -183,7 +183,7 @@ func TestServedDERProgramFollowsSchemaSequenceAndTypes(t *testing.T) {
 
 	// primacy is minOccurs=1 on DERProgram and is a child ELEMENT, not an
 	// attribute. Both halves matter: an absent primacy is a schema
-	// violation, and one emitted as an attribute is the IEEECORE-103 defect
+	// violation, and one emitted as an attribute is the same defect
 	// class that a round trip through our own marshaller cannot see.
 	gotPrimacy := elementText(t, body, "primacy")
 	if gotPrimacy != "1" {

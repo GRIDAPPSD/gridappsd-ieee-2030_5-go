@@ -52,7 +52,7 @@ import (
 // lfdi and edevID are deliberately separate fields: lfdi is IDENTITY (what
 // the ownership gate matches the presented certificate against) and edevID is
 // ADDRESSING (the {id} segment of the device's URLs). They stopped being the
-// same value at IEEECORE-URLINDEX, and a test that used one for the other
+// same value once the URL-index scheme was introduced, and a test that used one for the other
 // would be asserting the coupling that change removed.
 type mupTestDevice struct {
 	client *http.Client
@@ -230,7 +230,7 @@ func getSEP2(t *testing.T, d mupTestDevice, url string) (int, []byte) {
 //
 // Location is returned because IEEE 2030.5-2018 section 10.11.3 rule (a)(3)
 // makes it the ONLY output of a successful POST: the 201 carries no body
-// (IEEECORE-MMR), and the EPRI reference client's process_response never
+// and the EPRI reference client's process_response never
 // reads a POST response body, it follows Location with a fresh GET. A test
 // that wants to inspect what was actually created must do the same.
 func postMirrorUsagePoint(t *testing.T, d mupTestDevice, baseURL, mrid, claimLFDI string) (int, string, []byte) {
@@ -461,7 +461,7 @@ func TestPOSTMirrorUsagePointStampsCallerLFDIOverClaimedValue(t *testing.T) {
 	}
 
 	// Section 10.11.3 rule (a)(3): the 201 carries the Location header and no
-	// body (IEEECORE-MMR). Assert both halves, so a regression that starts
+	// body. Assert both halves, so a regression that starts
 	// echoing the created resource back is caught here rather than by a
 	// strict client in the field.
 	if len(bytes.TrimSpace(body)) != 0 {

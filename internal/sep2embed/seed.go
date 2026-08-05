@@ -18,7 +18,7 @@ import (
 // entries. Each registry entry becomes exactly one EndDevice and exactly
 // one child DER resource (the bridge does not yet carry more than one
 // DER per device's CIM identity; see internal/cim.DictItem, which is all
-// the registry entries are built from as of GAGO-025). The mapping,
+// the registry entries are built from). The mapping,
 // field by field (id = the opaque URL index allocated for Entry.MRID):
 //
 //	store id (both EndDevice and the DER's parent key) = index for Entry.MRID
@@ -32,7 +32,7 @@ import (
 //	DER id (within the EndDevice's DER scope)             = "1"
 //	DER.Href                                              = "/edev/" + id + "/der/1"
 //
-// ADDRESSING AND IDENTITY ARE SEPARATE (IEEECORE-URLINDEX). The store id,
+// ADDRESSING AND IDENTITY ARE SEPARATE. The store id,
 // and therefore the {id} segment of every URL, is an opaque server-chosen
 // index ("/edev/3/rg"), allocated by core's memory.EndDeviceIndex. It was
 // previously Entry.LFDI. The device's IDENTITY is unchanged and is still
@@ -100,12 +100,11 @@ func seedStores(ctx context.Context, stores *assembly.Stores, reg *registry.Regi
 type seedPolicy struct {
 	// modesSupported is the DERControlType bitmap (sep2config.SEP2Policy's
 	// own field of the same name) stamped onto every seeded
-	// DERCapability. Typed as *sep2.DERControlType (IEEECORE-047),
+	// DERCapability. Typed as *sep2.DERControlType,
 	// matching sep2.DERCapability.ModesSupported's own field type
 	// exactly, so this struct assigns straight through with no
 	// conversion at line ~251 below. nil means seedOne leaves the seeded
-	// DERCapability.ModesSupported nil rather than fabricating a bitmap
-	// (GAGO-049).
+	// DERCapability.ModesSupported nil rather than fabricating a bitmap.
 	modesSupported *sep2.DERControlType
 
 	// resolvePIN returns the operator-supplied registration PIN for the
@@ -164,7 +163,7 @@ type seedPolicy struct {
 // constructs a path from the LFDI. SFDI is unchanged: the canonical
 // certificate-derived SFDI (or the LFDI-derived placeholder).
 //
-// GAGO-049 adds a third resource per entry: a DERCapability, scoped
+// This adds a third resource per entry: a DERCapability, scoped
 // under the DER's own parent key (id + "/1", matching core's
 // DERSingletonHandlers.derParentKey) at the fixed singleton key
 // "default" (core's coresingleton.SingletonKey; duplicated locally as
@@ -214,7 +213,7 @@ type seedPolicy struct {
 func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, policy seedPolicy) error {
 	// The store key, and therefore the {id} segment of every URL this device
 	// is served under, is an opaque server-chosen index rather than the
-	// device's LFDI (IEEECORE-URLINDEX).
+	// device's LFDI.
 	//
 	// The allocator is keyed by the CIM mRID, not by the LFDI, and that
 	// choice is load-bearing. The LFDI is SHA-256 over the device
@@ -348,7 +347,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 	der := sep2.DER{}
 	der.Href = "/edev/" + id + "/der/1"
 	der.DERCapabilityLink = &sep2.Link{Href: dercapHref}
-	// DERSettingsLink, DERStatusLink, and DERAvailabilityLink (GAGO-DERLINKS):
+	// DERSettingsLink, DERStatusLink, and DERAvailabilityLink:
 	// the EPRI client's put_der_settings (oeg_client.c:352-356) gates each of
 	// its four PUTs (dera, dercap, derg, ders) independently on
 	// se_exists(der, <Type>Link), so a DER that advertises only
@@ -403,11 +402,11 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 // straight from the SPARQL binding in that same unscaled form (see
 // cmd/bridge/main.go's queryDevices).
 //
-// IEEECORE-014 narrowed sep2.ReactivePower.Value to int16 (per the
+// The core narrowed sep2.ReactivePower.Value to int16 (per the
 // PowerOfTenMultiplierType-scaled wire encoding IEEE 2030.5 actually
 // uses), so a real fleet's unscaled maxQ (hundreds of thousands of VAr
 // is a realistic rated magnitude) no longer fits Value directly at
-// Multiplier 0: GAGO-083 replaces the old hardcoded Multiplier: 0 with
+// Multiplier 0: this replaces the old hardcoded Multiplier: 0 with
 // computePowerOfTen, which picks the smallest multiplier that lets maxQ's
 // magnitude fit int16, preserving as many significant digits as int16
 // allows. See computePowerOfTen's own doc comment for the scaling and
@@ -424,7 +423,7 @@ func seedOne(ctx context.Context, stores *assembly.Stores, e registry.Entry, pol
 // or silently clamp it to a guessed magnitude, buildRTGMaxVar logs a
 // warning naming the device and returns nil, exactly as it does for an
 // absent maxQ: no capability advertised is safer than a wrong-sign one
-// (Cyrus, GAGO-049 review LOW finding; GAGO-068).
+// (Cyrus, review LOW finding).
 //
 // If maxQ's magnitude is so large that computePowerOfTen cannot fit it
 // into int16 even at the maximum multiplier, buildRTGMaxVar returns that
@@ -516,7 +515,7 @@ func seedFSA(ctx context.Context, stores *assembly.Stores, edevID, lfdi string) 
 // sepTLS.ValidateSFDI-passing) placeholder SFDI, deterministically
 // derived from lfdi.
 //
-// GAGO-033 gives every device a certificate-derived registry.Entry.SFDI
+// Every device is given a certificate-derived registry.Entry.SFDI
 // (spec section 6.3.3, computed directly from the device's own
 // certificate by internal/sep2embed.EnsureDeviceIdentities), so seedOne
 // reaches this fallback only for an Entry that predates that change or

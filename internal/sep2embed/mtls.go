@@ -24,7 +24,7 @@ import (
 // wrapper below only reconstructs the GCM/default listener core's
 // sep2srv.New would otherwise build. Rather than silently skip handshake
 // observation under CCM (an invisible gap), New fails closed and says so.
-var errObserverRequiresGCM = errors.New("sep2embed: Config.Observer is not supported with Config.EnableCCM (the CCM-8 listener has no handshake-observation seam yet); see GAGO-091 handoff notes")
+var errObserverRequiresGCM = errors.New("sep2embed: Config.Observer is not supported with Config.EnableCCM (the CCM-8 listener has no handshake-observation seam yet)")
 
 // observedMTLSServer is a drop-in replacement for *sep2srv.Server (it
 // satisfies the protocolServer interface embed.go defines) used only

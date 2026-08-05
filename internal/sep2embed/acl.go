@@ -52,7 +52,7 @@ func newStoreOwnerResolver(endDevices store.EndDeviceStore) *storeOwnerResolver 
 // sepTLS.LFDI(r.TLS.PeerCertificates[0]) call; the stored LFDI reaches
 // here via the EndDevice record's LFDI field, sourced (seed.go) from
 // registry.Entry.LFDI, which is itself certificate-derived via
-// sepTLS.LFDI (GAGO-033). Two callers of one canonicalizing function
+// sepTLS.LFDI. Two callers of one canonicalizing function
 // agree by construction, so exact-string compare is the correct check.
 // Do NOT add runtime case-folding here: that would mask a real drift
 // bug (one side no longer deriving from sepTLS.LFDI) instead of

@@ -1,4 +1,4 @@
-"""OpenDSS controllable DER model for the GAGO-044 sign loopback.
+"""OpenDSS controllable DER model for the sign loopback.
 
 A minimal three phase feeder: a source, a short line, and one Generator
 that stands in for the 2030.5 controlled DER inverter. OpenDSS Generator
@@ -17,7 +17,7 @@ import opendssdirect as dss
 
 def build():
     dss.Command("clear")
-    dss.Command("new circuit.gago044 basekv=0.416 pu=1.0 phases=3 bus1=sourcebus")
+    dss.Command("new circuit.signloopback basekv=0.416 pu=1.0 phases=3 bus1=sourcebus")
     dss.Command("new line.feeder bus1=sourcebus bus2=derbus phases=3 "
                 "length=0.05 r1=0.3 x1=0.6 units=km")
     # DER inverter as a Generator, model=1 (constant P,Q). kVA rating

@@ -14,7 +14,7 @@ const maxPowerOfTenMultiplier = 9
 
 // computePowerOfTen picks the smallest non-negative power-of-ten multiplier
 // m (0..maxPowerOfTenMultiplier) such that round(vAr / 10^m) fits in int16,
-// and returns the scaled value together with m. This is the GAGO-083 fix
+// and returns the scaled value together with m. This is the fix
 // for the Class-3 defect of hardcoding Multiplier: 0 regardless of
 // magnitude: a real fleet's maxQ (CIM PowerElectronicsConnection.maxQ, in
 // unscaled base VAr) routinely exceeds int16's +-32767 range, so the

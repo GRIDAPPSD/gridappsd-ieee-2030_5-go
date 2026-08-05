@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// URL-index addressing on the bridge's served tree (IEEECORE-URLINDEX).
+// URL-index addressing on the bridge's served tree.
 //
 // Core owns URL and link construction; these tests assert the property
 // end-to-end on the resources the BRIDGE seeds, over real mTLS, because the

@@ -1,4 +1,4 @@
-"""GAGO-044 co-simulation runner: broker plus two federates, then verdict.
+"""Sign loopback co-simulation runner: broker plus two federates, then verdict.
 
 Topology: a single HELICS broker (zmq) with two value federates.
 
@@ -45,7 +45,7 @@ def run():
 
     python = sys.executable
     broker = subprocess.Popen(
-        ["helics_broker", "-f", "2", "--name=gago044broker", "--loglevel=warning"],
+        ["helics_broker", "-f", "2", "--name=signloopbackbroker", "--loglevel=warning"],
         cwd=HERE,
     )
     time.sleep(1.0)
@@ -97,7 +97,7 @@ def verdict():
         data = json.load(f)
 
     print()
-    print("GAGO-044 DERControl sign loopback: directional evidence")
+    print("DERControl sign loopback: directional evidence")
     print("activeSignFlip =", data["activeSignFlip"], "  reactiveSignFlip =", data["reactiveSignFlip"])
     print("-" * 96)
     print(f"{'case':13s} {'2030.5 command':26s} {'bridge delta':16s} {'measured OpenDSS DER':22s} {'dir':4s}")

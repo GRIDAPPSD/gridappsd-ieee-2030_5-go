@@ -70,8 +70,8 @@ func deviceClient(t *testing.T, certPEM, keyPEM, caCertPEM []byte) *http.Client 
 	}
 }
 
-// TestACLTwoDeviceCrossAccessMatrix is the centerpiece test for
-// GAGO-043: it boots a real embedded server over real mTLS with two
+// TestACLTwoDeviceCrossAccessMatrix is the centerpiece test: it boots
+// a real embedded server over real mTLS with two
 // seeded devices whose LFDIs are derived from their own certificates
 // (not placeholders), and proves the full stack (identityMiddleware +
 // aclMiddleware + storeOwnerResolver, wired exactly as buildHandler
@@ -150,7 +150,7 @@ func TestACLTwoDeviceCrossAccessMatrix(t *testing.T) {
 	clientB := deviceClient(t, certB, keyB, caCertPEM)
 
 	// Resource URLs address a device by its opaque server-assigned index, not
-	// by its LFDI (IEEECORE-URLINDEX). The LFDI above is still the IDENTITY
+	// by its LFDI. The LFDI above is still the IDENTITY
 	// the ownership gate matches the client certificate against, which is
 	// exactly what this matrix exercises: each request below is authorized on
 	// the presenting certificate, never on the index it names.

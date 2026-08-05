@@ -145,7 +145,7 @@ func deriveEventMRID(kind, lfdi string, creationTime int64, base *sep2.DERContro
 // It is the single definition of "the same control payload" in this package,
 // and it has two callers that must not drift apart: deriveEventMRID, which
 // makes an event's identity a function of these bytes, and the change
-// detection in ApplyControlDelta (GAGO-136), which refuses to issue a second
+// detection in ApplyControlDelta, which refuses to issue a second
 // event for a payload already in force. If those two used different notions of
 // sameness, a delta could be judged a restatement while deriving a different
 // mRID, or judged a change while deriving the same one; either way the store

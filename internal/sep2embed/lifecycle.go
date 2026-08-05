@@ -12,9 +12,9 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
 )
 
-// End of life for an issued DERControl (GAGO-134).
+// End of life for an issued DERControl.
 //
-// WHY THIS FILE EXISTS. Since GAGO-133 every control delta issues its own
+// WHY THIS FILE EXISTS. Every control delta issues its own
 // DERControl and no previously issued control is ever rewritten. Nothing then
 // took any of them out of service, so a device's DERControlList grew for the
 // life of the process and every entry in it kept serving currentStatus 1
@@ -172,7 +172,7 @@ func maxEffectiveScheduledEnd(c sep2.DERControl) (int64, bool) {
 // control as still in force while a device that randomized the other way has
 // already dropped it.
 //
-// The caller is the GAGO-136 change bound, which suppresses a delta only while
+// The caller is the change bound, which suppresses a delta only while
 // the control it restates is certainly still running on every device. Taking
 // the earliest end is what makes "certainly" true: between the earliest and
 // the latest possible finish the fleet is split, and a restatement in that

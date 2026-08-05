@@ -18,9 +18,9 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
-// testDefaultControl is the GAGO-050 seed value this file's tests pass to
-// ApplyControlDelta. These tests assert GAGO-034 DOWN-path field mapping
-// and owner scoping, not the GAGO-050 seeding behavior itself (that is
+// testDefaultControl is the seed value this file's tests pass to
+// ApplyControlDelta. These tests assert DOWN-path field mapping
+// and owner scoping, not the seeding behavior itself (that is
 // snapshot_test.go's job), so the zero value is deliberate: a valid but
 // degenerate DefaultDERControl, sufficient for ensureDERProgram's lazy
 // DERProgram creation without asserting anything about its contents here.
@@ -102,7 +102,7 @@ func twoDeviceFixtureWithPolicy(t *testing.T, policy seedPolicy) (reg *registry.
 // if the count is anything but one, and also returns the store key it is
 // held at.
 //
-// It replaces the fixed "active" key every test used before GAGO-133. A
+// It replaces the fixed "active" key every test used before. A
 // device now accumulates one DERControl per issued control delta, so there is
 // no longer a well-known key to Get by; a test that wants "the control this
 // delta produced" has to say so, and has to state that it produced exactly
@@ -391,8 +391,8 @@ func TestApplyControlDeltaIssuesIndependentControlPerMode(t *testing.T) {
 	}
 }
 
-// TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram is the
-// GAGO-050 test: ensureDERProgram's lazy-creation seam must seed a
+// TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram tests
+// that ensureDERProgram's lazy-creation seam must seed a
 // DefaultDERControl (sourced from the caller-supplied defaultControl,
 // never hardcoded) into stores.DefaultDERControls and point the new
 // DERProgram's DefaultDERControlLink at it, closing the CSIP-mandatory
@@ -622,7 +622,7 @@ func TestApplyDERControlBaseFieldCoversEverySupportedField(t *testing.T) {
 			value:   true,
 			wantErr: true,
 		},
-		// HIGH-1 (Vance, power-systems review of GAGO-034 PR #9):
+		// HIGH-1 (Vance, power-systems review, PR #9):
 		// opModFixedW/opModFixedVar/opModMaxLimW are IEEE 2030.5
 		// PERCENT types (SignedPercent/PercentLimit/FixedVar), not
 		// absolute watts/vars, and this bridge has no seeded
@@ -630,7 +630,7 @@ func TestApplyDERControlBaseFieldCoversEverySupportedField(t *testing.T) {
 		// delta against. Mapping them would silently command the wrong
 		// physical setpoint, so they are refused exactly like any other
 		// unsupported attribute rather than mapped incorrectly. Percent
-		// support returns once DERCapability is seeded: GAGO-045.
+		// support returns once DERCapability is seeded.
 		{
 			name:      "opModFixedW refused, not mapped as absolute power",
 			field:     "opModFixedW",
@@ -717,10 +717,10 @@ func TestApplyControlDeltaRefusesPercentModeAttributes(t *testing.T) {
 // numeric effect on a mapped value, so an accidental flip of either
 // constant is caught by a failing test. This is NOT a claim about which
 // physical direction is correct (see activeSignFlip's doc comment):
-// only GAGO-044's co-simulation loopback can verify that. If a future
+// only the co-simulation loopback can verify that. If a future
 // change deliberately flips a constant, this test's want values must be
 // updated in the same commit as the flip, with the commit message
-// stating why (e.g. "GAGO-044 confirmed reactive sign is inverted").
+// stating why (e.g. "co-simulation loopback confirmed reactive sign is inverted").
 func TestSignFlipConstantsPinnedEffect(t *testing.T) {
 	t.Parallel()
 

@@ -17,7 +17,7 @@ import (
 // once the server's mTLS Identity is known (sep2srv.New guarantees this
 // ordering: Identity before build runs).
 //
-// AuthPolicy scope (GAGO-043): Wrap below composes identityMiddleware
+// AuthPolicy scope: Wrap below composes identityMiddleware
 // (extracts the caller's LFDI/SFDI from the verified TLS peer
 // certificate) with aclMiddleware (enforces the section 6.2.3 method
 // allow-list from internal/sep2acl, plus per-device ownership scoping
@@ -38,8 +38,8 @@ import (
 // observes an uncleaned path. See aclMiddleware's own doc comment for
 // why that ordering is load-bearing for its path parsing.
 //
-// There is deliberately no GridAPPS-D telemetry relay in this chain
-// (GAGO-121). Until then a successful DERStatus PUT also published to
+// There is deliberately no GridAPPS-D telemetry relay in this chain.
+// A prior implementation had a successful DERStatus PUT also publish to
 // the platform bus from inside this request path, which coupled the
 // protocol layer to the platform layer: receiving a 2030.5 request
 // caused a bus send. The 2030.5 server's responsibility now ends at
@@ -47,7 +47,7 @@ import (
 // its own timer. Do not reintroduce a publishing middleware here; add
 // to the publisher instead.
 //
-// observe (GAGO-090) is composed OUTSIDE acl, immediately after
+// observe is composed OUTSIDE acl, immediately after
 // identityMiddleware: it records every request from a cert-verified
 // caller into hook, regardless of whether the ACL goes on to permit or
 // deny that specific request. This is deliberate: the "served !=
@@ -128,7 +128,7 @@ func identityFromContext(ctx context.Context) (lfdi, sfdi string, ok bool) {
 
 // connObserveMiddleware records every authenticated request's caller
 // LFDI and request path into hook (see internal/connobs), feeding the
-// GAGO-091 admin /api/clients endpoint. Must run AFTER identityMiddleware
+// admin /api/clients endpoint. Must run AFTER identityMiddleware
 // in the Wrap chain, since it reads the identity identityMiddleware
 // already extracted into the request context; a request with no
 // extracted identity (the fail-closed no-cert path identityMiddleware's
@@ -136,7 +136,7 @@ func identityFromContext(ctx context.Context) (lfdi, sfdi string, ok bool) {
 // key by.
 //
 // hook == nil makes this a pass-through: every call site that does not
-// wire an observer (every pre-GAGO-090 test, and any future caller of
+// wire an observer (every existing test, and any future caller of
 // buildHandler that leaves Config.Observer unset) is unaffected.
 func connObserveMiddleware(hook *connobs.Hook) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

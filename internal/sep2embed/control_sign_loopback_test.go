@@ -13,8 +13,8 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 )
 
-// GAGO-044: co-simulation loopback verification of the DERControl active
-// and reactive sign convention.
+// signLoopback: co-simulation loopback verification of the DERControl
+// active and reactive sign convention.
 //
 // This file is the Go half of the verification. It runs the REAL
 // ApplyControlDelta control path (the unit under test) for two commanded
@@ -25,25 +25,24 @@ import (
 // OpenDSS DER and reads the measured active/reactive power sign back out.
 //
 // The two halves are coupled by the capture file written by
-// TestGAGO044CaptureBridgeSetpoints when GAGO044_CAPTURE_OUT is set, so
+// TestSignLoopbackCaptureBridgeSetpoints when SIGN_LOOPBACK_CAPTURE_OUT is set, so
 // the Python side consumes the bridge's genuine output, not a hand typed
 // value.
 //
-// 2030.5 semantics asserted against (card GAGO-044, IEEE 2030.5 section
-// 10.10):
+// 2030.5 semantics asserted against (IEEE 2030.5 section 10.10):
 //   - opModTargetW positive  = discharging / exporting real power.
 //   - opModTargetW negative  = charging / importing real power.
 //   - opModTargetVar positive = over excited / injecting VARs.
 //   - opModTargetVar negative = under excited / absorbing VARs.
 
-// gago044WattsOf collapses a sep2 multiplier plus value pair to plain
+// signLoopbackPowerToFloat collapses a sep2 multiplier plus value pair to plain
 // watts (or vars), so the sign and magnitude are directly comparable to
 // the commanded intent. value times 10^multiplier.
-func gago044PowerToFloat(multiplier int8, value int16) float64 {
+func signLoopbackPowerToFloat(multiplier int8, value int16) float64 {
 	return float64(value) * math.Pow10(int(multiplier))
 }
 
-// TestGAGO044SignConventionPinned locks BOTH the two sign constants AND
+// TestSignLoopbackConventionPinned locks BOTH the two sign constants AND
 // the resulting signed direction mapping. It is the regression the card
 // asks for: an accidental flip of either constant changes the sign of a
 // commanded target and fails a concrete signed assertion here, not just a
@@ -52,17 +51,17 @@ func gago044PowerToFloat(multiplier int8, value int16) float64 {
 // The mapping under test is identity (no flip): a discharge command
 // (positive watts) must produce a positive OpModTargetW, and a charge
 // command (negative watts) a negative OpModTargetW. Same for reactive.
-func TestGAGO044SignConventionPinned(t *testing.T) {
+func TestSignLoopbackConventionPinned(t *testing.T) {
 	t.Parallel()
 
 	// Pin the constants themselves. If a future edit flips one, this
 	// fails first with a clear pointer to update the direction asserts
 	// below in the same commit and state why.
 	if activeSignFlip {
-		t.Fatal("activeSignFlip changed from the GAGO-044 verified default false; a flip inverts every commanded opModTargetW, re verify the OpenDSS direction in harness/ before changing it")
+		t.Fatal("activeSignFlip changed from the sign-loopback verified default false; a flip inverts every commanded opModTargetW, re verify the OpenDSS direction in harness/ before changing it")
 	}
 	if reactiveSignFlip {
-		t.Fatal("reactiveSignFlip changed from the GAGO-044 verified default false; a flip inverts every commanded opModTargetVar, re verify the OpenDSS direction in harness/ before changing it")
+		t.Fatal("reactiveSignFlip changed from the sign-loopback verified default false; a flip inverts every commanded opModTargetVar, re verify the OpenDSS direction in harness/ before changing it")
 	}
 
 	cases := []struct {
@@ -105,12 +104,12 @@ func TestGAGO044SignConventionPinned(t *testing.T) {
 				if base.OpModTargetW == nil {
 					t.Fatalf("control has no OpModTargetW: %+v", base)
 				}
-				got = gago044PowerToFloat(base.OpModTargetW.Multiplier, base.OpModTargetW.Value)
+				got = signLoopbackPowerToFloat(base.OpModTargetW.Multiplier, base.OpModTargetW.Value)
 			case "opModTargetVar":
 				if base.OpModTargetVar == nil {
 					t.Fatalf("control has no OpModTargetVar: %+v", base)
 				}
-				got = gago044PowerToFloat(base.OpModTargetVar.Multiplier, base.OpModTargetVar.Value)
+				got = signLoopbackPowerToFloat(base.OpModTargetVar.Multiplier, base.OpModTargetVar.Value)
 			}
 
 			// Assert the exact signed value, not just the sign: the
@@ -137,17 +136,17 @@ func signOf(v float64) int {
 	}
 }
 
-// gago044Capture is the JSON schema the Python HELICS plus OpenDSS
+// signLoopbackCapture is the JSON schema the Python HELICS plus OpenDSS
 // harness reads. Each case carries the commanded 2030.5 intent and the
 // bridge's REAL output value (read from the store after ApplyControlDelta),
 // so the co-simulation drives the genuine control path output.
-type gago044Capture struct {
-	ActiveSignFlip   bool                 `json:"activeSignFlip"`
-	ReactiveSignFlip bool                 `json:"reactiveSignFlip"`
-	Cases            []gago044CaptureCase `json:"cases"`
+type signLoopbackCapture struct {
+	ActiveSignFlip   bool                      `json:"activeSignFlip"`
+	ReactiveSignFlip bool                      `json:"reactiveSignFlip"`
+	Cases            []signLoopbackCaptureCase `json:"cases"`
 }
 
-type gago044CaptureCase struct {
+type signLoopbackCaptureCase struct {
 	ID             int     `json:"id"`
 	Name           string  `json:"name"`
 	Attribute      string  `json:"attribute"`
@@ -158,14 +157,14 @@ type gago044CaptureCase struct {
 	BridgeTargetVar float64 `json:"bridge_target_var"`
 }
 
-// TestGAGO044CaptureBridgeSetpoints runs the real control path for the
-// discharge and VAR inject cases and, when GAGO044_CAPTURE_OUT names an
+// TestSignLoopbackCaptureBridgeSetpoints runs the real control path for the
+// discharge and VAR inject cases and, when SIGN_LOOPBACK_CAPTURE_OUT names an
 // output path, writes the bridge's genuine target values there for the
 // HELICS plus OpenDSS harness to consume. With the env var unset this is
 // a plain assertion (the capture write is skipped), so a normal
 // go test ./... run does not litter files.
-func TestGAGO044CaptureBridgeSetpoints(t *testing.T) {
-	out := os.Getenv("GAGO044_CAPTURE_OUT")
+func TestSignLoopbackCaptureBridgeSetpoints(t *testing.T) {
+	out := os.Getenv("SIGN_LOOPBACK_CAPTURE_OUT")
 
 	commands := []struct {
 		id        int
@@ -177,7 +176,7 @@ func TestGAGO044CaptureBridgeSetpoints(t *testing.T) {
 		{1, "var_inject", "opModTargetVar", 3000},
 	}
 
-	capture := gago044Capture{ActiveSignFlip: activeSignFlip, ReactiveSignFlip: reactiveSignFlip}
+	capture := signLoopbackCapture{ActiveSignFlip: activeSignFlip, ReactiveSignFlip: reactiveSignFlip}
 
 	for _, cmd := range commands {
 		reg, st := twoDeviceFixture(t)
@@ -197,12 +196,12 @@ func TestGAGO044CaptureBridgeSetpoints(t *testing.T) {
 		control, _ := soleControl(t, ctx, st, scope)
 		base := control.DERControlBase
 
-		cc := gago044CaptureCase{ID: cmd.id, Name: cmd.name, Attribute: cmd.attribute, CommandedValue: cmd.commanded}
+		cc := signLoopbackCaptureCase{ID: cmd.id, Name: cmd.name, Attribute: cmd.attribute, CommandedValue: cmd.commanded}
 		if base != nil && base.OpModTargetW != nil {
-			cc.BridgeTargetW = gago044PowerToFloat(base.OpModTargetW.Multiplier, base.OpModTargetW.Value)
+			cc.BridgeTargetW = signLoopbackPowerToFloat(base.OpModTargetW.Multiplier, base.OpModTargetW.Value)
 		}
 		if base != nil && base.OpModTargetVar != nil {
-			cc.BridgeTargetVar = gago044PowerToFloat(base.OpModTargetVar.Multiplier, base.OpModTargetVar.Value)
+			cc.BridgeTargetVar = signLoopbackPowerToFloat(base.OpModTargetVar.Multiplier, base.OpModTargetVar.Value)
 		}
 		capture.Cases = append(capture.Cases, cc)
 	}
@@ -228,7 +227,7 @@ func TestGAGO044CaptureBridgeSetpoints(t *testing.T) {
 	if err := os.WriteFile(out, b, 0o644); err != nil {
 		t.Fatalf("write capture to %s: %v", out, err)
 	}
-	t.Logf("GAGO-044 bridge capture written to %s", out)
+	t.Logf("sign-loopback bridge capture written to %s", out)
 }
 
 // Compile time guard: the capture struct is only meaningful while the

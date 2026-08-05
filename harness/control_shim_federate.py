@@ -1,9 +1,9 @@
-"""GAGO-044 HELICS federate: the bridge control shim.
+"""Sign loopback HELICS federate: the bridge control shim.
 
 This value federate stands in for the bridge's shipped control publish
 path. It does NOT reimplement the sign logic: it loads bridge_capture.json,
 the genuine output of the real ApplyControlDelta control path (written by
-the Go test TestGAGO044CaptureBridgeSetpoints), and drives those exact
+the Go test TestSignLoopbackCaptureBridgeSetpoints), and drives those exact
 target values into the federation. The OpenDSS federate then reports what
 the DER physically does with them.
 

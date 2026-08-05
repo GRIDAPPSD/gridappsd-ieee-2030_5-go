@@ -37,7 +37,7 @@ type DERStatusSnapshot struct {
 //
 // This is the read seam the GridAPPS-D telemetry publisher
 // (internal/telemetrypub) polls on its own timer. It replaces the
-// pre-GAGO-121 arrangement, where a DERStatus PUT itself triggered a bus
+// prior arrangement, where a DERStatus PUT itself triggered a bus
 // send from inside the protocol request path: the 2030.5 server's
 // responsibility now ends at storing the resource, and the store is the
 // seam between the protocol layer and the platform layer, exactly as the

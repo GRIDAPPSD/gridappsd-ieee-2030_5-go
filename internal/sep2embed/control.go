@@ -17,7 +17,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
-// GAGO-034 DOWN path: GridAPPS-D control deltas -> DERControl.
+// DOWN path: GridAPPS-D control deltas -> DERControl.
 //
 // A ControlDelta is the same shape internal/cim/diff already builds for
 // the platform's simulation input topic (diff.Difference: Object,
@@ -220,7 +220,7 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // (internal/server/test_mutations.go) end to end: same scope key, same
 // notify target, same NotificationStatusChanged.
 //
-// Owner scoping (data-invariants / GAGO-043): delta.Object is a CIM
+// Owner scoping (data-invariants): delta.Object is a CIM
 // device mRID, resolved to the owning device's LFDI via reg (the SAME
 // bidirectional mRID<->LFDI mapping seed.go seeds stores.EndDevices
 // from; no parallel device map is introduced here). The resulting
@@ -237,7 +237,7 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // explicit, currently-no-op activeSignFlip / reactiveSignFlip seam (see
 // their doc comment): no other unit or sign conversion happens.
 //
-// SUPERSEDE SEMANTICS (GAGO-133). Every delta issues a NEW DERControl,
+// SUPERSEDE SEMANTICS. Every delta issues a NEW DERControl,
 // carrying exactly the one control mode the delta names, with its own mRID,
 // its own href and a creationTime strictly newer than any overlapping control
 // on the same mode. No previously issued control is ever rewritten. Prior
@@ -261,7 +261,7 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // rule t)1) and t)2) p.92, rather than by being copied forward into a
 // rewritten record.
 //
-// TEMPORAL PLACEMENT (GAGO-131 / IEEECORE-041). Every control written here
+// TEMPORAL PLACEMENT. Every control written here
 // carries a creationTime and an interval, both minOccurs=1 on Event
 // (sep.xsd:5578 and :5584). Neither is decoration and neither can be left to
 // a downstream layer:
@@ -292,7 +292,7 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // nextEventCreationTime for why the bump exists and what bounds it, and
 // newEventStatus for the two clauses that fix the other two fields.
 //
-// CHANGE BOUND (GAGO-136). A delta whose payload is byte-for-byte the payload
+// CHANGE BOUND. A delta whose payload is byte-for-byte the payload
 // already in force for its own control modes issues NOTHING: no event, no
 // store write, no subscriber notification. Without that test the bound is a
 // bound on the delta RATE rather than on CHANGE, because a restatement one
@@ -310,14 +310,14 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // setpoint uncommanded for as long as it kept restating it. See
 // restatesControlInForce.
 //
-// END OF LIFE (GAGO-134). The interval stamped here is also what takes the
+// END OF LIFE. The interval stamped here is also what takes the
 // control back OUT of service: lifecycle.go removes it at the close of its
 // maximum Effective Scheduled Period. That removal is what bounds the
 // collection this function appends to, and it is not performed here; the
 // callers that drive it are Embed.ApplyControlDelta and Embed.Run's sweep.
 //
 // policy carries all three operator-configured inputs. DefaultControl is
-// GAGO-050's seed value for the DERProgram's DefaultDERControl singleton,
+// the seed value for the DERProgram's DefaultDERControl singleton,
 // forwarded unchanged to ensureDERProgram. Program is the matching policy
 // for the DERProgram itself; since boot seeding now creates a program for
 // every registered device, ensureDERProgram below is a fallback for a device
@@ -340,8 +340,8 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		return fmt.Errorf("%w: attribute %q (want prefix %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix)
 	}
 
-	// edevID must be the device's ADVERTISED store id, which since
-	// IEEECORE-URLINDEX is the opaque URL index rather than the LFDI.
+	// edevID must be the device's ADVERTISED store id: the opaque URL
+	// index rather than the LFDI.
 	// reg.Get resolves the delta's mRID to its Entry; the index allocator
 	// then maps that same mRID (its device key, as used by seed.go) to the
 	// id the device is actually seeded and advertised under.
@@ -406,7 +406,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// only one of the three that may differ, by the bounded tie-break.
 	wallUnix := policy.Control.now().UTC().Unix()
 
-	// GAGO-136. Nothing is written for a delta that restates the setpoint
+	// The change bound: nothing is written for a delta that restates the setpoint
 	// already in force. This runs BEFORE the creation instant is chosen and
 	// before anything is written, so a restatement costs one List and one
 	// comparison and leaves the served collection byte-identical: the event
@@ -522,7 +522,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 // burst of same-second deltas still issues controls that take effect
 // immediately, and no window is shifted or shortened.
 //
-// BOUNDED (GAGO-137). The advance is capped at maxCreationTimeLeadSeconds
+// BOUNDED. The advance is capped at maxCreationTimeLeadSeconds
 // ahead of the wall clock and a delta that would exceed it is refused with
 // ErrControlDeltaRateUnrepresentable. Without the cap the stamp drifts forward
 // without limit under sustained same-mode deltas above one per second, and the
@@ -581,14 +581,14 @@ func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wa
 // sustained demand for sub-second event ordering, which IEEE 2030.5 has no way
 // to express: TimeType is whole seconds (sep.xsd:6382).
 //
-// The GAGO-136 change bound sits in front of this one, so only a delta that
+// The change bound sits in front of this one, so only a delta that
 // actually CHANGES the commanded value can consume any of this budget.
 const maxCreationTimeLeadSeconds int64 = 10
 
 // restatesControlInForce reports whether base is a byte-for-byte restatement
 // of the control this device is already running for base's own control modes.
 //
-// It is the change bound GAGO-136 adds: an issued DERControl is an Event, and
+// It is what the change bound adds: an issued DERControl is an Event, and
 // re-issuing one that commands what is already commanded is not a change the
 // standard has any notion of. 2018 clause 10.2.5.6 p.95 has a client discard a
 // duplicate Event outright, and CSIP v2.0 section 4.4.1 lines 282 to 283
@@ -672,7 +672,7 @@ func restatesControlInForce(prior []sep2.DERControl, base *sep2.DERControlBase, 
 // Scheduled Period (rule r) p.91, and 2018 Annex B p.160, which makes
 // maintaining a Superseded event for that period a server responsibility).
 // Removing it when that period ends is a separate lifecycle concern and is
-// deliberately not done here: it lives in lifecycle.go (GAGO-134), which
+// deliberately not done here: it lives in lifecycle.go, which
 // keys on the interval alone. The two do not interact, because an event
 // whose window has closed overlaps nothing and so supersedes nothing, and a
 // superseded event that later ends keeps the status 4 it legitimately held.
@@ -740,7 +740,7 @@ func supersedePriorControls(ctx context.Context, controlStore store.ResourceStor
 // server-of-record's documented contract; it is core's existing
 // behavior, not something introduced here).
 //
-// GAGO-050: the same lazy-creation moment also seeds this program's
+// The same lazy-creation moment also seeds this program's
 // DefaultDERControl singleton (into stores.DefaultDERControls, keyed by
 // derControlScope + singletonKey, mirroring core's own
 // DefaultDERControlHandler parent-key derivation) and points the new
@@ -833,7 +833,7 @@ func createDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mrid
 
 // activeSignFlip and reactiveSignFlip are the explicit, testable seam
 // for the CIM-vs-IEEE-2030.5 sign convention on the real/reactive power
-// target mappings below (Vance, power-systems review of GAGO-034 PR #9,
+// target mappings below (Vance, power-systems review, PR #9,
 // HIGH-2). GridAPPS-D's PowerElectronicsConnection p/q carries the
 // classic CIM load-vs-generator sign ambiguity: some CIM profiles and
 // tools report p/q positive as consumed (load convention), others
@@ -847,9 +847,9 @@ func createDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mrid
 // assumes the GridAPPS-D side is ALREADY generator-positive, matching
 // IEEE 2030.5 with no conversion needed. This is Vance's placeholder,
 // NOT a verified physical-direction claim: it is unverified pending a
-// co-simulation loopback (GAGO-044: Hale runs OpenDSS and asserts the
+// co-simulation loopback (Hale runs OpenDSS and asserts the
 // inverter actually moves in the commanded direction end to end). Until
-// GAGO-044 closes, this DOWN path is dev-only and MUST NOT be pointed
+// that verification closes, this DOWN path is dev-only and MUST NOT be pointed
 // at a real inverter. Flipping either constant changes the sign of
 // every OpModTargetW / OpModTargetVar value this bridge writes; see
 // TestSignFlipConstantsPinnedEffect, which locks today's numeric effect
@@ -881,7 +881,7 @@ const (
 // rated capability (DERCapability), and this bridge's DERCapabilities
 // store exists but is never seeded (no rtg values available yet), so
 // there is no reference to convert against. Percent-mode support
-// returns once DERCapability rtg values are seeded: GAGO-045.
+// returns once DERCapability rtg values are seeded.
 func applyDERControlBaseField(base *sep2.DERControlBase, field string, value any) error {
 	switch field {
 	case "opModTargetW":

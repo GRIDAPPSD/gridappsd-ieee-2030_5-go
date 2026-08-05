@@ -6,7 +6,7 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 )
 
-// Supersession of issued DERControls (GAGO-133).
+// Supersession of issued DERControls.
 //
 // WHY THIS FILE EXISTS. The bridge used to keep exactly one DERControl per
 // device, at a fixed store key, whose mRID was a pure function of (kind,
@@ -87,9 +87,9 @@ const (
 // this value from operator configuration (sep2config.SEP2Policy) and plumbing
 // it to ApplyControlDelta, not of finding and rewriting scattered 2018
 // assumptions. No such configuration seam exists today and none is invented
-// here: see GAGO-133's report for what a 2023 mode would additionally need
+// here: a 2023 mode would additionally need
 // beyond this constant (chiefly the ActiveDERControlListLink deprecation and
-// the EventStatus 5 Completed lifecycle, which belongs to GAGO-134).
+// the EventStatus 5 Completed lifecycle, tracked separately).
 const servedEventEdition = edition2018
 
 // derControlModeName is one entry in the table of DERControlBase control
@@ -251,7 +251,7 @@ func supersedes(existing, incoming sep2.DERControl) modeRelation {
 // wall-clock instant wallUnix.
 //
 // currentStatus is EVALUATED against the two instants rather than assumed
-// (GAGO-137). sep.xsd:5603 fixes both directions:
+// sep.xsd:5603 fixes both directions:
 //
 //   - start at or before now: "this status SHALL never be indicated, the event
 //     SHALL start with a status of Active". A server that stamped 0 Scheduled
