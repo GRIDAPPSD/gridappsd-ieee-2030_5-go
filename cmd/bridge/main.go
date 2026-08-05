@@ -63,6 +63,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
 
@@ -321,8 +322,30 @@ func run(ctx context.Context, cfg config) error {
 		telemetryRun = pub.Run
 	}
 
+	// historyStore is the bounded in-memory time-series store backing the
+	// admin UI's read only telemetry history endpoint
+	// (internal/adminui's history handler). Always constructed, even
+	// with no history topics configured: its zero value is ready to
+	// use and empty, which is exactly the state the admin UI's response
+	// represents when the feature is off.
+	historyStore := &telemetryhistory.Store{}
+	if len(cfg.SEP2TelemetryHistoryTopics) == 0 {
+		log.Printf("bridge: no -sep2-telemetry-history-topics configured; telemetry history disabled")
+	} else {
+		// The history subscriber is an independent, best-effort read
+		// path: it does not join runBridgeRunners' cancel-on-any-exit
+		// chain (see runHistorySubscriber's doc comment), because a
+		// subscribe failure here is diagnostic, not fatal to bridge
+		// startup, and it uses its own gridappsdclient.Subscriber
+		// rather than sharing stompRun's Supervisor, so it can never
+		// disturb the existing pump or control-delta subscriptions.
+		go func() {
+			_ = runHistorySubscriber(ctx, gridappsdclient.NewSubscriber(bus), historyStore, cfg.SEP2TelemetryHistoryTopics)
+		}()
+	}
+
 	var adminUIRun func(context.Context) error
-	adminSrv, err := adminui.New(adminUIConfig(cfg), reg, embed, embed, &controlHook, embed, bus, &connHook)
+	adminSrv, err := adminui.New(adminUIConfig(cfg), reg, embed, embed, &controlHook, embed, bus, &connHook, historyStore)
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
 		log.Printf("bridge: admin UI disabled, SEP2_ADMIN_UI_KEY unset")
@@ -669,6 +692,7 @@ func adminUIConfig(cfg config) adminui.Config {
 		FeederMRID:       cfg.FeederMRID,
 		SimulationID:     cfg.SimulationID,
 		SORLink:          cfg.SEP2AdminUISORLink,
+		HistoryTopics:    cfg.SEP2TelemetryHistoryTopics,
 	}
 }
 
