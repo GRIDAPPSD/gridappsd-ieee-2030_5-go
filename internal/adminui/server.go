@@ -32,6 +32,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
 // ErrDisabled is returned by New when Config.Key is empty. This is the
@@ -100,6 +101,17 @@ type Config struct {
 	// It is a URL, not a secret, and is safe to expose over /api/health
 	// unlike Key. Empty means unset: no link, no error.
 	SORLink string
+
+	// HistoryTopics is the operator-configured list of GridAPPS-D
+	// difference-message destinations the bridge subscribes to for the
+	// telemetry history view (config.SEP2TelemetryHistoryTopics). Plain
+	// display/config data, not a secret, same posture as FeederMRID and
+	// SimulationID: exposed via the history endpoint's "configured" and
+	// "topics" fields so a client can distinguish "this feature is off"
+	// (empty) from "this feature is on but nothing has arrived yet"
+	// (non-empty, zero series currently retained). Empty means the
+	// history endpoint always returns a well-formed, empty result.
+	HistoryTopics []string
 }
 
 // RegistrySource is the minimal read surface Server needs from
@@ -154,6 +166,15 @@ type ClientObserverSource interface {
 	Snapshot() connobs.Snapshot
 }
 
+// HistorySource is the minimal read surface Server needs from
+// *telemetryhistory.Store for the /api/history endpoint: every currently
+// retained series, oldest sample first. Snapshot returns a defensive
+// copy (see telemetryhistory.Store.Snapshot's own contract), so
+// handleHistory never mutates the store's own state.
+type HistorySource interface {
+	Snapshot() []telemetryhistory.SeriesSnapshot
+}
+
 // Server is the admin UI's HTTP server: a bound, not yet serving
 // listener, plus the read only handler chain built from the injected
 // sources above. Construct with New; start serving with Run.
@@ -166,6 +187,7 @@ type Server struct {
 	identity IdentitySource
 	stomp    StompSource
 	clients  ClientObserverSource
+	history  HistorySource
 
 	startedAt time.Time
 
@@ -184,15 +206,15 @@ type Server struct {
 // A non-loopback cfg.Addr without cfg.AllowNonLoopback is rejected here,
 // before any socket is opened: fail closed on the loopback posture
 // check, exactly as fail closed applies to the missing-token case.
-func New(cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource, clients ClientObserverSource) (*Server, error) {
+func New(cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource, clients ClientObserverSource, history HistorySource) (*Server, error) {
 	if cfg.Key == "" {
 		return nil, ErrDisabled
 	}
 	if cfg.Addr == "" {
 		return nil, errors.New("adminui: Config.Addr is required")
 	}
-	if reg == nil || devices == nil || programs == nil || flow == nil || identity == nil || stomp == nil || clients == nil {
-		return nil, errors.New("adminui: registry, devices, programs, flow, identity, stomp, and clients sources are all required")
+	if reg == nil || devices == nil || programs == nil || flow == nil || identity == nil || stomp == nil || clients == nil || history == nil {
+		return nil, errors.New("adminui: registry, devices, programs, flow, identity, stomp, clients, and history sources are all required")
 	}
 
 	loopback, err := isLoopbackHost(cfg.Addr)
@@ -220,6 +242,7 @@ func New(cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERPr
 		identity:  identity,
 		stomp:     stomp,
 		clients:   clients,
+		history:   history,
 		startedAt: time.Now(),
 		ln:        ln,
 	}

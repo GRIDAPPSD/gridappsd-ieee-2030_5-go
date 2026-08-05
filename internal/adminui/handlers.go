@@ -8,6 +8,7 @@ import (
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
 // timeFormat is the fixed RFC 3339 (millisecond precision, UTC offset
@@ -41,6 +42,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("/api/served/derprogram", s.handleServedDERPrograms)
 	mux.HandleFunc("/api/controlflow", s.handleControlFlow)
 	mux.HandleFunc("/api/clients", s.handleClients)
+	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.Handle("/", s.spaHandler())
 	return mux
 }
@@ -403,6 +405,110 @@ func (s *Server) handleClients(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, clientsResponse{Clients: clients, Handshakes: handshakes})
+}
+
+// historySampleResponse is one retained point on a series, RFC 3339
+// formatted like every other timestamp field in this package. At is the
+// envelope's own publisher-stamped receipt time
+// (telemetryhistory.Sample.At), never a device-reported value: see
+// telemetryhistory.DecodeMessage's doc comment for why a device
+// dateTime is never used as a sample's timestamp.
+type historySampleResponse struct {
+	At    string  `json:"at"`
+	Value float64 `json:"value"`
+}
+
+// historySeriesResponse mirrors one telemetryhistory.SeriesSnapshot,
+// enriched with the Lane and Unit telemetryhistory.MetaFor derives from
+// the attribute name, so a client is never required to infer either
+// itself. SampleCount and Cap together let a client distinguish a
+// TRUNCATED window (SampleCount == Cap: the ring is full and the oldest
+// sample has already been evicted) from a SHORT one (SampleCount < Cap:
+// still filling).
+type historySeriesResponse struct {
+	Object      string                  `json:"object"`
+	Attribute   string                  `json:"attribute"`
+	Lane        string                  `json:"lane"`
+	Unit        string                  `json:"unit"`
+	SampleCount int                     `json:"sampleCount"`
+	Cap         int                     `json:"cap"`
+	Samples     []historySampleResponse `json:"samples"`
+}
+
+// historyResponse is the whole /api/history payload.
+//
+// Configured and Topics together are what let a client distinguish "no
+// data yet" from "this series/feature does not exist": Configured=false
+// (Topics empty) means the operator has not enabled telemetry history at
+// all, so Series is permanently empty and always will be, matching this
+// package's other "unconfigured returns a well-formed empty result, not
+// an error" endpoints. Configured=true with an empty Series list means
+// the feature is running but no sample has arrived yet, a genuinely
+// different, transient state.
+//
+// SeriesCap is the store's own MaxSeries ceiling (how many DISTINCT
+// series the store retains at once, across every configured topic), not
+// a per-series sample cap; each entry in Series carries its own Cap for
+// that.
+type historyResponse struct {
+	Configured bool                    `json:"configured"`
+	Topics     []string                `json:"topics"`
+	SeriesCap  int                     `json:"seriesCap"`
+	Series     []historySeriesResponse `json:"series"`
+}
+
+// handleHistory reports every currently retained telemetry-history
+// series. It reads a single defensive-copy Snapshot from s.history and
+// never mutates it or the store's own state; no request parameter is
+// ever read, so no query string can raise a cap, widen retention, or
+// add a series: the response reflects exactly, and only, what the
+// bridge has already decided to retain via its own configuration.
+//
+// A series whose attribute telemetryhistory.MetaFor cannot classify is
+// omitted (logged, not serialized): the store can only ever hold
+// samples telemetryhistory.DecodeMessage itself allowlisted, so this
+// is not expected to fire in production, and exists as a defensive
+// guard against a future decoder/allowlist drift being silently
+// misrepresented to a client rather than surfaced.
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	snap := s.history.Snapshot()
+
+	out := historyResponse{
+		Configured: len(s.cfg.HistoryTopics) > 0,
+		Topics:     s.cfg.HistoryTopics,
+		SeriesCap:  telemetryhistory.MaxSeries,
+		Series:     make([]historySeriesResponse, 0, len(snap)),
+	}
+	if out.Topics == nil {
+		out.Topics = []string{}
+	}
+
+	for _, series := range snap {
+		meta, ok := telemetryhistory.MetaFor(series.Key.Attribute)
+		if !ok {
+			log.Printf("adminui: history series object=%q attribute=%q has no lane/unit classification; omitting from response",
+				series.Key.Object, series.Key.Attribute)
+			continue
+		}
+		samples := make([]historySampleResponse, 0, len(series.Samples))
+		for _, sample := range series.Samples {
+			samples = append(samples, historySampleResponse{
+				At:    time.Unix(sample.At, 0).UTC().Format(timeFormat),
+				Value: sample.Value,
+			})
+		}
+		out.Series = append(out.Series, historySeriesResponse{
+			Object:      series.Key.Object,
+			Attribute:   series.Key.Attribute,
+			Lane:        string(meta.Lane),
+			Unit:        meta.Unit,
+			SampleCount: len(series.Samples),
+			Cap:         telemetryhistory.SamplesPerSeries,
+			Samples:     samples,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, out)
 }
 
 // writeJSON encodes v as the response body with the given status code
