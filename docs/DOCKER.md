@@ -27,9 +27,9 @@ not something you can `docker pull` today.
 The intended shape:
 
 - **Single-stage, distroless, non-root.** The Go binary is compiled
-  outside the image build (in CI, where the private-module
+  outside the image build (in CI, where the module-access
   credentials already live) and `COPY`'d in. The image build itself
-  never receives a credential, and no private module source ever
+  never receives a credential, and no GRIDAPPSD module source ever
   enters a layer.
 - **No `latest` tag**, and no branch or `main` tags. Only release-tag
   images are pushed, so a compose stack never changes under an

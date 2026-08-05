@@ -4,9 +4,6 @@
 [![CodeQL](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/codeql.yml)
 [![Go 1.26.3](https://img.shields.io/badge/go-1.26.3-00ADD8?logo=go)](https://go.dev)
 
-This repository is private. The workflow badges above render for viewers
-with repository access and show nothing for anonymous visitors.
-
 Go bridge between the IEEE 2030.5 protocol and the GridAPPS-D platform.
 It connects to the GridAPPS-D message bus over STOMP, discovers a
 feeder's inverter, solar, and battery DERs from the platform's CIM
@@ -21,7 +18,7 @@ available for observing what the bridge is doing.
 
 - Go 1.26.3.
 - GitHub access to the `GRIDAPPSD` org, with read access to two
-  private Go modules this bridge depends on:
+  Go modules this bridge depends on:
   `github.com/GRIDAPPSD/gridappsd-go` and
   `github.com/GRIDAPPSD/ieee-2030_5-core-go`. Set
   `GOPRIVATE=github.com/GRIDAPPSD/*` before building or running `go

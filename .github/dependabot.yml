@@ -20,17 +20,18 @@ updates:
       - dependency-type: "all"
 
   # Go module dependency bumps: check for updates weekly.
-  # Note: the bridge imports two private GRIDAPPSD modules, github.com/
-  # GRIDAPPSD/gridappsd-go and github.com/GRIDAPPSD/ieee-2030_5-core-go.
-  # Dependabot cannot resolve private modules without a dedicated
-  # registry entry plus credential, which is not configured here; the
-  # CI App token minted in ci.yml and release.yml is a separate
-  # credential path scoped to Actions workflow runs, not to Dependabot.
-  # GITHUB_TOKEN with read:packages would not help either: it has no
-  # cross-repo read on a private sibling, and read:packages is a
-  # registry scope, irrelevant to a direct-to-git module fetch. Both
-  # private pins therefore stay manual bumps. This entry only updates
-  # the public deps.
+  # Note: the bridge imports two GRIDAPPSD modules, github.com/
+  # GRIDAPPSD/gridappsd-go and github.com/GRIDAPPSD/ieee-2030_5-core-go,
+  # both resolved over authenticated git rather than the public module
+  # proxy. Dependabot cannot resolve modules that require authenticated
+  # git access without a dedicated registry entry plus credential,
+  # which is not configured here; the CI App token minted in ci.yml and
+  # release.yml is a separate credential path scoped to Actions workflow
+  # runs, not to Dependabot. GITHUB_TOKEN with read:packages would not
+  # help either: it has no cross-repo read on a sibling repository, and
+  # read:packages is a registry scope, irrelevant to a direct-to-git
+  # module fetch. Both GRIDAPPSD pins therefore stay manual bumps. This
+  # entry only updates the other, proxy-resolvable deps.
   - package-ecosystem: gomod
     directory: /
     schedule:
