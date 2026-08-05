@@ -4,16 +4,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/xml"
 	"errors"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 
@@ -309,11 +314,16 @@ func assertOnlyCertFiles(t *testing.T, certDir string, want ...string) {
 	}
 }
 
-// TestEnsureServerIdentityRefusesEmptyUnwritableDir covers the state an
-// operator hits when a bind mount is read-only but empty, typically
-// because the host path they meant to mount does not exist. There is
-// nothing to load and nothing can be minted, so the process must die
-// loudly, naming what is missing and saying it could not write.
+// TestEnsureServerIdentityRefusesEmptyUnwritableDir covers the state a
+// DEVELOPMENT host hits when its cert directory is empty and it cannot
+// write there: nothing to load, nothing that can be minted, so the
+// process must die loudly, naming what is missing and saying it could
+// not write.
+//
+// The mode here is dev-mint deliberately. Preprovisioned mode never
+// reaches the writability question at all, because it is forbidden to
+// write whether or not it could; that path is
+// TestPreprovisionedModeRefusesEmptyWritableDir below.
 func TestEnsureServerIdentityRefusesEmptyUnwritableDir(t *testing.T) {
 	t.Parallel()
 	requireUnprivileged(t)
@@ -324,7 +334,7 @@ func TestEnsureServerIdentityRefusesEmptyUnwritableDir(t *testing.T) {
 	}
 	chmodForTest(t, certDir, 0o500)
 
-	_, _, _, err := ensureServerIdentity(certDir, DeviceCertModePreprovisioned)
+	_, _, _, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err == nil {
 		t.Fatal("ensureServerIdentity on an empty unwritable directory: want an error, got nil")
 	}
@@ -334,20 +344,83 @@ func TestEnsureServerIdentityRefusesEmptyUnwritableDir(t *testing.T) {
 
 	msg := err.Error()
 	// Every required file is named, so an operator knows what to supply.
-	for _, want := range requiredServerCertFiles(DeviceCertModePreprovisioned) {
+	for _, want := range requiredServerCertFiles(DeviceCertModeDevMint) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error message does not name the missing %s: %v", want, err)
 		}
-	}
-	// A mode that never signs must not tell an operator to supply the CA
-	// signing key: doing so would be advice to put it on the host.
-	if strings.Contains(msg, caKeyFileName) {
-		t.Errorf("error message names %s, which a non-signing mode does not require: %v", caKeyFileName, err)
 	}
 	if !strings.Contains(msg, "written to") {
 		t.Errorf("error message does not say the directory could not be written to: %v", err)
 	}
 
+	assertOnlyCertFiles(t, certDir)
+}
+
+// TestPreprovisionedModeRefusesEmptyWritableDir pins the rule that makes
+// a read-only certificate volume the SUPPORTED shape for preprovisioned
+// mode rather than a shape that happens to work: this mode never writes
+// under the certificate directory, for any reason, so an empty directory
+// is a fatal startup error EVEN THOUGH it is writable and a mint would
+// succeed.
+//
+// The directory-contents assertion is not redundant with the error
+// check. An error can be returned after a partial write, and a refusal
+// that left a self-signed CA behind would be the same defect wearing a
+// different hat.
+func TestPreprovisionedModeRefusesEmptyWritableDir(t *testing.T) {
+	t.Parallel()
+
+	certDir := filepath.Join(t.TempDir(), "certs")
+	if err := os.MkdirAll(certDir, certDirPerm); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Load-bearing precondition: this directory really is writable, so
+	// the refusal below is about the mode and not about permissions.
+	if err := certDirWritable(certDir); err != nil {
+		t.Fatalf("test setup: directory must be writable for this test to mean anything: %v", err)
+	}
+
+	_, _, _, err := ensureServerIdentity(certDir, DeviceCertModePreprovisioned)
+	if err == nil {
+		t.Error("preprovisioned mode against an empty writable directory: want a fatal error, got nil")
+	} else {
+		if !errors.Is(err, errCertDirWriteForbidden) {
+			t.Errorf("error = %v, want one matching errCertDirWriteForbidden", err)
+		}
+		if errors.Is(err, errCertDirNotWritable) {
+			t.Errorf("the refusal blamed writability; the directory is writable and the mode is the reason: %v", err)
+		}
+
+		msg := err.Error()
+		// Actionable without reading source: the mode, the directory,
+		// every required file, what was found, and the never-creates rule.
+		if !strings.Contains(msg, DeviceCertModePreprovisioned.String()) {
+			t.Errorf("error message does not name the mode: %v", err)
+		}
+		if !strings.Contains(msg, certDir) {
+			t.Errorf("error message does not name the directory it looked in: %v", err)
+		}
+		for _, want := range requiredServerCertFiles(DeviceCertModePreprovisioned) {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error message does not name the required %s: %v", want, err)
+			}
+		}
+		if !strings.Contains(msg, "found (none)") {
+			t.Errorf("error message does not say what it found: %v", err)
+		}
+		if !strings.Contains(msg, "never creates certificate material") {
+			t.Errorf("error message does not state that this mode never creates material: %v", err)
+		}
+		// A mode that never signs must not advise an operator to put the
+		// CA signing key on the host.
+		if strings.Contains(msg, caKeyFileName) {
+			t.Errorf("error message names %s, which this mode neither requires nor should be told to supply: %v", caKeyFileName, err)
+		}
+	}
+
+	// The directory is still exactly as empty as it was. Not "no cert
+	// files": no entries at all, so a stray probe or temp file counts.
 	assertOnlyCertFiles(t, certDir)
 }
 
@@ -728,4 +801,366 @@ func TestDeviceCertLookupReevaluatesDirectoryPerRequest(t *testing.T) {
 	// operator's certificate.
 	assertNoFile(t, certDir, caKeyFileName)
 	assertOnlyCertFiles(t, devicesDir, base+".x509")
+}
+
+// TestDeviceMintNeverOverwritesExistingKey is the device-layer twin of
+// TestEnsureServerIdentityNeverOverwritesOperatorMaterial, and it exists
+// because the server-identity fix alone would have left the same defect
+// class open one directory down.
+//
+// ensureDeviceCert decides load-vs-mint on the CERTIFICATE file alone,
+// then writes the certificate AND the private key. A directory holding a
+// device key but not its certificate (a prior mint that died between the
+// two writes, or an operator staging keys) therefore had that key
+// renamed over by the mint. The pair is partially populated in exactly
+// the sense the server cert dir can be, and it gets the same answer:
+// refuse, write nothing.
+func TestDeviceMintNeverOverwritesExistingKey(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const mrid = "mrid-key-staged-without-cert"
+
+	// Establish the dev CA the mint would sign against, so the failure
+	// under test is the key write and not a missing signer.
+	if _, _, _, err := ensureServerIdentity(dir, DeviceCertModeDevMint); err != nil {
+		t.Fatalf("ensureServerIdentity: %v", err)
+	}
+
+	base, err := deviceCertFileBase(mrid)
+	if err != nil {
+		t.Fatalf("deviceCertFileBase: %v", err)
+	}
+	devicesDir := filepath.Join(dir, deviceCertDirName)
+	if err := os.MkdirAll(devicesDir, certDirPerm); err != nil {
+		t.Fatalf("MkdirAll(devicesDir): %v", err)
+	}
+
+	// The operator's key, at the path the mint writes to. Its certificate
+	// is deliberately absent: that absence is the mint signal.
+	keyFile := filepath.Join(devicesDir, base+".pem")
+	operatorKey := []byte("-----BEGIN PRIVATE KEY-----\nstaged by the operator\n-----END PRIVATE KEY-----\n")
+	if err := os.WriteFile(keyFile, operatorKey, certFilePerm); err != nil {
+		t.Fatalf("WriteFile(operator key): %v", err)
+	}
+
+	// t.Error, not t.Fatal: the byte assertion below is the real subject,
+	// and a run that returns no error must still report whether the key
+	// survived. Failing fast here would hide exactly the half that
+	// matters.
+	_, err = EnsureDeviceIdentities(dir, DeviceCertModeDevMint, []string{mrid})
+	if err == nil {
+		t.Error("mint over a staged device key: want a loud failure, got nil")
+	} else {
+		if !errors.Is(err, errCertDirPartial) {
+			t.Errorf("error = %v, want one matching errCertDirPartial", err)
+		}
+		if !strings.Contains(err.Error(), mrid) {
+			t.Errorf("error message does not name the mRID: %v", err)
+		}
+		if !strings.Contains(err.Error(), keyFile) {
+			t.Errorf("error message does not name the key path: %v", err)
+		}
+	}
+
+	// The byte assertion is the point.
+	got, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatalf("ReadFile(keyFile): %v", err)
+	}
+	if string(got) != string(operatorKey) {
+		t.Errorf("the staged key was rewritten: %d bytes on disk, want the operator's original %d\n on disk: %.60q\noriginal: %.60q",
+			len(got), len(operatorKey), got, operatorKey)
+	}
+
+	// And the refusal wrote nothing at all: no half-minted certificate
+	// left paired with a key it does not match.
+	assertOnlyCertFiles(t, devicesDir, base+".pem")
+}
+
+// snapshotTree records every file under root by relative path and
+// SHA-256 of its contents, so a later call can prove nothing anywhere in
+// the tree was created, removed or modified.
+//
+// Hashing the whole tree rather than checking a list of expected write
+// sites is deliberate. Enumerating write sites only proves the sites
+// somebody thought of; hashing proves the property.
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		if d.IsDir() {
+			out[rel+string(filepath.Separator)] = "<dir>"
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		sum := sha256.Sum256(data)
+		out[rel] = hex.EncodeToString(sum[:])
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(%q): %v", root, err)
+	}
+	return out
+}
+
+// assertTreeUnchanged compares a later snapshot against an earlier one
+// and reports every difference by path.
+func assertTreeUnchanged(t *testing.T, before, after map[string]string, what string) {
+	t.Helper()
+
+	for path, sum := range after {
+		prior, existed := before[path]
+		switch {
+		case !existed:
+			t.Errorf("%s: %q was created", what, path)
+		case prior != sum:
+			t.Errorf("%s: %q was modified", what, path)
+		}
+	}
+	for path := range before {
+		if _, still := after[path]; !still {
+			t.Errorf("%s: %q was removed", what, path)
+		}
+	}
+}
+
+// installPreprovisionedDevice writes one operator-supplied device
+// certificate under devicesDir, as raw DER at <base>.x509 and with NO
+// private key beside it, which is the production shape: the device holds
+// its own key, the server only ever needs the certificate.
+func installPreprovisionedDevice(t *testing.T, devicesDir, mrid string, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, serial string) (certPEM, keyPEM []byte, lfdi string) {
+	t.Helper()
+
+	certPEM, keyPEM, lfdi = mintDeviceIdentity(t, caCert, caKey, serial)
+	certDER, err := sep2cert.CertificateDER(certPEM)
+	if err != nil {
+		t.Fatalf("CertificateDER(%s): %v", serial, err)
+	}
+	base, err := deviceCertFileBase(mrid)
+	if err != nil {
+		t.Fatalf("deviceCertFileBase(%q): %v", mrid, err)
+	}
+	if err := os.WriteFile(filepath.Join(devicesDir, base+".x509"), certDER, certFilePerm); err != nil {
+		t.Fatalf("WriteFile(device cert for %q): %v", mrid, err)
+	}
+	return certPEM, keyPEM, lfdi
+}
+
+// TestPreprovisionedFlowEndToEndAgainstReadOnlyCertDir is the test that
+// carries the never-writes rule, and it is worth more than the code that
+// implements it: the rule is enforced by the FILESYSTEM here, not by
+// assertions about which branches were taken.
+//
+// The certificate directory and its devices subdirectory are made
+// genuinely read-only, and then the entire preprovisioned flow runs
+// against them: startup identity resolution, per-device identity
+// resolution, listener bind, a client walk to the registration resource,
+// and a second walk. Any write anywhere along that path, including one
+// added by somebody in six months on a branch nobody predicted, fails
+// with EACCES and surfaces here without this test having to know where
+// it came from. The whole tree is additionally hashed before and after,
+// so a write that somehow succeeded would still be caught.
+//
+// It also pins Craig's runtime constraint: a client that cannot be
+// served is REJECTED, and the server keeps serving everyone else. The
+// second half of that is the load-bearing half. A future change that
+// turned the rejection into a fatal error would satisfy a test that only
+// checked the rejection, which is why device A is exercised again after
+// the refusal rather than before it.
+func TestPreprovisionedFlowEndToEndAgainstReadOnlyCertDir(t *testing.T) {
+	t.Parallel()
+	requireUnprivileged(t)
+
+	certDir := filepath.Join(t.TempDir(), "certs")
+	material := writePreprovisionedServerMaterial(t, certDir)
+
+	devicesDir := filepath.Join(certDir, deviceCertDirName)
+	if err := os.MkdirAll(devicesDir, certDirPerm); err != nil {
+		t.Fatalf("MkdirAll(devicesDir): %v", err)
+	}
+
+	const mridA, mridB = "mrid-readonly-a", "mrid-readonly-b"
+	certA, keyA, lfdiA := installPreprovisionedDevice(t, devicesDir, mridA, material.caCert, material.caKey, "readonly-serial-a")
+	// Device B is preprovisioned and registered but never dials: it is
+	// here so the fleet has a second member whose continued availability
+	// after the rejection can be observed through the device list.
+	_, _, lfdiB := installPreprovisionedDevice(t, devicesDir, mridB, material.caCert, material.caKey, "readonly-serial-b")
+	if lfdiA == lfdiB {
+		t.Fatal("devices A and B produced the same LFDI; the fixture is broken")
+	}
+
+	// Device C is signed by the SAME CA, so its handshake succeeds and it
+	// reaches the authorization layer, but no certificate for it was ever
+	// preprovisioned and it is not in the registry. This is the client
+	// that must be rejected rather than served, and rejected rather than
+	// fatal.
+	certC, keyC, lfdiC := mintDeviceIdentity(t, material.caCert, material.caKey, "readonly-serial-c-unknown")
+	if lfdiC == lfdiA || lfdiC == lfdiB {
+		t.Fatal("the unknown device collided with a known one; the fixture is broken")
+	}
+
+	// From here on, nothing under certDir may be written. Innermost
+	// directory first: once the parent is read-only its children can
+	// still be traversed, but the reverse ordering would leave a window.
+	chmodForTest(t, devicesDir, 0o500)
+	chmodForTest(t, certDir, 0o500)
+
+	before := snapshotTree(t, certDir)
+
+	// Startup, part one: per-device identity resolution off a read-only
+	// directory, with values asserted against the operator's own certs.
+	identities, err := EnsureDeviceIdentities(certDir, DeviceCertModePreprovisioned, []string{mridA, mridB})
+	if err != nil {
+		t.Fatalf("EnsureDeviceIdentities against a read-only preprovisioned dir: %v", err)
+	}
+	if got := identities[mridA].LFDI; got != lfdiA {
+		t.Errorf("device A LFDI = %q, want %q", got, lfdiA)
+	}
+	if got := identities[mridB].LFDI; got != lfdiB {
+		t.Errorf("device B LFDI = %q, want %q", got, lfdiB)
+	}
+
+	reg := registry.New()
+	if err := reg.AddBatch([]registry.Entry{
+		{MRID: mridA, Name: "Device A", LFDI: lfdiA, SFDI: identities[mridA].SFDI},
+		{MRID: mridB, Name: "Device B", LFDI: lfdiB, SFDI: identities[mridB].SFDI},
+	}); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	const pinA = uint32(123455) // spec section 6.3.5 worked example
+	// Startup, part two: server identity resolution and listener bind.
+	e, err := New(ctx, Config{
+		Addr:           "127.0.0.1:0",
+		CertDir:        certDir,
+		DeviceCertMode: DeviceCertModePreprovisioned,
+		ResolveRegistrationPIN: func(string) (uint32, bool) {
+			return pinA, true
+		},
+		ShutdownTimeout: time.Second,
+	}, reg)
+	if err != nil {
+		t.Fatalf("New against a read-only preprovisioned dir: %v", err)
+	}
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- e.Run(ctx) }()
+
+	baseURL := "https://" + e.Addr()
+	clientA := deviceClient(t, certA, keyA, material.caCertPEM)
+	clientC := deviceClient(t, certC, keyC, material.caCertPEM)
+	edevA := embedURLIndex(t, e, mridA)
+	regHrefA := "/edev/" + edevA + "/rg"
+
+	// A served walk: discovery, the device list, and the registration
+	// resource behind the advertised link.
+	if status, _ := getBody(t, clientA, baseURL+"/dcap", "GET /dcap as device A"); status != http.StatusOK {
+		t.Fatalf("GET /dcap = %d, want 200", status)
+	}
+	if status, body := getBody(t, clientA, baseURL+"/edev", "GET /edev as device A"); status != http.StatusOK {
+		t.Fatalf("GET /edev = %d, want 200; body=%s", status, body)
+	}
+	regStatus, regBody := getBody(t, clientA, baseURL+regHrefA, "GET device A registration")
+	if regStatus != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", regHrefA, regStatus)
+	}
+	var regA sep2.Registration
+	if err := xml.Unmarshal([]byte(regBody), &regA); err != nil {
+		t.Fatalf("unmarshal Registration: %v\n%s", err, regBody)
+	}
+	if regA.PIN != pinA {
+		t.Errorf("Registration.PIN = %d, want %d", regA.PIN, pinA)
+	}
+
+	// The rejection: an unknown device reaches the server, is refused,
+	// and is not leaked another device's resource.
+	rejectStatus, rejectBody := getBody(t, clientC, baseURL+regHrefA, "unknown device C reading device A's registration")
+	if rejectStatus != http.StatusForbidden {
+		t.Errorf("unknown device GET %s = %d, want %d", regHrefA, rejectStatus, http.StatusForbidden)
+	}
+	if strings.Contains(rejectBody, "<Registration") || strings.Contains(rejectBody, "<pIN>") {
+		t.Error("the rejection leaked the Registration resource to an unknown device")
+	}
+
+	// Survival, which is the point. The server did not die on the
+	// rejection: device A is still served, with the same values.
+	afterStatus, afterBody := getBody(t, clientA, baseURL+regHrefA, "device A after the rejection")
+	if afterStatus != http.StatusOK {
+		t.Fatalf("device A GET %s after an unknown device was rejected = %d, want 200; a client rejection must not take the server down", regHrefA, afterStatus)
+	}
+	var regAfter sep2.Registration
+	if err := xml.Unmarshal([]byte(afterBody), &regAfter); err != nil {
+		t.Fatalf("unmarshal Registration after rejection: %v", err)
+	}
+	if regAfter.PIN != regA.PIN || regAfter.DateTimeRegistered != regA.DateTimeRegistered {
+		t.Error("device A's Registration changed across an unrelated device's rejection: the refusal left partial state behind")
+	}
+	// Device B, untouched throughout, is still reachable too: the
+	// rejection did not degrade the fleet, only the one caller.
+	if status, _ := getBody(t, clientA, baseURL+"/edev", "GET /edev after the rejection"); status != http.StatusOK {
+		t.Errorf("GET /edev after the rejection = %d, want 200", status)
+	}
+
+	// Nothing anywhere under the certificate directory was created,
+	// modified or removed by any of the above.
+	assertTreeUnchanged(t, before, snapshotTree(t, certDir), "read-only preprovisioned flow")
+
+	cancel()
+	select {
+	case err := <-runErr:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("Run: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("Run did not return within 3s of ctx cancel")
+	}
+}
+
+// TestPreprovisionedDeviceLookupRefusesMissingCertAndWritesNothing pins
+// the device-layer half of the never-writes rule directly, rather than
+// leaving it to the earlier reading of the code: a device with no
+// operator-supplied certificate is refused with the same matchable
+// sentinel the startup refusal uses, and the directory is untouched.
+func TestPreprovisionedDeviceLookupRefusesMissingCertAndWritesNothing(t *testing.T) {
+	t.Parallel()
+
+	certDir := filepath.Join(t.TempDir(), "certs")
+	writePreprovisionedServerMaterial(t, certDir)
+
+	before := snapshotTree(t, certDir)
+
+	const mrid = "mrid-with-no-operator-certificate"
+	_, err := EnsureDeviceIdentities(certDir, DeviceCertModePreprovisioned, []string{mrid})
+	if err == nil {
+		t.Error("device lookup with no preprovisioned certificate: want a fail-closed error, got nil")
+	} else {
+		if !errors.Is(err, errCertDirWriteForbidden) {
+			t.Errorf("error = %v, want one matching errCertDirWriteForbidden (the same rule as the startup refusal)", err)
+		}
+		if !strings.Contains(err.Error(), mrid) {
+			t.Errorf("error message does not name the mRID an operator must supply a certificate for: %v", err)
+		}
+		if !strings.Contains(err.Error(), DeviceCertModePreprovisioned.String()) {
+			t.Errorf("error message does not name the mode: %v", err)
+		}
+	}
+
+	// Not even the devices subdirectory was created.
+	assertTreeUnchanged(t, before, snapshotTree(t, certDir), "refused device lookup")
+	assertNoFile(t, certDir, deviceCertDirName)
 }

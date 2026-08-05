@@ -26,28 +26,41 @@ const (
 )
 
 // ensureServerIdentity resolves the embedded server's mTLS material
-// under dir for the given mode, minting a development-only set only when
-// dir holds no certificate material at all and can actually be written
-// to.
+// under dir for the given mode.
 //
 // It classifies dir on every call (classifyCertDir; nothing is cached)
-// into exactly one of three states, and acts:
+// and acts:
 //
 //   - Complete for the mode: the files are loaded as-is and their paths
 //     returned. NOTHING is written, whether or not dir is writable. This
-//     is the production path, and it is what makes a read-only
-//     bind-mounted certificate volume a supported deployment.
-//   - Empty and writable: a fresh self-signed CA plus a server leaf
-//     signed by it is minted and written at 0600 (dir at 0700). The dev
-//     path. All four files are written even in a mode whose required set
-//     is three, so the resulting directory is complete under either mode
-//     and a later start cannot classify this process's own output as
-//     partial.
+//     is the production path.
+//   - Anything less than complete, in a mode that may not write
+//     (preprovisioned): a fatal error, immediately, with no writability
+//     probe, because the probe is itself a write. See
+//     modeMayWriteCertMaterial: that mode never creates material under
+//     any circumstances, which is what makes a read-only bind-mounted
+//     certificate volume the SUPPORTED deployment shape rather than one
+//     that happens to work.
+//   - Empty and writable, in a mode that may write: a fresh self-signed
+//     CA plus a server leaf signed by it is minted and written at 0600
+//     (dir at 0700). The dev path. All four files are written even in a
+//     mode whose required set is three, so the resulting directory is
+//     complete under either mode and a later start cannot classify this
+//     process's own output as partial.
 //   - Empty and not writable: a fatal error naming the missing files and
 //     saying the directory could not be written to.
 //   - Partially populated: a fatal error, EVEN when dir is writable. See
 //     classifyCertDir for why completing an operator's partial set is
 //     worse than refusing to start.
+//
+// Every fatal case here is fatal to the PROCESS: the caller has no
+// serviceable state to start into, because the server has no identity,
+// so it exits non-zero rather than warning and continuing. That is a
+// startup rule and it does NOT extend to the running server: once the
+// listener is up, a client that cannot be served is refused and the
+// process keeps serving every other device. Anything reachable from a
+// client interaction that could terminate the process would be a remote
+// denial of service.
 //
 // Which files a mode requires depends on whether that mode signs; see
 // requiresCASigningKey. The previous unconditional all-four check is the
@@ -86,18 +99,29 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 		return "", "", "", err
 	}
 
-	switch state {
-	case certDirComplete:
+	if state == certDirComplete {
 		return certFile, keyFile, caFile, nil
+	}
 
+	// The material is not complete for this mode. A mode that never
+	// writes cannot make it complete, so this is fatal here and now, with
+	// no probe (a probe is itself a write) and no mint. The caller is
+	// expected to exit non-zero rather than start degraded; there is no
+	// serviceable state to start into, because the server has no identity.
+	if !modeMayWriteCertMaterial(mode) {
+		return "", "", "", incompleteCertDirError(errCertDirWriteForbidden, dir, mode, present, missing,
+			"This mode never creates certificate material, so it cannot supply the missing files and did not write anything. Place them in that directory before starting, or start in dev-mint mode if this is a development host.")
+	}
+
+	switch state {
 	case certDirPartial:
-		return "", "", "", fmt.Errorf("%w: %q holds %s but is missing %s. Nothing was written. Minting the missing files would create a CA private key that does not match the CA certificate already there, so this process refuses rather than guessing. Either add the missing files, or move the existing ones aside to let a fresh development set be minted",
-			errCertDirPartial, dir, describeCertFiles(present), describeCertFiles(missing))
+		return "", "", "", incompleteCertDirError(errCertDirPartial, dir, mode, present, missing,
+			"Nothing was written. Minting the missing files would create a CA private key that does not match the CA certificate already there, so this process refuses rather than guessing. Either add the missing files, or move the existing ones aside to let a fresh development set be minted.")
 
 	case certDirEmpty:
 		if werr := certDirWritable(dir); werr != nil {
-			return "", "", "", fmt.Errorf("%w: %q holds none of %s, so there is nothing to load, and it could not be written to, so there is nothing that can be minted: %w. Either preprovision %s in that directory, or make it writable by this process",
-				errCertDirNotWritable, dir, describeCertFiles(missing), werr, describeCertFiles(missing))
+			return "", "", "", incompleteCertDirError(errCertDirNotWritable, dir, mode, present, missing,
+				fmt.Sprintf("Nothing was written. The directory could not be written to, so nothing can be minted either: %v. Either preprovision the missing files, or make the directory writable by this process.", werr))
 		}
 
 	default:

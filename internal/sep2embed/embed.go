@@ -46,10 +46,13 @@ type Config struct {
 	//
 	// New classifies it once, at startup, per ensureServerIdentity: a set
 	// that is complete for DeviceCertMode is loaded as-is and nothing is
-	// written (so a read-only bind mount is supported); an empty writable
-	// directory receives fresh dev-mint material at 0600 (dir 0700); an
-	// empty unwritable one, or a partially populated one, is a fatal
-	// startup error. No existing file is ever overwritten.
+	// written; in dev-mint mode an empty writable directory receives
+	// fresh material at 0600 (dir 0700); anything else is a fatal startup
+	// error. No existing file is ever overwritten.
+	//
+	// In DeviceCertModePreprovisioned nothing under CertDir is written
+	// ever, for any reason, so a read-only bind mount is the supported
+	// shape for that mode.
 	//
 	// CertDir is never committed; the caller owns keeping it out of
 	// version control.

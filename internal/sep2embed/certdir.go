@@ -32,6 +32,13 @@ var (
 	// file. Keeping this distinct from absence is the point; see
 	// certFileExists.
 	errCertDirUnreadable = errors.New("sep2embed: certificate directory could not be inspected")
+
+	// errCertDirWriteForbidden reports that certificate material is
+	// missing and the configured mode is not permitted to create it.
+	// Preprovisioned mode never writes anything under the certificate
+	// directory, for any reason, for the lifetime of the process; see
+	// modeMayWriteCertMaterial.
+	errCertDirWriteForbidden = errors.New("sep2embed: certificate material is missing and this mode never creates it")
 )
 
 // allServerCertFileNames is every file name this package manages inside a
@@ -62,6 +69,44 @@ var allServerCertFileNames = []string{caCertFileName, caKeyFileName, serverCertF
 // required set (a refusal to start) rather than the looser one.
 func requiresCASigningKey(mode DeviceCertMode) bool {
 	return mode != DeviceCertModePreprovisioned
+}
+
+// modeMayWriteCertMaterial reports whether mode is permitted to create
+// ANYTHING under the certificate directory: minted material, a
+// subdirectory, or even a throwaway write probe.
+//
+// Preprovisioned mode is not. The rule is an invariant, not a set of
+// conditions: it does not mint into an empty directory even when that
+// directory is writable, it does not complete a partial one, and it does
+// not probe. All material is the operator's, supplied before the process
+// starts, and anything missing is a fatal startup error rather than
+// something to create. That is what makes a read-only certificate volume
+// the SUPPORTED shape for this mode rather than a shape that happens to
+// work today, and it is why the guarantee is stated here once instead of
+// being rebuilt at each write site (a site nobody thought of is exactly
+// how such a rule decays).
+//
+// It answers a different question from requiresCASigningKey, which asks
+// what a mode must READ. The two coincide today only because there are
+// two modes and the one that signs is also the one that writes; a third
+// mode could easily need the CA key and still be forbidden to write, so
+// they are kept separate rather than aliased.
+func modeMayWriteCertMaterial(mode DeviceCertMode) bool {
+	return mode != DeviceCertModePreprovisioned
+}
+
+// String names the mode as an operator configured it (these are the
+// cmd/bridge -sep2-device-cert-mode flag values), so an error can tell
+// them which mode produced it.
+func (m DeviceCertMode) String() string {
+	switch m {
+	case DeviceCertModeDevMint:
+		return "dev-mint"
+	case DeviceCertModePreprovisioned:
+		return "preprovisioned"
+	default:
+		return fmt.Sprintf("DeviceCertMode(%d)", int(m))
+	}
 }
 
 // requiredServerCertFiles returns the file names that must already exist
@@ -265,4 +310,19 @@ func describeCertFiles(names []string) string {
 		return "(none)"
 	}
 	return strings.Join(names, ", ")
+}
+
+// incompleteCertDirError builds the fatal, operator-facing error for a
+// certificate directory that cannot be used as it stands.
+//
+// One builder for every refusal, so they cannot drift into saying
+// different amounts. The shape is fixed by what an operator needs in
+// order to act without reading source: which mode the process is in,
+// which files that mode requires, where it looked, what it found, what
+// was missing, and what to do about it. A refusal an operator has to
+// decompile is a refusal that becomes a support ticket.
+func incompleteCertDirError(sentinel error, dir string, mode DeviceCertMode, present, missing []string, remedy string) error {
+	return fmt.Errorf("%w: mode %q requires %s in directory %q; found %s; missing %s. %s",
+		sentinel, mode, describeCertFiles(requiredServerCertFiles(mode)), dir,
+		describeCertFiles(present), describeCertFiles(missing), remedy)
 }
