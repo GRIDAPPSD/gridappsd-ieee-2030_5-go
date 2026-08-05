@@ -1,0 +1,142 @@
+# =====================================================================
+# Standalone deployment. Use this ONLY when the bridge runs as its OWN
+# docker compose project, separate from any gridappsd-docker checkout
+# (a dedicated host, a different orchestrator, or any setup where you
+# are not composing this file together with gridappsd-docker's own
+# docker-compose.yml in the same invocation).
+#
+# RECOMMENDED for most deployments: docker-compose-gridappsd-ieee-2030_5.yml
+# at this repository's root instead. That file runs the bridge INSIDE
+# the platform's own compose project, on the platform's own network,
+# reaching the broker by service name with no host-published broker
+# port involved. This file cannot do that: as its own separate compose
+# project, it is on a different Docker network than gridappsd-docker's
+# services, "gridappsd" resolves to nothing here, and there is no
+# "gridappsd" service in this file's project for `depends_on` to name.
+# See docs/DOCKER.md for the full comparison of the two paths.
+#
+# This file exists for the case where the platform-integrated path
+# genuinely does not apply: the broker must be reached at whatever
+# HOST-PUBLISHED address the platform stack exposes it at
+# (gridappsd-docker's own docker-compose.yml maps the platform's STOMP
+# port to the host as 61613:61613), and the operator is responsible for
+# the platform being up before starting this fragment; nothing here can
+# express that dependency the way an in-project depends_on can.
+#
+# Read docs/CERTIFICATES.md and docs/CONFIGURATION.md before deploying.
+# =====================================================================
+services:
+  ieee-2030_5-bridge:
+    image: gridappsd/gridappsd-ieee-2030_5:${SEP2_IMAGE_TAG:?set SEP2_IMAGE_TAG to a released version, e.g. v0.2.0}
+    container_name: ieee-2030_5-bridge
+    restart: unless-stopped
+
+    # Run as the invoking operator's own uid/gid, so the bind-mounted
+    # certificate directory below (owned by that same operator) needs
+    # no root chown to become writable by the container. Set from
+    # `id -u` / `id -g`, or in a .env file next to this fragment.
+    user: "${SEP2_UID:?set SEP2_UID, e.g. $$(id -u)}:${SEP2_GID:?set SEP2_GID, e.g. $$(id -g)}"
+
+    ports:
+      # IEEE 2030.5 mTLS listener, client-certificate authenticated with
+      # a per-device access-control check. In this standalone project
+      # there is no shared network for a same-project client to use
+      # instead, so publishing is not optional here the way it is in
+      # the platform-integrated fragment: this is the only way anything
+      # reaches the bridge.
+      - "8443:8443"
+      #
+      # The admin UI is OFF by default (no SEP2_ADMIN_UI_KEY* below) and
+      # this fragment does not publish 8444. To enable it, uncomment the
+      # environment block below AND this port line together, bound to
+      # host loopback only:
+      # - "127.0.0.1:8444:8444"
+
+    environment:
+      # Not a service name: this project shares no network with
+      # gridappsd-docker, so "gridappsd" would not resolve. Point this
+      # at wherever the platform's broker is actually reachable from
+      # this host, for example the platform host's address and its
+      # HOST-PUBLISHED STOMP port (gridappsd-docker's own
+      # docker-compose.yml publishes 61613:61613 on its "gridappsd"
+      # service): "192.0.2.10:61613", or "host.docker.internal:61613"
+      # if the platform runs on the same machine under Docker Desktop.
+      # There is no default: guessing wrong here fails silently as a
+      # connection-refused loop, not a configuration error, so an unset
+      # value stops compose instead.
+      SEP2_STOMP_ADDR: "${SEP2_STOMP_ADDR:?set SEP2_STOMP_ADDR to the platform broker's HOST-PUBLISHED address, e.g. 192.0.2.10:61613}"
+      SEP2_STOMP_ALLOW_PLAINTEXT: "true"    # the platform's published 61613 is plain STOMP; set "false" and configure TLS for a hardened deployment
+      SEP2_FEEDER_MRID: "${SEP2_FEEDER_MRID}"
+      SEP2_SIMULATION_ID: "${SEP2_SIMULATION_ID:-}"
+
+      # The binary defaults the 2030.5 listener to loopback, which
+      # inside a container is unreachable from other services and from
+      # the host. This is the deliberate, reviewed exception to that
+      # default: see the port mapping above.
+      SEP2_SERVER_ADDR: "0.0.0.0:8443"
+
+      SEP2_SERVER_CERT_DIR: /var/lib/sep2/certs
+
+      # dev-mint (the default below): the container generates a
+      # development CA and per-device certificates on first run and
+      # reuses them on every later run, because the volume below is
+      # persistent. Good for a co-simulation or feeder run where
+      # pre-provisioning a certificate for every DER ahead of time is
+      # not worth the friction.
+      #
+      # For a deployment where certificate issuance is owned elsewhere,
+      # set this to "preprovisioned" and place ca.pem, server.pem, and
+      # server-key.pem (NOT ca-key.pem: preprovisioned mode never signs
+      # and does not read it) in the mounted directory yourself before
+      # first start. See docs/CERTIFICATES.md.
+      SEP2_DEVICE_CERT_MODE: dev-mint
+
+      SEP2_STOMP_PASSWORD_FILE: /run/secrets/stomp_password
+
+      # Admin UI is OFF. To enable it, uncomment this block AND the
+      # 127.0.0.1:8444 port line above. Read docs/CONFIGURATION.md
+      # before binding it anywhere but host loopback: it is a
+      # read-only-but-Bearer-gated surface, a different risk class from
+      # the mTLS listener above, and its four independent gates
+      # (disabled unless keyed, loopback bind checked before any socket
+      # opens, explicit non-loopback opt-in, Host-header allowlist)
+      # exist specifically so enabling it is a deliberate act.
+      # SEP2_ADMIN_UI_ADDR: "0.0.0.0:8444"
+      # SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: "true"
+      # SEP2_ADMIN_UI_KEY_FILE: /run/secrets/admin_ui_key
+
+    volumes:
+      # Certificate material, READ-WRITE.
+      #
+      # Writable on purpose: in dev-mint mode the bridge generates the
+      # CA, the server certificate, and one certificate per DER on
+      # first run, and reuses them on every run after. The mount is
+      # what makes them survive a container restart or recreation.
+      # Without it, every restart mints a NEW CA, which changes the
+      # trust anchor every client was configured against and changes
+      # every device's LFDI.
+      #
+      # For a preprovisioned deployment, a read-only mount (append
+      # ":ro" below) is now genuinely supported, not merely tolerated:
+      # preprovisioned mode never writes to this directory in any
+      # circumstance. See docs/CERTIFICATES.md.
+      #
+      # Create the host directory before first start, owned by the uid
+      # above:
+      #     mkdir -p /srv/gridappsd/sep2-certs
+      #     chmod 700 /srv/gridappsd/sep2-certs
+      #
+      # SEP2_CERT_DIR must be an absolute path OUTSIDE any git
+      # checkout, and that includes this repository's own checkout: a
+      # relative path here would resolve against the directory holding
+      # this compose file, which is a repository. There is deliberately
+      # no default so an unset value stops `docker compose` instead of
+      # silently choosing somewhere convenient and wrong.
+      - "${SEP2_CERT_DIR:?set SEP2_CERT_DIR to an absolute path outside any git checkout, e.g. /srv/gridappsd/sep2-certs}:/var/lib/sep2/certs"
+
+    secrets:
+      - stomp_password
+
+secrets:
+  stomp_password:
+    file: "${SEP2_SECRETS_DIR:?set SEP2_SECRETS_DIR to a directory outside any git checkout holding a stomp_password file}/stomp_password"
