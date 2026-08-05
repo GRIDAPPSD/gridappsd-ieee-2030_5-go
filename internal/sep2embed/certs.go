@@ -12,8 +12,9 @@ import (
 )
 
 // File names within Config.CertDir. Fixed, not configurable: the
-// load-or-create contract in ensureServerIdentity depends on checking
-// for exactly these four names.
+// directory classification in classifyCertDir depends on checking for
+// exactly these four names, and which of them a given mode requires is
+// decided by requiredServerCertFiles.
 const (
 	caCertFileName     = "ca.pem"
 	caKeyFileName      = "ca-key.pem"
@@ -24,60 +25,111 @@ const (
 	certFilePerm = 0o600
 )
 
-// ensureServerIdentity is the single load-or-create code path for the
-// embedded server's mTLS material, per the bridge's 2026-05-08
-// dev-mint-vs-preprovisioned decision (see cmd/bridge history for the
-// original EnsureDeviceCert precedent this mirrors for server identity).
+// ensureServerIdentity resolves the embedded server's mTLS material
+// under dir for the given mode.
 //
-//   - If all four files already exist under dir, they are loaded as-is
-//     and returned unchanged: this is the production path, where an
-//     operator has placed preprovisioned CA and server material.
-//   - If any of the four is missing, fresh dev-mint material is
-//     generated (a self-signed CA plus a server leaf cert signed by it)
-//     and all four files are written to dir with 0600 permissions (dir
-//     itself created/left at 0700). This is the dev path.
+// It classifies dir on every call (classifyCertDir; nothing is cached)
+// and acts:
 //
-// There is no partial-mint state: the check is all-four-present or
-// mint-all-four, so a directory that already holds some but not all of
-// the expected files gets a fresh, consistent set rather than a mix of
-// old and new material.
+//   - Complete for the mode: the files are loaded as-is and their paths
+//     returned. NOTHING is written, whether or not dir is writable. This
+//     is the production path.
+//   - Anything less than complete, in a mode that may not write
+//     (preprovisioned): a fatal error, immediately, with no writability
+//     probe, because the probe is itself a write. See
+//     modeMayWriteCertMaterial: that mode never creates material under
+//     any circumstances, which is what makes a read-only bind-mounted
+//     certificate volume the SUPPORTED deployment shape rather than one
+//     that happens to work.
+//   - Empty and writable, in a mode that may write: a fresh self-signed
+//     CA plus a server leaf signed by it is minted and written at 0600
+//     (dir at 0700). The dev path. All four files are written even in a
+//     mode whose required set is three, so the resulting directory is
+//     complete under either mode and a later start cannot classify this
+//     process's own output as partial.
+//   - Empty and not writable: a fatal error naming the missing files and
+//     saying the directory could not be written to.
+//   - Partially populated: a fatal error, EVEN when dir is writable. See
+//     classifyCertDir for why completing an operator's partial set is
+//     worse than refusing to start.
 //
-// Each of the four files is written via writeFileAtomic (temp file in
-// the same directory, then rename), so a process crash mid-write leaves
-// either the old file (rename never happened) or the new one
-// (rename is the last step), never a truncated PEM. allExist's
-// presence-only check is therefore checking a set of files that are
-// each internally all-or-nothing; it is not itself a parse/validate
-// step (see the certs_test.go coverage for what happens when a file
-// exists but is not valid PEM: that is caught downstream by
-// sep2tls.NewServerTLSConfigWithExtraCAs when New wires the listener,
-// not here).
+// Every fatal case here is fatal to the PROCESS: the caller has no
+// serviceable state to start into, because the server has no identity,
+// so it exits non-zero rather than warning and continuing. That is a
+// startup rule and it does NOT extend to the running server: once the
+// listener is up, a client that cannot be served is refused and the
+// process keeps serving every other device. Anything reachable from a
+// client interaction that could terminate the process would be a remote
+// denial of service.
+//
+// Which files a mode requires depends on whether that mode signs; see
+// requiresCASigningKey. The previous unconditional all-four check is the
+// defect this shape replaces: a correctly deployed non-signing bridge
+// that withholds the CA private key had its real server certificate and
+// key renamed over with self-signed development material, which the
+// server then served.
+//
+// Minted files are written via writeFileNoClobber, which fails rather
+// than replacing an existing file, so no execution order through this
+// function can destroy operator material.
+//
+// The returned material is read from disk exactly once per process, by
+// the caller, at startup. It is NOT re-read afterwards, and must not be:
+// the CA certificate is the trust anchor every registered client's chain
+// was verified against, and the server key backs every live TLS session.
+// A server whose identity could change underneath it would break both
+// silently. Only the per-device certificate lookup re-reads the
+// filesystem later; see ensureDeviceCert.
 //
 // Returns the three file paths sep2srv.Options needs (CertFile, KeyFile,
-// CAFile). The CA private key file is written and its path returned to
-// nothing further inside this package, but it is NOT dead weight: a
-// caller (or a dev-only tooling script) that wants to mint additional
-// device certs trusted by this same dev CA, for local testing, needs to
-// sign against caKeyFile. See certs_test.go and embed_test.go's
-// mintTestDeviceClient, which do exactly that. Dropping it would break
-// that local-signing path with no runtime benefit, since the file
-// already carries 0600 permissions.
-func ensureServerIdentity(dir string) (certFile, keyFile, caFile string, err error) {
+// CAFile). The CA private key file is written by the mint path and its
+// path returned to nothing further inside this package, but it is NOT
+// dead weight: a caller (or a dev-only tooling script) that wants to
+// mint additional device certs trusted by this same dev CA, for local
+// testing, needs to sign against caKeyFile. See certs_test.go and
+// embed_test.go's mintTestDeviceClient, which do exactly that.
+func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, caFile string, err error) {
 	caFile = filepath.Join(dir, caCertFileName)
 	caKeyFile := filepath.Join(dir, caKeyFileName)
 	certFile = filepath.Join(dir, serverCertFileName)
 	keyFile = filepath.Join(dir, serverKeyFileName)
 
-	if allExist(caFile, caKeyFile, certFile, keyFile) {
+	state, present, missing, err := classifyCertDir(dir, mode)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	if state == certDirComplete {
 		return certFile, keyFile, caFile, nil
 	}
 
-	log.Printf("sep2embed: WARNING: no complete pre-provisioned certificate material found in %q; minting a development-only self-signed CA and server certificate. DO NOT use this material in production; provide preprovisioned %s, %s, %s, and %s instead.",
-		dir, caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName)
-
-	if err := os.MkdirAll(dir, certDirPerm); err != nil {
-		return "", "", "", fmt.Errorf("create cert dir %q: %w", dir, err)
+	// The material is not complete for this mode. A mode that never
+	// writes cannot make it complete, so this is fatal here and now, with
+	// no probe (a probe is itself a write) and no mint. The caller is
+	// expected to exit non-zero rather than start degraded; there is no
+	// serviceable state to start into, because the server has no identity.
+	if !modeMayWriteCertMaterial(mode) {
+		return "", "", "", incompleteCertDirError(errCertDirWriteForbidden, dir, mode, present, missing,
+			"This mode never creates certificate material, so it cannot supply the missing files and did not write anything. Place them in that directory before starting, or start in dev-mint mode if this is a development host.")
 	}
+
+	switch state {
+	case certDirPartial:
+		return "", "", "", incompleteCertDirError(errCertDirPartial, dir, mode, present, missing,
+			"Nothing was written. Minting the missing files would create a CA private key that does not match the CA certificate already there, so this process refuses rather than guessing. Either add the missing files, or move the existing ones aside to let a fresh development set be minted.")
+
+	case certDirEmpty:
+		if werr := certDirWritable(dir); werr != nil {
+			return "", "", "", incompleteCertDirError(errCertDirNotWritable, dir, mode, present, missing,
+				fmt.Sprintf("Nothing was written. The directory could not be written to, so nothing can be minted either: %v. Either preprovision the missing files, or make the directory writable by this process.", werr))
+		}
+
+	default:
+		return "", "", "", fmt.Errorf("sep2embed: unhandled certificate directory state %d for %q", state, dir)
+	}
+
+	log.Printf("sep2embed: WARNING: certificate directory %q is empty; minting a development-only self-signed CA and server certificate. DO NOT use this material in production; provide preprovisioned %s, %s, and %s instead (plus %s only if this process must sign certificates).",
+		dir, caCertFileName, serverCertFileName, serverKeyFileName, caKeyFileName)
 
 	caCertPEM, caKeyPEM, err := sep2cert.GenerateCA(sep2cert.CAOptions{
 		Organization: "gridappsd-ieee-2030_5-go dev-mint",
@@ -110,25 +162,12 @@ func ensureServerIdentity(dir string) (certFile, keyFile, caFile string, err err
 		{keyFile, serverKeyPEM},
 	}
 	for _, w := range writes {
-		if err := writeFileAtomic(w.path, w.data, certFilePerm); err != nil {
+		if err := writeFileNoClobber(w.path, w.data, certFilePerm); err != nil {
 			return "", "", "", fmt.Errorf("write %s: %w", w.path, err)
 		}
 	}
 
 	return certFile, keyFile, caFile, nil
-}
-
-// allExist reports whether every path in paths names a file that Stat
-// succeeds on. A permission error or any other Stat failure counts as
-// "does not exist" (fail toward re-minting rather than silently trusting
-// a path this process cannot actually read).
-func allExist(paths ...string) bool {
-	for _, p := range paths {
-		if _, err := os.Stat(p); err != nil {
-			return false
-		}
-	}
-	return true
 }
 
 // writeFileAtomic writes data to path as a single all-or-nothing
@@ -138,6 +177,12 @@ func allExist(paths ...string) bool {
 // before the rename leaves path exactly as it was (untouched, or absent);
 // a crash after the rename leaves the complete new file. There is no
 // window in which path exists but holds a partial write.
+//
+// It REPLACES an existing file at path: os.Rename does not ask. That is
+// acceptable only where the caller has already established the target is
+// its own to write, which is why the server-identity mint path uses
+// writeFileNoClobber instead. Reach for that one for anything an
+// operator may have placed.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")

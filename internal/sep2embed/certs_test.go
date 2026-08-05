@@ -1,8 +1,10 @@
 package sep2embed
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
@@ -14,7 +16,7 @@ func TestEnsureServerIdentityMintsWhenAbsent(t *testing.T) {
 	dir := t.TempDir()
 	certDir := filepath.Join(dir, "certs") // does not exist yet; MkdirAll must create it
 
-	certFile, keyFile, caFile, err := ensureServerIdentity(certDir)
+	certFile, keyFile, caFile, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("ensureServerIdentity: %v", err)
 	}
@@ -82,7 +84,7 @@ func TestEnsureServerIdentityLoadsWhenAllFourPresent(t *testing.T) {
 
 	certDir := t.TempDir()
 
-	certFile1, keyFile1, caFile1, err := ensureServerIdentity(certDir)
+	certFile1, keyFile1, caFile1, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("first ensureServerIdentity: %v", err)
 	}
@@ -93,7 +95,7 @@ func TestEnsureServerIdentityLoadsWhenAllFourPresent(t *testing.T) {
 
 	// Second call against the SAME directory must load, not re-mint: the
 	// server cert bytes on disk must be byte-for-byte unchanged.
-	certFile2, keyFile2, caFile2, err := ensureServerIdentity(certDir)
+	certFile2, keyFile2, caFile2, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("second ensureServerIdentity: %v", err)
 	}
@@ -182,39 +184,46 @@ func TestParseCAPairRejectsInvalidPEM(t *testing.T) {
 	}
 }
 
-func TestEnsureServerIdentityRemintsWhenOnlySomeFilesPresent(t *testing.T) {
+// TestEnsureServerIdentityRefusesPartiallyPopulatedDir replaces an
+// earlier test that asserted the OPPOSITE: that a partially populated
+// directory was re-minted into a fresh consistent set. That behavior is
+// the defect. Re-minting reaches the same rename over any of the four
+// names that happens to be occupied, and the file it lands on is, by
+// definition, one an operator put there.
+//
+// The refusal holds even though this directory is writable.
+func TestEnsureServerIdentityRefusesPartiallyPopulatedDir(t *testing.T) {
 	t.Parallel()
 
 	certDir := t.TempDir()
 
-	// Simulate a partially-populated directory: only the CA cert exists.
+	// A partially populated directory: only the CA cert exists.
 	if err := os.MkdirAll(certDir, certDirPerm); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(certDir, caCertFileName), []byte("not a real cert"), certFilePerm); err != nil {
+	stub := []byte("operator material this process did not write")
+	if err := os.WriteFile(filepath.Join(certDir, caCertFileName), stub, certFilePerm); err != nil {
 		t.Fatalf("WriteFile stub ca.pem: %v", err)
 	}
 
-	certFile, keyFile, caFile, err := ensureServerIdentity(certDir)
-	if err != nil {
-		t.Fatalf("ensureServerIdentity with partial dir: %v", err)
+	_, _, _, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
+	if err == nil {
+		t.Fatal("ensureServerIdentity on a partially populated directory: want an error, got nil")
+	}
+	if !errors.Is(err, errCertDirPartial) {
+		t.Errorf("error = %v, want one matching errCertDirPartial", err)
+	}
+	// The message must be actionable without reading source: it names
+	// what is there and what is not.
+	for _, want := range []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error message does not name %s: %v", want, err)
+		}
 	}
 
-	// allExist requires ALL four; the stub ca.pem alone must not satisfy
-	// the load path, so a fresh, consistent, parseable set is written.
-	caCertPEM, err := os.ReadFile(caFile)
-	if err != nil {
-		t.Fatalf("ReadFile(caFile): %v", err)
-	}
-	if string(caCertPEM) == "not a real cert" {
-		t.Fatalf("stub ca.pem was not replaced: load-or-create incorrectly treated a partial dir as complete")
-	}
-	if _, err := sep2cert.ParseCertificatePEM(caCertPEM); err != nil {
-		t.Fatalf("re-minted ca.pem does not parse: %v", err)
-	}
-	for _, p := range []string{certFile, keyFile} {
-		if _, err := os.Stat(p); err != nil {
-			t.Fatalf("Stat(%q) after remint: %v", p, err)
-		}
+	// The byte assertion is the point: the operator's file is untouched.
+	assertFileBytes(t, certDir, caCertFileName, stub)
+	for _, name := range []string{caKeyFileName, serverCertFileName, serverKeyFileName} {
+		assertNoFile(t, certDir, name)
 	}
 }

@@ -16,34 +16,110 @@ the four it is.
 ## What the server identity needs
 
 `SEP2_SERVER_CERT_DIR` (default `./sep2-certs`, resolved relative to
-the process's working directory) must hold exactly four fixed file
-names:
+the process's working directory) holds four fixed file names:
 
 | File | Purpose |
 |---|---|
 | `ca.pem` | The CA certificate, the trust anchor every device and client cert chains to. |
-| `ca-key.pem` | The CA's private key. Needed only to sign new certificates; a server that only loads preprovisioned material never needs to read it. |
+| `ca-key.pem` | The CA's private key. Needed only to sign new certificates. |
 | `server.pem` | The embedded server's own leaf certificate. |
 | `server-key.pem` | The embedded server's private key. |
+
+Which of them are *required* depends on `SEP2_DEVICE_CERT_MODE`,
+because only one of the two modes signs anything:
+
+| Mode | Signs? | Required files |
+|---|---|---|
+| `dev-mint` | yes | all four |
+| `preprovisioned` | no | `ca.pem`, `server.pem`, `server-key.pem` |
+
+**`preprovisioned` does not require `ca-key.pem` and never reads it.**
+Keep the CA signing key off the bridge host entirely; issue
+certificates wherever you keep it, and copy only the public
+certificate across.
 
 The directory is created at mode `0700` and each file at mode `0600`
 when the bridge writes them. Match those permissions if you supply
 your own.
 
-**Current behavior is all-or-nothing**: if any one of the four files
-is missing, the bridge mints a fresh, self-signed development CA and
-server certificate, writes all four files, and logs a loud warning.
-There is no partial state. This all-or-nothing check is under active
-revision as of this writing, specifically around whether
-`preprovisioned` mode should require `ca-key.pem` at all; treat the
-exact trigger condition as subject to change and re-check
-`internal/sep2embed/certs.go` if this section and the code appear to
-disagree.
-
 Per-device certificates, used when `SEP2_DEVICE_CERT_MODE=preprovisioned`,
 live under `<SEP2_SERVER_CERT_DIR>/devices/`, one raw DER-encoded
 `<name>.x509` file per device, signed by the same CA as the server
 identity above.
+
+## What the bridge does at startup
+
+It inspects the directory on every start and does exactly one of:
+
+- **Complete for the mode**: loads the files and writes nothing. The
+  directory may be read-only.
+- **Empty, in `dev-mint`, and writable**: mints a self-signed
+  development CA and server certificate, writes all four files, and
+  logs a loud warning.
+- **Anything else**: refuses to start.
+
+**No existing file is ever overwritten.** A directory holding some but
+not all of the required files is a startup error even when it is
+writable: completing somebody else's partial set would mint a CA key
+that does not match the CA certificate already sitting there. Move the
+existing files aside if what you want is a fresh development set.
+
+**`preprovisioned` mode writes nothing at all, ever.** Not a mint into
+an empty directory even when that directory is writable, not a
+completion of a partial one, not so much as a temporary file. A
+read-only mount is therefore a *supported* shape for that mode rather
+than one that merely happens to work: mount the volume `:ro` and the
+bridge has nothing it wants to do to it.
+
+Writability is decided by attempting a write and removing it again,
+not by reading permission bits, so ownership, ACLs and container uid
+mapping are all accounted for. A permission error is never mistaken
+for a missing file.
+
+### Missing material stops the process
+
+A certificate problem is fatal at startup. The bridge exits non-zero
+and does not start degraded. The message names the mode, the
+directory, what that mode requires, what was found, what was missing,
+and what to do, so it is actionable without reading source:
+
+```
+bridge: sep2 embed: sep2embed: server identity: sep2embed: certificate
+material is missing and this mode never creates it: mode
+"preprovisioned" requires ca.pem, server.pem, server-key.pem in
+directory "/etc/sep2/certs"; found (none); missing ca.pem, server.pem,
+server-key.pem. This mode never creates certificate material, so it
+cannot supply the missing files and did not write anything. Place them
+in that directory before starting, or start in dev-mint mode if this
+is a development host.
+```
+
+A partial directory, here `dev-mint` with the CA key absent, reports
+what it found alongside what it did not:
+
+```
+... sep2embed: certificate directory is partially populated: mode
+"dev-mint" requires ca.pem, ca-key.pem, server.pem, server-key.pem in
+directory "/etc/sep2/certs"; found ca.pem, server.pem, server-key.pem;
+missing ca-key.pem. Nothing was written. ...
+```
+
+A device with no preprovisioned certificate fails the same way, naming
+the mRID and the exact path it looked for:
+
+```
+bridge: device identities: sep2embed: certificate material is missing
+and this mode never creates it: mode "preprovisioned" requires an
+operator-supplied certificate for mRID "_1A2B3C4D-..." at
+"/etc/sep2/certs/devices/_1A2B3C4D-...-768877d10f057eed.x509", and
+none is there. Nothing was written; this mode never mints one (fail
+closed)
+```
+
+This is a *startup* rule and it stops there. Once the bridge is
+serving, a client it cannot serve is refused (a rejected TLS handshake,
+or HTTP 403) and the bridge keeps serving every other device. No
+client can take the process down.
 
 ## Quickest path: let the bridge mint its own
 
@@ -102,16 +178,13 @@ Point the bridge at it:
 export SEP2_SERVER_CERT_DIR=/etc/sep2/certs
 ```
 
-If `ca.pem`, `ca-key.pem`, `server.pem`, and `server-key.pem` are all
-present, the bridge loads them as-is and mints nothing.
+The bridge loads what is there and mints nothing.
 
-For a genuinely production deployment, an operator normally does not
-want the CA private key sitting alongside the server key at all;
-withhold `ca-key.pem` only once you have confirmed, against the
-current behavior of `ensureServerIdentity` in
-`internal/sep2embed/certs.go`, that your build's all-or-nothing check
-accepts that. See the note above: this is one of the things in
-flight.
+For a production deployment, do not leave the CA private key alongside
+the server key. Generate the CA somewhere else, copy only `ca.pem`,
+`server.pem` and `server-key.pem` to the bridge host, and run with
+`SEP2_DEVICE_CERT_MODE=preprovisioned`, which requires exactly those
+three and never reads the fourth.
 
 ## Device certificates in preprovisioned mode
 
@@ -124,11 +197,11 @@ Preprovisioning devices needs tooling that produces that extension;
 none is shipped in this repository today.
 
 The two knobs are independent, so a practical middle path is to
-preprovision the server identity above (`ca.pem`, `server.pem`,
-`server-key.pem`) while leaving `SEP2_DEVICE_CERT_MODE=dev-mint`: the
-bridge mints device certificates signed by your own preprovisioned
-CA. This requires `ca-key.pem` to be present, since minting needs the
-signing key.
+preprovision the server identity above while leaving
+`SEP2_DEVICE_CERT_MODE=dev-mint`: the bridge mints device
+certificates signed by your own CA. That mode signs, so it needs
+`ca-key.pem` present alongside the other three; supply all four or the
+bridge refuses to start.
 
 ## Where the directory must not be
 

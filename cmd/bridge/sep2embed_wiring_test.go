@@ -15,6 +15,7 @@ import (
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
 // The CA file names below are the documented, public contract of
@@ -108,7 +109,7 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	embed, err := newSEP2Embed(ctx, cfg, reg, testPolicyWithPIN(), nil)
+	embed, err := newSEP2Embed(ctx, cfg, reg, testPolicyWithPIN(), nil, sep2embed.DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("newSEP2Embed: %v", err)
 	}

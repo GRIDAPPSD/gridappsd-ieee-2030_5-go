@@ -7,6 +7,7 @@ import (
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
 // TestBusConfigMapsFields verifies busConfig's field-by-field mapping
@@ -99,7 +100,7 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 
 	policy := sep2config.DefaultPolicy()
 	var connHook connobs.Hook
-	got := sep2EmbedConfig(cfg, policy, &connHook)
+	got := sep2EmbedConfig(cfg, policy, &connHook, sep2embed.DeviceCertModeDevMint)
 	if got.Addr != cfg.SEP2ServerAddr {
 		t.Errorf("Addr: got %q, want %q", got.Addr, cfg.SEP2ServerAddr)
 	}

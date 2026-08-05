@@ -70,11 +70,15 @@ Design:
   `docker-compose.bridge.yml` mounts `SEP2_SERVER_CERT_DIR`
   READ-WRITE from an operator-supplied path outside any repository or
   workspace, matching [CERTIFICATES.md](CERTIFICATES.md). Writable is
-  deliberate: dev-mint mode needs to persist what it generates across
-  restarts, or every restart mints a new CA and invalidates every
-  device's identity. Read CERTIFICATES.md for what a writable mount
-  means for a preprovisioned deployment before pointing one at real
-  certificate material.
+  what the shipped fragment uses: `dev-mint` mode needs to persist
+  what it generates across restarts, or every restart mints a new CA
+  and invalidates every device's identity. For a `preprovisioned`
+  deployment, a **read-only** mount is now also genuinely supported,
+  not merely tolerated: `preprovisioned` mode writes nothing to that
+  directory in any circumstance, so `:ro` costs nothing and turns any
+  future accidental write attempt into a hard failure instead of a
+  silent one. See [CERTIFICATES.md](CERTIFICATES.md) for the exact
+  per-mode behavior.
 
 An illustrative excerpt (see `docker-compose.bridge.yml` for the full,
 commented fragment):

@@ -133,7 +133,10 @@ type DeviceIdentity struct {
 // the full rationale. "Cert file exists" is the sole load-vs-mint
 // signal per device, matching ensureServerIdentity's own load-or-create
 // shape: the private key is dev-tooling material, not something this
-// function or New reads back. A Preprovisioned-mode load additionally
+// function or New reads back. That is not a licence to write over
+// whatever sits at the key path, though: a key present without its
+// certificate makes the pair partially populated, and ensureDeviceCert
+// refuses that rather than minting over it. A Preprovisioned-mode load additionally
 // verifies the loaded cert chains to the CA (see ensureDeviceCert and
 // verifyDeviceCertChain), so a misconfigured or wrong-signer
 // operator-supplied cert fails here rather than at the real mTLS
@@ -201,19 +204,23 @@ func EnsureDeviceIdentities(dir string, mode DeviceCertMode, mrids []string) (ma
 // idempotent no-op.
 //
 // Preprovisioned mode never signs anything here, so it deliberately
-// does NOT call ensureServerIdentity (whose all-four-files-present
-// check would require ca-key.pem to exist on disk purely to satisfy
-// that check, even though the key's bytes are never read on the
-// all-four-present load path) and does NOT read the CA private key at
-// all. The CA signing key is the highest-value secret in this trust
-// chain; a production bridge host that only ever LOADS operator-issued
-// device certs has no legitimate need for it on the box (least
-// privilege). Preprovisioned mode reads ca.pem directly and requires it
-// to exist; a missing CA cert is a fail-closed error naming the
-// expected path.
+// does NOT call ensureServerIdentity and does NOT read the CA private
+// key at all. The CA signing key is the highest-value secret in this
+// trust chain; a production bridge host that only ever LOADS
+// operator-issued device certs has no legitimate need for it on the box
+// (least privilege). Preprovisioned mode reads ca.pem directly and
+// requires it to exist; a missing CA cert is a fail-closed error naming
+// the expected path.
+//
+// The CA certificate is re-read from disk on every call rather than
+// held from a prior one. That is not a caching oversight: it is what
+// lets a bridge started against a read-only preprovisioned directory
+// pick up material an operator adds later, without a restart. It does
+// NOT make the running server's own identity mutable; that is fixed at
+// startup by New and never re-read (see ensureServerIdentity).
 func loadDeviceSigningCA(dir string, mode DeviceCertMode) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	if mode == DeviceCertModeDevMint {
-		_, _, caFile, err := ensureServerIdentity(dir)
+		_, _, caFile, err := ensureServerIdentity(dir, mode)
 		if err != nil {
 			return nil, nil, fmt.Errorf("sep2embed: device identities: server CA: %w", err)
 		}
@@ -272,7 +279,17 @@ func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCer
 	certFile := filepath.Join(devicesDir, base+".x509")
 	keyFile := filepath.Join(devicesDir, base+".pem")
 
-	if _, statErr := os.Stat(certFile); statErr == nil {
+	// certFileExists rather than a bare os.Stat: only fs.ErrNotExist is
+	// absence here, exactly as in classifyCertDir. A cert this process
+	// cannot stat because of a permission error is not a cert that is
+	// missing, and treating it as one would send an unreadable but
+	// provisioned device down the mint path.
+	certExists, err := certFileExists(certFile)
+	if err != nil {
+		return nil, fmt.Errorf("sep2embed: device cert for mRID %q: %w", mrid, err)
+	}
+
+	if certExists {
 		certDER, err := os.ReadFile(certFile)
 		if err != nil {
 			return nil, fmt.Errorf("sep2embed: read device cert %q (mRID %q): %w", certFile, mrid, err)
@@ -298,8 +315,34 @@ func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCer
 		return cert, nil
 	}
 
-	if mode == DeviceCertModePreprovisioned {
-		return nil, fmt.Errorf("sep2embed: device cert for mRID %q not found at %q: preprovisioned mode requires an operator-supplied cert and refuses to mint one (fail closed)", mrid, certFile)
+	// Wrapped in the same sentinel the server-identity refusal uses, so
+	// "this mode never creates certificate material" is one matchable
+	// predicate across both layers rather than two similar-looking error
+	// strings that could drift apart.
+	if !modeMayWriteCertMaterial(mode) {
+		return nil, fmt.Errorf("%w: mode %q requires an operator-supplied certificate for mRID %q at %q, and none is there. Nothing was written; this mode never mints one (fail closed)",
+			errCertDirWriteForbidden, mode, mrid, certFile)
+	}
+
+	// The certificate's absence is the mint signal, but a mint writes TWO
+	// files, and the key is at a second path that may be occupied when
+	// the certificate is not: a prior mint that died between the two
+	// writes, or an operator staging keys ahead of certificates. Minting
+	// now would rename over that key.
+	//
+	// This pair is partially populated in precisely the sense a server
+	// cert dir can be (see classifyCertDir), so it gets the same answer:
+	// refuse, and write nothing. Completing somebody else's set would
+	// leave a certificate paired with a private key it does not match,
+	// which is a device that cannot complete a handshake and a directory
+	// that looks provisioned.
+	keyExists, err := certFileExists(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("sep2embed: device key for mRID %q: %w", mrid, err)
+	}
+	if keyExists {
+		return nil, fmt.Errorf("%w: a private key for mRID %q already exists at %q but its certificate %q does not. Nothing was written. Minting now would overwrite that key, and a fresh key would not match a certificate issued for the old one. Either supply the matching certificate, or move the key aside",
+			errCertDirPartial, mrid, keyFile, certFile)
 	}
 
 	if err := os.MkdirAll(devicesDir, certDirPerm); err != nil {
@@ -320,10 +363,14 @@ func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCer
 		return nil, fmt.Errorf("sep2embed: extract DER from minted device cert for mRID %q: %w", mrid, err)
 	}
 
-	if err := writeFileAtomic(certFile, devCertDER, certFilePerm); err != nil {
+	// writeFileNoClobber, not writeFileAtomic: the guard above is a check
+	// and these are acts, and between them there is a window. Finishing
+	// with os.Link closes it in the kernel, so neither write can destroy
+	// a file no matter how the two interleave.
+	if err := writeFileNoClobber(certFile, devCertDER, certFilePerm); err != nil {
 		return nil, fmt.Errorf("sep2embed: write %s: %w", certFile, err)
 	}
-	if err := writeFileAtomic(keyFile, devKeyPEM, certFilePerm); err != nil {
+	if err := writeFileNoClobber(keyFile, devKeyPEM, certFilePerm); err != nil {
 		return nil, fmt.Errorf("sep2embed: write %s: %w", keyFile, err)
 	}
 
@@ -331,7 +378,7 @@ func ensureDeviceCert(devicesDir string, mode DeviceCertMode, mrid string, caCer
 		mrid, certFile)
 
 	// Parsed from the in-memory devCertDER just written, not re-read
-	// from certFile: writeFileAtomic's rename-based all-or-nothing
+	// from certFile: writeFileNoClobber's link-based all-or-nothing
 	// guarantee (see its own doc comment) means certFile on disk is now
 	// either exactly these bytes, or, on an error already returned
 	// above, untouched. There is no partial-write state on disk a
