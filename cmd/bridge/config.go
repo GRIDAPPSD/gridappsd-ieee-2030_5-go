@@ -257,7 +257,41 @@ type config struct {
 	// because suppression would then silently age out every device that
 	// has not moved.
 	SEP2TelemetryPublishUnchanged bool
+
+	// SEP2TelemetryHistoryTopics is the operator-configured list of
+	// GridAPPS-D difference-message destinations the bridge subscribes
+	// to, read-only, purely to decode and retain samples for the admin
+	// UI's telemetry history view (internal/telemetryhistory). From
+	// -sep2-telemetry-history-topics (env
+	// SEP2_TELEMETRY_HISTORY_TOPICS), comma separated, resolved and
+	// validated by parseTelemetryHistoryTopics after fs.Parse.
+	//
+	// Default nil/empty: the feature is entirely off unless an operator
+	// configures at least one destination, matching the admin UI's own
+	// off-by-default posture (SEP2AdminUIKey). Capped at
+	// maxTelemetryHistoryTopics so the retained series budget stays
+	// predictable; any destination containing ">" or "*" is refused,
+	// because a wildcard on a shared broker would subscribe to every
+	// simulation on it, making the retained series count depend on
+	// broker state rather than on this list. Neither the pump nor the
+	// control-delta subscriber this bridge already runs is affected by
+	// this list: the history subscriber is wired as its own,
+	// independent read path.
+	//
+	// Samples arrive change-triggered, not fixed-cadence: the telemetry
+	// publisher (internal/telemetrypub) suppresses unchanged devices
+	// unless SEP2TelemetryPublishUnchanged is set, and an unchanged
+	// interval publishes nothing at all, so a device holding steady
+	// emits no sample here. That is inherent to reading from the bus,
+	// not a defect in this list.
+	SEP2TelemetryHistoryTopics []string
 }
+
+// maxTelemetryHistoryTopics bounds -sep2-telemetry-history-topics /
+// SEP2_TELEMETRY_HISTORY_TOPICS. See internal/telemetryhistory's own
+// MaxSeries / SamplesPerSeries byte ceiling: that ceiling only stays a
+// ceiling if the number of destinations feeding it is itself bounded.
+const maxTelemetryHistoryTopics = 4
 
 // deviceCertMode* are the only two values config.validate accepts for
 // SEP2DeviceCertMode / SEP2_DEVICE_CERT_MODE.
@@ -473,6 +507,18 @@ func loadConfig(args []string) (config, error) {
 	fs.BoolVar(&cfg.SEP2TelemetryPublishUnchanged, "sep2-telemetry-publish-unchanged", cfg.SEP2TelemetryPublishUnchanged,
 		"publish every device every interval instead of only those whose values changed (full-snapshot semantics; default false)")
 
+	// sep2-telemetry-history-topics registers with an empty-string
+	// default and is resolved, split, and validated by hand after
+	// Parse (parseTelemetryHistoryTopics), matching the PIN and rate
+	// flags above: an empty string is the "operator configured nothing"
+	// sentinel, which is what lets the feature default fully off.
+	var telemetryHistoryTopicsFlag string
+	fs.StringVar(&telemetryHistoryTopicsFlag, "sep2-telemetry-history-topics", "",
+		fmt.Sprintf("comma separated GridAPPS-D difference-message destinations to read-only subscribe and retain "+
+			"for the admin UI's telemetry history view (env: SEP2_TELEMETRY_HISTORY_TOPICS); unset subscribes nothing; "+
+			"at most %d destinations; a destination containing \">\" or \"*\" is refused; retained samples are "+
+			"change-triggered, not fixed-cadence (see -sep2-telemetry-publish-unchanged)", maxTelemetryHistoryTopics))
+
 	var versionFlag bool
 	fs.BoolVar(&versionFlag, "version", false, "print the build version and exit")
 
@@ -638,6 +684,21 @@ func loadConfig(args []string) (config, error) {
 				"config: -sep2-telemetry-interval / SEP2_TELEMETRY_INTERVAL value %q must be greater than zero", telemetryIntervalFlag)
 		}
 		cfg.SEP2TelemetryInterval = interval
+	}
+
+	// telemetry-history-topics resolves flag, then env, exactly like the
+	// telemetry interval above, and is split and validated here so a
+	// malformed, over-cap, or wildcard destination stops the bridge at
+	// config load rather than at first Subscribe.
+	if telemetryHistoryTopicsFlag == "" {
+		telemetryHistoryTopicsFlag = os.Getenv("SEP2_TELEMETRY_HISTORY_TOPICS")
+	}
+	if telemetryHistoryTopicsFlag != "" {
+		topics, err := parseTelemetryHistoryTopics(telemetryHistoryTopicsFlag)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.SEP2TelemetryHistoryTopics = topics
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -1043,4 +1104,39 @@ func getenvList(key string) []string {
 		return nil
 	}
 	return out
+}
+
+// parseTelemetryHistoryTopics splits raw on commas (trimming whitespace
+// and dropping empty entries, matching getenvList's own convention) into
+// -sep2-telemetry-history-topics' destination list, then validates the
+// result: at most maxTelemetryHistoryTopics entries, and no entry may
+// contain ">" or "*" (an ActiveMQ wildcard). Wildcards are refused
+// because a wildcard destination on a shared broker subscribes to every
+// simulation on it, so the retained series count would depend on broker
+// state rather than on this configured list, and one wildcard could
+// exhaust the series cap with traffic from an unrelated run. Called from
+// both the flag and the env resolution path in loadConfig, so a
+// malformed or over-cap list is a single startup error naming this flag
+// regardless of which source supplied it.
+func parseTelemetryHistoryTopics(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.ContainsAny(p, ">*") {
+			return nil, fmt.Errorf(
+				"config: -sep2-telemetry-history-topics / SEP2_TELEMETRY_HISTORY_TOPICS destination %q contains a wildcard character (\">\" or \"*\"); explicit destinations only",
+				p)
+		}
+		out = append(out, p)
+	}
+	if len(out) > maxTelemetryHistoryTopics {
+		return nil, fmt.Errorf(
+			"config: -sep2-telemetry-history-topics / SEP2_TELEMETRY_HISTORY_TOPICS lists %d destinations, want at most %d",
+			len(out), maxTelemetryHistoryTopics)
+	}
+	return out, nil
 }
