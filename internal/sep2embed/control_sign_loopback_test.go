@@ -43,8 +43,7 @@ func signLoopbackPowerToFloat(multiplier int8, value int16) float64 {
 }
 
 // TestSignLoopbackConventionPinned locks BOTH the two sign constants AND
-// the resulting signed direction mapping. It is the regression the card
-// asks for: an accidental flip of either constant changes the sign of a
+// the resulting signed direction mapping: an accidental flip of either constant changes the sign of a
 // commanded target and fails a concrete signed assertion here, not just a
 // non crash check.
 //

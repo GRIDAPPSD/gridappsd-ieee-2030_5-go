@@ -8,8 +8,7 @@ import (
 
 // Destination constants for the GridAPPS-D request queues exercised by
 // this package. Bare destinations (no /queue/ prefix); the underlying
-// Requester is responsible for any prefix normalization. Source:
-// research-stomp-cim-catalog.md section 1.
+// Requester is responsible for any prefix normalization.
 const (
 	// RequestPowergridModel is the queue for all CIM model queries:
 	// SPARQL via QUERY, plus QUERY_MODEL_INFO, QUERY_OBJECT_DICT, etc.

@@ -6,9 +6,9 @@ name: "CodeQL"
 # something in code that has not itself changed). Deliberately NOT on
 # every push to every branch: PRs into main are already gated, and a
 # push-triggered run on top of the PR run would double the analysis
-# cost for no additional signal. See .claude/rules/devops.md "GitHub
-# Actions" for the GitHub-hosted-runner posture this follows; this is
-# read-only static analysis with no deploy reach.
+# cost for no additional signal. GitHub-hosted runners are acceptable
+# here, matching ci.yml: this is read-only static analysis with no
+# deploy reach.
 #
 # Requires GitHub Advanced Security to be enabled for this repository:
 # Settings > Code security and analysis > "GitHub Advanced Security".

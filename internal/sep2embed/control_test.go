@@ -287,8 +287,8 @@ func TestApplyControlDeltaRefusesUnsupportedAttribute(t *testing.T) {
 }
 
 // TestApplyControlDeltaIssuesIndependentControlPerMode replaces the former
-// TestApplyControlDeltaMergesSecondFieldNotDuplicate, whose premise this card
-// reversed.
+// TestApplyControlDeltaMergesSecondFieldNotDuplicate, whose premise this
+// change reversed.
 //
 // Two deltas on two DIFFERENT control modes used to produce ONE DERControl
 // carrying both fields. They now produce TWO DERControls, each carrying its
@@ -382,7 +382,7 @@ func TestApplyControlDeltaIssuesIndependentControlPerMode(t *testing.T) {
 
 	// Distinct identities. Two events sharing an mRID would be read as
 	// duplicates of one another by a conformant client (2018 clause 10.2.5.6
-	// p.95), which is the defect this card exists to remove.
+	// p.95), which per-mode independent controls exist to remove.
 	if w.MRID == v.MRID {
 		t.Errorf("both issued controls carry mRID %s; each DERControl instance SHALL be uniquely identified by an mRID (2018 clause 10.10.4.2 p.120)", w.MRID)
 	}
@@ -466,8 +466,8 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 		t.Errorf("seeded DefaultDERControl.OpModEnergize = %+v, want true", dderc.DERControlBase.OpModEnergize)
 	}
 
-	// Negative invariants: the exact CSIP/1547 hazard this card guards
-	// against is a stray value in any of these four fields.
+	// Negative invariants: the exact CSIP/1547 hazard guarded
+	// against here is a stray value in any of these four fields.
 	// opModTargetVar set would silently disable autonomous volt-var per
 	// 1547-2018 clause 5.3; opModTargetW set would curtail PV;
 	// setGradW/setSoftGradW set would overwrite the device's own

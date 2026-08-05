@@ -29,7 +29,6 @@ const tokenTopic = "/topic/pnnl.goss.token.topic"
 // gossHasSubjectHeader and gossSubjectHeader are the GridAPPS-D-specific
 // headers that every request SEND must carry. They are not part of the
 // STOMP spec; without them the broker rejects or filters our SENDs.
-// See: plans/plan-1-design/research-stomp-cim-catalog.md sections 2 and 7.
 const (
 	gossHasSubjectHeader = "GOSS_HAS_SUBJECT"
 	gossSubjectHeader    = "GOSS_SUBJECT"

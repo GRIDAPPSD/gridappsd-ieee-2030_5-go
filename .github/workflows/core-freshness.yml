@@ -39,8 +39,7 @@ name: "Core freshness"
 # GitHub-hosted runners are appropriate: staleness-check reads (clone,
 # rev-list) plus one force-push to a bot branch and a PR API call,
 # never anything a human owns; conformance-vs-core-main never commits
-# or pushes what it builds. See .claude/rules/devops.md "GitHub
-# Actions" for the posture this follows.
+# or pushes what it builds.
 
 on:
   schedule:
@@ -166,10 +165,8 @@ jobs:
         env:
           # Passed via env: rather than interpolated directly into the
           # commit message text below, so a value with shell
-          # metacharacters is never expanded before execution. See
-          # .claude/rules/secure-coding.md "trust the boundary, not the
-          # caller"; the same pattern release.yml already uses for
-          # VERSION.
+          # metacharacters is never expanded before execution; the same
+          # pattern release.yml already uses for VERSION.
           APP_TOKEN: ${{ steps.read-token.outputs.token }}
           TARGET_LABEL: ${{ steps.compare.outputs.target_label }}
         run: |

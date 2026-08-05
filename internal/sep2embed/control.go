@@ -503,8 +503,8 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 // comparison is strictly greater on both sides: the EPRI reference client's
 // block_supersede evaluates `x->creationTime > y->creationTime`, so two
 // controls stamped in the same wall-clock second compare false in both
-// directions and the INCOMING one is discarded. That is this card's defect
-// exactly, arriving through the clock instead of through the mRID, and it is
+// directions and the INCOMING one is discarded. That is the same defect
+// class exactly, arriving through the clock instead of through the mRID, and it is
 // reachable whenever two GridAPPS-D deltas for one device land inside one
 // second, which a fast simulation loop does routinely. TimeType has
 // one-second resolution (sep.xsd:6382), so there is no finer stamp available
@@ -753,7 +753,7 @@ func supersedePriorControls(ctx context.Context, controlStore store.ResourceStor
 // match the program's own scope.
 //
 // This does not modify seed.go: seed.go's EndDevice/DER seeding stays
-// untouched (per this card's hard rule); the DERProgram (and its
+// untouched (a deliberate hard rule); the DERProgram (and its
 // DefaultDERControl) this function creates is control-flow plumbing
 // local to the DOWN path, created lazily on first use rather than at
 // bulk seed time.

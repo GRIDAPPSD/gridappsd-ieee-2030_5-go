@@ -248,7 +248,7 @@ func loadDeviceSigningCA(dir string, mode DeviceCertMode) (*x509.Certificate, *e
 // present, or, in DevMint mode, mints a fresh one signed by caCert/caKey
 // and writes it (plus its private key) to devicesDir. In Preprovisioned
 // mode a missing certificate is a hard error: see EnsureDeviceIdentities
-// and the card's fail-closed invariant for production deployments.
+// and its fail-closed invariant for production deployments.
 //
 // The certificate is stored as raw DER at <base>.x509, not PEM. This is
 // deliberate: a client that is handed these exact bytes and self-hashes

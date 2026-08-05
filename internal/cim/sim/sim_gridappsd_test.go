@@ -69,7 +69,7 @@ func TestGridAPPSD_SubscribePublishRoundTrip(t *testing.T) {
 	}
 	defer c.Close()
 
-	dest := fmt.Sprintf("/topic/test.gago011.roundtrip.%d", time.Now().UnixNano())
+	dest := fmt.Sprintf("/topic/test.sim.roundtrip.%d", time.Now().UnixNano())
 	subCtx, subCancel := context.WithCancel(context.Background())
 	defer subCancel()
 	sub, err := c.Subscribe(subCtx, dest)

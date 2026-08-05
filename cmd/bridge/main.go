@@ -303,7 +303,7 @@ func run(ctx context.Context, cfg config) error {
 	// publisher that reads the embed's DERStatus store and sends one
 	// aggregate per interval. It is a peer of the embed and the admin UI,
 	// not a hook inside the protocol request path, which is the whole
-	// point of the card: a 2030.5 PUT stores and returns, and nothing on
+	// point of this layering: a 2030.5 PUT stores and returns, and nothing on
 	// the platform side can make it fail, block, or slow down.
 	//
 	// Gated on SimulationID for the same reason the pump is: with no

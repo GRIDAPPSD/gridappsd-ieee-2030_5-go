@@ -3,9 +3,8 @@ name: CI
 # GitHub-hosted runners are acceptable here: both jobs are read-only
 # verification (build, vet, test, and a local frontend rebuild diffed
 # against the committed bundle), and neither job deploys, pushes to a
-# registry, or writes anything. See .claude/rules/devops.md "GitHub
-# Actions" in the Knowledge workspace for the posture this exception
-# follows. The build-and-test job does read one secret pair (the CI
+# registry, or writes anything: self-hosted runners are reserved for
+# deploy-bearing jobs. The build-and-test job does read one secret pair (the CI
 # GitHub App credentials) purely to resolve private module
 # dependencies; it is not an infrastructure credential and grants no
 # deploy reach.

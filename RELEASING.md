@@ -694,9 +694,7 @@ The reviewer returns, per claim, exactly one of three verdicts, each with
   rather than about code). UNVERIFIABLE is a legitimate and useful answer. It
   is never upgraded to CONFIRMED on the grounds that it is probably fine.
 
-Two habits carry most of the weight here. They come from the workspace rule
-`.claude/rules/claims-and-provenance.md`, and are restated so this section
-stands on its own:
+Two habits carry most of the weight here:
 
 - **Re-run the count; never read it off a commit message.** A claim of the form
   "every X is now a Y" is checked by enumerating X again, in the tree being
@@ -871,8 +869,8 @@ firing, and nobody looked until somebody was asked to.
 
 The reports behind those claims were substantially accurate. The looseness
 entered when they were restated in somebody else's voice, which is why care
-alone does not fix this: care was present throughout. The workspace rule
-`.claude/rules/claims-and-provenance.md` carries the underlying discipline (a
-claim you did not personally verify carries whose claim it is, and never write
-a number you did not count). This section applies that rule at the one moment
-where a wrong claim stops being editable, which is the tag.
+alone does not fix this: care was present throughout. The underlying
+discipline is that a claim you did not personally verify carries whose claim
+it is, and you never write a number you did not count. This section applies
+that discipline at the one moment where a wrong claim stops being editable,
+which is the tag.

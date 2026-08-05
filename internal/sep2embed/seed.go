@@ -192,21 +192,21 @@ type seedPolicy struct {
 // No other rtg* field (RTGMaxW, RTGMaxA, RTGMaxChargeRateW,
 // RTGMaxDischargeRateW) is populated here from the CIM
 // PowerElectronicsConnection query results, and this is deliberate, not
-// a placeholder for later completion of this card:
+// a placeholder for later completion:
 //
 //   - The core sep2.DERCapability type (as vendored) has no RTGMaxVA or
 //     RTGMaxV field at all, so the spec-correct ratedS -> rtgMaxVA /
-//     ratedU -> rtgMaxV mapping this card was scoped to has no target to
+//     ratedU -> rtgMaxV mapping this seeding path targets has no target to
 //     write into. This is a real gap in the vendored core library
 //     against the full IEEE 2030.5 DERCapability schema, not a staleness
-//     artifact; see this card's report for the cross-checked evidence.
+//     artifact, confirmed by cross-checking against the vendored type.
 //   - None of the other already-queried CIM fields cleanly retarget onto
 //     the rtg* fields core's type DOES have: maxIFault is a per-unit
 //     fault-current multiplier (a protection-study parameter, not an
 //     absolute current rating), and p/q are live operating-point values,
 //     not rated/maximum capability values. Mapping either class onto
 //     RTGMaxA/RTGMaxW would be a forced, semantically wrong mapping,
-//     which this card's spec explicitly forbids ("do not force a
+//     which the design here explicitly forbids ("do not force a
 //     mapping"; "do NOT silently invent capability bits"). maxQ is the
 //     one exception: it is itself a rated maximum, not a live value, so
 //     RTGMaxVar is populated from it.

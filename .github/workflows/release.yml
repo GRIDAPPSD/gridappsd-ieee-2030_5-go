@@ -1,8 +1,7 @@
 name: Release
 
 # Tag-driven release for cmd/bridge. GitHub-hosted runners are
-# acceptable here per .claude/rules/devops.md's non-deploy-bearing
-# release-workflow carve-out: this job never SSHes to a deployment
+# acceptable here: this job never SSHes to a deployment
 # target, never runs docker compose against a running environment, and
 # never pushes to a container registry. It only builds a Go binary and
 # publishes it as a GitHub release artifact.
@@ -15,8 +14,8 @@ name: Release
 # on two dependency repos and nothing else, so it adds no deploy reach
 # and the carve-out above still holds.
 #
-# Dry-run-safe by default per .claude/rules/releasing.md Section 1: a
-# workflow_dispatch run with no input supplied defaults dry_run to
+# Dry-run-safe by default: a workflow_dispatch run with no input
+# supplied defaults dry_run to
 # true, so an accidental manual trigger rehearses the full pipeline
 # (build, version stamp, canary smoke-test) without creating a
 # release. Only a real `v*` tag push, or an explicit dry_run=false
@@ -207,8 +206,7 @@ jobs:
           # git describe on a tag name, and git ref-name rules permit
           # shell metacharacters, so a crafted tag pushed with
           # contents:write could otherwise be expanded by the runner
-          # before execution. See .claude/rules/secure-coding.md
-          # "trust the boundary, not the caller".
+          # before execution.
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           go build \
@@ -222,8 +220,7 @@ jobs:
           # interpolate ${{ }} directly into the shell body.
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # This is the version-smoke-test gate from
-          # .claude/rules/releasing.md Section 4: unit tests never
+          # This is the version-smoke-test gate: unit tests never
           # receive the -ldflags build-time injection, so a typo in
           # the injection symbol path (an earlier failure mode)
           # would ship a silently wrong version while every unit test

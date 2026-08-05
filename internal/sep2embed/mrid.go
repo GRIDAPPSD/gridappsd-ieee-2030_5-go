@@ -47,8 +47,8 @@ const (
 // For a DERControl that means the client never sees responseRequired or
 // replyTo, so it never posts a Response: the served bytes look plausible in a
 // log while being unusable on the wire. Refusing to emit an invalid identifier
-// is required here rather than optional (see .claude/rules/data-invariants.md
-// Rule 2: do not paper over an identity that cannot be represented validly).
+// is required here rather than optional: do not paper over an identity
+// that cannot be represented validly.
 //
 // PROPERTIES. The digest is SHA-256 over "<kind>:<lfdi>", truncated to the
 // first 16 bytes and hex encoded uppercase. That gives:
@@ -179,7 +179,7 @@ func canonicalControlPayload(base *sep2.DERControlBase) ([]byte, error) {
 // href.
 //
 // The descending-time half exists because of paging, and dropping it
-// reintroduces this card's defect by another route. Core lists a scoped
+// reintroduces the same defect by another route. Core lists a scoped
 // collection in ascending id byte order (store.SortByIDAsc) and defaults an
 // unpaged GET to ten items (sep2srv/paging.DefaultLimit). Keying on the mRID
 // alone would order the DERControlList by what is effectively a random hash,

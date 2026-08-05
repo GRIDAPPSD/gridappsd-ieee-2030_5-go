@@ -302,7 +302,7 @@ func TestDERProgramsAndDERControlsReflectAppliedDelta(t *testing.T) {
 		t.Errorf("DefaultDERControl.Base.OpModEnergize = %+v, want true", dderc.Base.OpModEnergize)
 	}
 
-	// Negative invariant (the actual hazard this card guards against):
+	// Negative invariant (the actual hazard guarded against here):
 	// opModTargetW and opModTargetVar must stay nil on the seeded
 	// default. A stray value here would silently disable the device's
 	// own autonomous volt-var / curtailment behavior per IEEE 1547-2018

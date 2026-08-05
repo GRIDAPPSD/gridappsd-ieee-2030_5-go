@@ -101,8 +101,8 @@ type SEP2Policy struct {
 	// operator-editable file that is the source of truth, with the UI as an
 	// editor over it. Per-device rates belong in that same per-device
 	// provisioning record rather than a parallel store, so that two files
-	// can never disagree about the same device. Building that record is not
-	// this card's work.
+	// can never disagree about the same device. Building that record is
+	// a separate piece of work, out of scope here.
 	PollRates map[string]uint32
 	PostRates map[string]uint32
 

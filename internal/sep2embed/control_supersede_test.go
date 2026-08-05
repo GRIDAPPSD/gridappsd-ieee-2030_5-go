@@ -416,7 +416,7 @@ func TestIssuedControlIdentityIsDeterministicAcrossRestart(t *testing.T) {
 // that broke rather than reporting that two documents differ somewhere.
 //
 // The negative half matters as much as the positive: an mRID that did not
-// move with the payload would reintroduce the exact defect this card fixes,
+// move with the payload would reintroduce the exact defect this function fixes,
 // and an mRID that did not move with creationTime would collide whenever the
 // same value is re-commanded.
 func TestDeriveEventMRIDIsAFunctionOfItsInputs(t *testing.T) {
@@ -470,7 +470,7 @@ func TestDeriveEventMRIDIsAFunctionOfItsInputs(t *testing.T) {
 
 // TestNewestControlIsServedOnTheFirstUnpagedPage guards the paging hazard the
 // per-event id scheme introduced, and it is a defect of exactly the shape
-// this card exists to remove.
+// the descending-time id ordering exists to remove.
 //
 // Core lists a scoped collection in ascending id byte order
 // (store.SortByIDAsc) and defaults an unpaged GET to ten items
