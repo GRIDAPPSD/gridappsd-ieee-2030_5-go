@@ -243,6 +243,56 @@ jobs:
               ;;
           esac
 
+      - name: IEEE material redistribution check
+        # Gates the publish path specifically: this step's failure fails
+        # this job, which the image and publish jobs below both require,
+        # so neither an image nor a GitHub release can ship past it.
+        #
+        # IEEE 2030.5's sep.xsd schema and sep_wadl.xml application
+        # description are IEEE-copyrighted with no redistribution right
+        # granted (the IEEE GET Program grants read access, not
+        # redistribution). The container-publishing plan verified by a
+        # one-time source-tree count that none of this repository, the
+        # pinned github.com/GRIDAPPSD/ieee-2030_5-core-go, or the pinned
+        # github.com/GRIDAPPSD/gridappsd-go carries such a file or a
+        # go:embed directive pointing at one. That count was pinned to a
+        # specific dependency version; this step re-runs the same count
+        # on every release-pipeline run, against whatever version is
+        # actually checked out, so the property stays true rather than
+        # having been true once.
+        run: |
+          set -eu
+
+          scan_dirs="."
+          for mod in github.com/GRIDAPPSD/ieee-2030_5-core-go github.com/GRIDAPPSD/gridappsd-go; do
+            dir=$(go list -m -f '{{.Dir}}' "$mod")
+            scan_dirs="$scan_dirs $dir"
+          done
+
+          hits=""
+          count=0
+          for d in $scan_dirs; do
+            found=$(find "$d" -path "$d/.git" -prune -o -type f \( -iname '*.xsd' -o -iname '*.wadl' -o -iname '*.xml' \) -print)
+            n=$(printf '%s\n' "$found" | grep -c . || true)
+            count=$((count + n))
+            if [ -n "$found" ]; then
+              hits=$(printf '%s\n%s' "$hits" "$found")
+            fi
+          done
+
+          tree_count=$(printf '%s\n' "$scan_dirs" | tr ' ' '\n' | grep -c . || true)
+          echo "IEEE-material check: scanned $tree_count trees (this checkout, plus the two GRIDAPPSD dependency module directories); found $count matching file(s)."
+
+          if [ "$count" -gt 0 ]; then
+            echo "IEEE-material check FAILED. The following files match *.xsd, *.wadl, or *.xml"
+            echo "and must not ship in a public image or release artifact without a licensing"
+            echo "review first:"
+            printf '%s\n' "$hits"
+            exit 1
+          fi
+
+          echo "IEEE-material check passed: no .xsd, .wadl, or .xml assets found."
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
@@ -288,6 +338,125 @@ jobs:
             "dist/bridge-${VERSION}-linux-amd64" \
             --title "${REF_NAME}" \
             --generate-notes
+
+  image:
+    name: Build and publish container image
+    needs: build-and-verify
+    # Same gate as the publish job above, and for the same reason: only
+    # a real tag push, or an explicit dry_run=false dispatch, reaches
+    # the steps that actually push to Docker Hub. Runs alongside
+    # `publish` rather than after it; the two publish different things
+    # (a GitHub release, a container image) from the same verified
+    # artifact and neither depends on the other's output.
+    if: needs.build-and-verify.outputs.is_dry_run == 'false'
+    runs-on: ubuntu-latest
+    env:
+      # Mirrors the naming convention GOSS-GridAPPS-D's own publish
+      # workflow uses (DOCKER_PROJECT / DOCKER_IMAGE_NAME), so the two
+      # workflows read the same way side by side. The resulting
+      # repository is gridappsd/gridappsd-ieee-2030_5: the org prefix
+      # plus this repository's name with the "-go" language suffix
+      # dropped, matching every other image already published under
+      # that org.
+      DOCKER_PROJECT: gridappsd
+      DOCKER_IMAGE_NAME: gridappsd-ieee-2030_5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        # Default shallow checkout is enough: this job only needs the
+        # Dockerfile, .dockerignore, and LICENSE at HEAD, plus HEAD's
+        # own commit hash for the image tag below. It does not need Go,
+        # does not set GOPRIVATE, and does not mint the private-module
+        # App token the build job above uses: this job's only
+        # credential is the registry login two steps down, and the two
+        # must stay separate. See the container-publishing plan,
+        # section 6, for why the build that resolves private modules
+        # and the build that produces this image are deliberately
+        # different jobs with different secrets.
+
+      - name: Download build artifact
+        # The exact binary build-and-verify compiled and canary-tested,
+        # not a fresh compilation. This is the provenance property the
+        # plan calls out in section 6.3: the image ships the binary
+        # that passed the -version smoke test, not a second, unverified
+        # compilation of the same source.
+        uses: actions/download-artifact@v8
+        with:
+          name: bridge-${{ needs.build-and-verify.outputs.version }}
+          path: .
+
+      - name: Log in to Docker Hub
+        # Mirrors GOSS-GridAPPS-D's own publish step exactly (plain
+        # `docker login` piped from a token on stdin, not
+        # docker/login-action): same secret names, same shape, so
+        # anyone who has read one of these workflows can read the
+        # other. Guarded by repository_owner, matching GOSS, so a fork
+        # running this workflow (which cannot reach the org secrets
+        # regardless) fails closed rather than attempting a login with
+        # empty credentials.
+        #
+        # DOCKER_USERNAME and DOCKER_TOKEN are org-level secrets on
+        # GRIDAPPSD, not repository secrets on this repo: `gh secret
+        # list` against this repository lists only
+        # GRIDAPPSD_CI_APP_ID and GRIDAPPSD_CI_APP_PRIVATE_KEY (the
+        # private-module credential, a DIFFERENT credential this job
+        # deliberately never sees). The names DOCKER_USERNAME and
+        # DOCKER_TOKEN are read from GOSS-GridAPPS-D's own working
+        # release workflow, not from enumerating the org's secret
+        # store directly (that needs admin:org, which this session
+        # does not have). If either name is wrong or unshared to this
+        # repository, this step fails here, loudly, before any image
+        # is built, rather than at the push step below.
+        if: github.repository_owner == 'GRIDAPPSD'
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build, tag, and push the image
+        # Mirrors GOSS-GridAPPS-D's tag construction and its two-tag
+        # push (an immutable TIMESTAMP_GITHASH tag alongside the
+        # release tag itself), against the image name Craig named:
+        # gridappsd/gridappsd-ieee-2030_5. Diverges from GOSS in one
+        # place, deliberately: GOSS derives TAG from GITHUB_REF on
+        # every push to every branch, which is what puts branch names
+        # (and whatever they contain) on a public registry (see the
+        # plan, section 2.2 and 2.7). This workflow's trigger is
+        # already tag-only (`push: tags: ['v*']`), so TAG here only
+        # ever resolves from a `v*` tag, never a branch name; the
+        # GITHUB_REF-stripping logic is kept for fidelity to the
+        # source but is inert against a stray branch push because
+        # there is no such trigger to hand it one.
+        if: github.repository_owner == 'GRIDAPPSD'
+        env:
+          # Passed via env:, never interpolated directly into the
+          # shell body, matching this workflow's own established
+          # convention above for any value that originates from a ref
+          # name.
+          REF: ${{ github.ref }}
+          VERSION: ${{ needs.build-and-verify.outputs.version }}
+        run: |
+          set -eu
+          chmod +x bridge
+
+          TAG="${REF#refs/heads/}"
+          TAG="${TAG#refs/tags/}"
+          TAG="${TAG//\//_}"
+
+          IMAGE="${DOCKER_PROJECT}/${DOCKER_IMAGE_NAME}"
+          TIMESTAMP=$(date +'%y%m%d%H')
+          GITHASH=$(git log -1 --pretty=format:"%h")
+
+          echo "Image:   ${IMAGE}"
+          echo "Tags:    ${TIMESTAMP}_${GITHASH}  and  ${TAG}"
+
+          docker build \
+            --build-arg IMAGE_VERSION="${VERSION}" \
+            --build-arg IMAGE_REVISION="$(git rev-parse HEAD)" \
+            -t "${IMAGE}:${TIMESTAMP}_${GITHASH}" \
+            .
+
+          docker tag "${IMAGE}:${TIMESTAMP}_${GITHASH}" "${IMAGE}:${TAG}"
+
+          docker push "${IMAGE}:${TIMESTAMP}_${GITHASH}"
+          docker push "${IMAGE}:${TAG}"
 
   dry-run-report:
     name: Report dry-run result
