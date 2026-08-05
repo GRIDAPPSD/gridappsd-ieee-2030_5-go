@@ -25,8 +25,7 @@ name: "CodeQL"
 # permissions carries `actions: read` in addition to the
 # `contents: read` and `security-events: write` the CodeQL Action's own
 # README documents as the minimum outside GHAS's public-repo free tier.
-# The analyze
-# step's SARIF post-processing (fingerprinting alerts before upload)
+# The analyze step's SARIF post-processing (fingerprinting alerts before upload)
 # calls `GET /repos/:owner/:repo/actions/runs/:run_id` to resolve the
 # workflow's relative path; without `actions: read` that call fails
 # with "Resource not accessible by integration" AFTER the database
