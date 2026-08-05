@@ -12,7 +12,7 @@ import (
 )
 
 // This file's tests moved here verbatim with MapDERStatusToDifferences
-// itself (GAGO-121). The mapping did not change: only the package it
+// itself. The mapping did not change: only the package it
 // lives in, so that the 2030.5 embed no longer carries any GridAPPS-D
 // wire-shape code at all.
 
@@ -45,8 +45,8 @@ func TestMapDERStatusToDifferences(t *testing.T) {
 		byAttr[d.Attribute] = d
 	}
 
-	// ConnectStatusType.Value is sep2.HexBinary8 (sep.xsd:4471,
-	// IEEECORE-047), unlike its OperationalModeStatusType sibling below,
+	// ConnectStatusType.Value is sep2.HexBinary8 (sep.xsd:4471),
+	// unlike its OperationalModeStatusType sibling below,
 	// which stays plain UInt8 (sep.xsd:4559) and so stays uint8 here too.
 	if v, ok := byAttr["DERStatus.genConnectStatus"]; !ok || v.Value != sep2.HexBinary8(1) {
 		t.Errorf("DERStatus.genConnectStatus = %+v, want Value=1", v)

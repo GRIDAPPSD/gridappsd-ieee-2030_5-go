@@ -2,7 +2,7 @@
 // stored DERStatus resources to the GridAPPS-D message bus, on its own
 // timer, independently of the protocol request path.
 //
-// The layering this package exists to enforce (GAGO-121): receiving a
+// The layering this package exists to enforce: receiving a
 // 2030.5 request must not cause a platform-side bus publish. Per-device,
 // per-request handling is correct behaviour for the 2030.5 server, and
 // that is exactly where it stays: the server's responsibility ends at

@@ -518,7 +518,7 @@ func TestSubscriber_CtxCancelWhileRelayBlockedOnFullBuffer(t *testing.T) {
 	}
 }
 
-// TestSubscriber_ShutdownBoundsUnresponsiveUnsubscribe covers GAGO-041:
+// TestSubscriber_ShutdownBoundsUnresponsiveUnsubscribe verifies that
 // relay's shutdown must not block indefinitely when the broker never
 // answers Unsubscribe. It must return within a small bound, record the
 // resulting error via sub.setErr so it is observable (not swallowed),
@@ -581,7 +581,7 @@ func TestSubscriber_ShutdownBoundsUnresponsiveUnsubscribe(t *testing.T) {
 }
 
 // TestSubscriber_ShutdownBoundsUnsubscribeThatIgnoresCtxEntirely covers
-// GAGO-041 CRITICAL 2 (Pike's review of the first fix): the real
+// CRITICAL 2 (Pike's review of the first fix): the real
 // fieldbus.GridAPPSDMessageBus.Unsubscribe discards the ctx argument it
 // is given (gridappsd-go internal/router.Router.Unsubscribe(_
 // context.Context, ...)) and delegates to go-stomp's

@@ -13,7 +13,7 @@ import (
 // testLFDI derives a deterministic, exactly-40-character uppercase hex
 // LFDI from an arbitrary distinguishing tag, so fixtures can keep
 // readable, distinct seeds ("lfdi-old", "lfdi-new", "seed-lfdi-3") while
-// still satisfying validateEntry's canonical LFDI shape (GAGO-019).
+// still satisfying validateEntry's canonical LFDI shape.
 // SHA-1 is used only as a deterministic 20-byte hash, not for any
 // security property; a fixed tag always maps to the same value, and
 // distinct tags map to distinct values (collision probability is
@@ -675,7 +675,7 @@ func TestSnapshotConcurrentSafe(t *testing.T) {
 	wg.Wait()
 }
 
-// TestValidateEntryRejectsMalformedMRID pins the GAGO-019 MRID rejection
+// TestValidateEntryRejectsMalformedMRID pins the MRID rejection
 // paths: leading/trailing whitespace and embedded control characters are
 // both rejected via ErrInvalidEntry, distinct from the pre-existing
 // empty-MRID case already covered by TestAddValidation.
@@ -709,7 +709,7 @@ func TestValidateEntryRejectsMalformedMRID(t *testing.T) {
 	}
 }
 
-// TestValidateEntryRejectsMalformedLFDI pins the GAGO-019 LFDI allowlist:
+// TestValidateEntryRejectsMalformedLFDI pins the LFDI allowlist:
 // only exactly-40-character uppercase hex is accepted. Too short, too
 // long, lowercase, and non-hex characters are each rejected via
 // ErrInvalidEntry, distinct from the pre-existing empty-LFDI case already
@@ -749,7 +749,7 @@ func TestValidateEntryRejectsMalformedLFDI(t *testing.T) {
 // no options, or explicitly with WithMaxEntries(0) or a negative value,
 // never returns ErrRegistryFull no matter how many distinct entries are
 // added: this is the backward-compatibility contract for every
-// pre-GAGO-019 caller of New().
+// caller of New() from before this option existed.
 func TestWithMaxEntriesDefaultIsUnlimited(t *testing.T) {
 	t.Parallel()
 

@@ -22,10 +22,10 @@ import (
 //
 // SFDI is the companion IEEE 2030.5 short form device ID (spec section
 // 6.3.3), populated alongside a certificate-derived LFDI (see
-// internal/sep2embed.EnsureDeviceIdentities, GAGO-033). It is optional:
+// internal/sep2embed.EnsureDeviceIdentities). It is optional:
 // an empty SFDI is valid on an entry whose caller only tracks LFDI (all
 // existing registry-only tests, and any Placeholder entry that predates
-// GAGO-033), and downstream seeding (internal/sep2embed/seed.go) falls
+// certificate-derived identity), and downstream seeding (internal/sep2embed/seed.go) falls
 // back to deriving a syntactically valid placeholder SFDI from LFDI when
 // this field is empty.
 //
@@ -76,7 +76,7 @@ var ErrInvalidEntry = errors.New("registry: invalid entry")
 // replacements) would grow the registry beyond the bound set by
 // WithMaxEntries. The registry is left unmutated when this error is
 // returned. A Registry created with no options (or WithMaxEntries(0))
-// never returns this error, preserving pre-GAGO-019 unlimited-size
+// never returns this error, preserving the prior unlimited-size
 // behavior for existing callers.
 var ErrRegistryFull = errors.New("registry: full")
 
@@ -99,7 +99,7 @@ type Registry struct {
 	mu         sync.RWMutex
 	mridIndex  map[string]Entry  // mRID -> Entry
 	lfdiIndex  map[string]string // canonical LFDI -> mRID
-	maxEntries int               // 0 = unlimited (GAGO-019 default, backward compatible)
+	maxEntries int               // 0 = unlimited (default, backward compatible)
 }
 
 // Option configures a Registry at construction time. See WithMaxEntries.
@@ -110,7 +110,7 @@ type Option func(*Registry)
 // introduce a new mRID (rather than replace an existing one) returns
 // ErrRegistryFull and the registry is left unmutated. n <= 0 means
 // unlimited, matching the zero-value default so a Registry constructed
-// with New() and no options behaves exactly as it did before GAGO-019.
+// with New() and no options behaves exactly as it did before this option existed.
 func WithMaxEntries(n int) Option {
 	return func(r *Registry) {
 		if n > 0 {
@@ -120,7 +120,7 @@ func WithMaxEntries(n int) Option {
 }
 
 // New returns an empty Registry ready for use. With no options the
-// registry is unbounded (pre-GAGO-019 behavior); pass WithMaxEntries to
+// registry is unbounded (the original behavior); pass WithMaxEntries to
 // cap the number of distinct mRID entries it will accept.
 func New(opts ...Option) *Registry {
 	r := &Registry{
@@ -259,7 +259,7 @@ func (r *Registry) Snapshot() []Entry {
 }
 
 // lfdiPattern is an ALLOWLIST for the canonical IEEE 2030.5 LFDI shape
-// (GAGO-019): exactly 40 uppercase hex characters. This is not an
+// exactly 40 uppercase hex characters. This is not an
 // arbitrary tightening: sepTLS.LFDI (github.com/GRIDAPPSD/ieee-2030_5-
 // core-go, pkg/sep2tls/identity.go) derives every real LFDI as
 // fmt.Sprintf("%X", fp[:20]) over a certificate's SHA-256 fingerprint,
@@ -276,7 +276,7 @@ func (r *Registry) Snapshot() []Entry {
 var lfdiPattern = regexp.MustCompile(`^[0-9A-F]{40}$`)
 
 // validateEntry enforces the public contract: empty MRID or empty LFDI
-// is rejected (unchanged from the pre-GAGO-019 validate); an MRID
+// is rejected (unchanged from the original validate); an MRID
 // containing a control byte or leading/trailing whitespace is rejected
 // (a stray control byte or padding whitespace signals upstream data
 // corruption or copy-paste error, not a value this registry should

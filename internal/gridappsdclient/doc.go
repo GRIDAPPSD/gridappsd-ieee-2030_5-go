@@ -4,12 +4,12 @@
 // over gridappsd-go instead of this repo's own STOMP implementation in
 // internal/cimstomp.
 //
-// Wiring scope (GAGO-038 vs GAGO-039): this package holds ONLY the
+// Wiring scope: this package holds ONLY the
 // adapter types. It does not dial a broker, does not select TLS vs
 // plaintext (see gridappsd.Config.AllowPlaintext in gridappsd-go), and
 // is not wired into cmd/bridge. Every constructor here takes an
 // already-Connect'ed fieldbus.MessageBus; connecting it, and swapping
-// cmd/bridge over to use it, is GAGO-039's scope.
+// cmd/bridge over to use it, is out of scope for this package.
 //
 // # Request/reply: cim.Requester
 //
@@ -37,7 +37,7 @@
 // outside package cimstomp could satisfy sim.SubscribeClient as
 // originally declared.
 //
-// Design decision (Noor, GAGO-038 follow-up): reshape the interface
+// Design decision (Noor): reshape the interface
 // rather than route around it. internal/cim/sim now declares a small
 // Subscription interface (Messages() <-chan cimstomp.Message, Err()
 // error) alongside SubscribeClient, and *cimstomp.Subscription
@@ -60,7 +60,7 @@
 // broker-teardown signal reaches MessageBus callers yet, so Err() only
 // ever reports ctx.Err()).
 //
-// GAGO-039 remains out of scope for this package: it swaps cmd/bridge's
-// connectClient over to dial a gridappsd-go fieldbus.MessageBus instead
-// of cimstomp.Client.
+// Swapping cmd/bridge's connectClient over to dial a gridappsd-go
+// fieldbus.MessageBus instead of cimstomp.Client remains out of scope
+// for this package.
 package gridappsdclient

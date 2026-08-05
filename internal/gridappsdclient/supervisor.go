@@ -13,7 +13,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
 )
 
-// GAGO-107. The bridge's STOMP subscriptions died roughly 15 seconds
+// The bridge's STOMP subscriptions died roughly 15 seconds
 // after startup and never recovered, while the process stayed alive and
 // kept serving HTTP. The chain, end to end:
 //

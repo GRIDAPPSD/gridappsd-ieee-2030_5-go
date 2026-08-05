@@ -78,7 +78,7 @@ func TestDiffMessageBuilderAggregatesEveryDeviceUnderItsOwnMRID(t *testing.T) {
 }
 
 // TestDiffMessageBuilderPerDeviceContentMatchesThePerPUTPath is the
-// content invariant for GAGO-121: batching changed, content did not. It
+// content invariant: batching changed, content did not. It
 // reconstructs the exact envelope the removed per-PUT relay
 // (sep2embed.PublishDERStatus) built for a single device, and requires
 // the aggregate builder to produce the same command, simulation_id,

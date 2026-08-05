@@ -33,7 +33,8 @@ type Message struct {
 //
 // THIS IS THE MESSAGE-SHAPE SEAM. The bridge currently publishes the
 // internal/cim/diff envelope (DiffMessageBuilder below), matching what
-// the per-PUT relay published before GAGO-121. The agreed eventual
+// the per-PUT relay published before this bridge moved to batched
+// interval publishing. The agreed eventual
 // target is a CIM AnalogValue payload, as the Python upstream's
 // get_message_for_bus builds, which is deferred pending confirmation of
 // who actually subscribes. Swapping shapes means writing a second

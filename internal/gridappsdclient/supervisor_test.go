@@ -14,7 +14,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
 )
 
-// healthBus models the GAGO-107 failure at the boundary Supervisor sees.
+// healthBus models the connection-loss failure at the boundary Supervisor sees.
 // The bridge's whole go-stomp connection dies on the 15s read timeout:
 // from that instant the router's reader goroutines have exited, so no
 // handler is ever invoked again, and every bus operation on the dead
@@ -192,7 +192,7 @@ func (s *syncBuffer) String() string {
 }
 
 // TestSupervisor_IdleLongerThanTheDeadlineKeepsSubscriptionAlive is the
-// core GAGO-107 regression. A quiet simulation is entirely ordinary, so
+// core regression test. A quiet simulation is entirely ordinary, so
 // an idle interval that spans many liveness deadlines must not end,
 // error, or degrade the subscription; and a frame that arrives after all
 // that silence must still be delivered, with its body intact.
