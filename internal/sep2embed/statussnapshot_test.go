@@ -167,11 +167,11 @@ func TestDERStatusSnapshotsIsRaceFreeAgainstConcurrentPUTs(t *testing.T) {
 			mode := sep2.OperationalModeStatusType{Value: uint8(i % 5)}
 			status := sep2.DERStatus{OperationalModeStatus: &mode, ReadingTime: int64(i)}
 			for _, edevID := range scopes {
-				st := e.stores.DERStatuses.ForParent(edevID + "/1")
-				if err := st.Create(ctx, singletonKey, status); err != nil {
+				scope := edevID + "/1"
+				if err := e.stores.DERStatuses.Create(ctx, scope, singletonKey, status); err != nil {
 					// Already exists after the first round: update instead,
 					// which is exactly what core's singleton PUT does.
-					if uerr := st.Update(ctx, singletonKey, status); uerr != nil {
+					if uerr := e.stores.DERStatuses.Update(ctx, scope, singletonKey, status); uerr != nil {
 						t.Errorf("update DERStatus: %v", uerr)
 						return
 					}

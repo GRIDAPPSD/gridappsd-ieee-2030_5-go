@@ -436,7 +436,7 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 	edevA := urlIndexFor(t, st, "mrid-a")
 
 	// The DERProgram's own DefaultDERControlLink is populated.
-	program, err := st.DERPrograms.ForParent(edevA).Get(ctx, controlDERProgramID)
+	program, err := st.DERPrograms.Get(ctx, edevA, controlDERProgramID)
 	if err != nil {
 		t.Fatalf("DERPrograms.Get: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestApplyControlDeltaSeedsDefaultDERControlOnEveryDERProgram(t *testing.T) 
 	// program its own": a distinct identity, and carrying none of A's
 	// control.
 	edevB := urlIndexFor(t, st, "mrid-b")
-	programB, err := st.DERPrograms.ForParent(edevB).Get(ctx, controlDERProgramID)
+	programB, err := st.DERPrograms.Get(ctx, edevB, controlDERProgramID)
 	if err != nil {
 		t.Fatalf("DERPrograms.Get(B): %v (every seeded device has its own program)", err)
 	}

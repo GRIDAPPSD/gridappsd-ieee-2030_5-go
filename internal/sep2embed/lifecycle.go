@@ -369,11 +369,11 @@ func (l *endedControlLedger) len() int {
 //
 // A control whose temporal extent cannot be determined is left in place; see
 // maxEffectiveScheduledEnd for why that direction is the safe one.
-func expireDeviceControls(ctx context.Context, controlStore store.ResourceStore[sep2.DERControl], ledger *endedControlLedger, ed eventEdition, nowUnix int64) (int, error) {
+func expireDeviceControls(ctx context.Context, derControls store.ScopedStore[sep2.DERControl], scope string, ledger *endedControlLedger, ed eventEdition, nowUnix int64) (int, error) {
 	// Unbounded for the reason ApplyControlDelta's own read is unbounded: a
 	// page here would hide events from the sweep, and an event that is not
 	// examined is an event that keeps serving a past interval forever.
-	list, err := controlStore.List(ctx, store.ListOptions{Unbounded: true})
+	list, err := derControls.List(ctx, scope, store.ListOptions{Unbounded: true})
 	if err != nil {
 		return 0, fmt.Errorf("list controls: %w", err)
 	}
@@ -403,7 +403,7 @@ func expireDeviceControls(ctx context.Context, controlStore store.ResourceStore[
 		// its href, for the reason given on supersedePriorControls:
 		// derControlID produced both, and a recomputation cannot drift from
 		// a string the way a parse can.
-		if err := controlStore.Delete(ctx, derControlID(c.CreationTime, c.MRID)); err != nil {
+		if err := derControls.Delete(ctx, scope, derControlID(c.CreationTime, c.MRID)); err != nil {
 			return removed, fmt.Errorf("remove ended control %s: %w", c.MRID, err)
 		}
 		removed++
@@ -441,7 +441,7 @@ func expireEndedControls(ctx context.Context, stores *assembly.Stores, notifier 
 		}
 
 		scope := derControlScope(edevID, controlFSAID, controlDERProgramID)
-		n, err := expireDeviceControls(ctx, stores.DERControls.ForParent(scope), ledger, ed, nowUnix)
+		n, err := expireDeviceControls(ctx, stores.DERControls, scope, ledger, ed, nowUnix)
 		removed += n
 		if err != nil {
 			errs = append(errs, fmt.Errorf("sep2embed: expire ended controls (edev %q): %w", edevID, err))

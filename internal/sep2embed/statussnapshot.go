@@ -72,12 +72,17 @@ func (e *Embed) DERStatusSnapshots(ctx context.Context) ([]DERStatusSnapshot, er
 		for _, der := range dev.DERs {
 			scope := dev.ID + "/" + der.ID
 
-			// HasParent before Get: ScopedStore.Get routes through
-			// ForParent, which CREATES an empty per-parent store as a side
-			// effect of a read. This method runs on a timer against every
-			// seeded device, so taking that path would have every quiet
-			// device's store allocated by the reader rather than by its
-			// first PUT.
+			// HasParent before Get: as of core v0.14.1, ScopedStore.Get
+			// routes through the unexported parentStore lookup (core's
+			// memory/scoped.go:125), which looks a parent up WITHOUT
+			// creating one; Get on an unknown parent now reports
+			// ErrNotFound rather than materializing a bucket. The HasParent
+			// call here is kept anyway: it lets this method skip a device
+			// that has never PUT a DERStatus without paying for a Get call
+			// whose only outcome would be a discarded ErrNotFound, and doing
+			// so on a fallible query (see below) rather than a local nil
+			// comparison keeps a backend fault visible instead of silently
+			// read as "quiet device".
 			//
 			// The check is fallible by contract (store.ScopedReader:
 			// "on a durable backend this is a query, not a cheap local map

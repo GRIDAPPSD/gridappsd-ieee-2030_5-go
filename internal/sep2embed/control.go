@@ -374,7 +374,6 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	}
 
 	scope := derControlScope(edevID, controlFSAID, controlDERProgramID)
-	controlStore := stores.DERControls.ForParent(scope)
 
 	// The issued control carries EXACTLY the mode this delta names. It does
 	// not inherit the modes of previously issued controls: those remain in
@@ -394,7 +393,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// a collection the server itself bounds (see store.ListOptions.Unbounded):
 	// a page here would silently hide events from the supersession pass, and
 	// an event that is not examined is an event that is left Active.
-	priorList, err := controlStore.List(ctx, store.ListOptions{Unbounded: true})
+	priorList, err := stores.DERControls.List(ctx, scope, store.ListOptions{Unbounded: true})
 	if err != nil {
 		return fmt.Errorf("sep2embed: control delta: list existing controls: %w", err)
 	}
@@ -475,11 +474,11 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// of the event's content and creation instant, so an existing entry under
 	// this id IS this event, already published; there is nothing to write and
 	// nothing to change.
-	if err := controlStore.Create(ctx, controlID, control); err != nil && !errors.Is(err, store.ErrAlreadyExists) {
+	if err := stores.DERControls.Create(ctx, scope, controlID, control); err != nil && !errors.Is(err, store.ErrAlreadyExists) {
 		return fmt.Errorf("sep2embed: control delta: write control: %w", err)
 	}
 
-	if err := supersedePriorControls(ctx, controlStore, priorList.Items, control); err != nil {
+	if err := supersedePriorControls(ctx, stores.DERControls, scope, priorList.Items, control); err != nil {
 		return fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 
@@ -684,7 +683,7 @@ func restatesControlInForce(prior []sep2.DERControl, base *sep2.DERControlBase, 
 // whether they changed anything: under 2023 both are no-ops, and rewriting a
 // record to store the value it already holds would be a needless edit of a
 // served Event.
-func supersedePriorControls(ctx context.Context, controlStore store.ResourceStore[sep2.DERControl], prior []sep2.DERControl, issued sep2.DERControl) error {
+func supersedePriorControls(ctx context.Context, derControls store.ScopedStore[sep2.DERControl], scope string, prior []sep2.DERControl, issued sep2.DERControl) error {
 	// The instant recorded on a superseded event is the superseding event's
 	// Effective Start Time, which 2018 Annex B p.160 names explicitly: the
 	// server "SHALL mark the event as Superseded at the earliest Effective
@@ -724,7 +723,7 @@ func supersedePriorControls(ctx context.Context, controlStore store.ResourceStor
 		// href, because derControlID is what produced both and a recomputation
 		// cannot drift from a string the way a parse can.
 		// TestIssuedDERControlHrefEndsWithItsStoreKey pins the two together.
-		if err := controlStore.Update(ctx, derControlID(p.CreationTime, p.MRID), p); err != nil {
+		if err := derControls.Update(ctx, scope, derControlID(p.CreationTime, p.MRID), p); err != nil {
 			return fmt.Errorf("mark control %s superseded: %w", p.MRID, err)
 		}
 	}
@@ -763,8 +762,7 @@ func supersedePriorControls(ctx context.Context, controlStore store.ResourceStor
 // become a URL-addressing artifact, and building one from the index would
 // make it collide across restarts once indices are reassigned.
 func ensureDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mridBase, fsaID, derpID string, policy ControlPolicy) error {
-	inner := stores.DERPrograms.ForParent(edevID)
-	if _, err := inner.Get(ctx, derpID); err == nil {
+	if _, err := stores.DERPrograms.Get(ctx, edevID, derpID); err == nil {
 		return nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("get der program: %w", err)
@@ -825,7 +823,7 @@ func createDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mrid
 	}
 	program.DefaultDERControlLink = &sep2.Link{Href: dderc.Href}
 
-	if err := stores.DERPrograms.ForParent(edevID).Create(ctx, derpID, program); err != nil {
+	if err := stores.DERPrograms.Create(ctx, edevID, derpID, program); err != nil {
 		return fmt.Errorf("create der program: %w", err)
 	}
 	return nil

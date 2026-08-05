@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store/memory"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
@@ -858,6 +860,31 @@ func TestSeedStoresCreatesFSAAndLinkPerDevice(t *testing.T) {
 		if count != 1 {
 			t.Errorf("FSAs.Count(%q) = %d, want 1 (must match the advertised All)", id, count)
 		}
+	}
+}
+
+// TestSeedFSASkipsOnTypedNilFSAsStore pins the store.IsAbsent guard in
+// seedFSA against the exact regression it fixes: a nil *memory.ScopedStore
+// assigned into the store.ScopedStore[sep2.FunctionSetAssignments] interface
+// field is NOT == nil, because the interface's type half is set even though
+// its pointer half is nil (see core's pkg/store/absent.go). A plain
+// `stores.FSAs == nil` guard would therefore not fire here, and seedFSA
+// would go on to call Create on a nil *memory.ScopedStore receiver, which
+// panics on its first field access. store.IsAbsent must catch this case
+// where a bare nil comparison cannot.
+//
+// This is not reachable through seedStores/newStores today, because
+// newStores always assigns a real FSA store (stores.go:54); the test
+// constructs the absent case directly rather than reshaping newStores to
+// produce it.
+func TestSeedFSASkipsOnTypedNilFSAsStore(t *testing.T) {
+	t.Parallel()
+
+	var nilFSAs *memory.ScopedStore[sep2.FunctionSetAssignments]
+	stores := &assembly.Stores{FSAs: nilFSAs}
+
+	if err := seedFSA(context.Background(), stores, "1", "AAAA00000000000000000000000000000000AAAA"); err != nil {
+		t.Fatalf("seedFSA with a typed-nil FSAs store: %v (want nil: absence must be detected and skipped, not treated as a live store)", err)
 	}
 }
 

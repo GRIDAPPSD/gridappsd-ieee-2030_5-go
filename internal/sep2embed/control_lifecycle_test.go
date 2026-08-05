@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
+
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 )
 
 // Wire-level tests for the end of an issued DERControl's life.
@@ -651,5 +654,66 @@ func TestMarkEndedPerEdition(t *testing.T) {
 	// not panic the fleet-wide sweep.
 	if markEnded(edition2023, nil, at) {
 		t.Error("markEnded reported a change on a nil EventStatus")
+	}
+}
+
+// TestExpireEndedControlsSweepDoesNotMaterializeAnUntouchedDevicesControlBucket
+// guards the core IEEECORE-111 read contract at the one call site in this
+// package where a regression could reach it silently. The periodic sweep
+// (expireEndedControls) lists every seeded device and, for each, reads that
+// device's own DERControls scope (expireDeviceControls) to decide whether
+// anything needs removing. Reaching that read through ForParent, the
+// create-on-miss path core still exports for callers that hold the concrete
+// type, would allocate a parent bucket for a device the sweep only READ, not
+// wrote to. That allocation would then run on a timer for every quiet device
+// in the fleet, with nothing else in this package positioned to observe it:
+// the sweep never inspects HasParent itself, only List and Delete.
+//
+// Device A gets one issued control; device B is seeded but never touched by
+// anything on the control path, so it is the sweep's own read that must not
+// leave a trace.
+func TestExpireEndedControlsSweepDoesNotMaterializeAnUntouchedDevicesControlBucket(t *testing.T) {
+	t.Parallel()
+
+	reg, st := twoDeviceFixture(t)
+	ctx := context.Background()
+	notifier := coresub.NewManager(st.Subscriptions, 1, 10)
+
+	edevA := urlIndexFor(t, st, "mrid-a")
+	edevB := urlIndexFor(t, st, "mrid-b")
+	scopeA := derControlScope(edevA, controlFSAID, controlDERProgramID)
+	scopeB := derControlScope(edevB, controlFSAID, controlDERProgramID)
+
+	delta := diff.Difference{
+		Object:    "mrid-a",
+		Attribute: "DERControl.DERControlBase.opModTargetW",
+		Value:     map[string]any{"multiplier": 0.0, "value": 1000.0},
+	}
+	if err := ApplyControlDelta(ctx, st, notifier, reg, testControlPolicy, delta); err != nil {
+		t.Fatalf("ApplyControlDelta: %v", err)
+	}
+
+	// A's own bucket is expected to exist: its Create is the genuine,
+	// intentional materialization in this path.
+	hasA, err := st.DERControls.HasParent(ctx, scopeA)
+	if err != nil {
+		t.Fatalf("HasParent(A): %v", err)
+	}
+	if !hasA {
+		t.Fatalf("HasParent(A) = false after ApplyControlDelta issued a control there, want true")
+	}
+
+	// Run the sweep, which visits every seeded device including B.
+	ledger := newEndedControlLedger()
+	if _, err := expireEndedControls(ctx, st, notifier, ledger, servedEventEdition, 0); err != nil {
+		t.Fatalf("expireEndedControls: %v", err)
+	}
+
+	hasB, err := st.DERControls.HasParent(ctx, scopeB)
+	if err != nil {
+		t.Fatalf("HasParent(B): %v", err)
+	}
+	if hasB {
+		t.Fatalf("HasParent(B) = true after a sweep that never wrote anything for device B; the sweep's read materialized a parent bucket for a device with no issued DERControl, reintroducing the allocation IEEECORE-111 removed")
 	}
 }
