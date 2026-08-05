@@ -56,7 +56,7 @@
 // func(headers map[string]string, body []byte), opaque fieldbus.Token)
 // onto sim.Subscription's channel-plus-Err() shape. See subscriber.go
 // for the full backpressure and shutdown contract, including the
-// documented gap left open upstream (gridappsd-go GAG-009: no
+// documented gap left open upstream (gridappsd-go: no
 // broker-teardown signal reaches MessageBus callers yet, so Err() only
 // ever reports ctx.Err()).
 //

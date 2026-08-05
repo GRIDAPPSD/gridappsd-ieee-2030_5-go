@@ -32,8 +32,8 @@ import (
 //  3. gridappsd-go's transport bridge forwards that as
 //     transport.Msg{Err} and exits (internal/stomp/stomp.go:167,183).
 //     router.readLoop treats it as terminal, pushes the error into an
-//     errSink nobody reads (internal/router/router.go:186-195, upstream
-//     gap GAG-009), and returns.
+//     errSink nobody reads (internal/router/router.go:186-195, an
+//     upstream gap), and returns.
 //  4. Nothing above the router ever learns. Subscriber.relay only ends
 //     on ctx cancel, so the consumer's Messages channel stays open and
 //     its range loop blocks forever on a channel that will never carry

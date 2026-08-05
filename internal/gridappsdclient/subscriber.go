@@ -135,12 +135,12 @@ func (s *Subscriber) Subscribe(ctx context.Context, destination string) (sim.Sub
 //
 // There is currently no broker-teardown signal surfaced by
 // gridappsd-go's router.Router to fieldbus.MessageBus callers (readLoop
-// only reports to an internal errSink; see gridappsd-go GAG-009).
+// only reports to an internal errSink; this is an upstream gap).
 // sub.Err() therefore only ever reports ctx.Err() or a bounded
 // Unsubscribe failure at shutdown, never a broker-side drop mid-stream,
 // unlike cimstomp.Subscription which can also report a wrapped
-// ErrConnectionLost. Revisit this comment and Err's doc once GAG-009
-// exposes an Errors() channel upstream.
+// ErrConnectionLost. Revisit this comment and Err's doc once upstream
+// exposes an Errors() channel.
 func (s *Subscriber) relay(ctx context.Context, dest string, tok fieldbus.Token, raw <-chan cimstomp.Message, sub *subscription) {
 	defer close(sub.msgs)
 

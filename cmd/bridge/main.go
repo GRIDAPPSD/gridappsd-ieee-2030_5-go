@@ -269,7 +269,7 @@ func run(ctx context.Context, cfg config) error {
 		// runCtx is the pump's (and the control subscriber's) root.
 		//
 		// gridappsd-go's router still does not surface a broker-teardown
-		// signal to fieldbus.MessageBus callers (upstream gap GAG-009;
+		// signal to fieldbus.MessageBus callers (an upstream gap;
 		// see the relay doc comment in
 		// internal/gridappsdclient/subscriber.go), so a mid-run broker
 		// disconnect does NOT independently wake either loop. That is
