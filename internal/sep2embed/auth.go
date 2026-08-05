@@ -153,9 +153,10 @@ func connObserveMiddleware(hook *connobs.Hook) func(http.Handler) http.Handler {
 }
 
 // sfdiPrefixLen is the id-prefix length HandleCreateEndDevice derives
-// from an SFDI (the short-SFDI guard). Mirrors the truncation the
-// core assembly test suite uses (assembly_test.go testAuthPolicy) since
-// core's own auth.ExtractSFDIPrefix is server-internal and not exported.
+// from an SFDI (the short-SFDI guard, GRIDAPPSD/ieee-2030_5-server-go#13).
+// Mirrors the truncation the core assembly test suite uses
+// (assembly_test.go testAuthPolicy) since core's own
+// auth.ExtractSFDIPrefix is server-internal and not exported.
 const sfdiPrefixLen = 8
 
 // sfdiPrefix implements assembly.AuthPolicy.SFDIPrefix: a minimal,
