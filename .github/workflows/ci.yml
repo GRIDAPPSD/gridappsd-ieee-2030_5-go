@@ -5,7 +5,7 @@ name: CI
 # against the committed bundle), and neither job deploys, pushes to a
 # registry, or writes anything: self-hosted runners are reserved for
 # deploy-bearing jobs. The build-and-test job does read one secret pair (the CI
-# GitHub App credentials) purely to resolve private module
+# GitHub App credentials) purely to resolve GRIDAPPSD module
 # dependencies; it is not an infrastructure credential and grants no
 # deploy reach.
 
@@ -25,7 +25,7 @@ on:
 # read-only rather than inheriting the repo or org default, which can
 # be write-all.
 #
-# The private-module fetch below deliberately does NOT widen this.
+# The module-access fetch below deliberately does NOT widen this.
 # actions/create-github-app-token authenticates with the App private
 # key held in a secret, not with GITHUB_TOKEN, so minting the
 # installation token needs no workflow permission at all and no
@@ -41,8 +41,8 @@ jobs:
       # Required so `go` resolves github.com/GRIDAPPSD/* over
       # the token-authenticated git insteadOf rewrite configured below,
       # instead of attempting an anonymous proxy.golang.org and
-      # sum.golang.org lookup that cannot see a private repo. GOPRIVATE
-      # implies GONOPROXY and GONOSUMDB, so those need no separate
+      # sum.golang.org lookup, which cannot serve the GRIDAPPSD modules.
+      # GOPRIVATE implies GONOPROXY and GONOSUMDB, so those need no separate
       # setting. Without this, `go build` fails with
       # "fatal: could not read Username for 'https://github.com':
       # terminal prompts disabled".
@@ -52,7 +52,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Mint GitHub App installation token
-        # This repo depends on two PRIVATE modules,
+        # This repo depends on two GRIDAPPSD modules,
         # github.com/GRIDAPPSD/gridappsd-go and
         # github.com/GRIDAPPSD/ieee-2030_5-core-go, which the default
         # GITHUB_TOKEN cannot read (it is scoped to this repository
@@ -74,7 +74,7 @@ jobs:
           app-id: ${{ secrets.GRIDAPPSD_CI_APP_ID }}
           private-key: ${{ secrets.GRIDAPPSD_CI_APP_PRIVATE_KEY }}
           owner: GRIDAPPSD
-          # Narrow the token to exactly the private modules go.mod
+          # Narrow the token to exactly the modules go.mod
           # requires. Omitting this would grant the token every repo in
           # the App installation's selected set. This repo itself is
           # deliberately NOT listed: checkout already ran above using
@@ -89,11 +89,11 @@ jobs:
           # what a module fetch needs.
           permission-contents: read
 
-      - name: Configure private module access
+      - name: Configure module access
         # Rewrites HTTPS fetches of github.com/GRIDAPPSD/* to carry the
         # minted installation token, scoped to that org prefix only, so
-        # `go build` / `go vet` / `go test` below can resolve the private
-        # modules. Must run before the Go steps.
+        # `go build` / `go vet` / `go test` below can resolve them. Must
+        # run before the Go steps.
         #
         # The token is passed via `env:` rather than interpolated
         # directly into the command text so the value never appears in
@@ -113,7 +113,7 @@ jobs:
       - name: Disable git background maintenance
         # Prevents "fatal: shallow file has changed since we
         # read it", which failed the Build step of run 30384382776 once
-        # per import site of the private core-go module.
+        # per import site of the core-go module.
         #
         # Mechanism: with GOPRIVATE set, `go` fetches these modules
         # direct-to-git rather than through a proxy. To resolve the
@@ -167,7 +167,7 @@ jobs:
     runs-on: ubuntu-latest
     # No App token here on purpose: `make ui-check` runs npm and a local
     # `git status`, and never resolves a Go module, so this job needs no
-    # private-repo credential at all.
+    # module-access credential at all.
     steps:
       - name: Checkout
         uses: actions/checkout@v7

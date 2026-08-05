@@ -1,7 +1,7 @@
 name: "Core freshness"
 
 # Two independent watchdogs against github.com/GRIDAPPSD/ieee-2030_5-core-go,
-# the private wire-format module this bridge depends on. Neither gates
+# the wire-format module this bridge depends on. Neither gates
 # a pull_request: core moves on its own schedule, independent of what a
 # given bridge PR touches, so failing an unrelated PR because core
 # advanced would be noise, not signal. Both run on a daily schedule
@@ -286,7 +286,7 @@ jobs:
             ieee-2030_5-core-go
           permission-contents: read
 
-      - name: Configure private module access
+      - name: Configure module access
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |

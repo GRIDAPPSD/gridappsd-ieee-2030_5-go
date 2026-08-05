@@ -8,7 +8,7 @@ name: Release
 #
 # The publish path authenticates solely with the ephemeral GITHUB_TOKEN.
 # The build job additionally reads one secret pair (the CI GitHub App
-# credentials) purely to resolve private module dependencies, exactly as
+# credentials) purely to resolve GRIDAPPSD module dependencies, exactly as
 # ci.yml does. That is not an org-level secret, an SSH key, or an
 # infrastructure credential, and the token it mints grants contents:read
 # on two dependency repos and nothing else, so it adds no deploy reach
@@ -35,7 +35,7 @@ on:
 # publish job elevates to contents: write, and only because it creates
 # a release and uploads a build artifact to it.
 #
-# The private-module fetch added below deliberately does NOT widen this.
+# The module-access fetch added below deliberately does NOT widen this.
 # actions/create-github-app-token authenticates with the App private key
 # held in a secret, not with GITHUB_TOKEN, so minting the installation
 # token needs no workflow permission at all and no job-level override.
@@ -51,11 +51,11 @@ jobs:
       is_dry_run: ${{ steps.mode.outputs.is_dry_run }}
     env:
       # Same requirement as ci.yml's build-and-test job. The
-      # bridge depends on two PRIVATE GRIDAPPSD modules, so `go` must
+      # bridge depends on two GRIDAPPSD modules, so `go` must
       # resolve them direct-to-git over the token-authenticated insteadOf
       # rewrite configured below, instead of attempting an anonymous
-      # proxy.golang.org and sum.golang.org lookup that cannot see a
-      # private repo. GOPRIVATE implies GONOPROXY and GONOSUMDB, so those
+      # proxy.golang.org and sum.golang.org lookup, which cannot serve
+      # them. GOPRIVATE implies GONOPROXY and GONOSUMDB, so those
       # need no separate setting. Without this, the Build step fails with
       # "fatal: could not read Username for 'https://github.com':
       # terminal prompts disabled".
@@ -81,7 +81,7 @@ jobs:
         # (run 30388359508). release.yml carried the same defect and was a
         # latent release blocker: it would have failed the moment a v* tag
         # was pushed, because the default GITHUB_TOKEN is scoped to this
-        # repository only and cannot read the two private modules go.mod
+        # repository only and cannot read the two modules go.mod
         # requires (github.com/GRIDAPPSD/gridappsd-go and
         # github.com/GRIDAPPSD/ieee-2030_5-core-go). Mint a short-lived
         # installation token for the CI App instead of using a static PAT:
@@ -100,7 +100,7 @@ jobs:
           app-id: ${{ secrets.GRIDAPPSD_CI_APP_ID }}
           private-key: ${{ secrets.GRIDAPPSD_CI_APP_PRIVATE_KEY }}
           owner: GRIDAPPSD
-          # Exactly the private modules go.mod requires, and nothing else.
+          # Exactly the modules go.mod requires, and nothing else.
           # Omitting this would grant the token every repo in the App
           # installation's selected set. This repo itself is deliberately
           # NOT listed: checkout above already ran using GITHUB_TOKEN, and
@@ -114,11 +114,11 @@ jobs:
           # never widen it.
           permission-contents: read
 
-      - name: Configure private module access
+      - name: Configure module access
         # Rewrites HTTPS fetches of github.com/GRIDAPPSD/* to carry the
         # minted installation token, scoped to that org prefix only, so
-        # the Build step below can resolve the private modules. Must run
-        # before Set up Go.
+        # the Build step below can resolve them. Must run before Set up
+        # Go.
         #
         # The token is passed via `env:` rather than interpolated directly
         # into the command text, so the value never appears in the
@@ -137,8 +137,8 @@ jobs:
             "https://github.com/GRIDAPPSD/"
 
       - name: Disable git background maintenance
-        # The auth step above is necessary but NOT sufficient.
-        # Once git can actually reach the private repos, the Build step
+        # The auth step above is necessary but NOT sufficient. Once git
+        # can actually reach the two dependency repos, the Build step
         # hits the second failure diagnosed in ci.yml: "fatal: shallow
         # file has changed since we read it".
         #
