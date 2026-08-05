@@ -87,7 +87,7 @@ func TestACLTwoDeviceCrossAccessMatrix(t *testing.T) {
 	// below calls ensureServerIdentity again and finds all four files
 	// already present, so it just loads them), so device certs below
 	// can be signed against the same CA the embedded server will trust.
-	_, _, caFile, err := ensureServerIdentity(certDir)
+	_, _, caFile, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("ensureServerIdentity: %v", err)
 	}

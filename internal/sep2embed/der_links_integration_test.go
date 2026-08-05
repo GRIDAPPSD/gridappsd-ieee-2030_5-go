@@ -31,7 +31,7 @@ func TestDERLinksResolveOverRealServer(t *testing.T) {
 
 	certDir := t.TempDir()
 
-	_, _, caFile, err := ensureServerIdentity(certDir)
+	_, _, caFile, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("ensureServerIdentity: %v", err)
 	}

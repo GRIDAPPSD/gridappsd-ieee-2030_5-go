@@ -282,7 +282,7 @@ func TestEnsureDeviceIdentitiesPreprovisionedLoadsExistingCert(t *testing.T) {
 	// Stand up the shared CA the same way EnsureDeviceIdentities would,
 	// then hand-sign a device cert as if an operator had preprovisioned
 	// it, before EnsureDeviceIdentities is ever called against dir.
-	_, _, caFile, err := ensureServerIdentity(dir)
+	_, _, caFile, err := ensureServerIdentity(dir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("ensureServerIdentity: %v", err)
 	}

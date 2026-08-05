@@ -125,7 +125,7 @@ func TestNewObservedMTLSListenerRecordsAcceptedHandshakeWithMatchingLFDI(t *test
 	t.Parallel()
 
 	certDir := t.TempDir()
-	certFile, keyFile, caFile, err := ensureServerIdentity(certDir)
+	certFile, keyFile, caFile, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("ensureServerIdentity: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestNewObservedMTLSListenerRecordsRejectedHandshakeWithRealReason(t *testin
 	t.Parallel()
 
 	certDir := t.TempDir()
-	certFile, keyFile, caFile, err := ensureServerIdentity(certDir)
+	certFile, keyFile, caFile, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("ensureServerIdentity: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestNewObservedMTLSListenerRecordsRealRemoteAddr(t *testing.T) {
 	t.Parallel()
 
 	certDir := t.TempDir()
-	certFile, keyFile, caFile, err := ensureServerIdentity(certDir)
+	certFile, keyFile, caFile, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
 	if err != nil {
 		t.Fatalf("ensureServerIdentity: %v", err)
 	}

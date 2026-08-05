@@ -37,9 +37,10 @@ The intended shape:
 - **Certificate material is always a runtime mount, never baked in.**
   Mount `SEP2_SERVER_CERT_DIR` read-only from an operator-supplied
   path outside any repository or workspace, matching
-  [CERTIFICATES.md](CERTIFICATES.md). Read-only mounts double as a
-  safety check: an incomplete preprovisioned directory then fails
-  loudly instead of silently minting fresh development material.
+  [CERTIFICATES.md](CERTIFICATES.md). `preprovisioned` mode never
+  writes to that directory, so `:ro` is the supported shape rather
+  than a workaround, and an incomplete directory fails loudly at
+  startup whether or not the mount is read-only.
 - **The 2030.5 listener is meant to be exposed**; it is mTLS with a
   per-device access check, so publishing it on the compose network is
   the intended use. **The admin UI is not.** It defaults to loopback
