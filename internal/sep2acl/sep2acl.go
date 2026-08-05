@@ -5,11 +5,10 @@
 //
 // This package deliberately knows nothing about device ownership,
 // stores, or the registry: it is pure path parsing plus a static
-// table. That is what makes it the liftable half of GAGO-043's
-// authorization design (deferred card IEEECORE-011: a future core lift
-// of the method table moves this package unchanged; only the
-// per-device ownership half in internal/sep2embed is bridge-owned and
-// stays behind).
+// table. That is what makes it the liftable half of this
+// authorization design: a future core lift of the method table moves
+// this package unchanged; only the per-device ownership half in
+// internal/sep2embed is bridge-owned and stays behind.
 package sep2acl
 
 import (
@@ -64,7 +63,7 @@ var (
 // "fsa" family, which is read-only) that would otherwise also match as
 // a prefix of the same path.
 //
-// Read-only families per the design (GAGO-043, Noor): /dcap, /tm,
+// Read-only families per the design (Noor): /dcap, /tm,
 // /sdev, /dc, /rt. Every other family here either allows a create
 // (POST) at its own root, per the routes core's assembly package
 // actually registers (see assembly.BuildProtocolRouter), or allows a
@@ -97,7 +96,7 @@ var families = []family{
 	{[]string{"edev", segWild, "rg"}, readOnly},
 	{[]string{"edev", segWild, "sub"}, readSub},
 	{[]string{"edev", segWild, "der"}, readOnly},
-	{[]string{"edev", segWild, "der", segWild}, readWrite}, // DER instance: GET/HEAD/PUT (WADL PUTDER mode O, GAGO-111)
+	{[]string{"edev", segWild, "der", segWild}, readWrite}, // DER instance: GET/HEAD/PUT (WADL PUTDER mode O)
 	{[]string{"edev", segWild, "der", segWild, "dercap"}, readWrite},
 	{[]string{"edev", segWild, "der", segWild, "derg"}, readWrite},
 	{[]string{"edev", segWild, "der", segWild, "ders"}, readWrite},
@@ -113,7 +112,7 @@ var families = []family{
 	// WADL address and was never advertised, so no entry for it is kept
 	// here: a rule matching a path nothing serves is dead configuration.
 	//
-	// Ordering rule (GAGO-111, Noor): this entry lands with or before the
+	// Ordering rule (Noor): this entry lands with or before the
 	// core change that moves the address, never after. A window where the
 	// table names the old address fails CLOSED and silently: /lel then
 	// matches only the /edev/{id} singleton entry, which has no POST, so

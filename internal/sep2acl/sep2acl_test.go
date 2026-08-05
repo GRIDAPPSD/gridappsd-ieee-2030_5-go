@@ -54,7 +54,7 @@ func TestMethodAllowedFamilyMatrix(t *testing.T) {
 		{"edev/{id}/sub/{subId} DELETE allowed (prefix)", "/edev/DEV-A/sub/1", http.MethodDelete, true, true},
 		{"edev/{id}/der GET allowed", "/edev/DEV-A/der", http.MethodGet, true, true},
 		{"edev/{id}/der PUT denied", "/edev/DEV-A/der", http.MethodPut, false, true},
-		// DER instance (GAGO-111): the WADL declares PUTDER mode O, so the
+		// DER instance: the WADL declares PUTDER mode O, so the
 		// instance path must be read-write, not the DER list's read-only
 		// classification. Verifies neither the list (3 segments, above)
 		// nor the specific writable sub-resources (5 segments, below) had
@@ -80,7 +80,7 @@ func TestMethodAllowedFamilyMatrix(t *testing.T) {
 		{"fsa/.../dderc DELETE denied", "/edev/DEV-A/fsa/1/derp/2/dderc", http.MethodDelete, false, true},
 		{"cfg PUT allowed", "/edev/DEV-A/cfg", http.MethodPut, true, true},
 		{"dstat PUT allowed", "/edev/DEV-A/dstat", http.MethodPut, true, true},
-		// LogEvent list, at the WADL address /edev/{id}/lel (GAGO-132).
+		// LogEvent list, at the WADL address /edev/{id}/lel.
 		// Core v0.13.0 moved the list here from /edev/{id}/log, which was
 		// never a WADL address and is no longer served, so the table must
 		// classify the new address and no longer the old one.

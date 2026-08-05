@@ -1,7 +1,7 @@
 // Package controlobs is a small, mutex-guarded observation hook for the
 // bridge's control-delta down path. It records the last-applied control
 // delta, running applied/skipped counters, and the STOMP subscription
-// destinations the bridge is using, so a read-only consumer (the GAGO-059
+// destinations the bridge is using, so a read-only consumer (the
 // admin UI controlflow endpoint) can report control-flow state without
 // touching the control path's own write logic in any way.
 //
