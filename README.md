@@ -4,90 +4,104 @@
 [![CodeQL](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/codeql.yml)
 [![Go 1.26.3](https://img.shields.io/badge/go-1.26.3-00ADD8?logo=go)](https://go.dev)
 
-This repo is private: the workflow badges above render for viewers with
-repository access and show nothing for anonymous visitors. No release
-badge yet; this repo has not cut a tagged release.
+This repository is private. The workflow badges above render for viewers
+with repository access and show nothing for anonymous visitors.
 
-Go bridge that wires the IEEE 2030.5 protocol surface to the GridAPPS-D
-platform via STOMP/ActiveMQ messaging.
+Go bridge between the IEEE 2030.5 protocol and the GridAPPS-D platform.
+It connects to the GridAPPS-D message bus over STOMP, discovers a
+feeder's inverter, solar, and battery DERs from the platform's CIM
+model, and runs an in-process IEEE 2030.5 mTLS server those devices
+register and report against. Device identity (LFDI and SFDI) comes
+from real client certificates per IEEE 2030.5 sections 6.3.3 and
+6.3.4, access is enforced per device, DERControl flows to devices, and
+telemetry flows back onto the GridAPPS-D bus. A read-only admin UI is
+available for observing what the bridge is doing.
 
-## Status
+## Requirements
 
-v0.0.0 scaffold. The bridge is not yet wired. internal/cimstomp/ carries
-a STOMP publisher ported from gotocim. internal/cim/ and internal/registry/
-are placeholders.
+- Go 1.26.3.
+- GitHub access to the `GRIDAPPSD` org, with read access to two
+  private Go modules this bridge depends on:
+  `github.com/GRIDAPPSD/gridappsd-go` and
+  `github.com/GRIDAPPSD/ieee-2030_5-core-go`. Set
+  `GOPRIVATE=github.com/GRIDAPPSD/*` before building or running `go
+  mod download`; without it, the module proxy tries, and fails, to
+  fetch these modules publicly.
 
-## Repository access and build requirements
+## Quickstart
 
-This repository is private under the GRIDAPPSD GitHub org. A reader needs
-`GRIDAPPSD` org access (or an explicit collaborator grant) to clone it at
-all.
+```bash
+git clone <this repo>
+cd gridappsd-ieee-2030_5-go
+export GOPRIVATE=github.com/GRIDAPPSD/*
+make build
+make test
+```
 
-Today's dependency graph is mixed: `github.com/go-stomp/stomp/v3` is
-public, but the bridge also `require`s the private
-`github.com/GRIDAPPSD/gridappsd-go` module (the standard GridAPPS-D Go
-client). `go build ./...` therefore needs `GOPRIVATE=github.com/GRIDAPPSD/*`
-set and `GRIDAPPSD` org read access to `gridappsd-go` in addition to this
-repo; a reader who can clone this repo but lacks access to `gridappsd-go`
-will fail at `go mod download`, not at clone time.
+`make build` produces `./bridge`, with its version stamped in from
+`git describe`. `make test` runs the unit test suite; no broker is
+required for it.
 
-That access requirement will widen with the planned IEEE 2030.5 server
-embedding (see `cmd/bridge/README.md`, "Out of scope"). Once that work
-lands, the bridge will additionally `require` the private
-`github.com/GRIDAPPSD/ieee-2030_5-core-go` module, and a builder will need
-read access to that module too (a fine-grained GitHub PAT scoped to it,
-per the family migration plan). This section will be updated with the
-exact access steps when that dependency lands.
+Running the bridge for real needs two more things: a GridAPPS-D
+broker to talk to, and certificate material for its embedded IEEE
+2030.5 server. Start here:
+
+- **Certificates**: [docs/CERTIFICATES.md](docs/CERTIFICATES.md).
+  Short version: point `SEP2_SERVER_CERT_DIR` at an empty directory
+  outside any repository checkout, and the bridge mints everything it
+  needs the first time it starts.
+- **Configuration**: [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+  documents every environment variable and flag the bridge reads.
+- **Running it**: [cmd/bridge/README.md](cmd/bridge/README.md) covers
+  a local run against a dev broker. [docs/DOCKER.md](docs/DOCKER.md)
+  covers the container path.
 
 ## Layout
 
-- cmd/bridge/: bridge binary entry point.
-- internal/cimstomp/: STOMP publisher, configuration, and connection management.
-- internal/cim/: CIM model client (placeholder).
-- internal/registry/: mRID-to-LFDI registry (placeholder).
+- `cmd/bridge/`: the bridge binary's entry point and configuration
+  loader.
+- `internal/cimstomp/`: STOMP publisher, configuration, and
+  connection management.
+- `internal/cim/`: the CIM model client and SPARQL queries used to
+  discover DERs (`internal/cim/sim/` handles the simulation
+  output subscription).
+- `internal/gridappsdclient/`: the GridAPPS-D platform client
+  (broker connect, auth-token bootstrap, simulation subscribe).
+- `internal/registry/`: the in-memory mRID-to-LFDI device registry.
+- `internal/sep2embed/`: the embedded IEEE 2030.5 mTLS server,
+  including certificate load-or-mint (`certs.go`, `devicecert.go`)
+  and DERControl handling (`control.go`).
+- `internal/sep2acl/`: per-device access control enforcing device
+  ownership.
+- `internal/sep2config/`: the operator-facing IEEE 2030.5 policy
+  layer (default DERControl, poll and post rates, registration PINs).
+- `internal/controlobs/`, `internal/connobs/`: observation hooks the
+  admin UI reads from.
+- `internal/adminui/`: the read-only admin UI, a JSON API plus an
+  embedded Svelte single-page app.
+- `internal/buildinfo/`: the link-time version stamp.
 
-## Build
-
-    go build ./...
-    go vet ./...
-    go test ./...
-
-## Tests
+## Testing
 
 Three layers, slowest last:
 
 1. `make test` runs the unit tests. No broker required.
-2. `make test-integration` brings up a bare ActiveMQ Classic 6.1.6 via
-   `docker-compose.yml` at the repo root, runs the `integration`-tagged
-   tests in `internal/cimstomp/`, and tears the broker down. Credentials
-   are `system / manager`, matching the GridAPPS-D platform stack so the
-   bare-broker and platform test layers no longer diverge on creds. Fast;
-   intended for iterating on cimstomp internals.
+2. `make test-integration` brings up a bare ActiveMQ Classic broker
+   via `docker-compose.yml` at the repo root, runs the
+   `integration`-tagged tests in `internal/cimstomp/`, and tears the
+   broker down. Fast; good for iterating on cimstomp internals.
 3. `make test-gridappsd` runs the `gridappsd`-tagged tests in
-   `internal/cimstomp/` against the real GridAPPS-D platform stack
-   (broker plugins, auth-token responder, request routing). Credentials
-   are `system / manager`. The platform must be running before the target
-   is invoked; the target probes port 61613 and fails fast with a hint if
-   it is not reachable.
+   `internal/cimstomp/` against a real GridAPPS-D platform stack
+   (broker plugins, auth-token responder, request routing). The
+   platform must already be running: this target probes the STOMP
+   port and fails fast with a hint if it is not reachable. Bring the
+   platform up first from wherever you have the `gridappsd-docker`
+   stack cloned, then run this target from this repo.
 
-   To bring the platform up (one-time per session):
-
-       cd ~/repos/sentient_gridappsd_integration
-       pixi run gridappsd-start
-
-   Then from this repo:
-
-       make test-gridappsd
-
-   The platform stack is heavy (30 to 60 seconds to boot, multiple
-   containers). Use the bare-ActiveMQ `test-integration` target for fast
-   iteration; reach for `test-gridappsd` when verifying that wire-format
-   changes still ride on the production-equivalent broker.
-
-   The gridappsd-docker stack should only be brought up bound to loopback
-   (`127.0.0.1`). Do not run it on a publicly reachable host without
-   tightening broker authentication first; the dev-default `system / manager`
-   credentials baked into the compose are not production-safe.
+Other useful targets: `make vet`, `make fmt-check`, `make coverage`,
+and `make test-race`. `make ui-build` and `make ui-check` rebuild and
+verify the admin UI's embedded frontend assets; see the Makefile for
+details.
 
 ## License
 

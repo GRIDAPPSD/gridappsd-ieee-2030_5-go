@@ -1,129 +1,71 @@
 # cmd/bridge
 
-Stage 1 of the GridAPPS-D side of the IEEE 2030.5 to GridAPPS-D bridge.
-The Stage 2 IEEE 2030.5 server embedding is a Stage 2 follow-up filed
-separately and requires `ieee-2030_5-go/internal/server` to expose a
-public Server constructor.
+The bridge binary's entry point.
 
 ## What it does
 
 1. Connects to the GridAPPS-D broker over
    [gridappsd-go](https://github.com/GRIDAPPSD/gridappsd-go)'s
-   `fieldbus.MessageBus`, adapted to this bridge's own CIM and
-   simulation-subscribe interfaces via `internal/gridappsdclient`.
-2. Runs the two-step GOSS token authentication as part of that connect.
-3. Queries the configured CIM feeder for inverter / solar / battery DERs.
-4. Populates an in-memory `internal/registry` Registry with one entry
-   per device, keyed by mRID. The LFDI is a deterministic SHA-256
-   placeholder over the mRID; real LFDI from device certificates is
-   Stage 2 work.
-5. If `SEP2_SIMULATION_ID` is set, subscribes to
-   `/topic/goss.gridappsd.simulation.output.<sim_id>` and logs each
-   `MeasurementFrame`.
-6. Idles until SIGINT or SIGTERM. Cancellation flows through one
-   `context.Context` root; the message bus and pump goroutines all
-   exit on cancel.
+   `fieldbus.MessageBus`, including the two-step GOSS token
+   authentication.
+2. Queries the configured CIM feeder for inverter, solar, and battery
+   DERs.
+3. Derives a real, certificate-backed IEEE 2030.5 identity (LFDI per
+   spec section 6.3.4, SFDI per section 6.3.3) for each device and
+   starts the embedded mTLS server (`internal/sep2embed`) those
+   devices connect to, with per-device access control
+   (`internal/sep2acl`).
+4. If `SEP2_SIMULATION_ID` is set, subscribes to the simulation
+   output topic and logs each measurement frame; DERControl flowing
+   from devices back onto the GridAPPS-D bus is wired through the
+   same path.
+5. Idles until SIGINT or SIGTERM. A single `context.Context` root
+   cancels the message bus and every server goroutine together.
 
-## Configuration
-
-All knobs are env-var driven with `gridappsd-docker` defaults. Flags
-shadow envs, envs shadow compiled-in defaults.
-
-| Env var | Flag | Default | Notes |
-|---|---|---|---|
-| `SEP2_STOMP_ADDR` | `-stomp-addr` | `127.0.0.1:61613` | host:port of the broker |
-| `SEP2_STOMP_USER` | `-stomp-user` | `system` | gridappsd-docker default |
-| `SEP2_STOMP_PASSWORD` | `-stomp-password` | `manager` | gridappsd-docker default |
-| `SEP2_SIMULATION_ID` | `-simulation-id` | (empty) | empty disables sim subscribe |
-| `SEP2_FEEDER_MRID` | `-feeder-mrid` | `_C1C3E687-6FFD-C753-582B-632A27E28507` | IEEE 123-bus default |
-| `SEP2_PUBLISH_ON_START` | `-publish-on-start` | `false` | Stage 2 follow-up; logs and skips |
-| `SEP2_STOMP_ALLOW_PLAINTEXT` | `-stomp-allow-plaintext` | `false` | dev-only; gridappsd-docker's dev broker is plain TCP and needs this set to `true` |
-| `SEP2_TELEMETRY_INTERVAL` | `-sep2-telemetry-interval` | `15s` | period of the DERStatus telemetry publisher; a Go duration, not a bare number of seconds |
-| `SEP2_TELEMETRY_PUBLISH_UNCHANGED` | `-sep2-telemetry-publish-unchanged` | `false` | `true` publishes every device every interval (full-snapshot semantics) instead of only those whose values changed |
-
-### DERStatus telemetry publishing
-
-A device's DERStatus PUT is stored and answered, and that is the whole
-server-side effect: receiving an IEEE 2030.5 request never causes a bus
-publish. A separate publisher reads the stored statuses on its own
-timer (`SEP2_TELEMETRY_INTERVAL`, 15s by default, matching the Python
-upstream) and sends ONE aggregate message covering every device that
-changed. It runs only when a simulation id is configured, since without
-one there is no destination to publish to. An interval where no device
-changed publishes nothing and logs that it did not.
-
-The plaintext default is fail-closed: with no override, the bridge
-dials TLS against the system trust store. Set
-`SEP2_STOMP_ALLOW_PLAINTEXT=true` (or `-stomp-allow-plaintext`) only
-against a broker known to be plaintext, such as the local
-gridappsd-docker dev stack below.
-
-Run `bridge -h` for the live help.
+Configuration is documented in full in
+[../../docs/CONFIGURATION.md](../../docs/CONFIGURATION.md).
+Certificate setup is in
+[../../docs/CERTIFICATES.md](../../docs/CERTIFICATES.md).
 
 ## Local run
 
-Bring up a broker. Either:
+Bring up a broker. Either the bare ActiveMQ broker in this repo, good
+for testing connect and token bootstrap:
 
 ```bash
-# Bare ActiveMQ from this repo (good for testing connect / token bootstrap).
-cd ~/repos/gridappsd-ieee-2030_5-go
 docker compose up -d
 ```
 
-or:
+or the full GridAPPS-D platform, from wherever you have the
+`gridappsd-docker` stack cloned (allow 30 to 60 seconds for it to
+settle):
 
 ```bash
-# Full GridAPPS-D platform from sentient_gridappsd_integration.
-cd ~/repos/sentient_gridappsd_integration/gridappsd-docker
 docker compose up -d
-# Wait 30 to 60 seconds for the platform to settle.
 ```
 
-Then run the bridge:
+Then, from this repo's root:
 
 ```bash
-cd ~/repos/gridappsd-ieee-2030_5-go
 make bridge-e2e
 ```
 
-Or override the env per invocation. Both dev brokers above are plain
-TCP, so `SEP2_STOMP_ALLOW_PLAINTEXT=true` is required:
+Both dev brokers above are plain TCP, so `bridge-e2e`'s default
+already sets `SEP2_STOMP_ALLOW_PLAINTEXT=true`. Override any variable
+on the make command line:
 
 ```bash
 make bridge-e2e \
   SEP2_STOMP_ADDR=127.0.0.1:61613 \
-  SEP2_STOMP_ALLOW_PLAINTEXT=true \
   SEP2_SIMULATION_ID=1234567890
 ```
 
-**Do not put `SEP2_STOMP_PASSWORD=...` directly on the `make` command
-line** as shown in some examples above with the default dev password:
-a credential passed as `VAR=value` on a shell command line lands in
-that shell's history file and is visible to any other local user via
-`ps` while the command runs. Prefer exporting it first, so it never
-appears in the argv the `make`/`go run` process line shows:
+Do not put `SEP2_STOMP_PASSWORD=...` directly on that command line
+with a real password: it lands in your shell history and is visible
+to any other local user via `ps` while the command runs. Export it
+first instead; see [../../docs/CONFIGURATION.md](../../docs/CONFIGURATION.md)
+for the full credential-handling note.
 
-```bash
-export SEP2_STOMP_PASSWORD=manager
-make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
-```
-
-The same caution applies to the `-stomp-password=...` flag form: flag
-values are visible in `/proc/<pid>/cmdline` to any local user who can
-read that process's `/proc` entry, for as long as the process runs.
-The `SEP2_STOMP_PASSWORD` env var is the canonical way to supply this
-credential; `-stomp-password` exists for quick one-off dev runs only
-and should not be used with a real (non-dev-default) password.
-
-The bridge logs to stderr and stays running until Ctrl-C. CIM-query
-failures are fatal at startup (no useful work without a feeder); the
-subscribe loop logs frame errors and continues.
-
-## Out of scope (Stage 2)
-
-- IEEE 2030.5 server embedding.
-- Real LFDI computation from device certificates.
-- DERControl translation back to DifferenceBuilder envelopes (currently
-  the `-publish-on-start` smoke test is wired but no-ops; building and
-  sending the envelope body is a separate follow-up).
-- Resubscribe-on-Reconnect for the simulation output topic.
+The bridge logs to stderr and runs until Ctrl-C. A CIM query failure
+is fatal at startup, since there is no useful work without a feeder;
+the simulation subscribe loop logs frame errors and continues.
