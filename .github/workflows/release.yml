@@ -206,7 +206,8 @@ jobs:
           # git describe on a tag name, and git ref-name rules permit
           # shell metacharacters, so a crafted tag pushed with
           # contents:write could otherwise be expanded by the runner
-          # before execution.
+          # before execution: trust the boundary that sanitizes the
+          # value, never the caller that supplied it.
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           go build \

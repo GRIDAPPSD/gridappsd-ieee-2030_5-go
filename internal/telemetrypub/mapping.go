@@ -124,7 +124,7 @@ const derStatusStateOfChargePerCentScale = 100.0
 // its full wire type range (genConnectStatus is sep2.HexBinary8,
 // alarmStatus is sep2.HexBinary32; operationalModeStatus,
 // inverterStatus and storageModeStatus are plain uint8; readingTime is
-// int64; genConnectStatus and alarmStatus are on the
+// int64; genConnectStatus and alarmStatus moved onto the
 // hexBinary family, operationalModeStatus was and stays a plain UInt8
 // per sep.xsd), with no plausibility or range check against what a real
 // device could sanely report. stateOfChargeStatus is the one exception:
