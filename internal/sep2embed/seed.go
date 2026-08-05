@@ -10,6 +10,7 @@ import (
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
@@ -472,7 +473,16 @@ const fsaDescription = "Bridge DER function set"
 // function of the device identity rather than a second, unrelated numbering
 // scheme.
 func seedFSA(ctx context.Context, stores *assembly.Stores, edevID, lfdi string) error {
-	if stores.FSAs == nil {
+	// stores.FSAs is store.ScopedStore[sep2.FunctionSetAssignments], an
+	// interface, so a plain nil comparison misses a nil *memory.ScopedStore
+	// assigned into it: the interface's type half is set even though the
+	// pointer half is nil, and == nil is false in that case. store.IsAbsent
+	// uses reflection to see through that and reports absence correctly for
+	// both a nil interface and an interface holding a nil pointer. See core's
+	// pkg/store/absent.go for the full rationale and pkg/sep2srv/assembly.go's
+	// own migration to the same guard (for example its FSAs check at
+	// assembly.go:572 in the vendored v0.14.1 source).
+	if store.IsAbsent(stores.FSAs) {
 		return nil
 	}
 
