@@ -21,3 +21,18 @@ CLAUDE.md
 
 # Local environment
 .env
+
+# Certificate and key material: never committed. The embedded IEEE
+# 2030.5 server's default cert directory (config.defaultSEP2ServerCertDir,
+# "./sep2-certs") is relative to the working directory, so running the
+# bridge from the repo root with no override would otherwise write real
+# server and device key material into the checkout.
+/sep2-certs/
+*.pem
+*.key
+*.crt
+*.cer
+*.csr
+*.p12
+*.pfx
+*.x509
