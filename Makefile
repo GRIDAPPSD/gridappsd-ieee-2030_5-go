@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage ui-build ui-check
+.PHONY: build test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage ui-build ui-check bridge-artifact image
 
 # VERSION is stamped into internal/buildinfo.Version at link time via
 # LDFLAGS below. `git describe` gives the nearest tag plus a
@@ -203,3 +203,37 @@ fmt-check:
 
 coverage:
 	go test -cover ./internal/cimstomp/
+
+# IMAGE_NAME matches the published repository name exactly:
+# gridappsd/gridappsd-ieee-2030_5. Mirrors the sibling repository name
+# with the language suffix dropped, matching the naming convention the
+# other images in that org already use.
+IMAGE_NAME ?= gridappsd/gridappsd-ieee-2030_5
+IMAGE_TAG ?= $(VERSION)
+
+# bridge-artifact builds the exact binary the Dockerfile COPYs in:
+# linux/amd64, CGO_ENABLED=0 (distroless/static has no libc), stamped
+# with the same VERSION derivation the `build` target and release.yml
+# use so a locally built image and a CI-built image of the same commit
+# stamp identically. Written to ./bridge, which .gitignore already
+# excludes.
+bridge-artifact:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bridge ./cmd/bridge
+
+# image builds the container image from the artifact above. It never
+# passes a private-module credential to `docker build`: the Dockerfile's
+# only inputs are the compiled binary and LICENSE, both already present
+# in the build context by the time this runs, and the module credential
+# that bridge-artifact's `go build` may have needed is a build-time
+# concern of this Makefile / CI, never of the image build itself.
+#
+# IMAGE_REVISION is the exact commit the binary was built from; used as
+# the org.opencontainers.image.revision label so a pulled image names
+# the source commit even without a matching VERSION tag (e.g. a
+# workflow_dispatch dry run built off a branch).
+image: bridge-artifact
+	docker build \
+	  --build-arg IMAGE_VERSION="$(VERSION)" \
+	  --build-arg IMAGE_REVISION="$(shell git rev-parse HEAD)" \
+	  -t $(IMAGE_NAME):$(IMAGE_TAG) \
+	  .

@@ -1,0 +1,12 @@
+# Deny-by-default. This build never needs source, tests, docs, git
+# metadata, build tooling, or anything else in the repository: the
+# binary is compiled outside this build and COPY'd in (see the
+# Dockerfile's header comment), so the context should carry only the
+# handful of files the Dockerfile actually references. Everything is
+# excluded unless explicitly allowed back in below, rather than trying
+# to enumerate everything that must stay out (certificate and key
+# material included) and hoping the list is complete.
+*
+
+!bridge
+!LICENSE
