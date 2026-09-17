@@ -248,7 +248,7 @@ type protocolServer interface {
 
 // Embed is the in-process IEEE 2030.5 protocol server: seeded resource
 // stores, the subscription fan-out manager, and the mTLS listener from
-// core's pkg/sep2srv. Construct with New; start with Run.
+// server-go's pkg/sep2srv. Construct with New; start with Run.
 type Embed struct {
 	srv      protocolServer
 	notifier *coresub.Manager

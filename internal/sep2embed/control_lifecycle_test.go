@@ -477,7 +477,7 @@ func TestDERControlListAdvertisesTheAssumedPollRate(t *testing.T) {
 func TestMaxEffectiveScheduledEnd(t *testing.T) {
 	t.Parallel()
 
-	i32 := func(v int32) *sep2.OneHourRange { r := sep2.OneHourRange(v); return &r }
+	oneHourRange := func(v int32) *sep2.OneHourRange { r := sep2.OneHourRange(v); return &r }
 
 	for _, tc := range []struct {
 		name    string
@@ -498,31 +498,31 @@ func TestMaxEffectiveScheduledEnd(t *testing.T) {
 		},
 		{
 			name:    "positive randomizeDuration extends the window",
-			control: derControlWithInterval(1000, 1800, i32(60), nil),
+			control: derControlWithInterval(1000, 1800, oneHourRange(60), nil),
 			want:    2860,
 			wantOK:  true,
 		},
 		{
 			name:    "positive randomizeStart extends the window",
-			control: derControlWithInterval(1000, 1800, nil, i32(45)),
+			control: derControlWithInterval(1000, 1800, nil, oneHourRange(45)),
 			want:    2845,
 			wantOK:  true,
 		},
 		{
 			name:    "both positive randomizations extend the window",
-			control: derControlWithInterval(1000, 1800, i32(60), i32(45)),
+			control: derControlWithInterval(1000, 1800, oneHourRange(60), oneHourRange(45)),
 			want:    2905,
 			wantOK:  true,
 		},
 		{
 			name:    "negative randomizeDuration does not shorten the window",
-			control: derControlWithInterval(1000, 1800, i32(-60), nil),
+			control: derControlWithInterval(1000, 1800, oneHourRange(-60), nil),
 			want:    2800,
 			wantOK:  true,
 		},
 		{
 			name:    "negative randomizeStart does not shorten the window",
-			control: derControlWithInterval(1000, 1800, nil, i32(-45)),
+			control: derControlWithInterval(1000, 1800, nil, oneHourRange(-45)),
 			want:    2800,
 			wantOK:  true,
 		},

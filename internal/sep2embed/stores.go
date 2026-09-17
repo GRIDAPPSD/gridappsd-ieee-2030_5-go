@@ -8,12 +8,13 @@ import (
 
 // newStores builds a fully-populated assembly.Stores, matching how the
 // server-of-record assembles its own Stores (and core's own
-// assembly_test.go testStores helper): every field is a plain in-memory
-// store with no persistence path. Populating every field (rather than
-// leaving optional function-set stores nil) mirrors the server-of-record
-// so the embedded router mounts the full spec-compliant route set, not a
-// reduced one; assembly.BuildProtocolRouter treats a nil field as "skip
-// this function set's routes", which we do not want here.
+// assembly_test.go testStores helper): every resource store is a plain
+// in-memory store with no persistence path, so BuildProtocolRouter mounts
+// the full spec-compliant route set rather than skipping a function set
+// whose store field is nil. Two fields are deliberately left at their
+// zero value: EndDeviceManagers (no cross-device delegation) and
+// RegistrationPolicy (no PIN/pollRate provisioning; see its own doc
+// comment on assembly.Stores).
 func newStores() *assembly.Stores {
 	return &assembly.Stores{
 		EndDevices: memory.NewEndDeviceStore(),
