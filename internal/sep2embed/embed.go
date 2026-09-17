@@ -104,6 +104,15 @@ type Config struct {
 	NotifyWorkers   int
 	NotifyQueueSize int
 
+	// NotifyAllowLoopback permits a subscription's notificationURI to
+	// target loopback addresses (127.0.0.0/8, ::1), refused by default
+	// (coresub.DestinationPolicy's zero value). Off by default because
+	// this bridge's admin UI listener (SEP2_ADMIN_UI_ADDR) is loopback by
+	// default too: enabling this lets any client that can create a
+	// subscription make the server POST to it. Mirrors server-go's
+	// SEP2_NOTIFICATION_ALLOW_LOOPBACK; see buildNotifier.
+	NotifyAllowLoopback bool
+
 	// There is deliberately no bus, destination or simulation id here.
 	// This package serves the IEEE 2030.5 protocol and owns
 	// the resource stores; it does not publish to the GridAPPS-D bus,
@@ -333,7 +342,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	if queueSize <= 0 {
 		queueSize = DefaultNotifyQueueSize
 	}
-	notifier := coresub.NewManager(stores.Subscriptions, workers, queueSize)
+	notifier := buildNotifier(stores.Subscriptions, workers, queueSize, cfg.NotifyAllowLoopback)
 
 	// postRate reaches the wire through server-go's POST /mup handler, not
 	// through seeding: this bridge creates no MirrorUsagePoints, so
