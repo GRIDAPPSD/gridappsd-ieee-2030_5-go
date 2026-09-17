@@ -641,6 +641,25 @@ func TestLoadConfigSEP2NotificationAllowLoopbackFlagShadowsEnv(t *testing.T) {
 	}
 }
 
+// TestLoadConfigSEP2NotificationAllowLoopbackFlagDisablesEnv verifies the
+// fail-open direction of the flag-shadows-env precedence: an explicit
+// -sep2-notification-allow-loopback=false must turn the switch off even
+// when the environment enables it. FlagShadowsEnv above only proves the
+// flag can turn the switch ON over a false env; an operator disabling the
+// permissive state from the command line is the opposite, unpinned
+// direction the test coverage review's mutant d walked through.
+func TestLoadConfigSEP2NotificationAllowLoopbackFlagDisablesEnv(t *testing.T) {
+	t.Setenv("SEP2_NOTIFICATION_ALLOW_LOOPBACK", "true")
+
+	cfg, err := loadConfig([]string{"-sep2-notification-allow-loopback=false"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2NotificationAllowLoopback {
+		t.Errorf("SEP2NotificationAllowLoopback: want false, an explicit -sep2-notification-allow-loopback=false must disable it even with the env set true")
+	}
+}
+
 // TestLoadConfigSEP2NotificationAllowLoopbackBadBool verifies a malformed
 // env value is a loadConfig error naming the field, matching
 // SEP2_STOMP_ALLOW_PLAINTEXT's existing behavior.
