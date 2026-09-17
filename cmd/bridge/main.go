@@ -663,6 +663,7 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 		ResolveRegistrationPollRate: policy.ResolvePollRate,
 		ResolvePostRate:             policy.ResolvePostRate,
 		Observer:                    connHook,
+		NotifyAllowLoopback:         cfg.SEP2NotificationAllowLoopback,
 	}
 }
 

@@ -121,6 +121,14 @@ type config struct {
 	// ::1). See adminui.Config.AllowedHosts.
 	SEP2AdminUIAllowedHosts []string
 
+	// SEP2NotificationAllowLoopback lets subscription notificationURIs
+	// target loopback addresses; refused by default. See
+	// sep2embed.Config.NotifyAllowLoopback for why: this bridge's own
+	// admin UI listener (SEP2AdminUIAddr) is loopback by default too, so
+	// enabling this mirrors AllowPlaintext's explicit-opt-in shape for a
+	// switch that must not be set in production.
+	SEP2NotificationAllowLoopback bool
+
 	// SEP2AdminUISORLink is an optional, operator supplied URL to a
 	// server of record dashboard, exposed read only via the admin UI's
 	// /api/health endpoint. Not a credential: unlike
@@ -361,6 +369,15 @@ func loadConfig(args []string) (config, error) {
 	}
 	cfg.SEP2AdminUIAllowNonLoopback = adminUINonLoopbackFromEnv
 
+	// SEP2NotificationAllowLoopback mirrors AllowPlaintext's explicit
+	// opt-in shape: defaults false, and only an explicit env or flag
+	// override flips it on.
+	notificationAllowLoopbackFromEnv, err := getenvBool("SEP2_NOTIFICATION_ALLOW_LOOPBACK", false)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.SEP2NotificationAllowLoopback = notificationAllowLoopbackFromEnv
+
 	// SEP2TelemetryPublishUnchanged defaults false: unchanged devices
 	// are suppressed unless an operator explicitly asks for
 	// full-snapshot semantics. See the field's doc comment.
@@ -393,6 +410,8 @@ func loadConfig(args []string) (config, error) {
 	var adminUIKeyFlag string
 	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
 	fs.StringVar(&cfg.SEP2AdminUISORLink, "admin-ui-sor-link", cfg.SEP2AdminUISORLink, "optional server of record dashboard URL exposed via the admin UI (env: SEP2_ADMIN_UI_SOR_LINK)")
+	fs.BoolVar(&cfg.SEP2NotificationAllowLoopback, "sep2-notification-allow-loopback", cfg.SEP2NotificationAllowLoopback,
+		"allow subscription notificationURIs to target loopback addresses, including the admin UI listener (dev/test-only; default false)")
 
 	// sep2-registration-pin and sep2-registration-pin-file register with
 	// an empty string default, then are parsed and validated by hand

@@ -596,6 +596,66 @@ func TestLoadConfigSEP2AdminUIAllowNonLoopbackBadBool(t *testing.T) {
 	}
 }
 
+// TestLoadConfigSEP2NotificationAllowLoopbackDefaultsFalse verifies the
+// switch is off with no env or flag override, so the notifier's default
+// destination policy (loopback refused) is what a bare `go run
+// ./cmd/bridge` gets (issue 86 acceptance criterion: "with the switch
+// unset, behavior is unchanged").
+func TestLoadConfigSEP2NotificationAllowLoopbackDefaultsFalse(t *testing.T) {
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2NotificationAllowLoopback {
+		t.Errorf("SEP2NotificationAllowLoopback: got true with no override, want false")
+	}
+}
+
+// TestLoadConfigSEP2NotificationAllowLoopbackEnvOverride verifies the
+// loopback opt-in is honored from the env var, matching
+// AllowPlaintext's precedence shape.
+func TestLoadConfigSEP2NotificationAllowLoopbackEnvOverride(t *testing.T) {
+	t.Setenv("SEP2_NOTIFICATION_ALLOW_LOOPBACK", "true")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.SEP2NotificationAllowLoopback {
+		t.Errorf("SEP2NotificationAllowLoopback: want true from SEP2_NOTIFICATION_ALLOW_LOOPBACK=true")
+	}
+}
+
+// TestLoadConfigSEP2NotificationAllowLoopbackFlagShadowsEnv verifies the
+// flag wins over the env var, matching AllowPlaintext's precedence shape
+// (TestLoadConfigAllowPlaintextFlagShadowsEnv).
+func TestLoadConfigSEP2NotificationAllowLoopbackFlagShadowsEnv(t *testing.T) {
+	t.Setenv("SEP2_NOTIFICATION_ALLOW_LOOPBACK", "false")
+
+	cfg, err := loadConfig([]string{"-sep2-notification-allow-loopback=true"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.SEP2NotificationAllowLoopback {
+		t.Errorf("SEP2NotificationAllowLoopback: want true, flag should shadow the false env value")
+	}
+}
+
+// TestLoadConfigSEP2NotificationAllowLoopbackBadBool verifies a malformed
+// env value is a loadConfig error naming the field, matching
+// SEP2_STOMP_ALLOW_PLAINTEXT's existing behavior.
+func TestLoadConfigSEP2NotificationAllowLoopbackBadBool(t *testing.T) {
+	t.Setenv("SEP2_NOTIFICATION_ALLOW_LOOPBACK", "notabool")
+
+	_, err := loadConfig(nil)
+	if err == nil {
+		t.Fatal("expected error for invalid bool, got nil")
+	}
+	if !strings.Contains(err.Error(), "SEP2_NOTIFICATION_ALLOW_LOOPBACK") {
+		t.Errorf("error should name the env var: %v", err)
+	}
+}
+
 // TestLoadConfigSEP2AdminUIAllowedHostsParsesCommaSeparatedList verifies
 // getenvList's comma-splitting, whitespace-trimming, and empty-entry
 // dropping behavior end to end through loadConfig, including a trailing

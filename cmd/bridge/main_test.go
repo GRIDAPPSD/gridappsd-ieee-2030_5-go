@@ -146,6 +146,37 @@ func TestSEP2EmbedConfigMapsFields(t *testing.T) {
 	}
 }
 
+// TestSEP2EmbedConfigMapsNotificationAllowLoopback verifies
+// SEP2NotificationAllowLoopback passes through to
+// sep2embed.Config.NotifyAllowLoopback unmodified in both directions,
+// mirroring TestBusConfigMapsFields's AllowPlaintext check for the
+// STOMP side (issue 86).
+func TestSEP2EmbedConfigMapsNotificationAllowLoopback(t *testing.T) {
+	t.Parallel()
+
+	policy := sep2config.DefaultPolicy()
+	var connHook connobs.Hook
+
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"left at the fail-closed default", false},
+		{"explicitly opted in", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := config{SEP2NotificationAllowLoopback: tc.want}
+			got := sep2EmbedConfig(cfg, policy, &connHook, sep2embed.DeviceCertModeDevMint)
+			if got.NotifyAllowLoopback != tc.want {
+				t.Errorf("NotifyAllowLoopback: got %v, want %v", got.NotifyAllowLoopback, tc.want)
+			}
+		})
+	}
+}
+
 // TestAdminUIConfigMapsFields verifies adminUIConfig's field-by-field
 // mapping from the bridge's own config onto adminui.Config, mirroring
 // TestSEP2EmbedConfigMapsFields for the embedded IEEE 2030.5 side. This
