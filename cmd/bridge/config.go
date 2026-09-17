@@ -96,6 +96,16 @@ type config struct {
 	// shape for the "this is production" signal.
 	SEP2DeviceCertMode string
 
+	// SEP2NotificationAllowLoopback lets subscription notificationURIs
+	// target loopback addresses; refused by default. See
+	// sep2embed.Config.NotifyAllowLoopback for why: the permission admits
+	// any loopback destination on any port, reaching every service this
+	// bridge's network namespace exposes there (its admin UI listener,
+	// SEP2AdminUIAddr, among others), so enabling this mirrors
+	// AllowPlaintext's explicit-opt-in shape for a switch that must not be
+	// set in production.
+	SEP2NotificationAllowLoopback bool
+
 	// SEP2AdminUIAddr is the "host:port" the read only admin UI HTTP
 	// listener (internal/adminui) binds. See adminui.Config.Addr:
 	// loopback only unless SEP2AdminUIAllowNonLoopback is set. Defaults
@@ -361,6 +371,15 @@ func loadConfig(args []string) (config, error) {
 	}
 	cfg.SEP2AdminUIAllowNonLoopback = adminUINonLoopbackFromEnv
 
+	// SEP2NotificationAllowLoopback mirrors AllowPlaintext's explicit
+	// opt-in shape: defaults false, and only an explicit env or flag
+	// override flips it on.
+	notificationAllowLoopbackFromEnv, err := getenvBool("SEP2_NOTIFICATION_ALLOW_LOOPBACK", false)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.SEP2NotificationAllowLoopback = notificationAllowLoopbackFromEnv
+
 	// SEP2TelemetryPublishUnchanged defaults false: unchanged devices
 	// are suppressed unless an operator explicitly asks for
 	// full-snapshot semantics. See the field's doc comment.
@@ -393,6 +412,8 @@ func loadConfig(args []string) (config, error) {
 	var adminUIKeyFlag string
 	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
 	fs.StringVar(&cfg.SEP2AdminUISORLink, "admin-ui-sor-link", cfg.SEP2AdminUISORLink, "optional server of record dashboard URL exposed via the admin UI (env: SEP2_ADMIN_UI_SOR_LINK)")
+	fs.BoolVar(&cfg.SEP2NotificationAllowLoopback, "sep2-notification-allow-loopback", cfg.SEP2NotificationAllowLoopback,
+		"allow subscription notificationURIs to target any loopback destination on the host (dev/test-only; default false)")
 
 	// sep2-registration-pin and sep2-registration-pin-file register with
 	// an empty string default, then are parsed and validated by hand
