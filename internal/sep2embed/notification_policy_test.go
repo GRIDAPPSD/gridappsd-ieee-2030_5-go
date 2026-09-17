@@ -9,9 +9,10 @@ import (
 )
 
 // TestBuildNotifierLogsWarningExactlyOnceWhenLoopbackAllowed proves the
-// startup warning fires exactly once, names the switch, and names the
-// admin UI blast radius (issue 86's larger-than-standalone-server risk),
-// matching server-go's newSubscriptionNotifier warning shape.
+// startup warning fires exactly once, names the switch (both spellings),
+// and states the real blast radius: any loopback destination on any port,
+// not the admin UI alone, matching server-go's newSubscriptionNotifier
+// warning shape.
 func TestBuildNotifierLogsWarningExactlyOnceWhenLoopbackAllowed(t *testing.T) {
 	var buf bytes.Buffer
 	origOutput := log.Writer()
@@ -35,6 +36,25 @@ func TestBuildNotifierLogsWarningExactlyOnceWhenLoopbackAllowed(t *testing.T) {
 	}
 	if !strings.Contains(logged, "admin UI") {
 		t.Errorf("warning %q does not name the admin UI blast radius", logged)
+	}
+	// The corrected warning must state the permission's real width, not
+	// just the admin UI: any loopback destination on any port. The pre-fix
+	// wording ("loopback addresses, including this bridge's own admin UI
+	// listener") never said "any port"; a revert to it must fail this.
+	if !strings.Contains(logged, "any port") {
+		t.Errorf("warning %q does not say the permission reaches any port, not just the admin UI", logged)
+	}
+	// The corrected warning must say a hostname that resolves to loopback
+	// (e.g. localhost) counts as loopback too. The pre-fix wording never
+	// mentioned a hostname at all.
+	if !strings.Contains(logged, "localhost") {
+		t.Errorf("warning %q does not say a hostname such as localhost that resolves to loopback counts", logged)
+	}
+	// The corrected warning must name both spellings the switch can be set
+	// with (F7's answer: no plumbing exists to report which one actually
+	// set it). The pre-fix wording named only the environment variable.
+	if !strings.Contains(logged, "-sep2-notification-allow-loopback") {
+		t.Errorf("warning %q does not name the flag spelling -sep2-notification-allow-loopback", logged)
 	}
 }
 
