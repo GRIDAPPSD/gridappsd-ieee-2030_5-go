@@ -116,6 +116,12 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 
 	certDir := t.TempDir()
 	const mrid = "mrid-wiring-test-1"
+	// A second, non-caller device: seeded so the owner-case assertions
+	// below (list.All == 1, one item, that item's LFDI) can distinguish
+	// the caller's own scoped listing from a full-fleet listing. With
+	// only one device ever seeded, All == 1 would also be what a
+	// full-fleet regression serves, and the test would not notice.
+	const mridOther = "mrid-wiring-test-2"
 
 	// Mint a real, certificate-derived identity for the seeded device
 	// the same way bootstrapRegistry does in production (main.go): this
@@ -126,7 +132,7 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 	// never reach the served EndDeviceList. GET /edev under the
 	// server-go issue 354 ownership split then returns exactly this
 	// device to its own certificate.
-	identities, err := sep2embed.EnsureDeviceIdentities(certDir, sep2embed.DeviceCertModeDevMint, []string{mrid})
+	identities, err := sep2embed.EnsureDeviceIdentities(certDir, sep2embed.DeviceCertModeDevMint, []string{mrid, mridOther})
 	if err != nil {
 		t.Fatalf("EnsureDeviceIdentities: %v", err)
 	}
@@ -139,6 +145,14 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 	}
 	if err := reg.Add(entry); err != nil {
 		t.Fatalf("registry.Add: %v", err)
+	}
+	otherEntry := registry.Entry{
+		MRID: mridOther,
+		Name: "Wiring Test Battery",
+		LFDI: identities[mridOther].LFDI,
+	}
+	if err := reg.Add(otherEntry); err != nil {
+		t.Fatalf("registry.Add (second device): %v", err)
 	}
 
 	cfg := config{
@@ -223,6 +237,9 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 	got := list.EndDevice[0]
 	if got.LFDI != entry.LFDI {
 		t.Errorf("EndDevice[0].LFDI = %q, want the caller's own %q", got.LFDI, entry.LFDI)
+	}
+	if got.LFDI == otherEntry.LFDI {
+		t.Fatalf("EndDevice[0].LFDI = %q, the second seeded device's LFDI: owner-case listing leaked another caller's device", got.LFDI)
 	}
 	if got.Href == "" {
 		t.Errorf("EndDevice[0].Href is empty, want the resource's own href")
