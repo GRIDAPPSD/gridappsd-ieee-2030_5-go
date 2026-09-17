@@ -15,9 +15,11 @@ import (
 func buildNotifier(subs coresub.SubscriptionLister, workers, queueSize int, allowLoopback bool) *coresub.Manager {
 	policy := coresub.DestinationPolicy{AllowLoopback: allowLoopback}
 	if policy.AllowLoopback {
-		log.Print("WARNING: SEP2_NOTIFICATION_ALLOW_LOOPBACK=true: subscriptions may target loopback addresses, " +
-			"including this bridge's own admin UI listener (SEP2_ADMIN_UI_ADDR, loopback by default); " +
-			"intended for test harnesses only")
+		log.Print("WARNING: SEP2_NOTIFICATION_ALLOW_LOOPBACK / -sep2-notification-allow-loopback is set: " +
+			"subscriptions may target any loopback destination (127.0.0.0/8, ::1, or a hostname such as " +
+			"localhost that resolves there) on any port, reaching every service this bridge's network " +
+			"namespace exposes there, including its own STOMP broker, IEEE 2030.5 listener and admin UI " +
+			"among others; the admin UI's Bearer auth does not narrow this; intended for test harnesses only")
 	}
 	return coresub.NewManager(subs, workers, queueSize, coresub.WithDestinationPolicy(policy))
 }
