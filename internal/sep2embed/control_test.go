@@ -151,7 +151,10 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 	t.Parallel()
 
 	reg, st := twoDeviceFixture(t)
-	notifier := coresub.NewManager(st.Subscriptions, 2, 10)
+	// The subscriber fixture below listens on loopback; the zero-value
+	// DestinationPolicy refuses that by default in production.
+	notifier := coresub.NewManager(st.Subscriptions, 2, 10,
+		coresub.WithDestinationPolicy(coresub.DestinationPolicy{AllowLoopback: true}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
