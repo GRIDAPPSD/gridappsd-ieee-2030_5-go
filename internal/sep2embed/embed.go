@@ -20,6 +20,7 @@ import (
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 )
 
 // Default sizing for the subscription fan-out manager when Config leaves
@@ -282,6 +283,16 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 	if reg == nil {
 		return nil, errors.New("sep2embed: registry is required")
+	}
+	// cmd/bridge validates this same bound at boot (SEP2Policy.ValidateDERControl),
+	// but New is the exported constructor: a caller that reaches it without
+	// going through that boot sequence must fail here rather than serve a
+	// silently wrapped or narrowing-panicked randomizeDuration later (see
+	// control.go's OneHourRange conversion).
+	if !sep2config.RandomizeDurationInRange(cfg.DERControl.RandomizeDuration) {
+		return nil, fmt.Errorf(
+			"sep2embed: Config.DERControl.RandomizeDuration %d is outside the sep.xsd OneHourRangeType range of -%d to %d seconds",
+			cfg.DERControl.RandomizeDuration, sep2config.MaxRandomizeSeconds, sep2config.MaxRandomizeSeconds)
 	}
 
 	// The one and only read of the server's own certificate directory.

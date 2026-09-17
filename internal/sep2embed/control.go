@@ -459,8 +459,9 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// absent"; a pointer to 0 still reaches the wire as
 	// <randomizeDuration>0</randomizeDuration>, which states the policy
 	// instead of relying on the client to apply the schema's own default.
-	// ValidateDERControl already rejects a policy outside the
-	// OneHourRangeType bound at boot, so this narrowing never wraps.
+	// New refuses a Config.DERControl.RandomizeDuration outside the
+	// OneHourRangeType bound (sep2config.RandomizeDurationInRange), so
+	// this narrowing never wraps.
 	randomizeDuration := sep2.OneHourRange(policy.Control.RandomizeDuration)
 	control.RandomizeDuration = &randomizeDuration
 	control.DERControlBase = &base
