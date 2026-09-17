@@ -2,8 +2,8 @@ package sep2embed
 
 import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store/memory"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/store/memory"
 )
 
 // newStores builds a fully-populated assembly.Stores, matching how the

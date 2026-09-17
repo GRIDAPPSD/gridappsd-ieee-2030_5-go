@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
-	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/store"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -459,7 +459,9 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// absent"; a pointer to 0 still reaches the wire as
 	// <randomizeDuration>0</randomizeDuration>, which states the policy
 	// instead of relying on the client to apply the schema's own default.
-	randomizeDuration := policy.Control.RandomizeDuration
+	// ValidateDERControl already rejects a policy outside the
+	// OneHourRangeType bound at boot, so this narrowing never wraps.
+	randomizeDuration := sep2.OneHourRange(policy.Control.RandomizeDuration)
 	control.RandomizeDuration = &randomizeDuration
 	control.DERControlBase = &base
 

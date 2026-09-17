@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
-	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 )
@@ -477,7 +477,7 @@ func TestDERControlListAdvertisesTheAssumedPollRate(t *testing.T) {
 func TestMaxEffectiveScheduledEnd(t *testing.T) {
 	t.Parallel()
 
-	i32 := func(v int32) *int32 { return &v }
+	i32 := func(v int32) *sep2.OneHourRange { r := sep2.OneHourRange(v); return &r }
 
 	for _, tc := range []struct {
 		name    string
@@ -542,7 +542,7 @@ func TestMaxEffectiveScheduledEnd(t *testing.T) {
 
 // derControlWithInterval builds a DERControl carrying just the temporal
 // fields maxEffectiveScheduledEnd reads.
-func derControlWithInterval(start int64, duration uint32, randomizeDuration, randomizeStart *int32) sep2.DERControl {
+func derControlWithInterval(start int64, duration uint32, randomizeDuration, randomizeStart *sep2.OneHourRange) sep2.DERControl {
 	var c sep2.DERControl
 	c.Interval = &sep2.DateTimeInterval{Start: start, Duration: duration}
 	c.RandomizeDuration = randomizeDuration

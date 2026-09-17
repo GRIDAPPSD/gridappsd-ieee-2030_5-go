@@ -1,10 +1,8 @@
 // Package sep2embed boots the IEEE 2030.5 protocol server in-process,
-// inside the bridge's own binary. It consumes core's public embed
-// surface (github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv and
-// .../pkg/sep2srv/assembly) rather than promoting anything from the
-// server-of-record: per Noor's 2026-07-02 assessment, the reusable
-// surface already lives in core, so no server-side promotion is
-// required to stand up a working embedded server.
+// inside the bridge's own binary. It consumes
+// github.com/GRIDAPPSD/ieee-2030_5-server-go's public embed surface
+// (pkg/sep2srv and pkg/sep2srv/assembly), which moved there from
+// ieee-2030_5-core-go after core v0.14.1.
 package sep2embed
 
 import (
@@ -16,9 +14,9 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
-	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"

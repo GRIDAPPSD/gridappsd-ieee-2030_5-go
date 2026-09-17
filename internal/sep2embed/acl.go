@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/store"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2acl"
 )
