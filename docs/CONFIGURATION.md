@@ -42,6 +42,7 @@ make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
 | (none) | `-sep2-registration-pin-file` | unset | Path to a JSON file mapping device LFDI to that device's registration PIN. Unset means no per-device PINs are configured. |
 | `SEP2_POLL_RATE` | `-sep2-poll-rate` | unset | Fleet-wide `Registration` poll rate in seconds, advertised to every device. Unset advertises nothing; clients apply the spec default of 900 seconds. |
 | `SEP2_POST_RATE` | `-sep2-post-rate` | unset | Fleet-wide `MirrorUsagePoint` post rate in seconds. Unset advertises nothing and leaves each client's own value untouched. |
+| `SEP2_NOTIFICATION_ALLOW_LOOPBACK` | `-sep2-notification-allow-loopback` | `false` | Fail-closed: with no override a subscription whose `notificationURI` is a loopback address (127.0.0.0/8, `::1`) is refused with 400 at creation. Set `true` only for a test harness whose notification receiver listens on loopback. **Do not set this in production**: this bridge's admin UI listener (`SEP2_ADMIN_UI_ADDR`) is loopback by default too, so enabling it lets any client that can create a subscription make the server POST to the admin UI. Logs a warning once at start-up when set. |
 
 ## Admin UI
 
