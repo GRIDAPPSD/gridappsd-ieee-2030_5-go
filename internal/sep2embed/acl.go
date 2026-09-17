@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/store"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2acl"
 )
@@ -28,12 +28,11 @@ type OwnerResolver interface {
 
 // storeOwnerResolver implements OwnerResolver directly against the
 // EndDeviceStore, the single source of truth for a device's stored
-// identity. The device addressed by the wire path segment edevID (the
-// EndDeviceStore key, which is the device's canonical LFDI: see
-// seed.go) owns itself if and only if the caller's LFDI equals that
-// stored EndDevice's LFDI field. There is no separate advertised
-// identity to reconcile: the store key, the EndDevice.LFDI field, and
-// the ownership identity are all the same canonical value.
+// identity. edevID (the wire path segment) is the EndDeviceStore key,
+// which is the opaque, server-chosen URL index seed.go allocates, NOT
+// the device's LFDI. The device addressed by that key owns itself if
+// and only if the caller's LFDI equals the EndDevice record's own LFDI
+// field, read back from the store.
 type storeOwnerResolver struct {
 	endDevices store.EndDeviceStore
 }

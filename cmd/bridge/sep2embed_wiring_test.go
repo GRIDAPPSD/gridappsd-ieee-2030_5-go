@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/pem"
 	"encoding/xml"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +83,27 @@ func mintTestDeviceClient(t *testing.T, certDir string) *http.Client {
 	}
 }
 
+// deviceClient builds an mTLS *http.Client presenting certPEM/keyPEM,
+// trusting caCertPEM, mirroring mintTestDeviceClient's TLS config shape
+// but for a specific, caller-supplied device identity rather than an
+// arbitrary throwaway one.
+func deviceClient(t *testing.T, certPEM, keyPEM, caCertPEM []byte) *http.Client {
+	t.Helper()
+
+	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(certPEM, keyPEM, caCertPEM)
+	if err != nil {
+		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
+	}
+	// InsecureSkipVerify is safe here for the same reason as
+	// mintTestDeviceClient above.
+	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped
+
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Timeout:   5 * time.Second,
+	}
+}
+
 // TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS proves the bridge's
 // own wiring (sep2EmbedConfig, newSEP2Embed) produces a working, seeded
 // IEEE 2030.5 mTLS server, distinct from sep2embed's own package tests
@@ -91,20 +114,50 @@ func mintTestDeviceClient(t *testing.T, certDir string) *http.Client {
 func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 	t.Parallel()
 
+	certDir := t.TempDir()
+	const mrid = "mrid-wiring-test-1"
+	// A second, non-caller device: seeded so the owner-case assertions
+	// below (list.All == 1, one item, that item's LFDI) can distinguish
+	// the caller's own scoped listing from a full-fleet listing. With
+	// only one device ever seeded, All == 1 would also be what a
+	// full-fleet regression serves, and the test would not notice.
+	const mridOther = "mrid-wiring-test-2"
+
+	// Mint a real, certificate-derived identity for the seeded device
+	// the same way bootstrapRegistry does in production (main.go): this
+	// creates the embed's CA under certDir as a side effect and signs
+	// mrid's device cert against it. The registry is seeded with that
+	// LFDI BEFORE newSEP2Embed runs, because Embed.New (via seedStores)
+	// snapshots the registry once at construction; a later reg.Add would
+	// never reach the served EndDeviceList. GET /edev under the
+	// server-go issue 354 ownership split then returns exactly this
+	// device to its own certificate.
+	identities, err := sep2embed.EnsureDeviceIdentities(certDir, sep2embed.DeviceCertModeDevMint, []string{mrid, mridOther})
+	if err != nil {
+		t.Fatalf("EnsureDeviceIdentities: %v", err)
+	}
+
 	reg := registry.New()
 	entry := registry.Entry{
-		MRID:        "mrid-wiring-test-1",
-		Name:        "Wiring Test Inverter",
-		LFDI:        "999999999999999999999999999999999999DEAD",
-		Placeholder: true,
+		MRID: mrid,
+		Name: "Wiring Test Inverter",
+		LFDI: identities[mrid].LFDI,
 	}
 	if err := reg.Add(entry); err != nil {
 		t.Fatalf("registry.Add: %v", err)
 	}
+	otherEntry := registry.Entry{
+		MRID: mridOther,
+		Name: "Wiring Test Battery",
+		LFDI: identities[mridOther].LFDI,
+	}
+	if err := reg.Add(otherEntry); err != nil {
+		t.Fatalf("registry.Add (second device): %v", err)
+	}
 
 	cfg := config{
 		SEP2ServerAddr:    "127.0.0.1:0",
-		SEP2ServerCertDir: t.TempDir(),
+		SEP2ServerCertDir: certDir,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,7 +172,28 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 		runErr <- embed.Run(ctx)
 	}()
 
-	client := mintTestDeviceClient(t, cfg.SEP2ServerCertDir)
+	// Present the exact certificate EnsureDeviceIdentities minted for
+	// mrid above, using the same certDir/devices glob helper
+	// TestBootstrapRegistryDerivesRealCertBackedIdentities already uses
+	// to locate it. The cert is stored as raw DER (see
+	// sep2embed.EnsureDeviceIdentities' doc comment); the key is already
+	// PEM at the sibling ".pem" path.
+	certFile := deviceCertFileForTest(t, certDir, mrid)
+	certDER, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatalf("read device cert %q: %v", certFile, err)
+	}
+	callerKeyPEM, err := os.ReadFile(strings.TrimSuffix(certFile, ".x509") + ".pem")
+	if err != nil {
+		t.Fatalf("read device key for %q: %v", certFile, err)
+	}
+	callerCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	caCertPEM, err := os.ReadFile(filepath.Join(certDir, testCACertFileName))
+	if err != nil {
+		t.Fatalf("read ca.pem: %v", err)
+	}
+
+	client := deviceClient(t, callerCertPEM, callerKeyPEM, caCertPEM)
 	baseURL := "https://" + embed.Addr()
 
 	dcapResp, err := client.Get(baseURL + "/dcap")
@@ -135,6 +209,8 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 		t.Fatalf("GET /dcap status = %d, want 200; body=%s", dcapResp.StatusCode, dcapBody)
 	}
 
+	// GET /edev: the caller's own certificate lists exactly its own
+	// EndDevice, by field value.
 	edevResp, err := client.Get(baseURL + "/edev")
 	if err != nil {
 		t.Fatalf("GET /edev: %v", err)
@@ -158,8 +234,42 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 	if len(list.EndDevice) != 1 {
 		t.Fatalf("EndDeviceList.EndDevice has %d items, want 1", len(list.EndDevice))
 	}
-	if list.EndDevice[0].LFDI != entry.LFDI {
-		t.Errorf("EndDevice[0].LFDI = %q, want the seeded registry entry's LFDI %q", list.EndDevice[0].LFDI, entry.LFDI)
+	got := list.EndDevice[0]
+	if got.LFDI != entry.LFDI {
+		t.Errorf("EndDevice[0].LFDI = %q, want the caller's own %q", got.LFDI, entry.LFDI)
+	}
+	if got.LFDI == otherEntry.LFDI {
+		t.Fatalf("EndDevice[0].LFDI = %q, the second seeded device's LFDI: owner-case listing leaked another caller's device", got.LFDI)
+	}
+	if got.Href == "" {
+		t.Errorf("EndDevice[0].Href is empty, want the resource's own href")
+	}
+	if !sepTLS.ValidateSFDI(got.SFDI) {
+		t.Errorf("EndDevice[0].SFDI %q fails ValidateSFDI", got.SFDI)
+	}
+
+	// A certificate owning no seeded device gets an empty list rather
+	// than the fleet or a 403: /edev is a common resource any
+	// authenticated device may read.
+	otherClient := mintTestDeviceClient(t, cfg.SEP2ServerCertDir)
+	otherResp, err := otherClient.Get(baseURL + "/edev")
+	if err != nil {
+		t.Fatalf("GET /edev (certificate owning no seeded device): %v", err)
+	}
+	otherBody, err := io.ReadAll(otherResp.Body)
+	otherResp.Body.Close()
+	if err != nil {
+		t.Fatalf("read /edev body (certificate owning no seeded device): %v", err)
+	}
+	if otherResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /edev (certificate owning no seeded device) status = %d, want 200; body=%s", otherResp.StatusCode, otherBody)
+	}
+	var otherList sep2.EndDeviceList
+	if err := xml.Unmarshal(otherBody, &otherList); err != nil {
+		t.Fatalf("unmarshal EndDeviceList (certificate owning no seeded device): %v\nbody=%s", err, otherBody)
+	}
+	if otherList.All != 0 || len(otherList.EndDevice) != 0 {
+		t.Fatalf("EndDeviceList (certificate owning no seeded device) = {All: %d, len(EndDevice): %d}, want {0, 0}", otherList.All, len(otherList.EndDevice))
 	}
 
 	// Cancel and confirm Run returns within bounds: the no-goroutine-leak

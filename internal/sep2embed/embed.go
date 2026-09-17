@@ -1,10 +1,8 @@
 // Package sep2embed boots the IEEE 2030.5 protocol server in-process,
-// inside the bridge's own binary. It consumes core's public embed
-// surface (github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv and
-// .../pkg/sep2srv/assembly) rather than promoting anything from the
-// server-of-record: per Noor's 2026-07-02 assessment, the reusable
-// surface already lives in core, so no server-side promotion is
-// required to stand up a working embedded server.
+// inside the bridge's own binary. It consumes
+// github.com/GRIDAPPSD/ieee-2030_5-server-go's public embed surface
+// (pkg/sep2srv and pkg/sep2srv/assembly), which moved there from
+// ieee-2030_5-core-go after core v0.14.1.
 package sep2embed
 
 import (
@@ -16,17 +14,18 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
-	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 )
 
 // Default sizing for the subscription fan-out manager when Config leaves
-// NotifyWorkers / NotifyQueueSize at zero or negative. Mirrors core's own
-// NewManager zero-value fallback (workerCount<1 -> 2, queueSize<1 -> 100)
+// NotifyWorkers / NotifyQueueSize at zero or negative. Mirrors server-go's
+// own NewManager zero-value fallback (workerCount<1 -> 2, queueSize<1 -> 100)
 // with a slightly larger worker count sized for the bridge's expected
 // device fleet (the 123pv feeder's 14+14+14 devices).
 const (
@@ -215,7 +214,7 @@ type Config struct {
 	// untouched. This is NOT part of store seeding: the bridge creates no
 	// MirrorUsagePoints at all (every one is created by a client via POST
 	// /mup), so the only moment a server-side rate can reach a mirror is
-	// at creation, inside core's handler.
+	// at creation, inside server-go's handler.
 	ResolvePostRate func(lfdi string) (uint32, bool)
 
 	// Observer is the per-LFDI connection observer.
@@ -249,7 +248,7 @@ type protocolServer interface {
 
 // Embed is the in-process IEEE 2030.5 protocol server: seeded resource
 // stores, the subscription fan-out manager, and the mTLS listener from
-// core's pkg/sep2srv. Construct with New; start with Run.
+// server-go's pkg/sep2srv. Construct with New; start with Run.
 type Embed struct {
 	srv      protocolServer
 	notifier *coresub.Manager
@@ -284,6 +283,16 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 	if reg == nil {
 		return nil, errors.New("sep2embed: registry is required")
+	}
+	// cmd/bridge validates this same bound at boot (SEP2Policy.ValidateDERControl),
+	// but New is the exported constructor: a caller that reaches it without
+	// going through that boot sequence must fail here rather than serve a
+	// silently wrapped or narrowing-panicked randomizeDuration later (see
+	// control.go's OneHourRange conversion).
+	if !sep2config.RandomizeDurationInRange(cfg.DERControl.RandomizeDuration) {
+		return nil, fmt.Errorf(
+			"sep2embed: Config.DERControl.RandomizeDuration %d is outside the sep.xsd OneHourRangeType range of -%d to %d seconds",
+			cfg.DERControl.RandomizeDuration, sep2config.MaxRandomizeSeconds, sep2config.MaxRandomizeSeconds)
 	}
 
 	// The one and only read of the server's own certificate directory.
@@ -326,7 +335,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 	notifier := coresub.NewManager(stores.Subscriptions, workers, queueSize)
 
-	// postRate reaches the wire through core's POST /mup handler, not
+	// postRate reaches the wire through server-go's POST /mup handler, not
 	// through seeding: this bridge creates no MirrorUsagePoints, so
 	// creation-time stamping in core is the only point at which a
 	// server-side rate can attach to a mirror. RouterConfig is how core
@@ -340,7 +349,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 
 	// Observer wired: build the mTLS listener ourselves, with the
 	// additive handshake-observation wrapper (see mtls.go's doc comment
-	// for why core's sep2srv.New cannot be used for this path). Observer
+	// for why server-go's sep2srv.New cannot be used for this path). Observer
 	// unset: fall through unchanged to the
 	// prior sep2srv.New path below.
 	if cfg.Observer != nil {

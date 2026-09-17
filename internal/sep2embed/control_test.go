@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/assembly"
-	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/store"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/store"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -151,7 +151,10 @@ func TestApplyControlDeltaOwnerScopingAndFieldFidelity(t *testing.T) {
 	t.Parallel()
 
 	reg, st := twoDeviceFixture(t)
-	notifier := coresub.NewManager(st.Subscriptions, 2, 10)
+	// The subscriber fixture below listens on loopback; the zero-value
+	// DestinationPolicy refuses that by default in production.
+	notifier := coresub.NewManager(st.Subscriptions, 2, 10,
+		coresub.WithDestinationPolicy(coresub.DestinationPolicy{AllowLoopback: true}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

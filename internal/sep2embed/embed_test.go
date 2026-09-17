@@ -10,14 +10,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
-	coresub "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2srv/handlers/subscription"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -83,13 +82,47 @@ func mintTestDeviceClient(t *testing.T, certDir string) *http.Client {
 func TestEmbedServesSeededDevicesOverMTLS(t *testing.T) {
 	t.Parallel()
 
+	certDir := t.TempDir()
+
+	// Mint the server's own CA/leaf identity first (idempotent: New below
+	// calls ensureServerIdentity again and finds the files already
+	// present), so the caller device cert below can be signed against the
+	// same CA the embedded server will trust and its LFDI known ahead of
+	// seeding, mirroring acl_integration_test.go.
+	_, _, caFile, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
+	if err != nil {
+		t.Fatalf("ensureServerIdentity: %v", err)
+	}
+	caCertPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		t.Fatalf("read ca.pem: %v", err)
+	}
+	caKeyPEM, err := os.ReadFile(filepath.Join(certDir, caKeyFileName))
+	if err != nil {
+		t.Fatalf("read ca-key.pem: %v", err)
+	}
+	caCert, caKey, err := parseCAPair(caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("parseCAPair: %v", err)
+	}
+
+	// The caller's LFDI is seeded below as its own EndDevice, so GET
+	// /edev under the server-go issue 354 ownership split returns
+	// exactly this device (server-go#354 restricts the list to the
+	// caller's own instance, superseding the pre-354 full-fleet listing
+	// this test used to assert).
+	callerCertPEM, callerKeyPEM, callerLFDI := mintDeviceIdentity(t, caCert, caKey, "test-serial-embed-caller")
+
 	reg := registry.New()
-	entries := fixtureEntries()
+	entries := []registry.Entry{
+		{MRID: "mrid-inv-1", Name: "Inverter 1", LFDI: callerLFDI},
+		{MRID: "mrid-bat-1", Name: "Battery 1", LFDI: "222222222222222222222222222222222222BBBB", Placeholder: true},
+		{MRID: "mrid-sol-1", Name: "Solar 1", LFDI: "333333333333333333333333333333333333CCCC", Placeholder: true},
+	}
 	if err := reg.AddBatch(entries); err != nil {
 		t.Fatalf("AddBatch: %v", err)
 	}
 
-	certDir := t.TempDir()
 	cfg := Config{
 		Addr:                   "127.0.0.1:0",
 		CertDir:                certDir,
@@ -110,7 +143,7 @@ func TestEmbedServesSeededDevicesOverMTLS(t *testing.T) {
 	}()
 
 	baseURL := "https://" + e.Addr()
-	client := mintTestDeviceClient(t, certDir)
+	client := deviceClient(t, callerCertPEM, callerKeyPEM, caCertPEM)
 
 	// GET /dcap: the discovery root every CSIP client hits first.
 	dcapResp, err := client.Get(baseURL + "/dcap")
@@ -126,8 +159,8 @@ func TestEmbedServesSeededDevicesOverMTLS(t *testing.T) {
 		t.Fatalf("GET /dcap status = %d, want 200; body=%s", dcapResp.StatusCode, dcapBody)
 	}
 
-	// GET /edev: assert the parsed list contains exactly the seeded
-	// devices, by LFDI/SFDI value, not just a 200 and a non-empty body.
+	// GET /edev: the caller's own certificate must list exactly its own
+	// EndDevice, by field value, not the whole seeded fleet.
 	edevResp, err := client.Get(baseURL + "/edev")
 	if err != nil {
 		t.Fatalf("GET /edev: %v", err)
@@ -146,41 +179,51 @@ func TestEmbedServesSeededDevicesOverMTLS(t *testing.T) {
 		t.Fatalf("unmarshal EndDeviceList: %v\nbody=%s", err, edevBody)
 	}
 
-	if int(list.All) != len(entries) {
-		t.Fatalf("EndDeviceList.All = %d, want %d", list.All, len(entries))
+	if int(list.All) != 1 {
+		t.Fatalf("EndDeviceList.All = %d, want 1", list.All)
 	}
-	if len(list.EndDevice) != len(entries) {
-		t.Fatalf("EndDeviceList.EndDevice has %d items, want %d", len(list.EndDevice), len(entries))
+	if len(list.EndDevice) != 1 {
+		t.Fatalf("EndDeviceList.EndDevice has %d items, want 1", len(list.EndDevice))
+	}
+	got := list.EndDevice[0]
+	if got.LFDI != callerLFDI {
+		t.Errorf("EndDevice[0].LFDI = %q, want the caller's own %q", got.LFDI, callerLFDI)
+	}
+	if got.Href == "" {
+		t.Errorf("EndDevice[0].Href is empty, want the resource's own href")
+	}
+	if !sepTLS.ValidateSFDI(got.SFDI) {
+		t.Errorf("EndDevice[0].SFDI %q fails ValidateSFDI", got.SFDI)
 	}
 
-	wantLFDIs := make([]string, len(entries))
-	for i, e := range entries {
-		wantLFDIs[i] = e.LFDI
+	// A certificate owning no seeded device gets an empty list rather
+	// than the fleet or a 403: /edev is a common resource any
+	// authenticated device may read, per
+	// TestACLTwoDeviceCrossAccessMatrix's "device A reading the common
+	// /edev list" case.
+	otherClient := mintTestDeviceClient(t, certDir)
+	otherResp, err := otherClient.Get(baseURL + "/edev")
+	if err != nil {
+		t.Fatalf("GET /edev (certificate owning no seeded device): %v", err)
 	}
-	gotLFDIs := make([]string, len(list.EndDevice))
-	for i, d := range list.EndDevice {
-		gotLFDIs[i] = d.LFDI
-		if d.SFDI == "" {
-			t.Errorf("EndDevice[%d] (LFDI %q) has empty SFDI", i, d.LFDI)
-		}
-		if !sepTLS.ValidateSFDI(d.SFDI) {
-			t.Errorf("EndDevice[%d] (LFDI %q) SFDI %q fails ValidateSFDI", i, d.LFDI, d.SFDI)
-		}
+	otherBody, err := io.ReadAll(otherResp.Body)
+	otherResp.Body.Close()
+	if err != nil {
+		t.Fatalf("read /edev body (certificate owning no seeded device): %v", err)
 	}
-	sort.Strings(wantLFDIs)
-	sort.Strings(gotLFDIs)
-	for i := range wantLFDIs {
-		if gotLFDIs[i] != wantLFDIs[i] {
-			t.Fatalf("EndDeviceList LFDIs = %v, want %v", gotLFDIs, wantLFDIs)
-		}
+	if otherResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /edev (certificate owning no seeded device) status = %d, want 200; body=%s", otherResp.StatusCode, otherBody)
+	}
+	var otherList sep2.EndDeviceList
+	if err := xml.Unmarshal(otherBody, &otherList); err != nil {
+		t.Fatalf("unmarshal EndDeviceList (certificate owning no seeded device): %v\nbody=%s", err, otherBody)
+	}
+	if otherList.All != 0 || len(otherList.EndDevice) != 0 {
+		t.Fatalf("EndDeviceList (certificate owning no seeded device) = {All: %d, len(EndDevice): %d}, want {0, 0}", otherList.All, len(otherList.EndDevice))
 	}
 
 	// A no-cert client must be rejected at the TLS handshake, before any
 	// HTTP status is even produced.
-	caCertPEM, err := os.ReadFile(filepath.Join(certDir, caCertFileName))
-	if err != nil {
-		t.Fatalf("read ca.pem: %v", err)
-	}
 	caPool := x509.NewCertPool()
 	if !caPool.AppendCertsFromPEM(caCertPEM) {
 		t.Fatalf("AppendCertsFromPEM(ca.pem) failed")
