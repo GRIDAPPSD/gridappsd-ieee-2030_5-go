@@ -7,7 +7,7 @@ import (
 )
 
 // newStores builds a fully-populated assembly.Stores, matching how the
-// server-of-record assembles its own Stores (and core's own
+// server-of-record assembles its own Stores (and server-go's own
 // assembly_test.go testStores helper): every resource store is a plain
 // in-memory store with no persistence path, so BuildProtocolRouter mounts
 // the full spec-compliant route set rather than skipping a function set

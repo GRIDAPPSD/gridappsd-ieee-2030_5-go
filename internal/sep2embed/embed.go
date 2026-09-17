@@ -24,8 +24,8 @@ import (
 )
 
 // Default sizing for the subscription fan-out manager when Config leaves
-// NotifyWorkers / NotifyQueueSize at zero or negative. Mirrors core's own
-// NewManager zero-value fallback (workerCount<1 -> 2, queueSize<1 -> 100)
+// NotifyWorkers / NotifyQueueSize at zero or negative. Mirrors server-go's
+// own NewManager zero-value fallback (workerCount<1 -> 2, queueSize<1 -> 100)
 // with a slightly larger worker count sized for the bridge's expected
 // device fleet (the 123pv feeder's 14+14+14 devices).
 const (
@@ -214,7 +214,7 @@ type Config struct {
 	// untouched. This is NOT part of store seeding: the bridge creates no
 	// MirrorUsagePoints at all (every one is created by a client via POST
 	// /mup), so the only moment a server-side rate can reach a mirror is
-	// at creation, inside core's handler.
+	// at creation, inside server-go's handler.
 	ResolvePostRate func(lfdi string) (uint32, bool)
 
 	// Observer is the per-LFDI connection observer.
@@ -335,7 +335,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 	notifier := coresub.NewManager(stores.Subscriptions, workers, queueSize)
 
-	// postRate reaches the wire through core's POST /mup handler, not
+	// postRate reaches the wire through server-go's POST /mup handler, not
 	// through seeding: this bridge creates no MirrorUsagePoints, so
 	// creation-time stamping in core is the only point at which a
 	// server-side rate can attach to a mirror. RouterConfig is how core
@@ -349,7 +349,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 
 	// Observer wired: build the mTLS listener ourselves, with the
 	// additive handshake-observation wrapper (see mtls.go's doc comment
-	// for why core's sep2srv.New cannot be used for this path). Observer
+	// for why server-go's sep2srv.New cannot be used for this path). Observer
 	// unset: fall through unchanged to the
 	// prior sep2srv.New path below.
 	if cfg.Observer != nil {
