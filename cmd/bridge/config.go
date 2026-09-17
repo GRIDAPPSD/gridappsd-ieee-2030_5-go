@@ -96,6 +96,14 @@ type config struct {
 	// shape for the "this is production" signal.
 	SEP2DeviceCertMode string
 
+	// SEP2NotificationAllowLoopback lets subscription notificationURIs
+	// target loopback addresses; refused by default. See
+	// sep2embed.Config.NotifyAllowLoopback for why: this bridge's own
+	// admin UI listener (SEP2AdminUIAddr) is loopback by default too, so
+	// enabling this mirrors AllowPlaintext's explicit-opt-in shape for a
+	// switch that must not be set in production.
+	SEP2NotificationAllowLoopback bool
+
 	// SEP2AdminUIAddr is the "host:port" the read only admin UI HTTP
 	// listener (internal/adminui) binds. See adminui.Config.Addr:
 	// loopback only unless SEP2AdminUIAllowNonLoopback is set. Defaults
@@ -120,14 +128,6 @@ type config struct {
 	// accepts, beyond its own built in defaults (localhost, 127.0.0.1,
 	// ::1). See adminui.Config.AllowedHosts.
 	SEP2AdminUIAllowedHosts []string
-
-	// SEP2NotificationAllowLoopback lets subscription notificationURIs
-	// target loopback addresses; refused by default. See
-	// sep2embed.Config.NotifyAllowLoopback for why: this bridge's own
-	// admin UI listener (SEP2AdminUIAddr) is loopback by default too, so
-	// enabling this mirrors AllowPlaintext's explicit-opt-in shape for a
-	// switch that must not be set in production.
-	SEP2NotificationAllowLoopback bool
 
 	// SEP2AdminUISORLink is an optional, operator supplied URL to a
 	// server of record dashboard, exposed read only via the admin UI's
