@@ -98,10 +98,12 @@ type config struct {
 
 	// SEP2NotificationAllowLoopback lets subscription notificationURIs
 	// target loopback addresses; refused by default. See
-	// sep2embed.Config.NotifyAllowLoopback for why: this bridge's own
-	// admin UI listener (SEP2AdminUIAddr) is loopback by default too, so
-	// enabling this mirrors AllowPlaintext's explicit-opt-in shape for a
-	// switch that must not be set in production.
+	// sep2embed.Config.NotifyAllowLoopback for why: the permission admits
+	// any loopback destination on any port, reaching every service this
+	// bridge's network namespace exposes there (its admin UI listener,
+	// SEP2AdminUIAddr, among others), so enabling this mirrors
+	// AllowPlaintext's explicit-opt-in shape for a switch that must not be
+	// set in production.
 	SEP2NotificationAllowLoopback bool
 
 	// SEP2AdminUIAddr is the "host:port" the read only admin UI HTTP
@@ -411,7 +413,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
 	fs.StringVar(&cfg.SEP2AdminUISORLink, "admin-ui-sor-link", cfg.SEP2AdminUISORLink, "optional server of record dashboard URL exposed via the admin UI (env: SEP2_ADMIN_UI_SOR_LINK)")
 	fs.BoolVar(&cfg.SEP2NotificationAllowLoopback, "sep2-notification-allow-loopback", cfg.SEP2NotificationAllowLoopback,
-		"allow subscription notificationURIs to target loopback addresses, including the admin UI listener (dev/test-only; default false)")
+		"allow subscription notificationURIs to target any loopback destination on the host (dev/test-only; default false)")
 
 	// sep2-registration-pin and sep2-registration-pin-file register with
 	// an empty string default, then are parsed and validated by hand

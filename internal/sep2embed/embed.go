@@ -107,10 +107,12 @@ type Config struct {
 	// NotifyAllowLoopback permits a subscription's notificationURI to
 	// target loopback addresses (127.0.0.0/8, ::1), refused by default
 	// (coresub.DestinationPolicy's zero value). Off by default because
-	// this bridge's admin UI listener (SEP2_ADMIN_UI_ADDR) is loopback by
-	// default too: enabling this lets any client that can create a
-	// subscription make the server POST to it. Mirrors server-go's
-	// SEP2_NOTIFICATION_ALLOW_LOOPBACK; see buildNotifier.
+	// enabling it lets any client that can create a subscription make the
+	// server POST to any loopback destination on any port, reaching every
+	// service this bridge's network namespace exposes there (its admin UI
+	// listener, SEP2_ADMIN_UI_ADDR, among others; its Bearer auth does not
+	// narrow this). Mirrors server-go's SEP2_NOTIFICATION_ALLOW_LOOPBACK;
+	// see buildNotifier.
 	NotifyAllowLoopback bool
 
 	// There is deliberately no bus, destination or simulation id here.
