@@ -675,6 +675,65 @@ func TestLoadConfigSEP2NotificationAllowLoopbackBadBool(t *testing.T) {
 	}
 }
 
+// TestLoadConfigSEP2EnableCCMDefaultsFalse verifies the switch is off
+// with no env or flag override, so a bare `go run ./cmd/bridge` keeps
+// serving GCM (issue 101 acceptance: default behavior unchanged).
+func TestLoadConfigSEP2EnableCCMDefaultsFalse(t *testing.T) {
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2EnableCCM {
+		t.Errorf("SEP2EnableCCM: got true with no override, want false")
+	}
+}
+
+// TestLoadConfigSEP2EnableCCMEnvOverride verifies the CCM opt-in is
+// honored from the env var, matching AllowPlaintext's precedence shape.
+func TestLoadConfigSEP2EnableCCMEnvOverride(t *testing.T) {
+	t.Setenv("SEP2_ENABLE_CCM", "true")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.SEP2EnableCCM {
+		t.Errorf("SEP2EnableCCM: want true from SEP2_ENABLE_CCM=true")
+	}
+}
+
+// TestLoadConfigSEP2EnableCCMFlagDisablesEnv verifies the fail-open
+// direction of the flag-shadows-env precedence: an explicit
+// -sep2-enable-ccm=false must turn the switch off even when the
+// environment enables it, mirroring
+// TestLoadConfigSEP2NotificationAllowLoopbackFlagDisablesEnv.
+func TestLoadConfigSEP2EnableCCMFlagDisablesEnv(t *testing.T) {
+	t.Setenv("SEP2_ENABLE_CCM", "true")
+
+	cfg, err := loadConfig([]string{"-sep2-enable-ccm=false"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2EnableCCM {
+		t.Errorf("SEP2EnableCCM: want false, an explicit -sep2-enable-ccm=false must disable it even with the env set true")
+	}
+}
+
+// TestLoadConfigSEP2EnableCCMBadBool verifies a malformed env value is a
+// loadConfig error naming the field, matching
+// SEP2_STOMP_ALLOW_PLAINTEXT's existing behavior.
+func TestLoadConfigSEP2EnableCCMBadBool(t *testing.T) {
+	t.Setenv("SEP2_ENABLE_CCM", "notabool")
+
+	_, err := loadConfig(nil)
+	if err == nil {
+		t.Fatal("expected error for invalid bool, got nil")
+	}
+	if !strings.Contains(err.Error(), "SEP2_ENABLE_CCM") {
+		t.Errorf("error should name the env var: %v", err)
+	}
+}
+
 // TestLoadConfigSEP2AdminUIAllowedHostsParsesCommaSeparatedList verifies
 // getenvList's comma-splitting, whitespace-trimming, and empty-entry
 // dropping behavior end to end through loadConfig, including a trailing

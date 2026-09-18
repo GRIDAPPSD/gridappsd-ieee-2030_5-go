@@ -96,6 +96,21 @@ type config struct {
 	// shape for the "this is production" signal.
 	SEP2DeviceCertMode string
 
+	// SEP2EnableCCM selects the TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8
+	// (0xC0AE) cipher suite IEEE 2030.5-2018 section 6.7 makes mandatory,
+	// via sep2embed.Config.EnableCCM. Defaults false (the stdlib GCM
+	// fallback), mirroring AllowPlaintext's explicit-opt-in shape.
+	//
+	// Setting this disables the connection observer (see run's
+	// observerForEmbed): sep2embed.New refuses Config.Observer and
+	// Config.EnableCCM together (the CCM-8 listener has no
+	// handshake-observation seam yet), and this bridge chooses to serve
+	// the mandatory suite over that observation rather than refuse to
+	// start. The admin UI's connected-clients panel shows no live
+	// connections while this is set, until
+	// GRIDAPPSD/ieee-2030_5-server-go#583 adds a CCM-capable seam.
+	SEP2EnableCCM bool
+
 	// SEP2NotificationAllowLoopback lets subscription notificationURIs
 	// target loopback addresses; refused by default. See
 	// sep2embed.Config.NotifyAllowLoopback for why: the permission admits
@@ -371,6 +386,16 @@ func loadConfig(args []string) (config, error) {
 	}
 	cfg.SEP2AdminUIAllowNonLoopback = adminUINonLoopbackFromEnv
 
+	// SEP2EnableCCM mirrors AllowPlaintext's explicit opt-in shape:
+	// defaults false, and only an explicit env or flag override flips it
+	// on. See the field's doc comment for the observer trade-off this
+	// makes.
+	enableCCMFromEnv, err := getenvBool("SEP2_ENABLE_CCM", false)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.SEP2EnableCCM = enableCCMFromEnv
+
 	// SEP2NotificationAllowLoopback mirrors AllowPlaintext's explicit
 	// opt-in shape: defaults false, and only an explicit env or flag
 	// override flips it on.
@@ -404,6 +429,8 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.SEP2ServerAddr, "sep2-server-addr", cfg.SEP2ServerAddr, "embedded IEEE 2030.5 mTLS listener host:port (defaults to loopback only)")
 	fs.StringVar(&cfg.SEP2ServerCertDir, "sep2-server-cert-dir", cfg.SEP2ServerCertDir, "directory holding (or receiving dev-mint) the embedded server's CA/leaf cert material")
 	fs.StringVar(&cfg.SEP2DeviceCertMode, "sep2-device-cert-mode", cfg.SEP2DeviceCertMode, `device identity certificate source: "dev-mint" (default) or "preprovisioned"`)
+	fs.BoolVar(&cfg.SEP2EnableCCM, "sep2-enable-ccm", cfg.SEP2EnableCCM,
+		"serve the mandatory TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 suite instead of GCM; disables the connection observer (default false)")
 	fs.StringVar(&cfg.SEP2AdminUIAddr, "admin-ui-addr", cfg.SEP2AdminUIAddr, "admin UI read only HTTP listener host:port (defaults to loopback only)")
 	fs.BoolVar(&cfg.SEP2AdminUIAllowNonLoopback, "admin-ui-allow-non-loopback", cfg.SEP2AdminUIAllowNonLoopback, "bind the admin UI listener to a non-loopback host (dev-only; default false)")
 	// admin-ui-key registers with an empty default so flag.PrintDefaults

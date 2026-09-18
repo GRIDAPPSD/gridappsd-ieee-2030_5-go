@@ -233,9 +233,16 @@ func run(ctx context.Context, cfg config) error {
 	// VerifyPeerCertificate wrapper), is recorded here. Must be
 	// constructed before newSEP2Embed below, since sep2EmbedConfig
 	// threads its address into sep2embed.Config.Observer for New to wire
-	// into the listener it builds. The admin UI /api/clients endpoint is
-	// its only reader.
+	// into the listener it builds, UNLESS cfg.SEP2EnableCCM is set (see
+	// sep2EmbedConfig's doc comment): connHook is still passed to
+	// adminui.New below either way, so its /api/clients endpoint stays a
+	// valid, merely empty, reader rather than a nil one. The admin UI
+	// /api/clients endpoint is its only reader.
 	var connHook connobs.Hook
+
+	if cfg.SEP2EnableCCM {
+		log.Printf("bridge: SEP2_ENABLE_CCM is set: serving TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 instead of GCM, and disabling the connection observer (the admin UI connected-clients panel will show no live connections until GRIDAPPSD/ieee-2030_5-server-go#583 adds handshake observation for the CCM-8 listener)")
+	}
 
 	// The embed seeds its EndDevice/DER stores from reg, so it must be
 	// built after bootstrapRegistry above, not before.
@@ -622,11 +629,22 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 // connHook is threaded through as sep2embed.Config.Observer:
 // a non-nil connHook opts this bridge into the
 // additive request- and handshake-observation path sep2embed.New
-// builds when Config.Observer is set. cmd/bridge always passes a
-// non-nil *connobs.Hook (its own connHook), so observation is always
-// on for this bridge; a nil value here is only ever exercised by
-// sep2embed's own tests that leave Config.Observer unset.
+// builds when Config.Observer is set. cmd/bridge passes its own
+// non-nil *connobs.Hook (connHook) UNLESS cfg.SEP2EnableCCM is set: New
+// refuses Config.Observer and Config.EnableCCM together (the CCM-8
+// listener has no handshake-observation seam yet;
+// GRIDAPPSD/ieee-2030_5-server-go#583 adds one), and this bridge chooses
+// to serve the mandatory suite over that observation rather than fail
+// to start, so the flag this projects (see the SEP2EnableCCM field's
+// doc comment) is not merely wired but actually usable. run logs a
+// warning naming the trade-off whenever it takes this branch. A nil
+// connHook is also exercised directly by sep2embed's own tests that
+// leave Config.Observer unset.
 func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs.Hook, mode sep2embed.DeviceCertMode) sep2embed.Config {
+	observer := connHook
+	if cfg.SEP2EnableCCM {
+		observer = nil
+	}
 	return sep2embed.Config{
 		Addr:    cfg.SEP2ServerAddr,
 		CertDir: cfg.SEP2ServerCertDir,
@@ -662,7 +680,8 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 		// later changes nothing here or downstream of here.
 		ResolveRegistrationPollRate: policy.ResolvePollRate,
 		ResolvePostRate:             policy.ResolvePostRate,
-		Observer:                    connHook,
+		Observer:                    observer,
+		EnableCCM:                   cfg.SEP2EnableCCM,
 		NotifyAllowLoopback:         cfg.SEP2NotificationAllowLoopback,
 	}
 }

@@ -177,6 +177,43 @@ func TestSEP2EmbedConfigMapsNotificationAllowLoopback(t *testing.T) {
 	}
 }
 
+// TestSEP2EmbedConfigMapsEnableCCM verifies SEP2EnableCCM passes through
+// to sep2embed.Config.EnableCCM, and verifies the observer trade-off
+// sep2EmbedConfig's doc comment describes: with the switch off, the
+// passed-in connHook reaches Config.Observer unmodified (cmd/bridge's
+// long-standing default); with it on, Config.Observer is nil, which is
+// what keeps New from hitting its errObserverRequiresGCM refusal, since
+// cmd/bridge always passes a non-nil connHook to sep2EmbedConfig itself.
+func TestSEP2EmbedConfigMapsEnableCCM(t *testing.T) {
+	t.Parallel()
+
+	policy := sep2config.DefaultPolicy()
+	var connHook connobs.Hook
+
+	cases := []struct {
+		name         string
+		enableCCM    bool
+		wantObserver *connobs.Hook
+	}{
+		{"left at the GCM default", false, &connHook},
+		{"CCM explicitly opted in", true, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := config{SEP2EnableCCM: tc.enableCCM}
+			got := sep2EmbedConfig(cfg, policy, &connHook, sep2embed.DeviceCertModeDevMint)
+			if got.EnableCCM != tc.enableCCM {
+				t.Errorf("EnableCCM: got %v, want %v", got.EnableCCM, tc.enableCCM)
+			}
+			if got.Observer != tc.wantObserver {
+				t.Errorf("Observer: got %p, want %p", got.Observer, tc.wantObserver)
+			}
+		})
+	}
+}
+
 // TestAdminUIConfigMapsFields verifies adminUIConfig's field-by-field
 // mapping from the bridge's own config onto adminui.Config, mirroring
 // TestSEP2EmbedConfigMapsFields for the embedded IEEE 2030.5 side. This
