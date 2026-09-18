@@ -15,6 +15,7 @@ import (
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 )
 
 // DOWN path: GridAPPS-D control deltas -> DERControl.
@@ -79,6 +80,19 @@ var ErrUnsupportedControlAttribute = errors.New("sep2embed: unsupported control 
 // look exactly like success from every vantage point except the device that
 // never moved. Refusing puts the error where an operator can see it.
 var ErrDERControlDurationUnset = errors.New("sep2embed: DERControl interval duration is not configured")
+
+// ErrDERControlRandomizeDurationOutOfRange is returned by ApplyControlDelta
+// when the supplied ControlPolicy carries a RandomizeDuration outside the
+// sep.xsd OneHourRangeType bound.
+//
+// This is a refusal, not a fallback, for the same data-invariants reason
+// ErrDERControlDurationUnset is: the OneHourRange conversion below silently
+// narrows an out-of-range int32 to a legal-looking wrong value, so a caller
+// that reaches this function directly (bypassing both
+// sep2config.SEP2Policy.ValidateDERControl at boot and sep2embed.New at
+// construction) would otherwise store a control that fails to marshal on
+// the next fetch.
+var ErrDERControlRandomizeDurationOutOfRange = errors.New("sep2embed: RandomizeDuration is outside the sep.xsd OneHourRangeType range")
 
 // ErrControlDeltaRateUnrepresentable is returned by ApplyControlDelta when
 // stamping a creationTime strictly newer than every overlapping same-mode
@@ -334,6 +348,10 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	if policy.Control.Duration == 0 {
 		return fmt.Errorf("%w: set -sep2-control-duration to at least 1 second", ErrDERControlDurationUnset)
 	}
+	if !sep2config.RandomizeDurationInRange(policy.Control.RandomizeDuration) {
+		return fmt.Errorf("%w: policy.Control.RandomizeDuration %d is outside the sep.xsd OneHourRangeType range of -%d to %d seconds",
+			ErrDERControlRandomizeDurationOutOfRange, policy.Control.RandomizeDuration, sep2config.MaxRandomizeSeconds, sep2config.MaxRandomizeSeconds)
+	}
 
 	field, ok := strings.CutPrefix(delta.Attribute, derControlAttributePrefix)
 	if !ok || field == "" {
@@ -459,9 +477,10 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// absent"; a pointer to 0 still reaches the wire as
 	// <randomizeDuration>0</randomizeDuration>, which states the policy
 	// instead of relying on the client to apply the schema's own default.
-	// New refuses a Config.DERControl.RandomizeDuration outside the
-	// OneHourRangeType bound (sep2config.RandomizeDurationInRange), so
-	// this narrowing never wraps.
+	// ApplyControlDelta refuses a policy.Control.RandomizeDuration outside
+	// the OneHourRangeType bound at the top of this function, so this
+	// narrowing never wraps, regardless of which entry point the caller
+	// came through.
 	randomizeDuration := sep2.OneHourRange(policy.Control.RandomizeDuration)
 	control.RandomizeDuration = &randomizeDuration
 	control.DERControlBase = &base
