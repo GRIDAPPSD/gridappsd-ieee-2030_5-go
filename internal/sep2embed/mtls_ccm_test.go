@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,13 +87,11 @@ func ccmTestServer(t *testing.T, enableCCM bool) (addr string, caPool *x509.Cert
 // TestCCMFlagNegotiatesCCM8Suite proves Config.EnableCCM actually produces
 // a listener that negotiates TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 (0xC0AE):
 // a client offering both CCM_8 and the GCM fallback, in that preference
-// order, comes away with CCM_8, not GCM. This is the assertion server-go
-// issue #603 finds missing on the shared library's own layer; this is the
-// bridge's half, proving the flag reaches a running listener through
-// sep2embed.New and gridappsd-ieee-2030_5-go's actual production
-// construction (New -> the pinned sep2srv.New -> wrapMTLS -> gotls, with
-// no handshake-observation wrapper in the way: Observer is nil here,
-// mirroring cmd/bridge's own choice when EnableCCM is set).
+// order, comes away with CCM_8, not GCM. Proves the flag reaches a running
+// listener through sep2embed.New's CCM-only construction
+// (newCCMOnlyListener, mtls.go), with no handshake-observation wrapper in
+// the way: Observer is nil here, mirroring cmd/bridge's own choice when
+// EnableCCM is set.
 func TestCCMFlagNegotiatesCCM8Suite(t *testing.T) {
 	t.Parallel()
 
@@ -129,6 +128,44 @@ func TestCCMFlagNegotiatesCCM8Suite(t *testing.T) {
 	}
 }
 
+// TestCCMListenerRefusesGCMOnlyClient is the operator's revised
+// requirement for issue 82: with the flag on, the listener must serve
+// TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 and nothing else, so a client unable
+// to offer it fails the handshake rather than being served over GCM.
+// This is the negative case TestCCMFlagNegotiatesCCM8Suite cannot cover
+// (that test's client offers CCM_8 first, so it would pass even if GCM
+// were still available as a fallback): here the client offers ONLY GCM,
+// which the un-fixed listener (core's
+// NewCCMServerConfigWithExtraCAs, CipherSuites unmodified) would still
+// accept.
+func TestCCMListenerRefusesGCMOnlyClient(t *testing.T) {
+	t.Parallel()
+
+	addr, caPool, deviceCert := ccmTestServer(t, true)
+
+	raw, err := (&net.Dialer{Timeout: 3 * time.Second}).Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial tcp: %v", err)
+	}
+	defer func() { _ = raw.Close() }()
+
+	cfg := &gotls.Config{
+		RootCAs:            caPool,
+		Certificates:       []gotls.Certificate{deviceCert},
+		MinVersion:         gotls.VersionTLS12,
+		MaxVersion:         gotls.VersionTLS12,
+		CipherSuites:       []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+		CurvePreferences:   []gotls.CurveID{gotls.CurveP256},
+		InsecureSkipVerify: true, //nolint:gosec // test dials by IP; the point under test is the server's refusal of a GCM-only client offer
+	}
+	conn := gotls.Client(raw, cfg)
+	hsCtx, hsCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer hsCancel()
+	if err := conn.HandshakeContext(hsCtx); err == nil {
+		t.Fatal("handshake from a GCM-only client against the CCM listener: want an error, got nil (the listener must not fall back to GCM)")
+	}
+}
+
 // TestDefaultListenerNegotiatesGCM is TestCCMFlagNegotiatesCCM8Suite's
 // sibling: with Config.EnableCCM left at its zero value (false), the
 // listener is the plain stdlib crypto/tls GCM path, which has no CCM_8
@@ -157,5 +194,114 @@ func TestDefaultListenerNegotiatesGCM(t *testing.T) {
 	state := conn.ConnectionState()
 	if state.CipherSuite != tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 {
 		t.Errorf("negotiated cipher = %#04x, want %#04x (TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, the default fallback)", state.CipherSuite, tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256)
+	}
+}
+
+// TestCCMListenerRejectsForeignCertificate is TestCCMFlagNegotiatesCCM8Suite's
+// negative sibling (PR 108 review MEDIUM 3): both existing CCM tests dial
+// with a certificate the listener's own CA signed, so neither would catch
+// RequireAnyClientCert or VerifyPeerCertificate being weakened on the CCM
+// path specifically. This mints a device certificate from a SEPARATE,
+// untrusted CA (genTestCA, mirroring
+// TestNewObservedMTLSListenerRecordsRejectedHandshakeWithRealReason's GCM
+// equivalent) and asserts the CCM listener still refuses it at the
+// network level.
+func TestCCMListenerRejectsForeignCertificate(t *testing.T) {
+	t.Parallel()
+
+	addr, caPool, _ := ccmTestServer(t, true)
+
+	rogueCACert, rogueCAKey, _ := genTestCA(t, "rogue-ca-ccm")
+	devCertPEM, devKeyPEM, err := sep2cert.GenerateDeviceCert(rogueCACert, rogueCAKey, sep2cert.DeviceCertOptions{
+		DeviceType:  sep2cert.DeviceTypeGeneric,
+		HWSerialNum: "test-serial-ccm-rogue",
+		IsTestCert:  true,
+	})
+	if err != nil {
+		t.Fatalf("GenerateDeviceCert (rogue CA): %v", err)
+	}
+	rogueCert, err := gotls.X509KeyPair(devCertPEM, devKeyPEM)
+	if err != nil {
+		t.Fatalf("gotls.X509KeyPair: %v", err)
+	}
+
+	raw, err := (&net.Dialer{Timeout: 3 * time.Second}).Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial tcp: %v", err)
+	}
+	defer func() { _ = raw.Close() }()
+
+	cfg := &gotls.Config{
+		RootCAs:            caPool,
+		Certificates:       []gotls.Certificate{rogueCert},
+		MinVersion:         gotls.VersionTLS12,
+		MaxVersion:         gotls.VersionTLS12,
+		CipherSuites:       []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8},
+		CurvePreferences:   []gotls.CurveID{gotls.CurveP256},
+		InsecureSkipVerify: true, //nolint:gosec // test dials by IP; the point under test is the server's rejection of the client cert, not the client's trust of the server
+	}
+	conn := gotls.Client(raw, cfg)
+	hsCtx, hsCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer hsCancel()
+	if err := conn.HandshakeContext(hsCtx); err == nil {
+		t.Fatal("handshake with a rogue-CA-signed client cert over CCM: want an error, got nil")
+	}
+}
+
+// gotlsHTTPClient returns an *http.Client that dials over the gotls fork
+// (the CCM-8 listener's stack: plain crypto/tls has no CCM cipher suite
+// to offer) via DialTLSContext, so http.Client's own request/response
+// machinery drives the actual protocol traffic under test rather than a
+// hand-rolled read of the raw connection.
+func gotlsHTTPClient(cfg *gotls.Config) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				raw, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				conn := gotls.Client(raw, cfg)
+				if err := conn.HandshakeContext(ctx); err != nil {
+					_ = raw.Close()
+					return nil, err
+				}
+				return conn, nil
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+}
+
+// TestCCMListenerServesAuthenticatedRequest is the coverage gap the
+// security lane's LOW named: the two suite-negotiation tests above
+// handshake, assert, and close, so a regression in identity extraction
+// on the forked CCM connection type would pass both today. This drives
+// one real GET /dcap over a genuinely CCM-8-negotiated connection and
+// asserts the response, mirroring embed_test.go's plain-GCM
+// TestEmbedServesSeededDevicesOverMTLS shape for the CCM path.
+func TestCCMListenerServesAuthenticatedRequest(t *testing.T) {
+	t.Parallel()
+
+	addr, caPool, deviceCert := ccmTestServer(t, true)
+
+	client := gotlsHTTPClient(&gotls.Config{
+		RootCAs:            caPool,
+		Certificates:       []gotls.Certificate{deviceCert},
+		MinVersion:         gotls.VersionTLS12,
+		MaxVersion:         gotls.VersionTLS12,
+		CipherSuites:       []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8},
+		CurvePreferences:   []gotls.CurveID{gotls.CurveP256},
+		InsecureSkipVerify: true, //nolint:gosec // test dials by IP; only the request/response over the CCM connection is under test
+	})
+
+	resp, err := client.Get("https://" + addr + "/dcap")
+	if err != nil {
+		t.Fatalf("GET /dcap over CCM: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /dcap over CCM: status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }

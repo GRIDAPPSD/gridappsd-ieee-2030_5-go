@@ -690,8 +690,12 @@ func TestLoadConfigSEP2EnableCCMDefaultsFalse(t *testing.T) {
 
 // TestLoadConfigSEP2EnableCCMEnvOverride verifies the CCM opt-in is
 // honored from the env var, matching AllowPlaintext's precedence shape.
+// SEP2_CCM_ALLOW_NO_OBSERVER must also be set here: validate refuses
+// SEP2EnableCCM alone (TestLoadConfigSEP2EnableCCMRequiresObserverAck
+// below covers that refusal directly).
 func TestLoadConfigSEP2EnableCCMEnvOverride(t *testing.T) {
 	t.Setenv("SEP2_ENABLE_CCM", "true")
+	t.Setenv("SEP2_CCM_ALLOW_NO_OBSERVER", "true")
 
 	cfg, err := loadConfig(nil)
 	if err != nil {
@@ -731,6 +735,74 @@ func TestLoadConfigSEP2EnableCCMBadBool(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SEP2_ENABLE_CCM") {
 		t.Errorf("error should name the env var: %v", err)
+	}
+}
+
+// TestLoadConfigSEP2EnableCCMRequiresObserverAck is the refusal PR 108's
+// fix round adds: SEP2EnableCCM set alone must refuse to start (issue 82,
+// "Dropping the observer to obtain it is not acceptable: it silently
+// deletes the rejected-device record"), and the error must name both
+// settings so an operator reading it knows exactly what to set.
+func TestLoadConfigSEP2EnableCCMRequiresObserverAck(t *testing.T) {
+	t.Setenv("SEP2_ENABLE_CCM", "true")
+	t.Setenv("SEP2_CCM_ALLOW_NO_OBSERVER", "")
+
+	_, err := loadConfig(nil)
+	if err == nil {
+		t.Fatal("expected a refusal with SEP2_ENABLE_CCM set and no observer ack, got nil")
+	}
+	if !strings.Contains(err.Error(), "SEP2_ENABLE_CCM") {
+		t.Errorf("error should name SEP2_ENABLE_CCM: %v", err)
+	}
+	if !strings.Contains(err.Error(), "SEP2_CCM_ALLOW_NO_OBSERVER") {
+		t.Errorf("error should name SEP2_CCM_ALLOW_NO_OBSERVER: %v", err)
+	}
+}
+
+// TestLoadConfigSEP2EnableCCMWithAckStarts is
+// TestLoadConfigSEP2EnableCCMRequiresObserverAck's positive sibling: the
+// two-flag combination is exactly what the refusal exists to require, and
+// it must be a legal, error-free starting configuration.
+func TestLoadConfigSEP2EnableCCMWithAckStarts(t *testing.T) {
+	t.Setenv("SEP2_ENABLE_CCM", "true")
+	t.Setenv("SEP2_CCM_ALLOW_NO_OBSERVER", "true")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig with both settings acknowledged: %v", err)
+	}
+	if !cfg.SEP2EnableCCM || !cfg.SEP2CCMAllowNoObserver {
+		t.Errorf("SEP2EnableCCM=%v SEP2CCMAllowNoObserver=%v, want both true", cfg.SEP2EnableCCM, cfg.SEP2CCMAllowNoObserver)
+	}
+}
+
+// TestLoadConfigSEP2EnableCCMDefaultPathStillStarts is the default-path
+// half of the same acceptance criterion: with neither switch touched, the
+// refusal above must never fire, matching
+// TestLoadConfigSEP2EnableCCMDefaultsFalse but asserting the absence of
+// an error explicitly rather than only the field value.
+func TestLoadConfigSEP2EnableCCMDefaultPathStillStarts(t *testing.T) {
+	t.Setenv("SEP2_ENABLE_CCM", "")
+	t.Setenv("SEP2_CCM_ALLOW_NO_OBSERVER", "")
+
+	if _, err := loadConfig(nil); err != nil {
+		t.Fatalf("default path (neither switch set) must start clean: %v", err)
+	}
+}
+
+// TestLoadConfigSEP2CCMAllowNoObserverAloneIsNotEnough verifies the ack
+// flag alone, with SEP2EnableCCM unset, changes nothing: it is not an
+// independent opt-in, only a co-requirement of SEP2EnableCCM.
+func TestLoadConfigSEP2CCMAllowNoObserverAloneIsNotEnough(t *testing.T) {
+	t.Setenv("SEP2_ENABLE_CCM", "")
+	t.Setenv("SEP2_CCM_ALLOW_NO_OBSERVER", "true")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2EnableCCM {
+		t.Errorf("SEP2EnableCCM: got true, want false: the ack flag alone must not enable CCM")
 	}
 }
 
