@@ -12,6 +12,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
 // fakeRegistry is a minimal RegistrySource test double: Snapshot
@@ -77,6 +78,13 @@ type fakeClientObserver struct {
 
 func (f *fakeClientObserver) Snapshot() connobs.Snapshot { return f.snap }
 
+// fakeHistory is a minimal HistorySource test double.
+type fakeHistory struct {
+	snap []telemetryhistory.SeriesSnapshot
+}
+
+func (f *fakeHistory) Snapshot() []telemetryhistory.SeriesSnapshot { return f.snap }
+
 // newTestServer builds a Server wired to the pre-existing fakes, plus a
 // zero-value fakeIdentity/fakeStomp/fakeClientObserver set, bound to an
 // ephemeral loopback port, for tests that only need s.Handler() via
@@ -93,9 +101,24 @@ func newTestServer(t *testing.T, key string, reg RegistrySource, devices EndDevi
 // newTestServerWithSources is newTestServer plus explicit control over
 // the IdentitySource, StompSource, and ClientObserverSource fakes, for
 // tests that assert on /api/health's or /api/clients' extended fields.
+// The HistorySource defaults to an empty fakeHistory{}; tests that need
+// to control retained history series use newTestServerWithHistory
+// instead.
 func newTestServerWithSources(t *testing.T, key string, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource, clients ClientObserverSource) *Server {
 	t.Helper()
-	s, err := New(Config{Addr: "127.0.0.1:0", Key: key}, reg, devices, programs, flow, identity, stomp, clients)
+	return newTestServerWithHistory(t, Config{Addr: "127.0.0.1:0", Key: key}, reg, devices, programs, flow, identity, stomp, clients, &fakeHistory{})
+}
+
+// newTestServerWithHistory is the fullest constructor helper: every
+// source is caller-controlled, and cfg is taken whole (rather than just
+// a key) so a test can also set HistoryTopics, FeederMRID, and friends.
+// Addr defaults to an ephemeral loopback port when cfg.Addr is empty.
+func newTestServerWithHistory(t *testing.T, cfg Config, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource, clients ClientObserverSource, history HistorySource) *Server {
+	t.Helper()
+	if cfg.Addr == "" {
+		cfg.Addr = "127.0.0.1:0"
+	}
+	s, err := New(cfg, reg, devices, programs, flow, identity, stomp, clients, history)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

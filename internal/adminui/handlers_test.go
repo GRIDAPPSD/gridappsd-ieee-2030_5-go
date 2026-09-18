@@ -41,7 +41,7 @@ func TestHandleHealthReturnsAllEnrichedFieldValues(t *testing.T) {
 		FeederMRID:   "feeder-mrid-1",
 		SimulationID: "sim-1",
 		SORLink:      "https://sor.example/dashboard",
-	}, reg, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, identity, stomp, &fakeClientObserver{})
+	}, reg, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, identity, stomp, &fakeClientObserver{}, &fakeHistory{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestHandleDERsFlattensDERsWithOwningEndDeviceID(t *testing.T) {
 		{ID: "edev-2", DERs: []sep2embed.DERSnapshot{{ID: "der-3", Href: "/h3"}}},
 	}}
 	s, err := New(Config{Addr: "127.0.0.1:0", Key: testKey, FeederMRID: "feeder-mrid-1"},
-		&fakeRegistry{}, devices, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
+		&fakeRegistry{}, devices, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{}, &fakeHistory{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
