@@ -99,17 +99,32 @@ type config struct {
 	// SEP2EnableCCM selects the TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8
 	// (0xC0AE) cipher suite IEEE 2030.5-2018 section 6.7 makes mandatory,
 	// via sep2embed.Config.EnableCCM. Defaults false (the stdlib GCM
-	// fallback), mirroring AllowPlaintext's explicit-opt-in shape.
+	// fallback), mirroring AllowPlaintext's explicit-opt-in shape. CCM is
+	// EXCLUSIVE when set, not merely preferred: the listener offers
+	// TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 and nothing else
+	// (sep2embed.newCCMOnlyListener strips the GCM fallback core's own
+	// CCM config carries by default), so a client unable to offer it
+	// fails the handshake rather than being served over GCM.
 	//
-	// Setting this disables the connection observer (see run's
-	// observerForEmbed): sep2embed.New refuses Config.Observer and
-	// Config.EnableCCM together (the CCM-8 listener has no
-	// handshake-observation seam yet), and this bridge chooses to serve
-	// the mandatory suite over that observation rather than refuse to
-	// start. The admin UI's connected-clients panel shows no live
-	// connections while this is set, until
-	// GRIDAPPSD/ieee-2030_5-server-go#583 adds a CCM-capable seam.
+	// sep2embed.New refuses Config.Observer and Config.EnableCCM together
+	// (the CCM-8 listener has no handshake-observation seam yet; see
+	// sep2EmbedConfig's doc comment for the wiring), so validate below
+	// refuses to start with this set unless SEP2CCMAllowNoObserver is
+	// also set: the operator must choose to lose the rejected-device
+	// record explicitly, not have it implied by this flag alone. See
+	// GRIDAPPSD/ieee-2030_5-server-go#583 for the seam that removes the
+	// conflict.
 	SEP2EnableCCM bool
+
+	// SEP2CCMAllowNoObserver is the explicit second setting SEP2EnableCCM
+	// requires: without it, validate refuses to start rather than
+	// silently dropping the connection observer under CCM. Defaults
+	// false, mirroring AllowPlaintext's explicit-opt-in shape. Setting it
+	// accepts, until GRIDAPPSD/ieee-2030_5-server-go#583 ships, the loss
+	// of the rejected-device record, per-LFDI last-seen, and request
+	// counts and paths the observer would otherwise carry; the admin
+	// UI's connected-clients panel shows no live connections either way.
+	SEP2CCMAllowNoObserver bool
 
 	// SEP2NotificationAllowLoopback lets subscription notificationURIs
 	// target loopback addresses; refused by default. See
@@ -396,6 +411,16 @@ func loadConfig(args []string) (config, error) {
 	}
 	cfg.SEP2EnableCCM = enableCCMFromEnv
 
+	// SEP2CCMAllowNoObserver mirrors AllowPlaintext's explicit opt-in
+	// shape: defaults false, and only an explicit env or flag override
+	// flips it on. See the field's doc comment for what setting it
+	// accepts.
+	ccmAllowNoObserverFromEnv, err := getenvBool("SEP2_CCM_ALLOW_NO_OBSERVER", false)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.SEP2CCMAllowNoObserver = ccmAllowNoObserverFromEnv
+
 	// SEP2NotificationAllowLoopback mirrors AllowPlaintext's explicit
 	// opt-in shape: defaults false, and only an explicit env or flag
 	// override flips it on.
@@ -430,7 +455,9 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.SEP2ServerCertDir, "sep2-server-cert-dir", cfg.SEP2ServerCertDir, "directory holding (or receiving dev-mint) the embedded server's CA/leaf cert material")
 	fs.StringVar(&cfg.SEP2DeviceCertMode, "sep2-device-cert-mode", cfg.SEP2DeviceCertMode, `device identity certificate source: "dev-mint" (default) or "preprovisioned"`)
 	fs.BoolVar(&cfg.SEP2EnableCCM, "sep2-enable-ccm", cfg.SEP2EnableCCM,
-		"serve the mandatory TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 suite instead of GCM; disables the connection observer (default false)")
+		"serve ONLY the mandatory TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 suite (a client unable to offer it is refused, not served over GCM); requires -sep2-ccm-allow-no-observer (default false)")
+	fs.BoolVar(&cfg.SEP2CCMAllowNoObserver, "sep2-ccm-allow-no-observer", cfg.SEP2CCMAllowNoObserver,
+		"accept running -sep2-enable-ccm with the connection observer disabled, losing the rejected-device record until GRIDAPPSD/ieee-2030_5-server-go#583 ships (default false)")
 	fs.StringVar(&cfg.SEP2AdminUIAddr, "admin-ui-addr", cfg.SEP2AdminUIAddr, "admin UI read only HTTP listener host:port (defaults to loopback only)")
 	fs.BoolVar(&cfg.SEP2AdminUIAllowNonLoopback, "admin-ui-allow-non-loopback", cfg.SEP2AdminUIAllowNonLoopback, "bind the admin UI listener to a non-loopback host (dev-only; default false)")
 	// admin-ui-key registers with an empty default so flag.PrintDefaults
@@ -1040,6 +1067,23 @@ func (c config) validate() error {
 	if c.SEP2DeviceCertMode != deviceCertModeDevMintFlag && c.SEP2DeviceCertMode != deviceCertModePreprovisionedFlag {
 		return fmt.Errorf("config: SEP2_DEVICE_CERT_MODE / -sep2-device-cert-mode must be %q or %q, got %q",
 			deviceCertModeDevMintFlag, deviceCertModePreprovisionedFlag, c.SEP2DeviceCertMode)
+	}
+	// The CCM-8 listener has no handshake-observation seam yet
+	// (sep2embed.New's errObserverRequiresGCM), so SEP2EnableCCM alone
+	// would silently drop the connection observer: no rejected-device
+	// record, no per-LFDI last-seen, no request counts or paths, and
+	// nothing in the admin UI or the logs to show it happened. Refuse to
+	// start rather than let that loss be implied; the operator must
+	// choose it explicitly via SEP2CCMAllowNoObserver, or it is not
+	// chosen at all. See GRIDAPPSD/ieee-2030_5-server-go#583 for the seam
+	// that will let both be set together without a loss.
+	if c.SEP2EnableCCM && !c.SEP2CCMAllowNoObserver {
+		return fmt.Errorf(
+			"config: SEP2_ENABLE_CCM / -sep2-enable-ccm is set without SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer: " +
+				"the CCM-8 listener has no handshake-observation seam yet, so serving it would silently drop the connection observer, " +
+				"losing the rejected-device record, per-LFDI last-seen, and request counts and paths; " +
+				"set SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer=true to accept that loss until " +
+				"GRIDAPPSD/ieee-2030_5-server-go#583 adds the seam, or leave SEP2_ENABLE_CCM unset")
 	}
 	return nil
 }
