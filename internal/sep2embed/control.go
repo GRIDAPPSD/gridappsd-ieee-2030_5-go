@@ -349,7 +349,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 		return fmt.Errorf("%w: set -sep2-control-duration to at least 1 second", ErrDERControlDurationUnset)
 	}
 	if !sep2config.RandomizeDurationInRange(policy.Control.RandomizeDuration) {
-		return fmt.Errorf("%w: policy.Control.RandomizeDuration %d is outside the sep.xsd OneHourRangeType range of -%d to %d seconds",
+		return fmt.Errorf("%w: policy.Control.RandomizeDuration %d, bound is -%d to %d seconds",
 			ErrDERControlRandomizeDurationOutOfRange, policy.Control.RandomizeDuration, sep2config.MaxRandomizeSeconds, sep2config.MaxRandomizeSeconds)
 	}
 
