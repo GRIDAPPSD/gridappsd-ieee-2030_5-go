@@ -11,6 +11,7 @@ import (
 	"time"
 
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
+	gotls "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls/gotls"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
@@ -118,6 +119,52 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 	}
 
 	return tls.NewListener(listener, tlsCfg), identity, nil
+}
+
+// newCCMOnlyListener builds a CCM-8-only mTLS listener: the operator's
+// requirement (issue 82) is that a client unable to offer
+// TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 is refused, not silently served
+// over GCM. server-go's sep2srv.New has no seam for this: its wrapMTLS
+// always calls core's sepTLS.NewCCMServerConfigWithExtraCAs, whose
+// returned *gotls.Config hardcodes CipherSuites as
+// []uint16{CCM_8, 0xC02B (GCM fallback)}, and neither sep2srv.Options nor
+// any other exported core/server-go symbol lets a caller narrow that
+// list. This function calls the SAME exported constructor and then
+// overwrites CipherSuites on the returned config before building the
+// listener, reusing every other part of core's CCM setup (cert loading,
+// ClientAuth, the HardwareModuleName-aware VerifyPeerCertificate, the
+// TLS 1.2 cap) unchanged. It reuses gotls.NewListener directly, matching
+// server-go's own wrapMTLS choice (not sepTLS.WrapCCMListener, whose
+// pre-certificate log line is core issue #170, out of scope here).
+//
+// Identity is derived the same way newObservedMTLSListener's GCM path
+// does (deriveServerIdentity), since sep2srv's own deriveIdentity is
+// unexported. The caller must additionally wire
+// sepTLS.SetupCCMServer(httpSrv) and sepTLS.CCMIdentityMiddleware
+// (outermost), matching sep2srv.New's own CCM wiring in server.go,
+// since the standard identity middleware reads r.TLS, which crypto/tls
+// populates automatically but the gotls fork does not.
+func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs []string) (net.Listener, sep2srv.Identity, error) {
+	cfg, err := sepTLS.NewCCMServerConfigWithExtraCAs(certFile, keyFile, caFile, extraClientCAs)
+	if err != nil {
+		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: CCM TLS config: %w", err)
+	}
+	cfg.CipherSuites = []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8}
+
+	if len(cfg.Certificates) == 0 {
+		return nil, sep2srv.Identity{}, errors.New("sep2embed: CCM TLS config has no server certificate")
+	}
+	identity, err := deriveServerIdentity(cfg.Certificates[0].Certificate)
+	if err != nil {
+		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: derive server identity (CCM): %w", err)
+	}
+
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: listen: %w", err)
+	}
+
+	return gotls.NewListener(listener, cfg), identity, nil
 }
 
 // newRecordingVerifier builds the additive VerifyPeerCertificate closure
