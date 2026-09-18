@@ -315,17 +315,11 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	// not itself validate Duration, and ValidateDERControl never reaches
 	// this comparison for a zero Duration either, since it refuses that
 	// case first.
-	if cfg.DERControl.Duration != 0 {
-		magnitude := int64(cfg.DERControl.RandomizeDuration)
-		if magnitude < 0 {
-			magnitude = -magnitude
-		}
-		if magnitude >= int64(cfg.DERControl.Duration) {
-			return nil, fmt.Errorf(
-				"sep2embed: Config.DERControl.RandomizeDuration %d is not smaller in magnitude than Config.DERControl.Duration %d; "+
-					"a client applying an offset that wide can reduce the interval to zero or less",
-				cfg.DERControl.RandomizeDuration, cfg.DERControl.Duration)
-		}
+	if cfg.DERControl.Duration != 0 && sep2config.RandomizeDurationMagnitudeAtOrAboveDuration(cfg.DERControl.RandomizeDuration, cfg.DERControl.Duration) {
+		return nil, fmt.Errorf(
+			"sep2embed: Config.DERControl.RandomizeDuration %d is not smaller in magnitude than Config.DERControl.Duration %d; "+
+				"a client applying an offset that wide can reduce the interval to zero or less",
+			cfg.DERControl.RandomizeDuration, cfg.DERControl.Duration)
 	}
 
 	// The one and only read of the server's own certificate directory.
