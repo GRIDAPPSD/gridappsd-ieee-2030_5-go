@@ -112,3 +112,49 @@ func TestNewRefusesRandomizeDurationAtOrAboveDurationMagnitude(t *testing.T) {
 		})
 	}
 }
+
+// TestNewDurationZeroCarveOutWidth pins the CURRENT width of the
+// Duration == 0 carve-out on the magnitude check above: New does not
+// itself validate Duration (that is ApplyControlDelta's own
+// ErrDERControlDurationUnset refusal, and neither issue 89 nor issue 90
+// asked New to add it), so the carve-out applies whenever Duration is 0,
+// for every RandomizeDuration the range check above already accepts, not
+// only when RandomizeDuration is also 0.
+//
+// Both cases matter. Narrowing the carve-out to apply only when
+// RandomizeDuration is also 0 would refuse the second case below; widening
+// it to skip the magnitude check unconditionally is already caught
+// elsewhere (every test that builds an Embed through newEmbedTestServer's
+// zero-value DERControlSeed depends on the (0, 0) pair being accepted),
+// but nothing before this test pinned the first case explicitly.
+func TestNewDurationZeroCarveOutWidth(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		randomize int32
+	}{
+		{"zero randomize", 0},
+		{"non-zero randomize at the range bound", 3600},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reg := registry.New()
+			cfg := Config{
+				Addr:                   "127.0.0.1:0",
+				CertDir:                t.TempDir(),
+				ResolveRegistrationPIN: testResolvePIN,
+				DERControl:             DERControlSeed{Duration: 0, RandomizeDuration: tc.randomize},
+			}
+
+			e, err := New(context.Background(), cfg, reg)
+			if err != nil {
+				t.Fatalf("New(Duration=0, RandomizeDuration=%d) = %v, want nil: the magnitude check is carved out for Duration 0", tc.randomize, err)
+			}
+			if e == nil {
+				t.Fatal("New returned a nil *Embed with a nil error")
+			}
+		})
+	}
+}
