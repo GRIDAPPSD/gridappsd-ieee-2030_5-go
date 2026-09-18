@@ -111,7 +111,7 @@ func TestCCMFlagNegotiatesCCM8Suite(t *testing.T) {
 		MaxVersion:         gotls.VersionTLS12,
 		CipherSuites:       []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8, gotls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 		CurvePreferences:   []gotls.CurveID{gotls.CurveP256},
-		InsecureSkipVerify: true, //nolint:gosec // test dials by IP, trust pinned via RootCAs above
+		InsecureSkipVerify: true, //nolint:gosec // test dials by IP; this skips server cert verification entirely (RootCAs above is unused), which is fine here: only the negotiated suite is asserted
 	}
 	conn := gotls.Client(raw, cfg)
 	hsCtx, hsCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -146,7 +146,7 @@ func TestDefaultListenerNegotiatesGCM(t *testing.T) {
 		Certificates:       []tls.Certificate{tlsCert},
 		MinVersion:         tls.VersionTLS12,
 		MaxVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true, //nolint:gosec // test dials by IP, trust pinned via RootCAs above
+		InsecureSkipVerify: true, //nolint:gosec // test dials by IP; this skips server cert verification entirely (RootCAs above is unused), which is fine here: only the negotiated suite is asserted
 	}
 	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", addr, cfg)
 	if err != nil {
