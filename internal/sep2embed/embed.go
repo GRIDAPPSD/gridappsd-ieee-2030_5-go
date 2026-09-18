@@ -305,6 +305,22 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			"sep2embed: Config.DERControl.RandomizeDuration %d is outside the sep.xsd OneHourRangeType range of -%d to %d seconds",
 			cfg.DERControl.RandomizeDuration, sep2config.MaxRandomizeSeconds, sep2config.MaxRandomizeSeconds)
 	}
+	// The boot validator also refuses a RandomizeDuration whose magnitude
+	// is not smaller than Duration (policy.go: "a client applying an
+	// offset that wide can reduce the interval to zero or less"). New
+	// re-checks it here for the same reason it re-checks the range above:
+	// a caller of the exported New that skips cmd/bridge's boot sequence
+	// must fail here rather than serve a control whose effective window a
+	// client can cancel or reverse. Skipped when Duration is 0: New does
+	// not itself validate Duration, and ValidateDERControl never reaches
+	// this comparison for a zero Duration either, since it refuses that
+	// case first.
+	if cfg.DERControl.Duration != 0 && sep2config.RandomizeDurationMagnitudeAtOrAboveDuration(cfg.DERControl.RandomizeDuration, cfg.DERControl.Duration) {
+		return nil, fmt.Errorf(
+			"sep2embed: Config.DERControl.RandomizeDuration %d is not smaller in magnitude than Config.DERControl.Duration %d; "+
+				"a client applying an offset that wide can reduce the interval to zero or less",
+			cfg.DERControl.RandomizeDuration, cfg.DERControl.Duration)
+	}
 
 	// The one and only read of the server's own certificate directory.
 	// Everything downstream (the listener's TLS config, the identity

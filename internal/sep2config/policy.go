@@ -594,6 +594,25 @@ func RandomizeDurationInRange(value int32) bool {
 	return magnitude <= int64(MaxRandomizeSeconds)
 }
 
+// RandomizeDurationMagnitudeAtOrAboveDuration reports whether randomize's
+// magnitude is not smaller than duration: a client applying an offset that
+// wide can cancel or reverse the interval, reducing its effective window to
+// zero or less. ValidateDERControl below calls this at boot;
+// internal/sep2embed.New calls it again at the package boundary boot
+// validation does not reach, so the comparison lives in one place rather
+// than two.
+func RandomizeDurationMagnitudeAtOrAboveDuration(randomize int32, duration uint32) bool {
+	// Widened to int64 before taking the magnitude, for the same reason
+	// RandomizeDurationInRange widens: int32's most negative value has no
+	// positive counterpart, so negating it in int32 would silently yield a
+	// negative number and pass a comparison it should fail.
+	magnitude := int64(randomize)
+	if magnitude < 0 {
+		magnitude = -magnitude
+	}
+	return magnitude >= int64(duration)
+}
+
 // ValidateDERControl reports whether the configured DERControl temporal
 // policy can be served. Called at bridge boot alongside ValidateRates and
 // ValidateDefaultProgram, in the same before-we-dial-anything window, so an
@@ -621,15 +640,8 @@ func (p SEP2Policy) ValidateDERControl() error {
 	// client pick an offset that cancels or reverses the interval, which
 	// lands back on the zero-or-negative effective duration rejected above.
 	// Checked against the configured duration rather than a fixed ceiling,
-	// because the two knobs are only wrong in combination. Recomputed here
-	// (rather than reusing a magnitude RandomizeDurationInRange already
-	// took) because that helper reports in-range/out-of-range only and
-	// does not hand its magnitude back to the caller.
-	magnitude := int64(p.DERControl.RandomizeDuration)
-	if magnitude < 0 {
-		magnitude = -magnitude
-	}
-	if magnitude >= int64(p.DERControl.Duration) {
+	// because the two knobs are only wrong in combination.
+	if RandomizeDurationMagnitudeAtOrAboveDuration(p.DERControl.RandomizeDuration, p.DERControl.Duration) {
 		return fmt.Errorf(
 			"sep2config: -sep2-control-randomize-duration %d is not smaller in magnitude than -sep2-control-duration %d; "+
 				"a client applying an offset that wide can reduce the interval to zero or less",
