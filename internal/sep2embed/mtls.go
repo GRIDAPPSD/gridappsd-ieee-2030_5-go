@@ -154,11 +154,11 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 //
 // errorLog is forwarded to WrapCCMListener unchanged (nil is a valid
 // value there: it logs through the standard logger, as net/http does
-// when its own ErrorLog is nil). PR 108 round 3 review LOW: the caller
-// passes the SAME value it sets on the serving http.Server's own
-// ErrorLog field, from one variable, so the refusal log and the
-// server's other error logging cannot drift apart the day either one is
-// pointed somewhere other than the standard logger.
+// when its own ErrorLog is nil). The caller passes the SAME value it
+// sets on the serving http.Server's own ErrorLog field, from one
+// variable, so the refusal log and the server's other error logging
+// cannot drift apart the day either one is pointed somewhere other than
+// the standard logger.
 func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs []string, errorLog *log.Logger) (net.Listener, sep2srv.Identity, error) {
 	cfg, err := sepTLS.NewCCMServerConfigWithExtraCAs(certFile, keyFile, caFile, extraClientCAs)
 	if err != nil {

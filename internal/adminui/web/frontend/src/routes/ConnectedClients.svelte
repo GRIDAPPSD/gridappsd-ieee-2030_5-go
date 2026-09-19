@@ -80,7 +80,7 @@
   // clientsResult.ok branch below: a response the bridge and frontend
   // ship in the same binary always carries this field, so a payload
   // missing it (an older bridge served against a newer frontend, or
-  // vice versa) is out of scope here, same as PR 108's review named it.
+  // vice versa) is out of scope here: both halves ship in one binary.
   let observationDisabled = $state(false)
 
   // connectionStatusUnknown is true whenever the panel has no reliable

@@ -431,10 +431,9 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		// ccmErrorLog is passed to both the CCM listener's refusal-log
 		// wrapper (newCCMOnlyListener, mtls.go) and the http.Server's
 		// own ErrorLog field below, from this one variable, so the two
-		// can never drift apart: PR 108 round 3 review LOW, a literal
-		// nil passed only to the wrapper stayed wired to the standard
-		// logger even after a future change gave the http.Server its
-		// own ErrorLog.
+		// can never drift apart: a literal nil passed only to the
+		// wrapper would stay wired to the standard logger even after a
+		// future change gave the http.Server its own ErrorLog.
 		var ccmErrorLog *log.Logger
 
 		listener, identity, err := newCCMOnlyListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, ccmErrorLog)

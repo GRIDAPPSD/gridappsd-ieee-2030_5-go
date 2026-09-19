@@ -170,12 +170,9 @@ describe('ConnectedClients', () => {
   })
 
   it('badges served devices "unknown", not "never connected", when the /api/clients fetch fails', async () => {
-    // #101 round 3 review HIGH: the served-status section ignored
-    // clientsError entirely and rendered servedRows regardless, so a
-    // device the panel has no data about was badged "never connected",
-    // the exact false claim this PR exists to remove, just reached by a
-    // fetch failure instead of a config flag. Reproduced first with a
-    // scratch test (removed) before this permanent one was written.
+    // #101: the served-status section must not badge a device "never
+    // connected" when it has no data to base that on. A fetch failure
+    // is one such case, alongside observation being disabled below.
     vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
       if (path === '/api/clients') {
         return { ok: false, error: 'request failed with status 500', status: 500 }
@@ -241,11 +238,10 @@ describe('ConnectedClients', () => {
     expect(badges[0]).toHaveTextContent('unknown')
     expect(badges[0]).not.toHaveTextContent('never connected')
 
-    // Round 3 review MEDIUM: the top "Connected clients" table and the
-    // "Handshake attempts" table both asserted "No clients connected
-    // yet." / "No handshake attempts recorded yet." while observation
-    // was off, the same false-positive claim the served-status badge
-    // above was already fixed for.
+    // #101: the "Connected clients" and "Handshake attempts" tables
+    // must not assert "No clients connected yet." / "No handshake
+    // attempts recorded yet." while observation is off, the same
+    // false-positive claim the served-status badge above avoids.
     expect(screen.queryByTestId('clients-empty')).toBeNull()
     const clientsNote = screen.getByTestId('clients-observation-disabled')
     expect(clientsNote).toHaveTextContent('disabled')
