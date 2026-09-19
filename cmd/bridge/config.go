@@ -123,9 +123,12 @@ type config struct {
 	// accepts, until GRIDAPPSD/ieee-2030_5-server-go#583 ships:
 	//   - the loss of the rejected-device record, per-LFDI last-seen, and
 	//     request counts and paths the observer would otherwise carry;
-	//   - the admin UI's connected-clients panel showing every served
+	//   - the admin UI's served-status table showing every served
 	//     device's status as unknown, not connected or never connected
 	//     (ConnectedClients.svelte's observationDisabled state);
+	//   - the same panel's connected-clients and handshake-attempts
+	//     tables showing no data rather than admitting they cannot tell,
+	//     for the same reason;
 	//   - a refused handshake (a client that cannot offer CCM-8) reaching
 	//     the process log (sepTLS.WrapCCMListener) but never the panel.
 	SEP2CCMAllowNoObserver bool
@@ -1086,7 +1089,9 @@ func (c config) validate() error {
 			"config: SEP2_ENABLE_CCM / -sep2-enable-ccm is set without SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer: " +
 				"the CCM-8 listener has no handshake-observation seam yet, so serving it would silently drop the connection observer, " +
 				"losing the rejected-device record, per-LFDI last-seen, and request counts and paths; " +
-				"the admin UI panel would show every served device's connection status as unknown, not connected or disconnected; " +
+				"the admin UI panel's served-status table would show every served device's connection status as unknown, not connected or disconnected; " +
+				"its connected-clients table would show no clients rather than admitting it cannot tell; " +
+				"its handshake-attempts table would show no handshakes rather than admitting it cannot tell; " +
 				"and a client unable to offer CCM-8 would be refused with the refusal reaching the process log but never the panel; " +
 				"set SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer=true to accept those losses until " +
 				"GRIDAPPSD/ieee-2030_5-server-go#583 adds the seam, or leave SEP2_ENABLE_CCM unset")
