@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"time"
@@ -150,7 +151,15 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 // (outermost), matching sep2srv.New's own CCM wiring in server.go,
 // since the standard identity middleware reads r.TLS, which crypto/tls
 // populates automatically but the gotls fork does not.
-func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs []string) (net.Listener, sep2srv.Identity, error) {
+//
+// errorLog is forwarded to WrapCCMListener unchanged (nil is a valid
+// value there: it logs through the standard logger, as net/http does
+// when its own ErrorLog is nil). PR 108 round 3 review LOW: the caller
+// passes the SAME value it sets on the serving http.Server's own
+// ErrorLog field, from one variable, so the refusal log and the
+// server's other error logging cannot drift apart the day either one is
+// pointed somewhere other than the standard logger.
+func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs []string, errorLog *log.Logger) (net.Listener, sep2srv.Identity, error) {
 	cfg, err := sepTLS.NewCCMServerConfigWithExtraCAs(certFile, keyFile, caFile, extraClientCAs)
 	if err != nil {
 		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: CCM TLS config: %w", err)
@@ -174,7 +183,7 @@ func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs [
 		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: listen: %w", err)
 	}
 
-	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), nil), identity, nil
+	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), errorLog), identity, nil
 }
 
 // requireCCMVerification refuses a CCM config that no longer enforces

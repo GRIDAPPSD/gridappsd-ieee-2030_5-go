@@ -428,7 +428,16 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	// merely offered" criterion cannot be met by any sep2srv.Options
 	// field.
 	if cfg.EnableCCM {
-		listener, identity, err := newCCMOnlyListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs)
+		// ccmErrorLog is passed to both the CCM listener's refusal-log
+		// wrapper (newCCMOnlyListener, mtls.go) and the http.Server's
+		// own ErrorLog field below, from this one variable, so the two
+		// can never drift apart: PR 108 round 3 review LOW, a literal
+		// nil passed only to the wrapper stayed wired to the standard
+		// logger even after a future change gave the http.Server its
+		// own ErrorLog.
+		var ccmErrorLog *log.Logger
+
+		listener, identity, err := newCCMOnlyListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, ccmErrorLog)
 		if err != nil {
 			return nil, err
 		}
@@ -457,6 +466,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			ReadTimeout:       sep2srv.DefaultReadTimeout,
 			WriteTimeout:      sep2srv.DefaultWriteTimeout,
 			IdleTimeout:       sep2srv.DefaultIdleTimeout,
+			ErrorLog:          ccmErrorLog,
 		}
 		sepTLS.SetupCCMServer(httpSrv)
 
