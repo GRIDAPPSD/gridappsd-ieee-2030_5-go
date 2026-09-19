@@ -133,9 +133,13 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 // overwrites CipherSuites on the returned config before building the
 // listener, reusing every other part of core's CCM setup (cert loading,
 // ClientAuth, the HardwareModuleName-aware VerifyPeerCertificate, the
-// TLS 1.2 cap) unchanged. It reuses gotls.NewListener directly, matching
-// server-go's own wrapMTLS choice (not sepTLS.WrapCCMListener, whose
-// pre-certificate log line is core issue #170, out of scope here).
+// TLS 1.2 cap) unchanged. Unlike server-go's own wrapMTLS, the listener is
+// wrapped with sepTLS.WrapCCMListener so a refused handshake reaches a log
+// line the way net/http's own "TLS handshake error" case does for
+// *tls.Conn: that case never fires for the forked *gotls.Conn type
+// WrapCCMListener wraps. Measured against a live listener, this covers a
+// rejected certificate, a cipher-suite mismatch, and a version mismatch
+// alike, not only the pre-certificate case core issue #170 tracks.
 //
 // Identity is derived the same way newObservedMTLSListener's GCM path
 // does (deriveServerIdentity), since sep2srv's own deriveIdentity is
@@ -164,7 +168,7 @@ func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs [
 		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: listen: %w", err)
 	}
 
-	return gotls.NewListener(listener, cfg), identity, nil
+	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), nil), identity, nil
 }
 
 // newRecordingVerifier builds the additive VerifyPeerCertificate closure
