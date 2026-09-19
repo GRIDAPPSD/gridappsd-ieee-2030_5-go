@@ -365,10 +365,14 @@ type handshakeAttemptResponse struct {
 	At         string `json:"at"`
 }
 
-// clientsResponse mirrors connobs.Snapshot's exported fields.
+// clientsResponse mirrors connobs.Snapshot's exported fields, plus
+// ObservationDisabled (Config.ObservationDisabled passed through) so a
+// consumer can tell "no clients connected" apart from "the observer is
+// not wired and this snapshot can never show one" (PR 108 review).
 type clientsResponse struct {
-	Clients    []clientSnapshotResponse   `json:"clients"`
-	Handshakes []handshakeAttemptResponse `json:"handshakes"`
+	Clients             []clientSnapshotResponse   `json:"clients"`
+	Handshakes          []handshakeAttemptResponse `json:"handshakes"`
+	ObservationDisabled bool                       `json:"observationDisabled"`
 }
 
 // handleClients reports the per-LFDI connection observer's
@@ -402,7 +406,11 @@ func (s *Server) handleClients(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, clientsResponse{Clients: clients, Handshakes: handshakes})
+	writeJSON(w, http.StatusOK, clientsResponse{
+		Clients:             clients,
+		Handshakes:          handshakes,
+		ObservationDisabled: s.cfg.ObservationDisabled,
+	})
 }
 
 // writeJSON encodes v as the response body with the given status code

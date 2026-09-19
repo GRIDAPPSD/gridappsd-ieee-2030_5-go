@@ -6,11 +6,13 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"time"
 
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
+	gotls "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls/gotls"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
@@ -27,14 +29,16 @@ import (
 var errObserverRequiresGCM = errors.New("sep2embed: Config.Observer is not supported with Config.EnableCCM (the CCM-8 listener has no handshake-observation seam yet)")
 
 // observedMTLSServer is a drop-in replacement for *sep2srv.Server (it
-// satisfies the protocolServer interface embed.go defines) used only
-// when a *connobs.Hook is supplied via Config.Observer: it builds the
+// satisfies the protocolServer interface embed.go defines). Built by
+// newObservedMTLSListener below when Config.Observer is set: it builds the
 // SAME mTLS tls.Config core's own sep2srv.New would build for the
 // GCM/default path (via the same exported
 // sepTLS.NewServerTLSConfigWithExtraCAs call, with the same cert/key/CA
 // inputs), but wraps VerifyPeerCertificate to additively RECORD each
 // connection attempt's accept/reject verdict, reason, and LFDI-match
 // into hook before returning the verifier's own real result unchanged.
+// The CCM-only path (newCCMOnlyListener) reuses this same struct as a
+// plain listener/httpSrv container: no hook, no recording wrapper.
 //
 // Why this exists: core's pkg/sep2srv exposes no seam from outside the
 // package for observing the mTLS handshake (no VerifyConnection or
@@ -118,6 +122,86 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 	}
 
 	return tls.NewListener(listener, tlsCfg), identity, nil
+}
+
+// newCCMOnlyListener builds a CCM-8-only mTLS listener: the operator's
+// requirement (issue 82) is that a client unable to offer
+// TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 is refused, not silently served
+// over GCM. server-go's sep2srv.New has no seam for this: its wrapMTLS
+// always calls core's sepTLS.NewCCMServerConfigWithExtraCAs, whose
+// returned *gotls.Config hardcodes CipherSuites as
+// []uint16{CCM_8, 0xC02B (GCM fallback)}, and neither sep2srv.Options nor
+// any other exported core/server-go symbol lets a caller narrow that
+// list. This function calls the SAME exported constructor and then
+// overwrites CipherSuites on the returned config before building the
+// listener, reusing every other part of core's CCM setup (cert loading,
+// ClientAuth, the HardwareModuleName-aware VerifyPeerCertificate, the
+// TLS 1.2 cap) unchanged. Unlike server-go's own wrapMTLS, the listener is
+// wrapped with sepTLS.WrapCCMListener so a refused handshake reaches a log
+// line the way net/http's own "TLS handshake error" case does for
+// *tls.Conn: that case never fires for the forked *gotls.Conn type
+// WrapCCMListener wraps. Measured against a live listener, this covers a
+// rejected certificate, a cipher-suite mismatch, and a version mismatch
+// alike, not only the pre-certificate case core issue #170 tracks.
+//
+// Identity is derived the same way newObservedMTLSListener's GCM path
+// does (deriveServerIdentity), since sep2srv's own deriveIdentity is
+// unexported. The caller must additionally wire
+// sepTLS.SetupCCMServer(httpSrv) and sepTLS.CCMIdentityMiddleware
+// (outermost), matching sep2srv.New's own CCM wiring in server.go,
+// since the standard identity middleware reads r.TLS, which crypto/tls
+// populates automatically but the gotls fork does not.
+//
+// errorLog is forwarded to WrapCCMListener unchanged (nil is a valid
+// value there: it logs through the standard logger, as net/http does
+// when its own ErrorLog is nil). The caller passes the SAME value it
+// sets on the serving http.Server's own ErrorLog field, from one
+// variable, so the refusal log and the server's other error logging
+// cannot drift apart the day either one is pointed somewhere other than
+// the standard logger.
+func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs []string, errorLog *log.Logger) (net.Listener, sep2srv.Identity, error) {
+	cfg, err := sepTLS.NewCCMServerConfigWithExtraCAs(certFile, keyFile, caFile, extraClientCAs)
+	if err != nil {
+		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: CCM TLS config: %w", err)
+	}
+	cfg.CipherSuites = []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8}
+
+	if err := requireCCMVerification(cfg); err != nil {
+		return nil, sep2srv.Identity{}, err
+	}
+
+	if len(cfg.Certificates) == 0 {
+		return nil, sep2srv.Identity{}, errors.New("sep2embed: CCM TLS config has no server certificate")
+	}
+	identity, err := deriveServerIdentity(cfg.Certificates[0].Certificate)
+	if err != nil {
+		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: derive server identity (CCM): %w", err)
+	}
+
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: listen: %w", err)
+	}
+
+	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), errorLog), identity, nil
+}
+
+// requireCCMVerification refuses a CCM config that no longer enforces
+// client-certificate verification. Unlike newObservedMTLSListener above,
+// which only WRAPS an existing VerifyPeerCertificate it does not own,
+// newCCMOnlyListener mutates a *gotls.Config another module builds
+// (NewCCMServerConfigWithExtraCAs): the same class of breakage the GCM
+// sibling's own nil-VerifyPeerCertificate check (above) guards against,
+// applied here so a future core change weakening ClientAuth or dropping
+// VerifyPeerCertificate cannot silently serve an unverified listener.
+func requireCCMVerification(cfg *gotls.Config) error {
+	if cfg.VerifyPeerCertificate == nil {
+		return errors.New("sep2embed: CCM TLS config has no VerifyPeerCertificate (core API changed?)")
+	}
+	if cfg.ClientAuth != gotls.RequireAnyClientCert {
+		return fmt.Errorf("sep2embed: CCM TLS config ClientAuth = %v, want RequireAnyClientCert (core API changed?)", cfg.ClientAuth)
+	}
+	return nil
 }
 
 // newRecordingVerifier builds the additive VerifyPeerCertificate closure

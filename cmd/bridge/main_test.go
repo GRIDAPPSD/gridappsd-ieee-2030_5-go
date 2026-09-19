@@ -177,6 +177,43 @@ func TestSEP2EmbedConfigMapsNotificationAllowLoopback(t *testing.T) {
 	}
 }
 
+// TestSEP2EmbedConfigMapsEnableCCM verifies SEP2EnableCCM passes through
+// to sep2embed.Config.EnableCCM, and verifies the observer trade-off
+// sep2EmbedConfig's doc comment describes: with the switch off, the
+// passed-in connHook reaches Config.Observer unmodified (cmd/bridge's
+// long-standing default); with it on, Config.Observer is nil, which is
+// what keeps New from hitting its errObserverRequiresGCM refusal, since
+// cmd/bridge always passes a non-nil connHook to sep2EmbedConfig itself.
+func TestSEP2EmbedConfigMapsEnableCCM(t *testing.T) {
+	t.Parallel()
+
+	policy := sep2config.DefaultPolicy()
+	var connHook connobs.Hook
+
+	cases := []struct {
+		name         string
+		enableCCM    bool
+		wantObserver *connobs.Hook
+	}{
+		{"left at the GCM default", false, &connHook},
+		{"CCM explicitly opted in", true, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := config{SEP2EnableCCM: tc.enableCCM}
+			got := sep2EmbedConfig(cfg, policy, &connHook, sep2embed.DeviceCertModeDevMint)
+			if got.EnableCCM != tc.enableCCM {
+				t.Errorf("EnableCCM: got %v, want %v", got.EnableCCM, tc.enableCCM)
+			}
+			if got.Observer != tc.wantObserver {
+				t.Errorf("Observer: got %p, want %p", got.Observer, tc.wantObserver)
+			}
+		})
+	}
+}
+
 // TestAdminUIConfigMapsFields verifies adminUIConfig's field-by-field
 // mapping from the bridge's own config onto adminui.Config, mirroring
 // TestSEP2EmbedConfigMapsFields for the embedded IEEE 2030.5 side. This
@@ -193,6 +230,7 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 		FeederMRID:                  "feeder-mrid-1",
 		SimulationID:                "sim-1",
 		SEP2AdminUISORLink:          "https://sor.example/dashboard",
+		SEP2EnableCCM:               true,
 	}
 
 	got := adminUIConfig(cfg)
@@ -217,6 +255,9 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 	if got.SORLink != cfg.SEP2AdminUISORLink {
 		t.Errorf("SORLink: got %q, want %q", got.SORLink, cfg.SEP2AdminUISORLink)
 	}
+	if !got.ObservationDisabled {
+		t.Errorf("ObservationDisabled: got %v, want true (cfg.SEP2EnableCCM is set)", got.ObservationDisabled)
+	}
 }
 
 // TestAdminUIConfigZeroValueMapsToDisabledShape confirms a zero-value
@@ -238,6 +279,42 @@ func TestAdminUIConfigZeroValueMapsToDisabledShape(t *testing.T) {
 	}
 	if got.SORLink != "" {
 		t.Errorf("SORLink: got %q, want empty for a zero-value config", got.SORLink)
+	}
+	if got.ObservationDisabled {
+		t.Errorf("ObservationDisabled: got true, want false for a zero-value config (SEP2EnableCCM unset)")
+	}
+}
+
+// TestSEP2EmbedConfigObservationAgreesWithAdminUI asserts sep2EmbedConfig's
+// decision to null the observer and adminUIConfig's ObservationDisabled
+// field are two projections of the SAME fact (ccmObservationDisabled) and
+// must never disagree. Table-driven over both values of SEP2EnableCCM AND
+// SEP2CCMAllowNoObserver: varying SEP2EnableCCM alone leaves
+// SEP2CCMAllowNoObserver at its zero value in every case, so a second
+// disabling condition added only at sep2EmbedConfig's call site (keyed on
+// SEP2CCMAllowNoObserver, not routed through ccmObservationDisabled) would
+// pass unnoticed. A real non-nil connHook makes "Observer == nil" actually
+// distinguish the two cases (a nil connHook would make Observer nil
+// regardless of SEP2EnableCCM, collapsing the case this test exists to
+// catch).
+func TestSEP2EmbedConfigObservationAgreesWithAdminUI(t *testing.T) {
+	t.Parallel()
+
+	policy := sep2config.DefaultPolicy()
+	var connHook connobs.Hook
+
+	for _, enableCCM := range []bool{false, true} {
+		for _, allowNoObserver := range []bool{false, true} {
+			cfg := config{SEP2EnableCCM: enableCCM, SEP2CCMAllowNoObserver: allowNoObserver}
+			embedCfg := sep2EmbedConfig(cfg, policy, &connHook, sep2embed.DeviceCertModeDevMint)
+			adminCfg := adminUIConfig(cfg)
+
+			observerNil := embedCfg.Observer == nil
+			if adminCfg.ObservationDisabled != observerNil {
+				t.Errorf("SEP2EnableCCM=%v SEP2CCMAllowNoObserver=%v: adminUIConfig.ObservationDisabled = %v, sep2EmbedConfig.Observer == nil = %v; want equal",
+					enableCCM, allowNoObserver, adminCfg.ObservationDisabled, observerNil)
+			}
+		}
 	}
 }
 
@@ -442,5 +519,42 @@ func TestBuildSEP2PolicyDefaultProgramFlowsThroughAndValidates(t *testing.T) {
 	tooLong := strings.Repeat("x", 33)
 	if _, err := buildSEP2Policy(config{SEP2ProgramDescription: &tooLong}); err == nil {
 		t.Error("buildSEP2Policy accepted a 33-character description, want a boot-time refusal (sep.xsd String32)")
+	}
+}
+
+// TestLogCCMObserverDisabledChoiceLogsWhenEnabled asserts the startup log
+// line naming the operator's explicit SEP2_ENABLE_CCM /
+// SEP2_CCM_ALLOW_NO_OBSERVER choice names the mandatory suite and every
+// panel consequence validate's refusal text also names (config.go), not
+// just some of them.
+func TestLogCCMObserverDisabledChoiceLogsWhenEnabled(t *testing.T) {
+	buf := captureLog(t)
+
+	logCCMObserverDisabledChoice(config{SEP2EnableCCM: true})
+
+	got := buf.String()
+	for _, want := range []string{
+		"SEP2_ENABLE_CCM",
+		"SEP2_CCM_ALLOW_NO_OBSERVER",
+		"CCM_8",
+		"served-status table",
+		"connected-clients and handshake-attempts tables",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log output %q does not contain %q", got, want)
+		}
+	}
+}
+
+// TestLogCCMObserverDisabledChoiceSilentWhenDisabled confirms the
+// function is a no-op on the default (SEP2EnableCCM false) path: the
+// startup log carries no line about a choice the operator never made.
+func TestLogCCMObserverDisabledChoiceSilentWhenDisabled(t *testing.T) {
+	buf := captureLog(t)
+
+	logCCMObserverDisabledChoice(config{SEP2EnableCCM: false})
+
+	if got := buf.String(); got != "" {
+		t.Errorf("log output = %q, want empty (SEP2EnableCCM false)", got)
 	}
 }

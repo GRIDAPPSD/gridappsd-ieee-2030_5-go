@@ -233,9 +233,14 @@ func run(ctx context.Context, cfg config) error {
 	// VerifyPeerCertificate wrapper), is recorded here. Must be
 	// constructed before newSEP2Embed below, since sep2EmbedConfig
 	// threads its address into sep2embed.Config.Observer for New to wire
-	// into the listener it builds. The admin UI /api/clients endpoint is
-	// its only reader.
+	// into the listener it builds, UNLESS cfg.SEP2EnableCCM is set (see
+	// sep2EmbedConfig's doc comment): connHook is still passed to
+	// adminui.New below either way, so its /api/clients endpoint stays a
+	// valid, merely empty, reader rather than a nil one. The admin UI
+	// /api/clients endpoint is its only reader.
 	var connHook connobs.Hook
+
+	logCCMObserverDisabledChoice(cfg)
 
 	// The embed seeds its EndDevice/DER stores from reg, so it must be
 	// built after bootstrapRegistry above, not before.
@@ -590,6 +595,37 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 	return policy, nil
 }
 
+// ccmObservationDisabled reports whether the connection observer is
+// disabled for cfg: today exactly cfg.SEP2EnableCCM, but named as its
+// own function so sep2EmbedConfig's decision to pass a nil Observer and
+// adminUIConfig's ObservationDisabled field can never answer this
+// question differently. With each caller asserting cfg.SEP2EnableCCM
+// independently, a second disabling condition added to sep2EmbedConfig
+// alone would leave the full suite green; deriving both from this one
+// function closes that by construction, and
+// TestSEP2EmbedConfigObservationAgreesWithAdminUI below pins the two
+// projections' agreement directly as well.
+func ccmObservationDisabled(cfg config) bool {
+	return cfg.SEP2EnableCCM
+}
+
+// logCCMObserverDisabledChoice logs the operator's explicit choice to
+// run SEP2_ENABLE_CCM with the connection observer disabled. Split out
+// from run() so its content, and the condition that gates it, can be
+// asserted by a unit test without starting a bridge, the same pattern
+// sep2EmbedConfig and adminUIConfig follow above. A no-op when
+// ccmObservationDisabled(cfg) is false. cfg.validate (called from
+// loadConfig, before run ever starts) already refused to reach this
+// call unless SEP2CCMAllowNoObserver is also set: this log records
+// that the operator made that choice explicitly, not that the bridge
+// made it for them.
+func logCCMObserverDisabledChoice(cfg config) {
+	if !ccmObservationDisabled(cfg) {
+		return
+	}
+	log.Printf("bridge: SEP2_ENABLE_CCM is set with SEP2_CCM_ALLOW_NO_OBSERVER: serving ONLY TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 (a client unable to offer it is refused, not served over GCM, and the refusal reaches this log but not the admin UI), with the connection observer disabled as explicitly accepted (the admin UI panel's served-status table will show every served device's status as unknown, not connected or disconnected, and its connected-clients and handshake-attempts tables will show no data rather than admit they cannot tell, until GRIDAPPSD/ieee-2030_5-server-go#583 adds handshake observation for the CCM-8 listener)")
+}
+
 // sep2EmbedConfig projects the bridge's config onto sep2embed.Config.
 // Split out from newSEP2Embed so the address/cert-dir mapping can be
 // asserted by a unit test without minting real certificate material or
@@ -622,11 +658,23 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 // connHook is threaded through as sep2embed.Config.Observer:
 // a non-nil connHook opts this bridge into the
 // additive request- and handshake-observation path sep2embed.New
-// builds when Config.Observer is set. cmd/bridge always passes a
-// non-nil *connobs.Hook (its own connHook), so observation is always
-// on for this bridge; a nil value here is only ever exercised by
+// builds when Config.Observer is set. cmd/bridge passes its own
+// non-nil *connobs.Hook (connHook) UNLESS cfg.SEP2EnableCCM is set: New
+// refuses Config.Observer and Config.EnableCCM together (the CCM-8
+// listener has no handshake-observation seam yet;
+// GRIDAPPSD/ieee-2030_5-server-go#583 adds one). By the time this runs,
+// cfg has already passed validate (called from loadConfig, before run
+// ever starts), so SEP2EnableCCM true here implies
+// SEP2CCMAllowNoObserver is also true: validate refuses to start
+// otherwise, rather than let the observer's loss be implied by
+// SEP2EnableCCM alone. run logs the operator's explicit choice whenever
+// it takes this branch. A nil connHook is also exercised directly by
 // sep2embed's own tests that leave Config.Observer unset.
 func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs.Hook, mode sep2embed.DeviceCertMode) sep2embed.Config {
+	observer := connHook
+	if ccmObservationDisabled(cfg) {
+		observer = nil
+	}
 	return sep2embed.Config{
 		Addr:    cfg.SEP2ServerAddr,
 		CertDir: cfg.SEP2ServerCertDir,
@@ -662,7 +710,8 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 		// later changes nothing here or downstream of here.
 		ResolveRegistrationPollRate: policy.ResolvePollRate,
 		ResolvePostRate:             policy.ResolvePostRate,
-		Observer:                    connHook,
+		Observer:                    observer,
+		EnableCCM:                   cfg.SEP2EnableCCM,
 		NotifyAllowLoopback:         cfg.SEP2NotificationAllowLoopback,
 	}
 }
@@ -670,15 +719,21 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 // adminUIConfig projects the bridge's config onto adminui.Config. Split
 // out from run() so the field mapping can be asserted by a unit test
 // with no listener bound and no admin token required.
+//
+// ObservationDisabled is ccmObservationDisabled(cfg), the SAME function
+// sep2EmbedConfig's "observer = nil" branch calls above: that is the one
+// and only branch where the connection observer never reaches the
+// listener, so /api/clients can never report a real client either.
 func adminUIConfig(cfg config) adminui.Config {
 	return adminui.Config{
-		Addr:             cfg.SEP2AdminUIAddr,
-		AllowNonLoopback: cfg.SEP2AdminUIAllowNonLoopback,
-		Key:              cfg.SEP2AdminUIKey,
-		AllowedHosts:     cfg.SEP2AdminUIAllowedHosts,
-		FeederMRID:       cfg.FeederMRID,
-		SimulationID:     cfg.SimulationID,
-		SORLink:          cfg.SEP2AdminUISORLink,
+		Addr:                cfg.SEP2AdminUIAddr,
+		AllowNonLoopback:    cfg.SEP2AdminUIAllowNonLoopback,
+		Key:                 cfg.SEP2AdminUIKey,
+		AllowedHosts:        cfg.SEP2AdminUIAllowedHosts,
+		FeederMRID:          cfg.FeederMRID,
+		SimulationID:        cfg.SimulationID,
+		SORLink:             cfg.SEP2AdminUISORLink,
+		ObservationDisabled: ccmObservationDisabled(cfg),
 	}
 }
 

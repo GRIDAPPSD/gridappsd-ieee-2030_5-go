@@ -14,6 +14,15 @@
   // connected" rather than being visually indistinguishable from one
   // that is actively polling. No new endpoint was introduced for this:
   // both endpoints the cross-reference needs already exist.
+  //
+  // That distinction requires a live observer. When
+  // clientsResponse.ObservationDisabled is true (SEP2_ENABLE_CCM),
+  // clients.Clients is always empty regardless of real traffic, so every
+  // served device reads "unknown" here instead of a false "connected"
+  // or "never connected" claim (#101). The same reasoning applies when
+  // the /api/clients fetch itself fails (clientsError set): the panel
+  // has no clients data either way, and must not assert a status it
+  // does not know on that path either.
   import { onMount } from 'svelte'
   import { fetchJSON } from '../lib/api'
 
@@ -36,6 +45,7 @@
   interface ClientsResponse {
     clients: ClientSnapshotResponse[]
     handshakes: HandshakeAttemptResponse[]
+    observationDisabled: boolean
   }
 
   interface ServedEndDeviceResponse {
@@ -61,6 +71,28 @@
   let clientsError = $state('')
   let servedError = $state('')
   let loaded = $state(false)
+  // observationDisabled mirrors clientsResponse.ObservationDisabled
+  // (handlers.go): true when the bridge's connection observer is not
+  // wired (SEP2_ENABLE_CCM), so clients/handshakes above are always
+  // empty regardless of real traffic. Distinct from clientsError: this
+  // is a valid, successful response saying "this snapshot cannot show a
+  // connection", not a fetch failure. Only ever set inside the
+  // clientsResult.ok branch below: a response the bridge and frontend
+  // ship in the same binary always carries this field, so a payload
+  // missing it (an older bridge served against a newer frontend, or
+  // vice versa) is out of scope here: both halves ship in one binary.
+  let observationDisabled = $state(false)
+
+  // connectionStatusUnknown is true whenever the panel has no reliable
+  // clients data to cross-reference against the served roster, for
+  // either reason the "Served EndDevices: connection status" section
+  // and the two panel sections above it must not assert a status they
+  // do not know (#101): the observer is disabled (observationDisabled),
+  // or the /api/clients fetch itself failed (clientsError). The two
+  // causes get distinct messages below, but the SAME "unknown" badge
+  // and the SAME refusal to claim "never connected": a fetch failure is
+  // not evidence of anything about the device.
+  let connectionStatusUnknown = $derived(observationDisabled || clientsError !== '')
 
   // servedRows is the served-vs-connected cross-reference described
   // above: derived, not stored, so it always reflects the latest
@@ -108,6 +140,7 @@
     if (clientsResult.ok) {
       clients = clientsResult.data.clients
       handshakes = clientsResult.data.handshakes
+      observationDisabled = clientsResult.data.observationDisabled
     } else {
       clientsError = clientsResult.error
     }
@@ -135,6 +168,11 @@
     <h2>Connected clients</h2>
     {#if clientsError}
       <p class="error" data-testid="clients-error">Connected clients unavailable: {clientsError}</p>
+    {:else if observationDisabled}
+      <p data-testid="clients-observation-disabled">
+        Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show which clients,
+        if any, are connected.
+      </p>
     {:else if clients.length === 0}
       <p data-testid="clients-empty">No clients connected yet.</p>
     {:else}
@@ -161,11 +199,24 @@
     {/if}
 
     <h2>Served EndDevices: connection status</h2>
-    <p class="note">
-      Cross references GET /api/served/edev (the served roster) against the connected-client
-      snapshot above, by LFDI: a served EndDevice that has never issued a request shows "never
-      connected" instead of being indistinguishable from one that is actively polling.
-    </p>
+    {#if observationDisabled}
+      <p class="note" data-testid="observation-disabled-note">
+        The connection observer is disabled on this bridge (SEP2_ENABLE_CCM). Connection status
+        below is unknown for every served device, not "never connected": a device may be actively
+        polling with nothing here to show it.
+      </p>
+    {:else if clientsError}
+      <p class="error" data-testid="served-status-clients-error-note">
+        Connection status is unavailable: the connected-client snapshot could not be fetched
+        ({clientsError}). Status below is unknown for every served device, not "never connected".
+      </p>
+    {:else}
+      <p class="note">
+        Cross references GET /api/served/edev (the served roster) against the connected-client
+        snapshot above, by LFDI: a served EndDevice that has never issued a request shows "never
+        connected" instead of being indistinguishable from one that is actively polling.
+      </p>
+    {/if}
     {#if servedError}
       <p class="error" data-testid="served-status-error">
         Served EndDevice roster unavailable: {servedError}
@@ -191,6 +242,8 @@
               <td>
                 {#if row.connected}
                   <span class="badge connected" data-testid="status-badge">connected</span>
+                {:else if connectionStatusUnknown}
+                  <span class="badge unknown-status" data-testid="status-badge">unknown</span>
                 {:else}
                   <span class="badge never-connected" data-testid="status-badge"
                     >never connected</span
@@ -209,6 +262,11 @@
     {#if clientsError}
       <p class="error" data-testid="handshakes-error">
         Handshake attempts unavailable: {clientsError}
+      </p>
+    {:else if observationDisabled}
+      <p data-testid="handshakes-observation-disabled">
+        Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show handshake
+        attempts.
       </p>
     {:else if handshakes.length === 0}
       <p data-testid="handshakes-empty">No handshake attempts recorded yet.</p>
@@ -298,7 +356,8 @@
   }
 
   .badge.never-connected,
-  .badge.unknown {
+  .badge.unknown,
+  .badge.unknown-status {
     background: #9a6700;
   }
 

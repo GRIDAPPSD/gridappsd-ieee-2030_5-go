@@ -100,6 +100,20 @@ type Config struct {
 	// It is a URL, not a secret, and is safe to expose over /api/health
 	// unlike Key. Empty means unset: no link, no error.
 	SORLink string
+
+	// ObservationDisabled reports whether the caller's connection
+	// observer is wired to the live listener. False (the default,
+	// matching this package's other opt-in fields) is the common case:
+	// the observer is live, and /api/clients reflects real handshake and
+	// request activity. cmd/bridge sets this true exactly when
+	// SEP2EnableCCM disconnects the observer (sep2embed.Config.Observer
+	// forced nil; see errObserverRequiresGCM), so an empty /api/clients
+	// snapshot can be told apart from "nothing connected yet" (PR 108
+	// review HIGH 2 / MEDIUM: the served-EndDevice panel was badging
+	// every actively polling device "never connected" with no way to
+	// tell the two states apart). Serialized on clientsResponse, not
+	// invented at the frontend.
+	ObservationDisabled bool
 }
 
 // RegistrySource is the minimal read surface Server needs from

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
 	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
@@ -88,6 +89,9 @@ type Config struct {
 	// 2030.5-2018 section 6.7) via core's forked crypto/tls. False (the
 	// default) serves the stdlib GCM fallback, which is still mTLS: this
 	// knob selects the cipher suite, not whether TLS is required.
+	// EXCLUSIVE, not merely preferred: a client unable to offer CCM-8 is
+	// refused the handshake, never served over GCM (newCCMOnlyListener).
+	// Mutually exclusive with Observer; see errObserverRequiresGCM.
 	EnableCCM bool
 
 	// ShutdownTimeout bounds Run's graceful drain after ctx is
@@ -229,10 +233,14 @@ type Config struct {
 	ResolvePostRate func(lfdi string) (uint32, bool)
 
 	// Observer is the per-LFDI connection observer.
-	// Nil (the zero value) disables observation entirely: New falls back
-	// to delegating listener construction to sep2srv.New exactly as
-	// before, and buildHandler wires a nil-safe pass-through in place of
-	// the request-observation middleware. When non-nil, every
+	// Nil (the zero value) disables observation entirely. With EnableCCM
+	// unset, New falls back to delegating listener construction to
+	// sep2srv.New exactly as before, and buildHandler wires a nil-safe
+	// pass-through in place of the request-observation middleware. With
+	// EnableCCM set, Observer MUST be nil (New refuses the combination
+	// otherwise, see errObserverRequiresGCM) and New instead builds the
+	// CCM-only listener itself (newCCMOnlyListener), which has no
+	// handshake-observation seam of its own. When non-nil, every
 	// authenticated request is recorded via Observer.RecordRequest, and
 	// (GCM/default listener only; see errObserverRequiresGCM) every mTLS
 	// connection attempt that reaches certificate verification (i.e. the
@@ -412,13 +420,73 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger()}, nil
 	}
 
+	// EnableCCM with no Observer: build a CCM-8-ONLY listener ourselves
+	// rather than delegating to sep2srv.New, whose CCM path (via core's
+	// sepTLS.NewCCMServerConfigWithExtraCAs) always keeps GCM as a
+	// fallback suite. See newCCMOnlyListener's doc comment (mtls.go) for
+	// why this repository issue 82's "the mandatory suite is served, not
+	// merely offered" criterion cannot be met by any sep2srv.Options
+	// field.
+	if cfg.EnableCCM {
+		// ccmErrorLog is passed to both the CCM listener's refusal-log
+		// wrapper (newCCMOnlyListener, mtls.go) and the http.Server's
+		// own ErrorLog field below, from this one variable, so the two
+		// can never drift apart: a literal nil passed only to the
+		// wrapper would stay wired to the standard logger even after a
+		// future change gave the http.Server its own ErrorLog.
+		var ccmErrorLog *log.Logger
+
+		listener, identity, err := newCCMOnlyListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, ccmErrorLog)
+		if err != nil {
+			return nil, err
+		}
+
+		// cfg.Observer is nil on this path (the branch above returns
+		// early whenever it is non-nil), so this is exactly the
+		// no-observation handler buildHandler already builds for that
+		// case; passing cfg.Observer rather than a literal nil keeps the
+		// call symmetric with the two sibling branches.
+		handler := buildHandler(cfg.Router, stores, reg, identity, notifier, cfg.Observer)
+
+		shutdownTimeout := cfg.ShutdownTimeout
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = sep2srv.DefaultShutdownTimeout
+		}
+
+		httpSrv := &http.Server{
+			// CCMIdentityMiddleware must wrap OUTERMOST: it populates
+			// r.TLS from the gotls connection state SetupCCMServer below
+			// threads through ConnContext, and every other middleware
+			// (identityMiddleware included) reads r.TLS. This mirrors
+			// server-go's own sep2srv.New CCM wiring exactly
+			// (server.go: "sepTLS.CCMIdentityMiddleware(handler)").
+			Handler:           sepTLS.CCMIdentityMiddleware(handler),
+			ReadHeaderTimeout: sep2srv.DefaultReadHeaderTimeout,
+			ReadTimeout:       sep2srv.DefaultReadTimeout,
+			WriteTimeout:      sep2srv.DefaultWriteTimeout,
+			IdleTimeout:       sep2srv.DefaultIdleTimeout,
+			ErrorLog:          ccmErrorLog,
+		}
+		sepTLS.SetupCCMServer(httpSrv)
+
+		srv := &observedMTLSServer{
+			identity:        identity,
+			listener:        listener,
+			httpSrv:         httpSrv,
+			shutdownTimeout: shutdownTimeout,
+		}
+
+		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger()}, nil
+	}
+
+	// Neither Observer nor EnableCCM: the plain GCM path, delegated to
+	// server-go's sep2srv.New unchanged.
 	opts := sep2srv.Options{
 		Addr:            cfg.Addr,
 		CertFile:        certFile,
 		KeyFile:         keyFile,
 		CAFile:          caFile,
 		ExtraClientCAs:  cfg.ExtraClientCAs,
-		EnableCCM:       cfg.EnableCCM,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 	}
 
