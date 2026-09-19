@@ -6,11 +6,33 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	gotls "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls/gotls"
 )
+
+// syncBuffer guards a bytes.Buffer written by WrapCCMListener's own
+// acceptLoop goroutine (ccmserver.go) while a test goroutine polls it,
+// the same shape internal/gridappsdclient/supervisor_test.go uses for a
+// background goroutine logging while a test reads.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 // TestCCMListenerRefusalReachesLog pins newCCMOnlyListener's
 // sepTLS.WrapCCMListener wrap (mtls.go:177): a rejected handshake on the
@@ -24,9 +46,9 @@ import (
 // here too (Go's test driver runs every non-parallel top-level test to
 // completion before any parallel-declared test in this package resumes).
 func TestCCMListenerRefusalReachesLog(t *testing.T) {
-	var buf bytes.Buffer
+	buf := &syncBuffer{}
 	origOutput := log.Writer()
-	log.SetOutput(&buf)
+	log.SetOutput(buf)
 	defer log.SetOutput(origOutput)
 
 	addr, caPool, deviceCert := ccmTestServer(t, true)
