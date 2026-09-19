@@ -230,6 +230,7 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 		FeederMRID:                  "feeder-mrid-1",
 		SimulationID:                "sim-1",
 		SEP2AdminUISORLink:          "https://sor.example/dashboard",
+		SEP2EnableCCM:               true,
 	}
 
 	got := adminUIConfig(cfg)
@@ -254,6 +255,9 @@ func TestAdminUIConfigMapsFields(t *testing.T) {
 	if got.SORLink != cfg.SEP2AdminUISORLink {
 		t.Errorf("SORLink: got %q, want %q", got.SORLink, cfg.SEP2AdminUISORLink)
 	}
+	if !got.ObservationDisabled {
+		t.Errorf("ObservationDisabled: got %v, want true (cfg.SEP2EnableCCM is set)", got.ObservationDisabled)
+	}
 }
 
 // TestAdminUIConfigZeroValueMapsToDisabledShape confirms a zero-value
@@ -275,6 +279,9 @@ func TestAdminUIConfigZeroValueMapsToDisabledShape(t *testing.T) {
 	}
 	if got.SORLink != "" {
 		t.Errorf("SORLink: got %q, want empty for a zero-value config", got.SORLink)
+	}
+	if got.ObservationDisabled {
+		t.Errorf("ObservationDisabled: got true, want false for a zero-value config (SEP2EnableCCM unset)")
 	}
 }
 

@@ -694,15 +694,21 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 // adminUIConfig projects the bridge's config onto adminui.Config. Split
 // out from run() so the field mapping can be asserted by a unit test
 // with no listener bound and no admin token required.
+//
+// ObservationDisabled mirrors sep2EmbedConfig's own
+// "observer = nil when cfg.SEP2EnableCCM" condition exactly: that is the
+// one and only branch where the connection observer never reaches the
+// listener, so /api/clients can never report a real client either.
 func adminUIConfig(cfg config) adminui.Config {
 	return adminui.Config{
-		Addr:             cfg.SEP2AdminUIAddr,
-		AllowNonLoopback: cfg.SEP2AdminUIAllowNonLoopback,
-		Key:              cfg.SEP2AdminUIKey,
-		AllowedHosts:     cfg.SEP2AdminUIAllowedHosts,
-		FeederMRID:       cfg.FeederMRID,
-		SimulationID:     cfg.SimulationID,
-		SORLink:          cfg.SEP2AdminUISORLink,
+		Addr:                cfg.SEP2AdminUIAddr,
+		AllowNonLoopback:    cfg.SEP2AdminUIAllowNonLoopback,
+		Key:                 cfg.SEP2AdminUIKey,
+		AllowedHosts:        cfg.SEP2AdminUIAllowedHosts,
+		FeederMRID:          cfg.FeederMRID,
+		SimulationID:        cfg.SimulationID,
+		SORLink:             cfg.SEP2AdminUISORLink,
+		ObservationDisabled: cfg.SEP2EnableCCM,
 	}
 }
 

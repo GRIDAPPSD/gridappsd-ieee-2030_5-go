@@ -50,6 +50,7 @@ describe('ConnectedClients', () => {
                 at: '2026-07-27T09:13:00.000Z',
               },
             ],
+            observationDisabled: false,
           },
         }
       }
@@ -136,7 +137,7 @@ describe('ConnectedClients', () => {
   it('shows explicit empty states, not a crash, when clients and handshakes are both []', async () => {
     vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
       if (path === '/api/clients') {
-        return { ok: true, data: { clients: [], handshakes: [] } }
+        return { ok: true, data: { clients: [], handshakes: [], observationDisabled: false } }
       }
       return { ok: true, data: [] }
     })
@@ -168,10 +169,73 @@ describe('ConnectedClients', () => {
     expect(handshakesError).toHaveTextContent('request failed with status 500')
   })
 
+  it('badges every served device "unknown", not "never connected", when observation is disabled', async () => {
+    // PR 108 review HIGH 2: with the connection observer off
+    // (SEP2_ENABLE_CCM), clients is always [] regardless of real
+    // traffic, so the panel must not assert the false "never connected"
+    // verdict for an actively polling device.
+    vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
+      if (path === '/api/clients') {
+        return { ok: true, data: { clients: [], handshakes: [], observationDisabled: true } }
+      }
+      return {
+        ok: true,
+        data: [
+          {
+            id: 'edev-1',
+            lfdi: 'LFDI-POLLING',
+            sfdi: 'SFDI1',
+            href: '/edev/LFDI-POLLING',
+            enabled: true,
+            ders: [],
+          },
+        ],
+      }
+    })
+
+    render(ConnectedClients)
+
+    const note = await screen.findByTestId('observation-disabled-note')
+    expect(note).toHaveTextContent('unknown')
+
+    const badges = screen.getAllByTestId('status-badge')
+    expect(badges).toHaveLength(1)
+    expect(badges[0]).toHaveTextContent('unknown')
+    expect(badges[0]).not.toHaveTextContent('never connected')
+  })
+
+  it('badges a never-observed served device "never connected" when observation is enabled (default)', async () => {
+    vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
+      if (path === '/api/clients') {
+        return { ok: true, data: { clients: [], handshakes: [], observationDisabled: false } }
+      }
+      return {
+        ok: true,
+        data: [
+          {
+            id: 'edev-1',
+            lfdi: 'LFDI-NEVER-CONNECTED',
+            sfdi: 'SFDI1',
+            href: '/edev/LFDI-NEVER-CONNECTED',
+            enabled: true,
+            ders: [],
+          },
+        ],
+      }
+    })
+
+    render(ConnectedClients)
+
+    const badges = await screen.findAllByTestId('status-badge')
+    expect(badges).toHaveLength(1)
+    expect(badges[0]).toHaveTextContent('never connected')
+    expect(screen.queryByTestId('observation-disabled-note')).toBeNull()
+  })
+
   it('shows an error state when the /api/served/edev fetch fails, independent of clients', async () => {
     vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
       if (path === '/api/clients') {
-        return { ok: true, data: { clients: [], handshakes: [] } }
+        return { ok: true, data: { clients: [], handshakes: [], observationDisabled: false } }
       }
       return { ok: false, error: 'request failed with status 500', status: 500 }
     })

@@ -103,6 +103,20 @@ func newTestServerWithSources(t *testing.T, key string, reg RegistrySource, devi
 	return s
 }
 
+// newTestServerObservationDisabled is newTestServer plus
+// Config.ObservationDisabled=true, for the one test asserting
+// /api/clients' observationDisabled field (PR 108 review).
+func newTestServerObservationDisabled(t *testing.T, key string, clients ClientObserverSource) *Server {
+	t.Helper()
+	s, err := New(Config{Addr: "127.0.0.1:0", Key: key, ObservationDisabled: true},
+		&fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, clients)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.ln.Close() })
+	return s
+}
+
 // doRequest issues a single in-process request against handler via
 // httptest, with the given method, path, Authorization header value
 // (empty means omit the header entirely), and Host header (empty means

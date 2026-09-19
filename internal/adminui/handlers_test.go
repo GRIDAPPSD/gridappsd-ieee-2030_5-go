@@ -445,6 +445,35 @@ func TestHandleClientsReturnsEmptyArraysNotNullWhenNoState(t *testing.T) {
 	if !strings.Contains(body, `"handshakes":[]`) {
 		t.Errorf("body = %s, want a literal \"handshakes\":[] field", body)
 	}
+	if !strings.Contains(body, `"observationDisabled":false`) {
+		t.Errorf("body = %s, want a literal \"observationDisabled\":false field", body)
+	}
+}
+
+// TestHandleClientsReportsObservationDisabled is the field-value test
+// for clientsResponse.ObservationDisabled (PR 108 review HIGH 2 /
+// MEDIUM): with Config.ObservationDisabled set, the field must be true
+// on the wire even when the snapshot itself is empty, so a consumer can
+// tell "the observer is off" apart from "nothing connected yet".
+func TestHandleClientsReportsObservationDisabled(t *testing.T) {
+	t.Parallel()
+
+	clients := &fakeClientObserver{snap: connobs.Snapshot{}}
+	s := newTestServerObservationDisabled(t, testKey, clients)
+
+	rec := doRequest(t, s.Handler(), "GET", "/api/clients", "Bearer "+testKey, "localhost")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got clientsResponse
+	decodeJSON(t, rec.Body.Bytes(), &got)
+
+	if !got.ObservationDisabled {
+		t.Error("ObservationDisabled = false, want true")
+	}
+	if len(got.Clients) != 0 || len(got.Handshakes) != 0 {
+		t.Errorf("Clients/Handshakes = %v/%v, want both empty", got.Clients, got.Handshakes)
+	}
 }
 
 // TestNoResponseBodyEverContainsTheAdminToken is the CRITICAL

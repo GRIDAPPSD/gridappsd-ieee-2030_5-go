@@ -14,6 +14,12 @@
   // connected" rather than being visually indistinguishable from one
   // that is actively polling. No new endpoint was introduced for this:
   // both endpoints the cross-reference needs already exist.
+  //
+  // That distinction requires a live observer. When
+  // clientsResponse.ObservationDisabled is true (SEP2_ENABLE_CCM),
+  // clients.Clients is always empty regardless of real traffic, so every
+  // served device reads "unknown" here instead of the false "never
+  // connected" PR 108 review found this panel asserting.
   import { onMount } from 'svelte'
   import { fetchJSON } from '../lib/api'
 
@@ -36,6 +42,7 @@
   interface ClientsResponse {
     clients: ClientSnapshotResponse[]
     handshakes: HandshakeAttemptResponse[]
+    observationDisabled: boolean
   }
 
   interface ServedEndDeviceResponse {
@@ -61,6 +68,13 @@
   let clientsError = $state('')
   let servedError = $state('')
   let loaded = $state(false)
+  // observationDisabled mirrors clientsResponse.ObservationDisabled
+  // (handlers.go): true when the bridge's connection observer is not
+  // wired (SEP2_ENABLE_CCM), so clients/handshakes above are always
+  // empty regardless of real traffic. Distinct from clientsError: this
+  // is a valid, successful response saying "this snapshot cannot show a
+  // connection", not a fetch failure.
+  let observationDisabled = $state(false)
 
   // servedRows is the served-vs-connected cross-reference described
   // above: derived, not stored, so it always reflects the latest
@@ -108,6 +122,7 @@
     if (clientsResult.ok) {
       clients = clientsResult.data.clients
       handshakes = clientsResult.data.handshakes
+      observationDisabled = clientsResult.data.observationDisabled
     } else {
       clientsError = clientsResult.error
     }
@@ -161,11 +176,19 @@
     {/if}
 
     <h2>Served EndDevices: connection status</h2>
-    <p class="note">
-      Cross references GET /api/served/edev (the served roster) against the connected-client
-      snapshot above, by LFDI: a served EndDevice that has never issued a request shows "never
-      connected" instead of being indistinguishable from one that is actively polling.
-    </p>
+    {#if observationDisabled}
+      <p class="note" data-testid="observation-disabled-note">
+        The connection observer is disabled on this bridge (SEP2_ENABLE_CCM). Connection status
+        below is unknown for every served device, not "never connected": a device may be actively
+        polling with nothing here to show it.
+      </p>
+    {:else}
+      <p class="note">
+        Cross references GET /api/served/edev (the served roster) against the connected-client
+        snapshot above, by LFDI: a served EndDevice that has never issued a request shows "never
+        connected" instead of being indistinguishable from one that is actively polling.
+      </p>
+    {/if}
     {#if servedError}
       <p class="error" data-testid="served-status-error">
         Served EndDevice roster unavailable: {servedError}
@@ -191,6 +214,8 @@
               <td>
                 {#if row.connected}
                   <span class="badge connected" data-testid="status-badge">connected</span>
+                {:else if observationDisabled}
+                  <span class="badge unknown-status" data-testid="status-badge">unknown</span>
                 {:else}
                   <span class="badge never-connected" data-testid="status-badge"
                     >never connected</span
@@ -298,7 +323,8 @@
   }
 
   .badge.never-connected,
-  .badge.unknown {
+  .badge.unknown,
+  .badge.unknown-status {
     background: #9a6700;
   }
 
