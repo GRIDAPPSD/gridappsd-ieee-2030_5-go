@@ -285,14 +285,18 @@ func TestAdminUIConfigZeroValueMapsToDisabledShape(t *testing.T) {
 	}
 }
 
-// TestSEP2EmbedConfigObservationAgreesWithAdminUI pins P5 (PR 108
-// round 3 review MEDIUM): sep2EmbedConfig's decision to null the
-// observer and adminUIConfig's ObservationDisabled field are two
-// projections of the SAME fact (ccmObservationDisabled) and must never
-// disagree. Table-driven over both values of SEP2EnableCCM, with a
-// real non-nil connHook so "Observer == nil" actually distinguishes the
-// two cases (a nil connHook would make Observer nil regardless of
-// SEP2EnableCCM, collapsing the case this test exists to catch).
+// TestSEP2EmbedConfigObservationAgreesWithAdminUI asserts sep2EmbedConfig's
+// decision to null the observer and adminUIConfig's ObservationDisabled
+// field are two projections of the SAME fact (ccmObservationDisabled) and
+// must never disagree. Table-driven over both values of SEP2EnableCCM AND
+// SEP2CCMAllowNoObserver: varying SEP2EnableCCM alone leaves
+// SEP2CCMAllowNoObserver at its zero value in every case, so a second
+// disabling condition added only at sep2EmbedConfig's call site (keyed on
+// SEP2CCMAllowNoObserver, not routed through ccmObservationDisabled) would
+// pass unnoticed. A real non-nil connHook makes "Observer == nil" actually
+// distinguish the two cases (a nil connHook would make Observer nil
+// regardless of SEP2EnableCCM, collapsing the case this test exists to
+// catch).
 func TestSEP2EmbedConfigObservationAgreesWithAdminUI(t *testing.T) {
 	t.Parallel()
 
@@ -300,14 +304,16 @@ func TestSEP2EmbedConfigObservationAgreesWithAdminUI(t *testing.T) {
 	var connHook connobs.Hook
 
 	for _, enableCCM := range []bool{false, true} {
-		cfg := config{SEP2EnableCCM: enableCCM}
-		embedCfg := sep2EmbedConfig(cfg, policy, &connHook, sep2embed.DeviceCertModeDevMint)
-		adminCfg := adminUIConfig(cfg)
+		for _, allowNoObserver := range []bool{false, true} {
+			cfg := config{SEP2EnableCCM: enableCCM, SEP2CCMAllowNoObserver: allowNoObserver}
+			embedCfg := sep2EmbedConfig(cfg, policy, &connHook, sep2embed.DeviceCertModeDevMint)
+			adminCfg := adminUIConfig(cfg)
 
-		observerNil := embedCfg.Observer == nil
-		if adminCfg.ObservationDisabled != observerNil {
-			t.Errorf("SEP2EnableCCM=%v: adminUIConfig.ObservationDisabled = %v, sep2EmbedConfig.Observer == nil = %v; want equal",
-				enableCCM, adminCfg.ObservationDisabled, observerNil)
+			observerNil := embedCfg.Observer == nil
+			if adminCfg.ObservationDisabled != observerNil {
+				t.Errorf("SEP2EnableCCM=%v SEP2CCMAllowNoObserver=%v: adminUIConfig.ObservationDisabled = %v, sep2EmbedConfig.Observer == nil = %v; want equal",
+					enableCCM, allowNoObserver, adminCfg.ObservationDisabled, observerNil)
+			}
 		}
 	}
 }
@@ -516,12 +522,11 @@ func TestBuildSEP2PolicyDefaultProgramFlowsThroughAndValidates(t *testing.T) {
 	}
 }
 
-// TestLogCCMObserverDisabledChoiceLogsWhenEnabled pins round 2 LOW 3:
-// the startup log line naming the operator's explicit SEP2_ENABLE_CCM /
-// SEP2_CCM_ALLOW_NO_OBSERVER choice had no test; deleting it left the
-// suite green. Asserts the line names the mandatory suite and every
-// panel consequence validate's refusal text also names (config.go),
-// not just some of them.
+// TestLogCCMObserverDisabledChoiceLogsWhenEnabled asserts the startup log
+// line naming the operator's explicit SEP2_ENABLE_CCM /
+// SEP2_CCM_ALLOW_NO_OBSERVER choice names the mandatory suite and every
+// panel consequence validate's refusal text also names (config.go), not
+// just some of them.
 func TestLogCCMObserverDisabledChoiceLogsWhenEnabled(t *testing.T) {
 	buf := captureLog(t)
 

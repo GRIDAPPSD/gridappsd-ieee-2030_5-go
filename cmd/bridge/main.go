@@ -599,12 +599,12 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 // disabled for cfg: today exactly cfg.SEP2EnableCCM, but named as its
 // own function so sep2EmbedConfig's decision to pass a nil Observer and
 // adminUIConfig's ObservationDisabled field can never answer this
-// question differently. PR 108 round 3 review MEDIUM: with each caller
-// asserting cfg.SEP2EnableCCM independently, a mutant adding a second
-// disabling condition to sep2EmbedConfig alone left the full suite
-// green; deriving both from this one function closes that by
-// construction, and TestSEP2EmbedConfigObservationAgreesWithAdminUI
-// below pins the two projections' agreement directly as well.
+// question differently. With each caller asserting cfg.SEP2EnableCCM
+// independently, a second disabling condition added to sep2EmbedConfig
+// alone would leave the full suite green; deriving both from this one
+// function closes that by construction, and
+// TestSEP2EmbedConfigObservationAgreesWithAdminUI below pins the two
+// projections' agreement directly as well.
 func ccmObservationDisabled(cfg config) bool {
 	return cfg.SEP2EnableCCM
 }
