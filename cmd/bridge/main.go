@@ -245,7 +245,7 @@ func run(ctx context.Context, cfg config) error {
 		// already refused to reach this line unless SEP2CCMAllowNoObserver
 		// is also set: this log records that the operator made that choice
 		// explicitly, not that the bridge made it for them.
-		log.Printf("bridge: SEP2_ENABLE_CCM is set with SEP2_CCM_ALLOW_NO_OBSERVER: serving ONLY TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 (a client unable to offer it is refused, not served over GCM), with the connection observer disabled as explicitly accepted (the admin UI connected-clients panel will show no live connections until GRIDAPPSD/ieee-2030_5-server-go#583 adds handshake observation for the CCM-8 listener)")
+		log.Printf("bridge: SEP2_ENABLE_CCM is set with SEP2_CCM_ALLOW_NO_OBSERVER: serving ONLY TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 (a client unable to offer it is refused, not served over GCM, and the refusal reaches this log but not the admin UI), with the connection observer disabled as explicitly accepted (the admin UI connected-clients panel will show every served device's status as unknown, not connected or disconnected, until GRIDAPPSD/ieee-2030_5-server-go#583 adds handshake observation for the CCM-8 listener)")
 	}
 
 	// The embed seeds its EndDevice/DER stores from reg, so it must be

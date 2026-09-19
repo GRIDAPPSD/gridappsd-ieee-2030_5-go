@@ -120,10 +120,14 @@ type config struct {
 	// requires: without it, validate refuses to start rather than
 	// silently dropping the connection observer under CCM. Defaults
 	// false, mirroring AllowPlaintext's explicit-opt-in shape. Setting it
-	// accepts, until GRIDAPPSD/ieee-2030_5-server-go#583 ships, the loss
-	// of the rejected-device record, per-LFDI last-seen, and request
-	// counts and paths the observer would otherwise carry; the admin
-	// UI's connected-clients panel shows no live connections either way.
+	// accepts, until GRIDAPPSD/ieee-2030_5-server-go#583 ships:
+	//   - the loss of the rejected-device record, per-LFDI last-seen, and
+	//     request counts and paths the observer would otherwise carry;
+	//   - the admin UI's connected-clients panel showing every served
+	//     device's status as unknown, not connected or never connected
+	//     (ConnectedClients.svelte's observationDisabled state);
+	//   - a refused handshake (a client that cannot offer CCM-8) reaching
+	//     the process log (sepTLS.WrapCCMListener) but never the panel.
 	SEP2CCMAllowNoObserver bool
 
 	// SEP2NotificationAllowLoopback lets subscription notificationURIs
@@ -1082,7 +1086,9 @@ func (c config) validate() error {
 			"config: SEP2_ENABLE_CCM / -sep2-enable-ccm is set without SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer: " +
 				"the CCM-8 listener has no handshake-observation seam yet, so serving it would silently drop the connection observer, " +
 				"losing the rejected-device record, per-LFDI last-seen, and request counts and paths; " +
-				"set SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer=true to accept that loss until " +
+				"the admin UI panel would show every served device's connection status as unknown, not connected or disconnected; " +
+				"and a client unable to offer CCM-8 would be refused with the refusal reaching the process log but never the panel; " +
+				"set SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer=true to accept those losses until " +
 				"GRIDAPPSD/ieee-2030_5-server-go#583 adds the seam, or leave SEP2_ENABLE_CCM unset")
 	}
 	return nil
