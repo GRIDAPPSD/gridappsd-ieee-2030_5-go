@@ -743,6 +743,11 @@ func TestLoadConfigSEP2EnableCCMBadBool(t *testing.T) {
 // "Dropping the observer to obtain it is not acceptable: it silently
 // deletes the rejected-device record"), and the error must name both
 // settings so an operator reading it knows exactly what to set.
+//
+// This is the informed-consent surface for issue 82's seven losses, so
+// each assertion below pins a distinguishing substring of a separate
+// loss clause in config.go: removing any one clause turns exactly that
+// assertion red.
 func TestLoadConfigSEP2EnableCCMRequiresObserverAck(t *testing.T) {
 	t.Setenv("SEP2_ENABLE_CCM", "true")
 	t.Setenv("SEP2_CCM_ALLOW_NO_OBSERVER", "")
@@ -756,6 +761,19 @@ func TestLoadConfigSEP2EnableCCMRequiresObserverAck(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SEP2_CCM_ALLOW_NO_OBSERVER") {
 		t.Errorf("error should name SEP2_CCM_ALLOW_NO_OBSERVER: %v", err)
+	}
+	for _, loss := range []string{
+		"rejected-device record",
+		"per-LFDI last-seen",
+		"request counts and paths",
+		"served-status table would show every served device's connection status as unknown",
+		"connected-clients table would show no clients rather than admitting it cannot tell",
+		"handshake-attempts table would show no handshakes rather than admitting it cannot tell",
+		"refusal reaching the process log but never the panel",
+	} {
+		if !strings.Contains(err.Error(), loss) {
+			t.Errorf("error should name the loss %q: %v", loss, err)
+		}
 	}
 }
 
