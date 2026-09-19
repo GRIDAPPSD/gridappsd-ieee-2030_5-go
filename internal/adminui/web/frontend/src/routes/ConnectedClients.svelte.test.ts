@@ -169,11 +169,49 @@ describe('ConnectedClients', () => {
     expect(handshakesError).toHaveTextContent('request failed with status 500')
   })
 
+  it('badges served devices "unknown", not "never connected", when the /api/clients fetch fails', async () => {
+    // #101 round 3 review HIGH: the served-status section ignored
+    // clientsError entirely and rendered servedRows regardless, so a
+    // device the panel has no data about was badged "never connected",
+    // the exact false claim this PR exists to remove, just reached by a
+    // fetch failure instead of a config flag. Reproduced first with a
+    // scratch test (removed) before this permanent one was written.
+    vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
+      if (path === '/api/clients') {
+        return { ok: false, error: 'request failed with status 500', status: 500 }
+      }
+      return {
+        ok: true,
+        data: [
+          {
+            id: 'edev-1',
+            lfdi: 'LFDI-MAYBE-POLLING',
+            sfdi: 'SFDI1',
+            href: '/edev/LFDI-MAYBE-POLLING',
+            enabled: true,
+            ders: [],
+          },
+        ],
+      }
+    })
+
+    render(ConnectedClients)
+
+    await screen.findByTestId('clients-error')
+    const note = screen.getByTestId('served-status-clients-error-note')
+    expect(note).toHaveTextContent('request failed with status 500')
+
+    const badges = screen.getAllByTestId('status-badge')
+    expect(badges).toHaveLength(1)
+    expect(badges[0]).toHaveTextContent('unknown')
+    expect(badges[0]).not.toHaveTextContent('never connected')
+  })
+
   it('badges every served device "unknown", not "never connected", when observation is disabled', async () => {
-    // PR 108 review HIGH 2: with the connection observer off
-    // (SEP2_ENABLE_CCM), clients is always [] regardless of real
-    // traffic, so the panel must not assert the false "never connected"
-    // verdict for an actively polling device.
+    // #101: with the connection observer off (SEP2_ENABLE_CCM), clients
+    // is always [] regardless of real traffic, so the panel must not
+    // assert a false "connected" or "never connected" verdict for an
+    // actively polling device, in any of its three sections.
     vi.spyOn(api, 'fetchJSON').mockImplementation(async (path: string) => {
       if (path === '/api/clients') {
         return { ok: true, data: { clients: [], handshakes: [], observationDisabled: true } }
@@ -202,6 +240,21 @@ describe('ConnectedClients', () => {
     expect(badges).toHaveLength(1)
     expect(badges[0]).toHaveTextContent('unknown')
     expect(badges[0]).not.toHaveTextContent('never connected')
+
+    // Round 3 review MEDIUM: the top "Connected clients" table and the
+    // "Handshake attempts" table both asserted "No clients connected
+    // yet." / "No handshake attempts recorded yet." while observation
+    // was off, the same false-positive claim the served-status badge
+    // above was already fixed for.
+    expect(screen.queryByTestId('clients-empty')).toBeNull()
+    const clientsNote = screen.getByTestId('clients-observation-disabled')
+    expect(clientsNote).toHaveTextContent('disabled')
+    expect(clientsNote).not.toHaveTextContent('No clients connected')
+
+    expect(screen.queryByTestId('handshakes-empty')).toBeNull()
+    const handshakesNote = screen.getByTestId('handshakes-observation-disabled')
+    expect(handshakesNote).toHaveTextContent('disabled')
+    expect(handshakesNote).not.toHaveTextContent('No handshake attempts')
   })
 
   it('badges a never-observed served device "never connected" when observation is enabled (default)', async () => {
