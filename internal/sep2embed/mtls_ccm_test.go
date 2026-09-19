@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,8 +162,18 @@ func TestCCMListenerRefusesGCMOnlyClient(t *testing.T) {
 	conn := gotls.Client(raw, cfg)
 	hsCtx, hsCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer hsCancel()
-	if err := conn.HandshakeContext(hsCtx); err == nil {
+	err = conn.HandshakeContext(hsCtx)
+	if err == nil {
 		t.Fatal("handshake from a GCM-only client against the CCM listener: want an error, got nil (the listener must not fall back to GCM)")
+	}
+	// PR 108 review LOW: asserting only that the handshake errs lets a
+	// future change break it for an unrelated reason and still pass.
+	// "handshake failure" is the alert the client actually receives for
+	// a cipher-suite mismatch (the server's more specific reason, "no
+	// cipher suite supported by both client and server", is logged
+	// server side only, never sent over the wire).
+	if !strings.Contains(err.Error(), "handshake failure") {
+		t.Errorf("handshake error = %q, want a cipher-suite-mismatch message", err.Error())
 	}
 }
 

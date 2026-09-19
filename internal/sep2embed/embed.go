@@ -89,6 +89,9 @@ type Config struct {
 	// 2030.5-2018 section 6.7) via core's forked crypto/tls. False (the
 	// default) serves the stdlib GCM fallback, which is still mTLS: this
 	// knob selects the cipher suite, not whether TLS is required.
+	// EXCLUSIVE, not merely preferred: a client unable to offer CCM-8 is
+	// refused the handshake, never served over GCM (newCCMOnlyListener).
+	// Mutually exclusive with Observer; see errObserverRequiresGCM.
 	EnableCCM bool
 
 	// ShutdownTimeout bounds Run's graceful drain after ctx is
@@ -230,10 +233,14 @@ type Config struct {
 	ResolvePostRate func(lfdi string) (uint32, bool)
 
 	// Observer is the per-LFDI connection observer.
-	// Nil (the zero value) disables observation entirely: New falls back
-	// to delegating listener construction to sep2srv.New exactly as
-	// before, and buildHandler wires a nil-safe pass-through in place of
-	// the request-observation middleware. When non-nil, every
+	// Nil (the zero value) disables observation entirely. With EnableCCM
+	// unset, New falls back to delegating listener construction to
+	// sep2srv.New exactly as before, and buildHandler wires a nil-safe
+	// pass-through in place of the request-observation middleware. With
+	// EnableCCM set, Observer MUST be nil (New refuses the combination
+	// otherwise, see errObserverRequiresGCM) and New instead builds the
+	// CCM-only listener itself (newCCMOnlyListener), which has no
+	// handshake-observation seam of its own. When non-nil, every
 	// authenticated request is recorded via Observer.RecordRequest, and
 	// (GCM/default listener only; see errObserverRequiresGCM) every mTLS
 	// connection attempt that reaches certificate verification (i.e. the

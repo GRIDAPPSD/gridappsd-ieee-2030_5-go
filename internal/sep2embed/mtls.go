@@ -28,14 +28,16 @@ import (
 var errObserverRequiresGCM = errors.New("sep2embed: Config.Observer is not supported with Config.EnableCCM (the CCM-8 listener has no handshake-observation seam yet)")
 
 // observedMTLSServer is a drop-in replacement for *sep2srv.Server (it
-// satisfies the protocolServer interface embed.go defines) used only
-// when a *connobs.Hook is supplied via Config.Observer: it builds the
+// satisfies the protocolServer interface embed.go defines). Built by
+// newObservedMTLSListener below when Config.Observer is set: it builds the
 // SAME mTLS tls.Config core's own sep2srv.New would build for the
 // GCM/default path (via the same exported
 // sepTLS.NewServerTLSConfigWithExtraCAs call, with the same cert/key/CA
 // inputs), but wraps VerifyPeerCertificate to additively RECORD each
 // connection attempt's accept/reject verdict, reason, and LFDI-match
 // into hook before returning the verifier's own real result unchanged.
+// The CCM-only path (newCCMOnlyListener) reuses this same struct as a
+// plain listener/httpSrv container: no hook, no recording wrapper.
 //
 // Why this exists: core's pkg/sep2srv exposes no seam from outside the
 // package for observing the mTLS handshake (no VerifyConnection or
