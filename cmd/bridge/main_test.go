@@ -285,6 +285,33 @@ func TestAdminUIConfigZeroValueMapsToDisabledShape(t *testing.T) {
 	}
 }
 
+// TestSEP2EmbedConfigObservationAgreesWithAdminUI pins P5 (PR 108
+// round 3 review MEDIUM): sep2EmbedConfig's decision to null the
+// observer and adminUIConfig's ObservationDisabled field are two
+// projections of the SAME fact (ccmObservationDisabled) and must never
+// disagree. Table-driven over both values of SEP2EnableCCM, with a
+// real non-nil connHook so "Observer == nil" actually distinguishes the
+// two cases (a nil connHook would make Observer nil regardless of
+// SEP2EnableCCM, collapsing the case this test exists to catch).
+func TestSEP2EmbedConfigObservationAgreesWithAdminUI(t *testing.T) {
+	t.Parallel()
+
+	policy := sep2config.DefaultPolicy()
+	var connHook connobs.Hook
+
+	for _, enableCCM := range []bool{false, true} {
+		cfg := config{SEP2EnableCCM: enableCCM}
+		embedCfg := sep2EmbedConfig(cfg, policy, &connHook, sep2embed.DeviceCertModeDevMint)
+		adminCfg := adminUIConfig(cfg)
+
+		observerNil := embedCfg.Observer == nil
+		if adminCfg.ObservationDisabled != observerNil {
+			t.Errorf("SEP2EnableCCM=%v: adminUIConfig.ObservationDisabled = %v, sep2EmbedConfig.Observer == nil = %v; want equal",
+				enableCCM, adminCfg.ObservationDisabled, observerNil)
+		}
+	}
+}
+
 // TestBuildSEP2PolicyNeitherFlagSetMatchesDefaultPolicy verifies the
 // no-op contract at the policy layer: a zero-value config (no
 // -sep2-registration-pin, no -sep2-registration-pin-file) produces a
@@ -486,5 +513,43 @@ func TestBuildSEP2PolicyDefaultProgramFlowsThroughAndValidates(t *testing.T) {
 	tooLong := strings.Repeat("x", 33)
 	if _, err := buildSEP2Policy(config{SEP2ProgramDescription: &tooLong}); err == nil {
 		t.Error("buildSEP2Policy accepted a 33-character description, want a boot-time refusal (sep.xsd String32)")
+	}
+}
+
+// TestLogCCMObserverDisabledChoiceLogsWhenEnabled pins round 2 LOW 3:
+// the startup log line naming the operator's explicit SEP2_ENABLE_CCM /
+// SEP2_CCM_ALLOW_NO_OBSERVER choice had no test; deleting it left the
+// suite green. Asserts the line names the mandatory suite and every
+// panel consequence validate's refusal text also names (config.go),
+// not just some of them.
+func TestLogCCMObserverDisabledChoiceLogsWhenEnabled(t *testing.T) {
+	buf := captureLog(t)
+
+	logCCMObserverDisabledChoice(config{SEP2EnableCCM: true})
+
+	got := buf.String()
+	for _, want := range []string{
+		"SEP2_ENABLE_CCM",
+		"SEP2_CCM_ALLOW_NO_OBSERVER",
+		"CCM_8",
+		"served-status table",
+		"connected-clients and handshake-attempts tables",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log output %q does not contain %q", got, want)
+		}
+	}
+}
+
+// TestLogCCMObserverDisabledChoiceSilentWhenDisabled confirms the
+// function is a no-op on the default (SEP2EnableCCM false) path: the
+// startup log carries no line about a choice the operator never made.
+func TestLogCCMObserverDisabledChoiceSilentWhenDisabled(t *testing.T) {
+	buf := captureLog(t)
+
+	logCCMObserverDisabledChoice(config{SEP2EnableCCM: false})
+
+	if got := buf.String(); got != "" {
+		t.Errorf("log output = %q, want empty (SEP2EnableCCM false)", got)
 	}
 }
