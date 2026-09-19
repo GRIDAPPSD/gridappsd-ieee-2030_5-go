@@ -155,6 +155,10 @@ func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs [
 	}
 	cfg.CipherSuites = []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8}
 
+	if err := requireCCMVerification(cfg); err != nil {
+		return nil, sep2srv.Identity{}, err
+	}
+
 	if len(cfg.Certificates) == 0 {
 		return nil, sep2srv.Identity{}, errors.New("sep2embed: CCM TLS config has no server certificate")
 	}
@@ -169,6 +173,24 @@ func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs [
 	}
 
 	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), nil), identity, nil
+}
+
+// requireCCMVerification refuses a CCM config that no longer enforces
+// client-certificate verification. Unlike newObservedMTLSListener above,
+// which only WRAPS an existing VerifyPeerCertificate it does not own,
+// newCCMOnlyListener mutates a *gotls.Config another module builds
+// (NewCCMServerConfigWithExtraCAs): the same class of breakage the GCM
+// sibling's own nil-VerifyPeerCertificate check (above) guards against,
+// applied here so a future core change weakening ClientAuth or dropping
+// VerifyPeerCertificate cannot silently serve an unverified listener.
+func requireCCMVerification(cfg *gotls.Config) error {
+	if cfg.VerifyPeerCertificate == nil {
+		return errors.New("sep2embed: CCM TLS config has no VerifyPeerCertificate (core API changed?)")
+	}
+	if cfg.ClientAuth != gotls.RequireAnyClientCert {
+		return fmt.Errorf("sep2embed: CCM TLS config ClientAuth = %v, want RequireAnyClientCert (core API changed?)", cfg.ClientAuth)
+	}
+	return nil
 }
 
 // newRecordingVerifier builds the additive VerifyPeerCertificate closure

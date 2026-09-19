@@ -305,3 +305,45 @@ func TestCCMListenerServesAuthenticatedRequest(t *testing.T) {
 		t.Errorf("GET /dcap over CCM: status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }
+
+// TestRequireCCMVerification is the guard newCCMOnlyListener now runs
+// (PR 108 review MEDIUM 3): newObservedMTLSListener's sibling check at
+// mtls.go:81 only wraps an existing VerifyPeerCertificate it does not
+// own; this constructor mutates a *gotls.Config another module builds,
+// so it needs its own check that a core change has not silently dropped
+// verification. Table-driven over the config shape a future core bump
+// could plausibly return, proving each case actually trips the guard.
+func TestRequireCCMVerification(t *testing.T) {
+	t.Parallel()
+
+	valid := func() *gotls.Config {
+		return &gotls.Config{
+			ClientAuth:            gotls.RequireAnyClientCert,
+			VerifyPeerCertificate: func([][]byte, [][]*x509.Certificate) error { return nil },
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*gotls.Config)
+		wantErr bool
+	}{
+		{"unmodified config", func(*gotls.Config) {}, false},
+		{"VerifyPeerCertificate nil", func(c *gotls.Config) { c.VerifyPeerCertificate = nil }, true},
+		{"ClientAuth relaxed to NoClientCert", func(c *gotls.Config) { c.ClientAuth = gotls.NoClientCert }, true},
+		{"ClientAuth relaxed to RequestClientCert", func(c *gotls.Config) { c.ClientAuth = gotls.RequestClientCert }, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := valid()
+			tc.mutate(cfg)
+			err := requireCCMVerification(cfg)
+			if tc.wantErr && err == nil {
+				t.Error("requireCCMVerification: want an error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("requireCCMVerification: want nil, got %v", err)
+			}
+		})
+	}
+}
