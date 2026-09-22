@@ -1,0 +1,18 @@
+# EnergyConsumer enumeration with House linkage
+    PREFIX c:  <http://iec.ch/TC57/CIM100#>
+    SELECT ?ecid ?ecname (SAMPLE(?houseraw) as ?house) WHERE {
+    VALUES ?fdrid {"DEADBEEF-0000-0000-0000-000000000123"}
+    ?ec a c:EnergyConsumer.
+    ?ec c:Equipment.EquipmentContainer ?fdr.
+    ?fdr c:IdentifiedObject.mRID ?fdrid.
+    ?ec c:IdentifiedObject.mRID ?ecid.
+    ?ec c:IdentifiedObject.name ?ecname.
+    OPTIONAL {
+      ?h a c:House.
+      ?h c:House.EnergyConsumer ?ec.
+      BIND(?h as ?houseraw)
+    }
+    }
+    GROUP by ?ecid ?ecname
+    ORDER by ?ecid
+    

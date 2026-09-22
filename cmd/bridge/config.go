@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -199,6 +200,22 @@ type config struct {
 	// but empty PIN file is rejected outright by
 	// loadRegistrationPINFile rather than producing an empty map here.
 	SEP2RegistrationPINs map[string]uint32
+
+	// SEP2BatteryLegs is the optional, explicit list of utility battery
+	// leg EnergyConsumer mRIDs, loaded verbatim from the plain-text file
+	// at -sep2-battery-leg-list-file (one mRID per line, blank lines and
+	// "#" comments ignored). The CIM model carries no type or link that
+	// marks a battery leg the way c:House.EnergyConsumer marks a house
+	// load (see internal/cim's sparqlQueryEnergyConsumers doc comment),
+	// so these must be named rather than discovered; bootstrapRegistry
+	// checks every entry against the live model at boot (an
+	// EnergyConsumer on the configured feeder, not also a house load)
+	// before registering it. Nil means the flag was not set: zero legs
+	// configured is indistinguishable from "flag absent" here, matching
+	// SEP2RegistrationPINs's shape, because loadBatteryLegListFile
+	// rejects an existing but empty file outright rather than producing
+	// an empty slice.
+	SEP2BatteryLegs []string
 
 	// SEP2PollRate and SEP2PostRate are the optional fleet-wide IEEE
 	// 2030.5 poll and post intervals, in seconds, from -sep2-poll-rate and
@@ -491,6 +508,16 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&registrationPINFileFlag, "sep2-registration-pin-file", "",
 		"path to a JSON object mapping device LFDI to that device's IEEE 2030.5 registration PIN; unset means no per-device PINs are configured")
 
+	// sep2-battery-leg-list-file registers with an empty string default
+	// and is resolved (flag, then env) after Parse below, matching the
+	// poll/post rate flags' precedence dance rather than the PIN flags'
+	// flag-only one: an operator running the bridge against a fixed
+	// co-simulation feeder wants this set once in the environment, not
+	// repeated on every invocation's command line.
+	var batteryLegListFileFlag string
+	fs.StringVar(&batteryLegListFileFlag, "sep2-battery-leg-list-file", "",
+		"path to a plain-text file of utility battery leg EnergyConsumer mRIDs, one per line, in the model's form (upper case, no leading underscore); blank lines and lines starting with # are ignored (env: SEP2_BATTERY_LEG_LIST_FILE); unset means no utility battery legs are registered")
+
 	// sep2-poll-rate and sep2-post-rate register an empty-string default
 	// for the same reason the PIN flags above do: a numeric flag default
 	// cannot represent "unset", and unset is a distinct, load-bearing
@@ -608,6 +635,21 @@ func loadConfig(args []string) (config, error) {
 			return config{}, err
 		}
 		cfg.SEP2RegistrationPINs = pins
+	}
+
+	// batteryLegListFileFlag resolves here for the same reason the PIN
+	// fields do: a malformed file must stop the bridge at config load,
+	// before any network I/O. Flag wins over env, matching every other
+	// non-credential field's precedence in this loader.
+	if batteryLegListFileFlag == "" {
+		batteryLegListFileFlag = os.Getenv("SEP2_BATTERY_LEG_LIST_FILE")
+	}
+	if batteryLegListFileFlag != "" {
+		legs, err := loadBatteryLegListFile(batteryLegListFileFlag)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.SEP2BatteryLegs = legs
 	}
 
 	// Rate flags resolve here alongside the PIN flags, and for the same
@@ -1053,6 +1095,66 @@ func loadRegistrationPINFile(path string) (map[string]uint32, error) {
 		pins[lfdi] = uint32(i)
 	}
 	return pins, nil
+}
+
+// batteryLegMRIDPattern is an ALLOWLIST for the shape of a battery-leg
+// mRID line in a -sep2-battery-leg-list-file: the model's bare,
+// uppercase-hex-and-dash mRID form (e.g.
+// "CA0A0024-DA79-4395-9B05-6A7B9DE0AED9"), the same shape
+// internal/cim's queries store c:IdentifiedObject.mRID in. Rejecting
+// anything outside [0-9A-F-] is what "upper case, no leading
+// underscore" in the file-format contract means in practice: a
+// lowercase or underscore-prefixed entry (the form some spreadsheet
+// exports carry, see craigpnnl/EPRI_Client#62) is a format error here,
+// not a value this loader normalizes.
+var batteryLegMRIDPattern = regexp.MustCompile(`^[0-9A-F-]{8,}$`)
+
+// loadBatteryLegListFile reads and validates the plain-text file at
+// path: one EnergyConsumer mRID per line, in the model's form (upper
+// case, no leading underscore; see batteryLegMRIDPattern), with blank
+// lines and lines starting with "#" ignored. It rejects a malformed
+// line and a mRID repeated within the file, each by name, and never
+// falls back to an empty or partial list on a bad file: an operator's
+// path typo or a malformed entry must fail the boot outright, mirroring
+// loadRegistrationPINFile's fail-closed shape.
+//
+// This function checks only the file's own syntax and internal
+// consistency. Whether each mRID actually names an EnergyConsumer on
+// the configured feeder, and whether it is also a house load, is a
+// model-dependent question this loader cannot answer without a network
+// round trip; bootstrapRegistry checks both against the live CIM model
+// at boot, per issue #115.
+func loadBatteryLegListFile(path string) ([]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("config: -sep2-battery-leg-list-file %q does not exist", path)
+		}
+		return nil, fmt.Errorf("config: -sep2-battery-leg-list-file %q is not readable: %w", path, err)
+	}
+
+	seen := make(map[string]struct{})
+	var legs []string
+	for i, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !batteryLegMRIDPattern.MatchString(line) {
+			return nil, fmt.Errorf(
+				"config: -sep2-battery-leg-list-file %q: line %d: %q is not an mRID in the model's form (upper case, no leading underscore)",
+				path, i+1, line)
+		}
+		if _, dup := seen[line]; dup {
+			return nil, fmt.Errorf("config: -sep2-battery-leg-list-file %q: mRID %q is duplicated", path, line)
+		}
+		seen[line] = struct{}{}
+		legs = append(legs, line)
+	}
+	if len(legs) == 0 {
+		return nil, fmt.Errorf("config: -sep2-battery-leg-list-file %q contains no mRIDs", path)
+	}
+	return legs, nil
 }
 
 // resolveCred returns the first non-empty value among the parsed flag,

@@ -9,7 +9,10 @@ The bridge binary's entry point.
    `fieldbus.MessageBus`, including the two-step GOSS token
    authentication.
 2. Queries the configured CIM feeder for inverter, solar, and battery
-   DERs.
+   PowerElectronicsConnection DERs, plus (see
+   [../../docs/CONFIGURATION.md](../../docs/CONFIGURATION.md)) any
+   EnergyConsumer house loads the model marks structurally and any
+   utility battery legs named in `SEP2_BATTERY_LEG_LIST_FILE`.
 3. Derives a real, certificate-backed IEEE 2030.5 identity (LFDI per
    spec section 6.3.4, SFDI per section 6.3.3) for each device and
    starts the embedded mTLS server (`internal/sep2embed`) those

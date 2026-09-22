@@ -36,6 +36,7 @@ func goldenQueryCases() []goldenQueryCase {
 		{name: "inverter", call: (*Client).QueryInverter},
 		{name: "all_der_groups", call: (*Client).QueryAllDERGroups},
 		{name: "pec_count", call: (*Client).QueryPECCount},
+		{name: "energy_consumers", call: (*Client).QueryEnergyConsumers},
 	}
 }
 

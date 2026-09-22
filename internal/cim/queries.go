@@ -195,6 +195,45 @@ const (
     }
     `
 
+	// sparqlQueryEnergyConsumers enumerates every EnergyConsumer on the
+	// feeder (issue #115: the bridge's PEC-only discovery above never
+	// sees house loads or utility battery legs, since both are modeled
+	// as EnergyConsumer, not PowerElectronicsConnection). Each row
+	// carries the EC's identity plus a "house" binding that is present
+	// when the EC is the target of a c:House.EnergyConsumer link and
+	// absent otherwise: that link is the ONLY structural marker this
+	// feeder carries for a house load, so the caller reads a non-empty
+	// "house" binding as "this EC is a house". A battery leg has no
+	// such marker (or any other), so bootstrapRegistry checks its
+	// configured list against this same row set instead of querying for
+	// legs directly. GROUP BY collapses the OPTIONAL House join's
+	// possible multiple matches (one EC can carry more than one House,
+	// see the feeder inventory) to one row per EC, matching every other
+	// device-enumeration template in this file.
+	//
+	// The join is restricted to the feeder container the same way every
+	// other template here is: c:IdentifiedObject.name is not a unique
+	// key store-wide, so joining only by name would silently pick up an
+	// EnergyConsumer from an unrelated model.
+	sparqlQueryEnergyConsumers = `# EnergyConsumer enumeration with House linkage
+    PREFIX c:  <http://iec.ch/TC57/CIM100#>
+    SELECT ?ecid ?ecname (SAMPLE(?houseraw) as ?house) WHERE {
+    VALUES ?fdrid {"%s"}
+    ?ec a c:EnergyConsumer.
+    ?ec c:Equipment.EquipmentContainer ?fdr.
+    ?fdr c:IdentifiedObject.mRID ?fdrid.
+    ?ec c:IdentifiedObject.mRID ?ecid.
+    ?ec c:IdentifiedObject.name ?ecname.
+    OPTIONAL {
+      ?h a c:House.
+      ?h c:House.EnergyConsumer ?ec.
+      BIND(?h as ?houseraw)
+    }
+    }
+    GROUP by ?ecid ?ecname
+    ORDER by ?ecid
+    `
+
 	sparqlQueryAllDERGroups = `#get all EndDeviceGroup
     PREFIX  xsd:  <http://www.w3.org/2001/XMLSchema#>
     PREFIX  r:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -339,6 +378,20 @@ func (c *Client) QueryInverter(ctx context.Context, feederID string) (*QueryData
 // this template is unchanged from the Python upstream.
 func (c *Client) QueryAllDERGroups(ctx context.Context, feederID string) (*QueryDataResult, error) {
 	return c.queryFeederTemplate(ctx, sparqlQueryAllDERGroups, feederID)
+}
+
+// QueryEnergyConsumers runs the EnergyConsumer enumeration SPARQL
+// against the powergrid-model service, scoped to feederID. The result
+// has one row per EnergyConsumer on the feeder, each carrying a "house"
+// binding that is present when that EnergyConsumer is a house load (the
+// target of a c:House.EnergyConsumer link) and absent otherwise. Callers
+// use this both to find house loads by model structure and to check a
+// caller-supplied mRID (such as a configured utility battery leg)
+// against the feeder's real EnergyConsumer set; see
+// sparqlQueryEnergyConsumers's doc comment and cmd/bridge/main.go's
+// projectEnergyConsumers and resolveBatteryLegs.
+func (c *Client) QueryEnergyConsumers(ctx context.Context, feederID string) (*QueryDataResult, error) {
+	return c.queryFeederTemplate(ctx, sparqlQueryEnergyConsumers, feederID)
 }
 
 // QueryPECCount runs the discovery-count SPARQL against the

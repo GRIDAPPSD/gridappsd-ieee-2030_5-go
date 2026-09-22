@@ -209,7 +209,7 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	reg, err := bootstrapRegistry(ctx, cimClient, cfg.FeederMRID, cfg.SEP2ServerCertDir, mode)
+	reg, err := bootstrapRegistry(ctx, cimClient, cfg.FeederMRID, cfg.SEP2ServerCertDir, mode, cfg.SEP2BatteryLegs)
 	if err != nil {
 		return err
 	}
@@ -932,13 +932,24 @@ func deviceCertMode(s string) (sep2embed.DeviceCertMode, error) {
 	}
 }
 
-// bootstrapRegistry runs the three CIM enumeration queries against the
-// feeder, dedupes by mRID (a single device may surface in multiple
-// queries when the upstream filter is open), derives each device's real
-// IEEE 2030.5 identity from its certificate (spec sections
-// 6.3.4 LFDI / 6.3.3 SFDI, via sep2embed.EnsureDeviceIdentities), and
-// populates a fresh registry from the result. Returns the populated
-// registry; the caller does not need a separate add step.
+// bootstrapRegistry runs the three PowerElectronicsConnection (PEC)
+// enumeration queries against the feeder, dedupes by mRID (a single
+// device may surface in multiple queries when the upstream filter is
+// open), then (issue #115) queries the feeder's EnergyConsumers to add
+// house loads (found structurally, by their c:House link) and
+// caller-supplied utility battery legs (found by name nowhere; each
+// entry in batteryLegs is checked against this same EnergyConsumer
+// query before it is trusted). It derives every device's real IEEE
+// 2030.5 identity from its certificate (spec sections 6.3.4 LFDI /
+// 6.3.3 SFDI, via sep2embed.EnsureDeviceIdentities) and populates a
+// fresh registry from the result. Returns the populated registry; the
+// caller does not need a separate add step.
+//
+// batteryLegs is cfg.SEP2BatteryLegs: nil or empty means no utility
+// battery legs are configured, in which case this function adds only
+// whatever house loads the model itself carries (see
+// projectEnergyConsumers and resolveBatteryLegs below for the model
+// checks each entry must pass).
 //
 // certDir and mode are threaded straight through to
 // EnsureDeviceIdentities: certDir is cfg.SEP2ServerCertDir, the SAME
@@ -947,7 +958,7 @@ func deviceCertMode(s string) (sep2embed.DeviceCertMode, error) {
 // sep2embed.EnsureDeviceIdentities's doc comment for why this must run
 // before sep2embed.New's own load-or-create call against the same
 // dir). mode selects dev-mint vs fail-closed preprovisioned sourcing.
-func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir string, mode sep2embed.DeviceCertMode) (*registry.Registry, error) {
+func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir string, mode sep2embed.DeviceCertMode, batteryLegs []string) (*registry.Registry, error) {
 	log.Printf("bridge: querying CIM feeder %s", feederMRID)
 
 	qctx, cancel := context.WithTimeout(ctx, queryTimeout)
@@ -1072,6 +1083,31 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 		log.Printf("bridge: %s", msg)
 	}
 
+	// EnergyConsumer devices (issue #115): the PEC-only discovery above
+	// finds neither the feeder's house loads nor its utility battery
+	// legs, since both are modeled as EnergyConsumer, not
+	// PowerElectronicsConnection. This runs, and can add house devices,
+	// even when batteryLegs is empty: houses are found by model
+	// structure, not by the caller-supplied list. It runs strictly after
+	// the PEC drop-check above so that check's len(devices) stays
+	// PEC-sourced only, per issue #115's done-when.
+	ecRes, err := c.QueryEnergyConsumers(qctx, feederMRID)
+	if err != nil {
+		return nil, fmt.Errorf("query energy consumers: %w", err)
+	}
+	houseDevices, feederECs, err := projectEnergyConsumers(ecRes)
+	if err != nil {
+		return nil, err
+	}
+	legDevices, err := resolveBatteryLegs(batteryLegs, feederECs)
+	if err != nil {
+		return nil, fmt.Errorf("bridge: feeder %s: %w", feederMRID, err)
+	}
+	log.Printf("bridge: feeder %s: %d house load(s), %d utility battery leg(s) from EnergyConsumer discovery",
+		feederMRID, len(houseDevices), len(legDevices))
+	devices = append(devices, houseDevices...)
+	devices = append(devices, legDevices...)
+
 	mrids := make([]string, len(devices))
 	for i, d := range devices {
 		mrids[i] = d.MRID
@@ -1112,6 +1148,72 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 	log.Printf("bridge: registry populated: %d entries (LFDI/SFDI certificate-derived per spec 6.3.4/6.3.3)",
 		reg.Len())
 	return reg, nil
+}
+
+// ecRow is one EnergyConsumer's projection from
+// cim.Client.QueryEnergyConsumers: its display name and whether it is a
+// house load, per that query's "house" binding.
+type ecRow struct {
+	Name    string
+	IsHouse bool
+}
+
+// projectEnergyConsumers projects res (a QueryEnergyConsumers result)
+// into the feeder's house-load devices and a lookup of every
+// EnergyConsumer the query found, keyed by mRID. houses is deduped by
+// construction: QueryEnergyConsumers already GROUPs by ?ecid, so each
+// mRID here binds at most once, and a row with an empty mRID (a
+// malformed or missing ?ecid binding) is skipped the same way
+// queryDevices skips an empty ?pecid. A repeated mRID across rows (the
+// model binding the same EC under two different names) is a data error
+// this function refuses rather than silently picking one.
+func projectEnergyConsumers(res *cim.QueryDataResult) (houses []cimDevice, ecs map[string]ecRow, err error) {
+	ecs = make(map[string]ecRow)
+	if res == nil {
+		return nil, ecs, nil
+	}
+	for _, row := range res.Results.Bindings {
+		mrid := row["ecid"].Value
+		if mrid == "" {
+			continue
+		}
+		if _, dup := ecs[mrid]; dup {
+			return nil, nil, fmt.Errorf("query energy consumers: mRID %q returned more than one row", mrid)
+		}
+		r := ecRow{Name: row["ecname"].Value, IsHouse: row["house"].Value != ""}
+		ecs[mrid] = r
+		if r.IsHouse {
+			houses = append(houses, cimDevice{MRID: mrid, Name: r.Name})
+		}
+	}
+	return houses, ecs, nil
+}
+
+// resolveBatteryLegs checks every mRID in legs against feederECs (the
+// feeder's EnergyConsumers, from projectEnergyConsumers) and returns
+// one cimDevice per leg, in legs' own order. A leg mRID absent from
+// feederECs is not an EnergyConsumer on the configured feeder; a leg
+// mRID present but flagged IsHouse is also a house load. Either stops
+// boot, naming the offending mRID, per issue #115's done-when. legs is
+// assumed already deduplicated against itself: loadBatteryLegListFile
+// rejects a repeated line at config load, so no duplicate check runs
+// here.
+func resolveBatteryLegs(legs []string, feederECs map[string]ecRow) ([]cimDevice, error) {
+	if len(legs) == 0 {
+		return nil, nil
+	}
+	out := make([]cimDevice, 0, len(legs))
+	for _, mrid := range legs {
+		r, ok := feederECs[mrid]
+		if !ok {
+			return nil, fmt.Errorf("battery leg mRID %q is not an EnergyConsumer on the configured feeder", mrid)
+		}
+		if r.IsHouse {
+			return nil, fmt.Errorf("battery leg mRID %q is also a house load", mrid)
+		}
+		out = append(out, cimDevice{MRID: mrid, Name: r.Name})
+	}
+	return out, nil
 }
 
 // cimDevice is the slim projection of a SPARQL binding row this bridge
