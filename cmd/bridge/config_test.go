@@ -1179,6 +1179,193 @@ func TestLoadConfigRegistrationPINBothFlagsTogether(t *testing.T) {
 	}
 }
 
+// TestLoadConfigBatteryLegListFileLoadsExactList verifies a valid
+// -sep2-battery-leg-list-file populates SEP2BatteryLegs with exactly
+// the mRIDs in the file, in file order, with blank lines and "#"
+// comments dropped.
+func TestLoadConfigBatteryLegListFileLoadsExactList(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legs.txt")
+	body := "# utility battery legs\nAAAAAAAA-0000-0000-0000-000000000001\n\nAAAAAAAA-0000-0000-0000-000000000002\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := loadConfig([]string{"-sep2-battery-leg-list-file=" + path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	want := []string{"AAAAAAAA-0000-0000-0000-000000000001", "AAAAAAAA-0000-0000-0000-000000000002"}
+	if len(cfg.SEP2BatteryLegs) != len(want) {
+		t.Fatalf("SEP2BatteryLegs = %v, want %v", cfg.SEP2BatteryLegs, want)
+	}
+	for i, mrid := range want {
+		if cfg.SEP2BatteryLegs[i] != mrid {
+			t.Errorf("SEP2BatteryLegs[%d] = %q, want %q", i, cfg.SEP2BatteryLegs[i], mrid)
+		}
+	}
+}
+
+// TestLoadConfigBatteryLegListFileEnvOverride verifies
+// SEP2_BATTERY_LEG_LIST_FILE is read when the flag is absent, matching
+// the poll/post rate flags' env-fallback shape rather than the PIN
+// flags' flag-only one.
+func TestLoadConfigBatteryLegListFileEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legs.txt")
+	if err := os.WriteFile(path, []byte("AAAAAAAA-0000-0000-0000-000000000001\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("SEP2_BATTERY_LEG_LIST_FILE", path)
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.SEP2BatteryLegs) != 1 || cfg.SEP2BatteryLegs[0] != "AAAAAAAA-0000-0000-0000-000000000001" {
+		t.Errorf("SEP2BatteryLegs = %v, want [AAAAAAAA-0000-0000-0000-000000000001]", cfg.SEP2BatteryLegs)
+	}
+}
+
+// TestLoadConfigBatteryLegListFileFlagShadowsEnv matches the precedence
+// pattern the rest of this loader uses: an explicit flag beats an env
+// var pointing somewhere else.
+func TestLoadConfigBatteryLegListFileFlagShadowsEnv(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "env-legs.txt")
+	flagPath := filepath.Join(dir, "flag-legs.txt")
+	if err := os.WriteFile(envPath, []byte("AAAAAAAA-0000-0000-0000-000000000001\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(flagPath, []byte("BBBBBBBB-0000-0000-0000-000000000002\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("SEP2_BATTERY_LEG_LIST_FILE", envPath)
+
+	cfg, err := loadConfig([]string{"-sep2-battery-leg-list-file=" + flagPath})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.SEP2BatteryLegs) != 1 || cfg.SEP2BatteryLegs[0] != "BBBBBBBB-0000-0000-0000-000000000002" {
+		t.Errorf("SEP2BatteryLegs = %v, want [BBBBBBBB-0000-0000-0000-000000000002] (flag must shadow env)", cfg.SEP2BatteryLegs)
+	}
+}
+
+// TestLoadConfigBatteryLegListFileUnset verifies the no-flag, no-env
+// case leaves SEP2BatteryLegs nil: this is the state bootstrapRegistry
+// reads as "no utility battery legs configured".
+func TestLoadConfigBatteryLegListFileUnset(t *testing.T) {
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SEP2BatteryLegs != nil {
+		t.Errorf("SEP2BatteryLegs = %v, want nil", cfg.SEP2BatteryLegs)
+	}
+}
+
+// TestLoadConfigBatteryLegListFileMissing verifies a nonexistent path
+// is a distinct, named loadConfig error, matching
+// TestLoadConfigRegistrationPINFileMissing's shape for the PIN file.
+func TestLoadConfigBatteryLegListFileMissing(t *testing.T) {
+	_, err := loadConfig([]string{"-sep2-battery-leg-list-file=/nonexistent/legs.txt"})
+	if err == nil {
+		t.Fatal("expected an error for a missing battery-leg list file, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error should say the file does not exist: %v", err)
+	}
+}
+
+// TestLoadConfigBatteryLegListFileMalformedLine verifies a line that is
+// not an mRID in the model's form (here, lowercase, which
+// batteryLegMRIDPattern rejects) is a named error citing the line
+// number and the offending text, and that the parse stops before
+// returning a partial list.
+func TestLoadConfigBatteryLegListFileMalformedLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legs.txt")
+	body := "AAAAAAAA-0000-0000-0000-000000000001\naaaaaaaa-0000-0000-0000-000000000002\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-battery-leg-list-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for a lowercase mRID line, got nil")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("error should name line 2: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not an mRID in the model's form") {
+		t.Errorf("error should say the line is not an mRID in the model's form: %v", err)
+	}
+}
+
+// TestLoadConfigBatteryLegListFileUnderscorePrefixRejected verifies the
+// underscore-prefixed mRID form some CIM tooling emits (accepted
+// elsewhere in this codebase for a feeder mRID) is rejected here: the
+// file-format contract requires the model's bare form.
+func TestLoadConfigBatteryLegListFileUnderscorePrefixRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legs.txt")
+	if err := os.WriteFile(path, []byte("_AAAAAAAA-0000-0000-0000-000000000001\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-battery-leg-list-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for an underscore-prefixed mRID, got nil")
+	}
+	if !strings.Contains(err.Error(), "not an mRID in the model's form") {
+		t.Errorf("error should say the line is not an mRID in the model's form: %v", err)
+	}
+}
+
+// TestLoadConfigBatteryLegListFileDuplicate verifies a mRID repeated
+// within the file is a named error citing the duplicate value, per
+// issue #115's done-when ("A listed mRID that ... is duplicated ...
+// stops boot and names it").
+func TestLoadConfigBatteryLegListFileDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legs.txt")
+	body := "AAAAAAAA-0000-0000-0000-000000000001\nAAAAAAAA-0000-0000-0000-000000000001\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-battery-leg-list-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for a duplicated mRID, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicated") {
+		t.Errorf("error should say the mRID is duplicated: %v", err)
+	}
+	if !strings.Contains(err.Error(), "AAAAAAAA-0000-0000-0000-000000000001") {
+		t.Errorf("error should name the duplicated mRID: %v", err)
+	}
+}
+
+// TestLoadConfigBatteryLegListFileEmpty verifies a file with no mRID
+// lines (comments and blanks only) is rejected outright, matching
+// TestLoadConfigRegistrationPINFileEmptyObject's shape: an empty file
+// must not be indistinguishable from "flag absent".
+func TestLoadConfigBatteryLegListFileEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legs.txt")
+	if err := os.WriteFile(path, []byte("# nothing here\n\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := loadConfig([]string{"-sep2-battery-leg-list-file=" + path})
+	if err == nil {
+		t.Fatal("expected an error for a battery-leg list file with no mRIDs, got nil")
+	}
+	if !strings.Contains(err.Error(), "contains no mRIDs") {
+		t.Errorf("error should say the file has no mRIDs: %v", err)
+	}
+}
+
 // writeProgramFile writes a -sep2-program-file document and returns its path.
 func writeProgramFile(t *testing.T, body string) string {
 	t.Helper()

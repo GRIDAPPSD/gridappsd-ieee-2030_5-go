@@ -112,7 +112,7 @@ func TestBootstrapRegistryEmptyFleetFailsLoud(t *testing.T) {
 	client := cim.NewClient(requester)
 
 	const feederMRID = "_DEADBEEF-0000-0000-0000-000000000001"
-	reg, err := bootstrapRegistry(context.Background(), client, feederMRID, certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, feederMRID, certDir, sep2embed.DeviceCertModeDevMint, nil)
 	if err == nil {
 		t.Fatal("bootstrapRegistry with zero PowerElectronicsConnection rows: want error, got nil")
 	}
@@ -149,7 +149,7 @@ func TestBootstrapRegistryHappyPathNoSpuriousWarning(t *testing.T) {
 
 	buf := captureLog(t)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestBootstrapRegistryLogsDropWhenDiscoveredExceedsProjected(t *testing.T) {
 
 	buf := captureLog(t)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}

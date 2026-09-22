@@ -144,6 +144,13 @@ type kindRoutedMockCIMRequester struct {
 	solarResp    []byte
 	batteryResp  []byte
 	countResp    []byte
+	// ecResp is the canned response for the EnergyConsumer enumeration
+	// query (issue #115). It is nil-checked, not just body-matched: a
+	// caller that does not set it (every pre-#115 test using this mock)
+	// must fall through to inverterResp, exactly as it did before this
+	// field existed, rather than returning an empty (and therefore
+	// unparsable) response for a query those tests never anticipated.
+	ecResp []byte
 }
 
 func (m *kindRoutedMockCIMRequester) Request(_ context.Context, _ string, body []byte) ([]byte, error) {
@@ -155,6 +162,8 @@ func (m *kindRoutedMockCIMRequester) Request(_ context.Context, _ string, body [
 		src = m.solarResp
 	case bytes.Contains(body, []byte("DistStorage")):
 		src = m.batteryResp
+	case bytes.Contains(body, []byte("EnergyConsumer enumeration")) && m.ecResp != nil:
+		src = m.ecResp
 	default:
 		src = m.inverterResp
 	}
@@ -203,7 +212,7 @@ func TestBootstrapRegistryAnchorsIdentityOnPECNotUnit(t *testing.T) {
 	buf := captureLog(t)
 
 	certDir := t.TempDir()
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -373,7 +382,7 @@ func TestBootstrapRegistryDerivesRealCertBackedIdentities(t *testing.T) {
 	requester := &mockCIMRequester{resp: threeDeviceEnvelope(t)}
 	client := cim.NewClient(requester)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -458,7 +467,7 @@ func TestBootstrapRegistryPreprovisionedMissingCertFailsClosed(t *testing.T) {
 	requester := &mockCIMRequester{resp: threeDeviceEnvelope(t)}
 	client := cim.NewClient(requester)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModePreprovisioned)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModePreprovisioned, nil)
 	if err == nil {
 		t.Fatal("bootstrapRegistry in Preprovisioned mode with no preprovisioned certs: want error, got nil")
 	}
@@ -669,7 +678,7 @@ func TestBootstrapRegistryThreadsMaxQIntoRegistryEntry(t *testing.T) {
 	requester := &mockCIMRequester{resp: b}
 	client := cim.NewClient(requester)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -691,6 +700,242 @@ func TestBootstrapRegistryThreadsMaxQIntoRegistryEntry(t *testing.T) {
 	}
 	if withoutMaxQ.MaxQ != nil {
 		t.Errorf("entry mrid-bat-1: MaxQ = %v, want nil (no maxQ binding for this device)", *withoutMaxQ.MaxQ)
+	}
+}
+
+// energyConsumerBinding builds one QueryEnergyConsumers binding row:
+// mRID, name, and (if isHouse) a non-empty "house" URI binding matching
+// what the OPTIONAL c:House.EnergyConsumer join emits (see
+// sparqlQueryEnergyConsumers). Omitting the "house" key entirely when
+// isHouse is false mirrors a SPARQL OPTIONAL that did not bind, not an
+// empty-string value.
+func energyConsumerBinding(mrid, name string, isHouse bool) map[string]any {
+	row := map[string]any{
+		"ecid":   map[string]string{"type": "literal", "value": mrid},
+		"ecname": map[string]string{"type": "literal", "value": name},
+	}
+	if isHouse {
+		row["house"] = map[string]string{"type": "uri", "value": "urn:uuid:house-" + mrid}
+	}
+	return row
+}
+
+// energyConsumersEnvelope wraps rows in the {"data": {...},
+// "responseComplete": true} envelope QueryEnergyConsumers expects.
+func energyConsumersEnvelope(t *testing.T, rows ...map[string]any) []byte {
+	t.Helper()
+	data := map[string]any{
+		"head":    map[string]any{"vars": []string{"ecid", "ecname", "house"}},
+		"results": map[string]any{"bindings": rows},
+	}
+	env := map[string]any{"data": data, "responseComplete": true, "id": "x"}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	return b
+}
+
+// TestBootstrapRegistryAddsHouseDevices is the core issue #115 house
+// path: an EnergyConsumer flagged "house" by projectEnergyConsumers
+// must be registered alongside the PEC-discovered fleet, and a
+// non-house EnergyConsumer that is not on the configured battery-leg
+// list must NOT be, even though it appears in the same query result.
+func TestBootstrapRegistryAddsHouseDevices(t *testing.T) {
+	onePEC := singleRowEnvelope(t, threeDeviceBinding("PEC-1", "PV 1"))
+	requester := &kindRoutedMockCIMRequester{
+		inverterResp: onePEC,
+		solarResp:    onePEC,
+		batteryResp:  onePEC,
+		countResp:    countEnvelope(t, 1),
+		ecResp: energyConsumersEnvelope(t,
+			energyConsumerBinding("HOUSE-1", "tl_house_1_240v", true),
+			energyConsumerBinding("HOUSE-2", "tl_house_2_240v", true),
+			energyConsumerBinding("LEG-1", "utility_bat1_a", false),
+		),
+	}
+	client := cim.NewClient(requester)
+	certDir := t.TempDir()
+
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
+	if err != nil {
+		t.Fatalf("bootstrapRegistry: %v", err)
+	}
+	if got := reg.Len(); got != 3 {
+		t.Fatalf("registry.Len() = %d, want 3 (1 PEC + 2 houses; LEG-1 is not a house and no battery-leg list was configured)", got)
+	}
+	for _, mrid := range []string{"PEC-1", "HOUSE-1", "HOUSE-2"} {
+		if _, ok := reg.Get(mrid); !ok {
+			t.Errorf("registry missing entry for %q", mrid)
+		}
+	}
+	if _, ok := reg.Get("LEG-1"); ok {
+		t.Errorf("registry has an entry for LEG-1, want none: not a house, and no battery-leg list was configured")
+	}
+	entry, _ := reg.Get("HOUSE-1")
+	if entry.Name != "tl_house_1_240v" {
+		t.Errorf("HOUSE-1 entry.Name = %q, want %q", entry.Name, "tl_house_1_240v")
+	}
+}
+
+// TestBootstrapRegistryAddsValidBatteryLegs is the core issue #115
+// battery-leg path: every mRID in batteryLegs that resolves to a
+// non-house EnergyConsumer on the feeder is registered, with its model
+// name carried through.
+func TestBootstrapRegistryAddsValidBatteryLegs(t *testing.T) {
+	onePEC := singleRowEnvelope(t, threeDeviceBinding("PEC-1", "PV 1"))
+	requester := &kindRoutedMockCIMRequester{
+		inverterResp: onePEC,
+		solarResp:    onePEC,
+		batteryResp:  onePEC,
+		countResp:    countEnvelope(t, 1),
+		ecResp: energyConsumersEnvelope(t,
+			energyConsumerBinding("HOUSE-1", "tl_house_1_240v", true),
+			energyConsumerBinding("LEG-1", "utility_bat1_a", false),
+			energyConsumerBinding("LEG-2", "utility_bat1_b", false),
+		),
+	}
+	client := cim.NewClient(requester)
+	certDir := t.TempDir()
+
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, []string{"LEG-1", "LEG-2"})
+	if err != nil {
+		t.Fatalf("bootstrapRegistry: %v", err)
+	}
+	if got := reg.Len(); got != 4 {
+		t.Fatalf("registry.Len() = %d, want 4 (1 PEC + 1 house + 2 battery legs)", got)
+	}
+	entry, ok := reg.Get("LEG-2")
+	if !ok {
+		t.Fatalf("registry missing entry for LEG-2")
+	}
+	if entry.Name != "utility_bat1_b" {
+		t.Errorf("LEG-2 entry.Name = %q, want %q", entry.Name, "utility_bat1_b")
+	}
+}
+
+// TestBootstrapRegistryRejectsBatteryLegNotOnFeeder covers issue #115's
+// first refusal case: a configured battery-leg mRID with no matching
+// row in the feeder's EnergyConsumer set must stop boot, naming the
+// mRID, never silently register a partial fleet.
+func TestBootstrapRegistryRejectsBatteryLegNotOnFeeder(t *testing.T) {
+	onePEC := singleRowEnvelope(t, threeDeviceBinding("PEC-1", "PV 1"))
+	requester := &kindRoutedMockCIMRequester{
+		inverterResp: onePEC,
+		solarResp:    onePEC,
+		batteryResp:  onePEC,
+		countResp:    countEnvelope(t, 1),
+		ecResp:       energyConsumersEnvelope(t, energyConsumerBinding("HOUSE-1", "tl_house_1_240v", true)),
+	}
+	client := cim.NewClient(requester)
+	certDir := t.TempDir()
+
+	_, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, []string{"GHOST-LEG"})
+	if err == nil {
+		t.Fatal("bootstrapRegistry with a battery leg mRID absent from the feeder: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), `"GHOST-LEG"`) || !strings.Contains(err.Error(), "not an EnergyConsumer on the configured feeder") {
+		t.Errorf("error = %v, want it to name GHOST-LEG and say it is not an EnergyConsumer on the configured feeder", err)
+	}
+}
+
+// TestBootstrapRegistryRejectsBatteryLegAlsoHouseLoad covers issue
+// #115's second refusal case: a configured battery-leg mRID that
+// resolves to a house-flagged EnergyConsumer must stop boot, naming the
+// mRID, rather than silently double-registering it or preferring one
+// role over the other.
+func TestBootstrapRegistryRejectsBatteryLegAlsoHouseLoad(t *testing.T) {
+	onePEC := singleRowEnvelope(t, threeDeviceBinding("PEC-1", "PV 1"))
+	requester := &kindRoutedMockCIMRequester{
+		inverterResp: onePEC,
+		solarResp:    onePEC,
+		batteryResp:  onePEC,
+		countResp:    countEnvelope(t, 1),
+		ecResp:       energyConsumersEnvelope(t, energyConsumerBinding("HOUSE-1", "tl_house_1_240v", true)),
+	}
+	client := cim.NewClient(requester)
+	certDir := t.TempDir()
+
+	_, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, []string{"HOUSE-1"})
+	if err == nil {
+		t.Fatal("bootstrapRegistry with a battery leg mRID that is also a house load: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), `"HOUSE-1"`) || !strings.Contains(err.Error(), "also a house load") {
+		t.Errorf("error = %v, want it to name HOUSE-1 and say it is also a house load", err)
+	}
+}
+
+// TestBootstrapRegistryDropCheckComparesPECOnlyOnceEnergyConsumersJoin
+// is the P3 regression test: the discover-vs-project PEC drop check
+// (pecCountLogLine) must keep comparing the discovery count against the
+// PEC-sourced device count, never against the larger total once house
+// and battery-leg EnergyConsumer devices have joined `devices`. Before
+// this fix's ordering (the EnergyConsumer query runs strictly after the
+// drop-check call), a naive change would compare 1 discovered PEC
+// against 4 total devices and warn on every boot with houses configured.
+//
+// This test deliberately does not call t.Parallel(): it uses
+// captureLog, whose doc comment requires non-parallel callers.
+func TestBootstrapRegistryDropCheckComparesPECOnlyOnceEnergyConsumersJoin(t *testing.T) {
+	onePEC := singleRowEnvelope(t, threeDeviceBinding("PEC-1", "PV 1"))
+	requester := &kindRoutedMockCIMRequester{
+		inverterResp: onePEC,
+		solarResp:    onePEC,
+		batteryResp:  onePEC,
+		countResp:    countEnvelope(t, 1),
+		ecResp: energyConsumersEnvelope(t,
+			energyConsumerBinding("HOUSE-1", "tl_house_1_240v", true),
+			energyConsumerBinding("HOUSE-2", "tl_house_2_240v", true),
+			energyConsumerBinding("LEG-1", "utility_bat1_a", false),
+		),
+	}
+	client := cim.NewClient(requester)
+	certDir := t.TempDir()
+	buf := captureLog(t)
+
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, []string{"LEG-1"})
+	if err != nil {
+		t.Fatalf("bootstrapRegistry: %v", err)
+	}
+	if got := reg.Len(); got != 4 {
+		t.Fatalf("registry.Len() = %d, want 4 (1 PEC + 2 houses + 1 leg)", got)
+	}
+	logged := buf.String()
+	if strings.Contains(logged, "bridge: WARNING") {
+		t.Errorf("discover-vs-project check fired a WARNING after EnergyConsumer devices joined; it must keep comparing PEC-sourced rows only, got:\n%s", logged)
+	}
+	if !strings.Contains(logged, "discovered 1 PowerElectronicsConnection object(s), projected 1 device(s); no drops") {
+		t.Errorf("expected the discover-vs-project log line to report 1 discovered / 1 projected (PEC-only, not the 4-device total), got:\n%s", logged)
+	}
+}
+
+// TestBootstrapRegistryUnchangedWithNoBatteryLegsAndNoHouses covers
+// issue #115's third done-when clause: with no battery-leg list
+// configured and no House-flagged EnergyConsumer on the feeder, the
+// registry holds only the PEC-discovered devices, exactly as it did
+// before this change. A non-house EnergyConsumer that was never
+// configured as a battery leg (LOAD-1 here) must not appear.
+func TestBootstrapRegistryUnchangedWithNoBatteryLegsAndNoHouses(t *testing.T) {
+	onePEC := singleRowEnvelope(t, threeDeviceBinding("PEC-1", "PV 1"))
+	requester := &kindRoutedMockCIMRequester{
+		inverterResp: onePEC,
+		solarResp:    onePEC,
+		batteryResp:  onePEC,
+		countResp:    countEnvelope(t, 1),
+		ecResp:       energyConsumersEnvelope(t, energyConsumerBinding("LOAD-1", "load_other", false)),
+	}
+	client := cim.NewClient(requester)
+	certDir := t.TempDir()
+
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
+	if err != nil {
+		t.Fatalf("bootstrapRegistry: %v", err)
+	}
+	if got := reg.Len(); got != 1 {
+		t.Fatalf("registry.Len() = %d, want 1 (PEC-1 only: no battery legs configured, no House objects on the feeder)", got)
+	}
+	if _, ok := reg.Get("LOAD-1"); ok {
+		t.Errorf("registry has an entry for LOAD-1, a non-house EnergyConsumer that was never configured as a battery leg")
 	}
 }
 
