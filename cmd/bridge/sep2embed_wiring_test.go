@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/pem"
 	"encoding/xml"
@@ -274,6 +275,130 @@ func TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS(t *testing.T) {
 
 	// Cancel and confirm Run returns within bounds: the no-goroutine-leak
 	// assertion for the bridge's own wiring path.
+	cancel()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run returned error after ctx cancel: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return within 3s of ctx cancel (goroutine leak or unbounded shutdown)")
+	}
+}
+
+// TestBridgeServesConfiguredOpModMaxLimWOverMTLS is the end-to-end proof for
+// issue #111: an operator-written -sep2-default-control-file reaches the
+// wire, not just the parsed config struct. It goes through the same
+// loadConfig/buildSEP2Policy path run() uses, unlike
+// TestBridgeWiresSEP2EmbedServesSeededDeviceOverMTLS above, which builds its
+// config struct by hand.
+//
+// The href is discovered via Embed.DERPrograms (an in-process accessor,
+// not the property under test) so this test does not depend on the fixed
+// FSA/DERProgram ids sep2embed's own package-internal tests use, which are
+// unexported across the package boundary. The served bytes themselves are
+// read the same way a device would: a real mTLS GET.
+func TestBridgeServesConfiguredOpModMaxLimWOverMTLS(t *testing.T) {
+	t.Parallel()
+
+	certDir := t.TempDir()
+	const mrid = "mrid-maxlimw-test-1"
+
+	identities, err := sep2embed.EnsureDeviceIdentities(certDir, sep2embed.DeviceCertModeDevMint, []string{mrid})
+	if err != nil {
+		t.Fatalf("EnsureDeviceIdentities: %v", err)
+	}
+	reg := registry.New()
+	entry := registry.Entry{MRID: mrid, Name: "MaxLimW Test Inverter", LFDI: identities[mrid].LFDI}
+	if err := reg.Add(entry); err != nil {
+		t.Fatalf("registry.Add: %v", err)
+	}
+
+	controlPath := writeDefaultControlFile(t, `{"opModMaxLimW": 5000}`)
+	cfg, err := loadConfig([]string{
+		"-sep2-server-addr=127.0.0.1:0",
+		"-sep2-server-cert-dir=" + certDir,
+		"-sep2-default-control-file=" + controlPath,
+		// A valid checksum PIN (see pinhelper_test.go's testPolicyWithPIN
+		// doc comment): buildSEP2Policy's validation gate does not care
+		// which value, only that it passes 6.3.5's checksum rule.
+		"-sep2-registration-pin=123455",
+	})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	policy, err := buildSEP2Policy(cfg)
+	if err != nil {
+		t.Fatalf("buildSEP2Policy: %v", err)
+	}
+	if policy.DefaultControl.DERControlBase == nil || policy.DefaultControl.DERControlBase.OpModMaxLimW == nil ||
+		*policy.DefaultControl.DERControlBase.OpModMaxLimW != sep2.PerCent(5000) {
+		t.Fatalf("policy.DefaultControl.DERControlBase.OpModMaxLimW = %+v, want a configured 5000; "+
+			"the wire assertion below cannot be meaningful if the value never reached policy", policy.DefaultControl.DERControlBase)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	embed, err := newSEP2Embed(ctx, cfg, reg, policy, nil, sep2embed.DeviceCertModeDevMint)
+	if err != nil {
+		t.Fatalf("newSEP2Embed: %v", err)
+	}
+	runErr := make(chan error, 1)
+	go func() { runErr <- embed.Run(ctx) }()
+
+	edevs, err := embed.EndDevices(ctx)
+	if err != nil {
+		t.Fatalf("EndDevices: %v", err)
+	}
+	if len(edevs) != 1 {
+		t.Fatalf("EndDevices = %d devices, want 1", len(edevs))
+	}
+	programs, err := embed.DERPrograms(ctx, edevs[0].ID)
+	if err != nil {
+		t.Fatalf("DERPrograms: %v", err)
+	}
+	if len(programs) != 1 || programs[0].DefaultDERControlLink == "" {
+		t.Fatalf("DERPrograms = %+v, want exactly one program with a DefaultDERControlLink", programs)
+	}
+
+	certFile := deviceCertFileForTest(t, certDir, mrid)
+	certDER, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatalf("read device cert %q: %v", certFile, err)
+	}
+	callerKeyPEM, err := os.ReadFile(strings.TrimSuffix(certFile, ".x509") + ".pem")
+	if err != nil {
+		t.Fatalf("read device key for %q: %v", certFile, err)
+	}
+	callerCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	caCertPEM, err := os.ReadFile(filepath.Join(certDir, testCACertFileName))
+	if err != nil {
+		t.Fatalf("read ca.pem: %v", err)
+	}
+	client := deviceClient(t, callerCertPEM, callerKeyPEM, caCertPEM)
+
+	resp, err := client.Get("https://" + embed.Addr() + programs[0].DefaultDERControlLink)
+	if err != nil {
+		t.Fatalf("GET DefaultDERControl: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read DefaultDERControl body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET DefaultDERControl status = %d, want 200\nbody=%s", resp.StatusCode, body)
+	}
+
+	// The bare-element, schema-order form: PerCent marshals as element text,
+	// never multiplier/value children (unlike ActivePower), and this is the
+	// wire proof that the value the operator wrote actually reached it.
+	const want = `<opModMaxLimW>5000</opModMaxLimW>`
+	if !bytes.Contains(body, []byte(want)) {
+		t.Errorf("served DefaultDERControl does not carry %s\nbody=%s", want, body)
+	}
+
 	cancel()
 	select {
 	case err := <-runErr:
