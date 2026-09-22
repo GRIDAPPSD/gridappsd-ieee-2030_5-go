@@ -268,14 +268,16 @@ type config struct {
 	//
 	// Each member is a pointer, and an absent member leaves the compiled-in
 	// value alone rather than resetting it: the file is a set of overrides,
-	// not a replacement document. That distinction is the whole reason it is
-	// not decoded straight into a value type, because false is a meaningful
-	// setting for both members and could not otherwise be told from absent.
+	// not a replacement document. That is why the two booleans are pointers
+	// rather than bare bools (false is a meaningful setting for both and
+	// could not otherwise be told from absent), and why OpModMaxLimW is a
+	// pointer too: 0 is a meaningful percent (full curtailment).
 	//
-	// The shipped default sets NEITHER, which is what makes it command
-	// nothing; see sep2config.DefaultPolicy.
+	// The shipped default sets NONE of the three, which is what makes it
+	// command nothing; see sep2config.DefaultPolicy.
 	SEP2DefaultControlOpModConnect  *bool
 	SEP2DefaultControlOpModEnergize *bool
+	SEP2DefaultControlOpModMaxLimW  *uint16
 
 	// SEP2TelemetryInterval is the period of the DERStatus telemetry
 	// publisher (internal/telemetrypub), from -sep2-telemetry-interval
@@ -541,7 +543,7 @@ func loadConfig(args []string) (config, error) {
 	// the shape an admin UI rewrites.
 	var defaultControlFileFlag string
 	fs.StringVar(&defaultControlFileFlag, "sep2-default-control-file", "",
-		"path to a JSON object configuring the seeded DefaultDERControl, e.g. {\"opModConnect\": true}; "+
+		"path to a JSON object configuring the seeded DefaultDERControl, e.g. {\"opModConnect\": true, \"opModMaxLimW\": 10000}; "+
 			"unset ships a control that commands nothing, leaving each DER on its own IEEE 1547 autonomous behavior")
 
 	// sep2-telemetry-interval registers with an empty-string default and
@@ -691,12 +693,13 @@ func loadConfig(args []string) (config, error) {
 	}
 
 	if defaultControlFileFlag != "" {
-		connect, energize, err := loadDefaultControlFile(defaultControlFileFlag)
+		connect, energize, maxLimW, err := loadDefaultControlFile(defaultControlFileFlag)
 		if err != nil {
 			return config{}, err
 		}
 		cfg.SEP2DefaultControlOpModConnect = connect
 		cfg.SEP2DefaultControlOpModEnergize = energize
+		cfg.SEP2DefaultControlOpModMaxLimW = maxLimW
 	}
 
 	// The telemetry interval resolves flag, then env, then the
@@ -834,27 +837,38 @@ func loadProgramFile(path string) (*uint8, *string, error) {
 	return primacy, description, nil
 }
 
+// maxOpModMaxLimW is PerCent's own XSD range ceiling (IEEE 2030.5-2018
+// Annex B.2.3.4, "PerCent object (UInt16)": 0 to 10000, hundredths of a
+// percent), restated here because loadDefaultControlFile judges
+// representability before core's own sep2.PerCent ever sees the value.
+const maxOpModMaxLimW = 10000
+
 // loadDefaultControlFile reads -sep2-default-control-file: a single JSON
 // object holding the operator's overrides for the seeded DefaultDERControl,
 // the control a device applies when no DERControl is active.
 //
-//	{"opModConnect": true, "opModEnergize": true}
+//	{"opModConnect": true, "opModEnergize": true, "opModMaxLimW": 5000}
 //
-// Both members are optional and each returns nil when absent, so an
+// All three members are optional and each returns nil when absent, so an
 // unmentioned member keeps the compiled-in value rather than being reset.
-// That is why the returns are pointers rather than bare bools: false is a
-// meaningful setting for both, so the zero value cannot double as "absent",
-// and a file setting only one member must not silently clear the other.
+// That is why the two booleans return pointers rather than bare bools
+// (false is a meaningful setting for both, so the zero value cannot double
+// as "absent") and why opModMaxLimW returns a pointer too (0 is a
+// meaningful percent: full curtailment).
 //
-// WHY ONLY THESE TWO MEMBERS. The set is deliberately narrow, and the
-// omissions are decisions rather than unfinished work:
+// WHY opModMaxLimW BUT NOT THE OTHER POWER FIELDS. All three are
+// power-related, but only a cap is exposed here:
 //
-//   - opModTargetW and opModTargetVar are not exposed. Setting either in the
-//     FALLBACK puts the device into a fixed-power mode whenever nothing else
-//     is commanding it, which disables its own autonomous volt-var and
-//     curtailment behavior (IEEE 1547-2018 clause 5.3 mutual exclusivity).
-//     A fallback that suppresses the device's autonomy is not a fallback.
-//   - setGradW and the setES* family are not exposed. sep.xsd:3306 and
+//   - opModMaxLimW is a ceiling on generation (IEEE 2030.5-2018 Annex
+//     B.2.22), not a fixed dispatch: the device still regulates
+//     autonomously below it, so 1547-2018 clause 5.3's mutual-exclusivity
+//     rule for FIXED settings does not reach it.
+//   - opModTargetW and opModTargetVar remain unexposed. Setting either in
+//     the FALLBACK puts the device into a fixed-power mode whenever
+//     nothing else is commanding it, which disables its own autonomous
+//     volt-var and curtailment behavior (clause 5.3). A fallback that
+//     suppresses the device's autonomy is not a fallback.
+//   - setGradW and the setES* family remain unexposed. sep.xsd:3306 and
 //     sep.xsd:3271 say each SHALL update the corresponding DERSettings
 //     value, which is an installer-owned persistent write to the device's
 //     commissioned configuration, not a control-channel default.
@@ -865,13 +879,13 @@ func loadProgramFile(path string) (*uint8, *string, error) {
 // on the wire.
 //
 // Only syntax and JSON type are judged here.
-func loadDefaultControlFile(path string) (opModConnect, opModEnergize *bool, err error) {
+func loadDefaultControlFile(path string) (opModConnect, opModEnergize *bool, opModMaxLimW *uint16, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil, fmt.Errorf("config: -sep2-default-control-file %q does not exist", path)
+			return nil, nil, nil, fmt.Errorf("config: -sep2-default-control-file %q does not exist", path)
 		}
-		return nil, nil, fmt.Errorf("config: -sep2-default-control-file %q is not readable: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("config: -sep2-default-control-file %q is not readable: %w", path, err)
 	}
 
 	var members map[string]any
@@ -880,16 +894,16 @@ func loadDefaultControlFile(path string) (opModConnect, opModEnergize *bool, err
 	if err := dec.Decode(&members); err != nil {
 		var typeErr *json.UnmarshalTypeError
 		if errors.As(err, &typeErr) {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"config: -sep2-default-control-file %q is not a JSON object", path)
 		}
-		return nil, nil, fmt.Errorf("config: -sep2-default-control-file %q is not valid JSON: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("config: -sep2-default-control-file %q is not valid JSON: %w", path, err)
 	}
 
 	for k := range members {
-		if k != "opModConnect" && k != "opModEnergize" {
-			return nil, nil, fmt.Errorf(
-				"config: -sep2-default-control-file %q: unknown member %q (want \"opModConnect\" or \"opModEnergize\"); "+
+		if k != "opModConnect" && k != "opModEnergize" && k != "opModMaxLimW" {
+			return nil, nil, nil, fmt.Errorf(
+				"config: -sep2-default-control-file %q: unknown member %q (want \"opModConnect\", \"opModEnergize\" or \"opModMaxLimW\"); "+
 					"power targets and the setGradW/setES settings are deliberately not configurable here", path, k)
 		}
 	}
@@ -907,12 +921,32 @@ func loadDefaultControlFile(path string) (opModConnect, opModEnergize *bool, err
 		}
 		b, ok := v.(bool)
 		if !ok {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"config: -sep2-default-control-file %q: %q is not a JSON boolean", path, m.name)
 		}
 		*m.out = &b
 	}
-	return opModConnect, opModEnergize, nil
+
+	if v, ok := members["opModMaxLimW"]; ok {
+		n, ok := v.(json.Number)
+		if !ok {
+			return nil, nil, nil, fmt.Errorf(
+				"config: -sep2-default-control-file %q: %q is not a JSON integer", path, "opModMaxLimW")
+		}
+		i, err := n.Int64()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf(
+				"config: -sep2-default-control-file %q: %q value %q is not a base-10 integer", path, "opModMaxLimW", n.String())
+		}
+		if i < 0 || i > maxOpModMaxLimW {
+			return nil, nil, nil, fmt.Errorf(
+				"config: -sep2-default-control-file %q: %q value %d out of range [0, %d]", path, "opModMaxLimW", i, maxOpModMaxLimW)
+		}
+		u := uint16(i)
+		opModMaxLimW = &u
+	}
+
+	return opModConnect, opModEnergize, opModMaxLimW, nil
 }
 
 func parseRateFlag(raw, flagName string) (uint32, error) {

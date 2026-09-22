@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 )
 
@@ -260,6 +262,84 @@ func TestBuildSEP2PolicyDefaultControlFilePartialLeavesOtherFieldUnset(t *testin
 	}
 }
 
+// TestBuildSEP2PolicyDefaultControlFromFileOpModMaxLimW covers the third
+// member end to end: parsed, carried through buildSEP2Policy, and cast to
+// sep2.PerCent on the policy's DERControlBase. The combined body also pins
+// that configuring opModMaxLimW does not disturb an opModConnect set in the
+// same file, the same fill-not-replace invariant the two-bool test above
+// covers for that pair.
+func TestBuildSEP2PolicyDefaultControlFromFileOpModMaxLimW(t *testing.T) {
+	path := writeDefaultControlFile(t, `{"opModConnect": true, "opModMaxLimW": 5000}`)
+
+	policy, err := buildSEP2Policy(mustLoadConfig(t, []string{"-sep2-default-control-file=" + path}))
+	if err != nil {
+		t.Fatalf("buildSEP2Policy: %v", err)
+	}
+	base := policy.DefaultControl.DERControlBase
+	if base == nil {
+		t.Fatal("DefaultControl.DERControlBase = nil, want the configured base")
+	}
+	if base.OpModMaxLimW == nil || *base.OpModMaxLimW != sep2.PerCent(5000) {
+		t.Errorf("DefaultControl.OpModMaxLimW = %v, want a configured 5000", base.OpModMaxLimW)
+	}
+	if base.OpModConnect == nil || !*base.OpModConnect {
+		t.Errorf("DefaultControl.OpModConnect = %v, want the configured true", base.OpModConnect)
+	}
+	if base.OpModEnergize != nil {
+		t.Errorf("DefaultControl.OpModEnergize = %v, want nil; opModMaxLimW must not materialize an unconfigured member", *base.OpModEnergize)
+	}
+}
+
+// TestBuildSEP2PolicyDefaultControlFileOpModMaxLimWOmittedLeavesUnset is the
+// mirror of TestBuildSEP2PolicyDefaultControlFilePartialLeavesOtherFieldUnset
+// for the third member: a file that never names opModMaxLimW must leave the
+// compiled-in nil (no active limit) in place rather than materializing a
+// zero-percent (full curtailment) command.
+func TestBuildSEP2PolicyDefaultControlFileOpModMaxLimWOmittedLeavesUnset(t *testing.T) {
+	path := writeDefaultControlFile(t, `{"opModConnect": true}`)
+
+	policy, err := buildSEP2Policy(mustLoadConfig(t, []string{"-sep2-default-control-file=" + path}))
+	if err != nil {
+		t.Fatalf("buildSEP2Policy: %v", err)
+	}
+	base := policy.DefaultControl.DERControlBase
+	if base == nil {
+		t.Fatal("DefaultControl.DERControlBase = nil, want the configured base")
+	}
+	if base.OpModMaxLimW != nil {
+		t.Errorf("DefaultControl.OpModMaxLimW = %v, want nil; a file that omits the member must not command full curtailment", *base.OpModMaxLimW)
+	}
+}
+
+// TestLoadConfigDefaultControlFileParsesOpModMaxLimWRange covers the parse
+// layer's accepted boundary values: 0 (full curtailment) and 10000 (100%,
+// the shipped no-op equivalent an operator might still write explicitly) are
+// both legal PerCent values (IEEE 2030.5-2018 Annex B.2.3.4), not just the
+// interior 5000 the other tests use.
+func TestLoadConfigDefaultControlFileParsesOpModMaxLimWRange(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want uint16
+	}{
+		{"zero (full curtailment)", `{"opModMaxLimW": 0}`, 0},
+		{"upper bound (100%)", `{"opModMaxLimW": 10000}`, 10000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeDefaultControlFile(t, tt.body)
+			cfg, err := loadConfig([]string{"-sep2-default-control-file=" + path})
+			if err != nil {
+				t.Fatalf("loadConfig(%s): %v", tt.body, err)
+			}
+			if cfg.SEP2DefaultControlOpModMaxLimW == nil || *cfg.SEP2DefaultControlOpModMaxLimW != tt.want {
+				t.Errorf("SEP2DefaultControlOpModMaxLimW = %v, want %d", cfg.SEP2DefaultControlOpModMaxLimW, tt.want)
+			}
+		})
+	}
+}
+
 // TestLoadConfigDefaultControlFileRejectsBadInput: every unusable file is a
 // load error naming the flag, never a silently ignored setting. The
 // misspelled-member and unsupported-member cases matter most here, because an
@@ -277,6 +357,11 @@ func TestLoadConfigDefaultControlFileRejectsBadInput(t *testing.T) {
 		{"deliberately unsupported ramp setting", `{"setGradW": 100}`},
 		{"boolean as a string", `{"opModConnect": "true"}`},
 		{"boolean as a number", `{"opModEnergize": 1}`},
+		{"opModMaxLimW negative", `{"opModMaxLimW": -1}`},
+		{"opModMaxLimW above range", `{"opModMaxLimW": 10001}`},
+		{"opModMaxLimW fractional", `{"opModMaxLimW": 50.5}`},
+		{"opModMaxLimW as a string", `{"opModMaxLimW": "5000"}`},
+		{"opModMaxLimW as a boolean", `{"opModMaxLimW": true}`},
 	}
 
 	for _, tt := range tests {

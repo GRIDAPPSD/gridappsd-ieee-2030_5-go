@@ -560,7 +560,7 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 	// rather than assumes: a nil base here would panic on the first
 	// assignment, and the failure would be a crash at boot for an operator
 	// who did nothing wrong.
-	if cfg.SEP2DefaultControlOpModConnect != nil || cfg.SEP2DefaultControlOpModEnergize != nil {
+	if cfg.SEP2DefaultControlOpModConnect != nil || cfg.SEP2DefaultControlOpModEnergize != nil || cfg.SEP2DefaultControlOpModMaxLimW != nil {
 		if policy.DefaultControl.DERControlBase == nil {
 			policy.DefaultControl.DERControlBase = &sep2.DERControlBase{}
 		}
@@ -569,6 +569,10 @@ func buildSEP2Policy(cfg config) (sep2config.SEP2Policy, error) {
 		}
 		if cfg.SEP2DefaultControlOpModEnergize != nil {
 			policy.DefaultControl.DERControlBase.OpModEnergize = cfg.SEP2DefaultControlOpModEnergize
+		}
+		if cfg.SEP2DefaultControlOpModMaxLimW != nil {
+			maxLimW := sep2.PerCent(*cfg.SEP2DefaultControlOpModMaxLimW)
+			policy.DefaultControl.DERControlBase.OpModMaxLimW = &maxLimW
 		}
 	}
 
