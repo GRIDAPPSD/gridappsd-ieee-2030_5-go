@@ -221,6 +221,13 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	return nil
 }
 
+// parseCAPair parses a CA certificate and private key and confirms the
+// key can actually sign for that certificate before returning either.
+// ParseKeyPEM only ever returns ECDSA keys, so a cert whose public key
+// is not ECDSA can never match one and is refused on that basis too.
+// Without this check a mismatched pair loads cleanly and every device
+// certificate it signs fails to verify later, at the client, with no
+// indication the CA material itself was the cause.
 func parseCAPair(certPEM, keyPEM []byte) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	cert, err := sep2cert.ParseCertificatePEM(certPEM)
 	if err != nil {
@@ -229,6 +236,10 @@ func parseCAPair(certPEM, keyPEM []byte) (*x509.Certificate, *ecdsa.PrivateKey, 
 	key, err := sep2cert.ParseKeyPEM(keyPEM)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse CA key: %w", err)
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !key.PublicKey.Equal(pub) {
+		return nil, nil, fmt.Errorf("CA key %s does not match CA certificate %s", caKeyFileName, caCertFileName)
 	}
 	return cert, key, nil
 }
