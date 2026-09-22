@@ -1,6 +1,7 @@
 package sep2embed
 
 import (
+	"crypto/ecdsa"
 	"errors"
 	"os"
 	"path/filepath"
@@ -181,6 +182,62 @@ func TestParseCAPairRejectsInvalidPEM(t *testing.T) {
 	}
 	if _, _, err := parseCAPair(validCertPEM, []byte("not a key")); err == nil {
 		t.Error("parseCAPair with invalid key PEM: want error, got nil")
+	}
+}
+
+// TestParseCAPairRejectsMismatchedKey is the regression test for the
+// defect the CA cert and key not being checked against each other: a
+// key from one CA paired with a certificate from a different CA parses
+// cleanly on both sides individually but must not be accepted as a
+// pair, since a CA signing with that key could never be verified by
+// that certificate.
+func TestParseCAPairRejectsMismatchedKey(t *testing.T) {
+	t.Parallel()
+
+	certPEM, _, err := sep2cert.GenerateCA(sep2cert.CAOptions{CommonName: "ca-a"})
+	if err != nil {
+		t.Fatalf("GenerateCA(ca-a): %v", err)
+	}
+	_, otherKeyPEM, err := sep2cert.GenerateCA(sep2cert.CAOptions{CommonName: "ca-b"})
+	if err != nil {
+		t.Fatalf("GenerateCA(ca-b): %v", err)
+	}
+
+	_, _, err = parseCAPair(certPEM, otherKeyPEM)
+	if err == nil {
+		t.Fatal("parseCAPair with a key from a different CA: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), caCertFileName) || !strings.Contains(err.Error(), caKeyFileName) {
+		t.Errorf("error must name both %s and %s: %v", caCertFileName, caKeyFileName, err)
+	}
+}
+
+// TestParseCAPairAcceptsMatchingPair is the companion assertion to
+// TestParseCAPairRejectsMismatchedKey: the same check must not refuse a
+// genuinely matching pair. Asserted both ways (error is nil AND the
+// returned cert/key are the parsed pair, key.PublicKey.Equal the cert's
+// public key) so the mismatch check cannot pass by refusing everything.
+func TestParseCAPairAcceptsMatchingPair(t *testing.T) {
+	t.Parallel()
+
+	certPEM, keyPEM, err := sep2cert.GenerateCA(sep2cert.CAOptions{CommonName: "ca-matching"})
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+
+	cert, key, err := parseCAPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("parseCAPair with a matching pair: want nil error, got %v", err)
+	}
+	if cert.Subject.CommonName != "ca-matching" {
+		t.Errorf("cert.Subject.CommonName = %q, want %q", cert.Subject.CommonName, "ca-matching")
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("cert.PublicKey type = %T, want *ecdsa.PublicKey", cert.PublicKey)
+	}
+	if !key.PublicKey.Equal(pub) {
+		t.Error("returned key does not match returned cert's public key")
 	}
 }
 
