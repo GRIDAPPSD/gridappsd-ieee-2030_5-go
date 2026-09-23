@@ -115,7 +115,7 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 	servingCAFile := filepath.Join(dir, servingCACertFileName)
 	servingCAKeyFile := filepath.Join(dir, servingCAKeyFileName)
 
-	state, present, missing, err := classifyCertDir(dir, mode)
+	state, present, missing, required, err := classifyCertDir(dir, mode)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -130,18 +130,18 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 	// expected to exit non-zero rather than start degraded; there is no
 	// serviceable state to start into, because the server has no identity.
 	if !modeMayWriteCertMaterial(mode) {
-		return "", "", "", incompleteCertDirError(errCertDirWriteForbidden, dir, mode, present, missing,
+		return "", "", "", incompleteCertDirError(errCertDirWriteForbidden, dir, mode, present, missing, required,
 			"This mode never creates certificate material, so it cannot supply the missing files and did not write anything. Place them in that directory before starting, or start in dev-mint mode if this is a development host.")
 	}
 
 	switch state {
 	case certDirPartial:
-		return "", "", "", incompleteCertDirError(errCertDirPartial, dir, mode, present, missing,
+		return "", "", "", incompleteCertDirError(errCertDirPartial, dir, mode, present, missing, required,
 			"Nothing was written. Minting the missing files would create a CA private key that does not match the CA certificate already there, so this process refuses rather than guessing. Either add the missing files, or move the existing ones aside to let a fresh development set be minted.")
 
 	case certDirEmpty:
 		if werr := certDirWritable(dir); werr != nil {
-			return "", "", "", incompleteCertDirError(errCertDirNotWritable, dir, mode, present, missing,
+			return "", "", "", incompleteCertDirError(errCertDirNotWritable, dir, mode, present, missing, required,
 				fmt.Sprintf("Nothing was written. The directory could not be written to, so nothing can be minted either: %v. Either preprovision the missing files, or make the directory writable by this process.", werr))
 		}
 

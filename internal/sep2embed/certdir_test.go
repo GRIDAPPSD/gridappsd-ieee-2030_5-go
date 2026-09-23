@@ -660,7 +660,7 @@ func TestClassifyCertDirModeRequiredSets(t *testing.T) {
 				}
 			}
 
-			state, _, _, err := classifyCertDir(dir, tc.mode)
+			state, _, _, _, err := classifyCertDir(dir, tc.mode)
 			if err != nil {
 				t.Fatalf("classifyCertDir: %v", err)
 			}
