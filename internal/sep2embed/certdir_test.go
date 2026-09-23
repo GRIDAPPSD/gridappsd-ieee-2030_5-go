@@ -629,7 +629,7 @@ func TestClassifyCertDirModeRequiredSets(t *testing.T) {
 			wantState: certDirComplete,
 		},
 		{
-			// #118 P4: preprovisioned mode never signs, so it has no use
+			// Preprovisioned mode never signs, so it has no use
 			// for the serving CA's private key; a stray serving-ca.pem
 			// with no key must not force one, the same asymmetry
 			// requiredServerCertFiles already gives ca-key.pem.

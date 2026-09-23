@@ -164,7 +164,7 @@ func TestEnsureServerIdentityMintsCrossCheckedCAs(t *testing.T) {
 // mintTestDeviceClient's InsecureSkipVerify pattern: the security lane's
 // review of this PR found that flag disables ALL chain verification, not
 // only the hostname match its comment claims, which is a pre-existing,
-// out-of-scope defect (P6) and exactly why no in-repo test could see
+// out-of-scope defect and exactly why no in-repo test could see
 // this issue. This test's tls.Config never sets it.
 //
 // The decision: a fresh mint keeps minting two distinct CAs (matching
@@ -172,7 +172,7 @@ func TestEnsureServerIdentityMintsCrossCheckedCAs(t *testing.T) {
 // above), rather than collapsing to one CA on mint. A client holding
 // only the device CA (ca.pem) genuinely cannot verify a freshly minted
 // bridge; that is asserted below as the expected, not silent, half of
-// this test. What #118 P2 required was making that impossible to miss:
+// this test. What #118 required was making that impossible to miss:
 // ensureServerIdentity's mint-path warning now names both CAs' roles
 // explicitly (see certs.go), and the conformance harness and docs are
 // updated in this same fix round to use the serving CA as the anchor a
@@ -267,8 +267,8 @@ func TestFreshMintServerAuthNeedsServingCAAnchor(t *testing.T) {
 		t.Errorf("a client trusting the serving CA could not verify a freshly minted bridge: %v", err)
 	}
 
-	// The anchor a pre-split client held. This is the P2 finding's
-	// stranding case, pinned here as an explicit, asserted expectation
+	// The anchor a pre-split client held. This is the stranding case,
+	// pinned here as an explicit, asserted expectation
 	// rather than a silent gap: it must keep failing, loudly, with a
 	// chain-trust error rather than succeeding by accident.
 	err = dial(deviceCACertPEM)
@@ -587,7 +587,7 @@ func requiredClause(t *testing.T, msg string) string {
 }
 
 // TestEnsureServerIdentityPreprovisionedSpareCAKeyMessageNamesOnlyRequired
-// is the regression test for #118 P3: incompleteCertDirError's "requires"
+// is the regression test for #118: incompleteCertDirError's "requires"
 // clause used to be built as present union missing, and present is every
 // managed file classifyCertDir found, required or not. A preprovisioned
 // directory holding nothing but a spare ca-key.pem (left over from, say,
