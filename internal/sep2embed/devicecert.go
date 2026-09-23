@@ -18,13 +18,17 @@ import (
 
 // deviceCertDirName is the fixed subdirectory of the embedded server's
 // CertDir holding per-device identity certificates (and, in DevMint
-// mode, their private keys). Devices are signed by the SAME CA the
-// embedded server's own leaf certificate is signed by (see
-// ensureServerIdentity), so a device cert minted or loaded here is
-// automatically trusted by the mTLS listener once it starts: no
-// ExtraClientCAs wiring is needed for this same-CA shape. This mirrors
-// how internal/sep2embed/embed_test.go's mintTestDeviceClient already
-// signs its own throwaway test device certs against the same CA.
+// mode, their private keys). Devices are signed by the DEVICE CA (see
+// ensureServerIdentity and loadDeviceSigningCA), which is also the
+// trust bundle the mTLS listener verifies clients against, so a device
+// cert minted or loaded here is automatically trusted once the listener
+// starts: no ExtraClientCAs wiring is needed for that. Since #118 split
+// the CAs, the device CA is not necessarily the CA that signs the
+// embedded server's own leaf (the serving CA); the two default to the
+// same material and only diverge once an operator supplies a separate
+// serving CA pair. This mirrors how
+// internal/sep2embed/embed_test.go's mintTestDeviceClient already signs
+// its own throwaway test device certs against the device CA.
 const deviceCertDirName = "devices"
 
 // deviceCertFileNameSafeRune reports whether r is safe to appear

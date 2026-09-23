@@ -2,6 +2,7 @@ package sep2embed
 
 import (
 	"crypto/ecdsa"
+	"crypto/x509"
 	"errors"
 	"os"
 	"path/filepath"
@@ -32,9 +33,12 @@ func TestEnsureServerIdentityMintsWhenAbsent(t *testing.T) {
 		t.Errorf("caFile = %q, want %q", caFile, filepath.Join(certDir, caCertFileName))
 	}
 
-	// All four files exist (the CA key file is the one not returned).
+	// All six files exist (the two CA key files are the ones not
+	// returned): #118 mints a device CA and a serving CA, not one CA.
 	caKeyFile := filepath.Join(certDir, caKeyFileName)
-	for _, p := range []string{certFile, keyFile, caFile, caKeyFile} {
+	servingCAFile := filepath.Join(certDir, servingCACertFileName)
+	servingCAKeyFile := filepath.Join(certDir, servingCAKeyFileName)
+	for _, p := range []string{certFile, keyFile, caFile, caKeyFile, servingCAFile, servingCAKeyFile} {
 		info, err := os.Stat(p)
 		if err != nil {
 			t.Fatalf("Stat(%q): %v", p, err)
@@ -52,9 +56,9 @@ func TestEnsureServerIdentityMintsWhenAbsent(t *testing.T) {
 		t.Errorf("Stat(certDir).Mode().Perm() = %o, want %o", perm, certDirPerm)
 	}
 
-	// The minted material must actually parse as a valid CA-signed server
-	// leaf: load-bearing for New's downstream sep2tls.NewServerTLSConfig
-	// call, not just "files exist".
+	// The minted material must actually parse as valid CA certificates
+	// and a CA-signed server leaf: load-bearing for New's downstream
+	// sep2tls.NewServerTLSConfig call, not just "files exist".
 	caCertPEM, err := os.ReadFile(caFile)
 	if err != nil {
 		t.Fatalf("ReadFile(caFile): %v", err)
@@ -64,7 +68,19 @@ func TestEnsureServerIdentityMintsWhenAbsent(t *testing.T) {
 		t.Fatalf("ParseCertificatePEM(ca): %v", err)
 	}
 	if !caCert.IsCA {
-		t.Errorf("minted CA cert has IsCA = false")
+		t.Errorf("minted device CA cert has IsCA = false")
+	}
+
+	servingCACertPEM, err := os.ReadFile(servingCAFile)
+	if err != nil {
+		t.Fatalf("ReadFile(servingCAFile): %v", err)
+	}
+	servingCACert, err := sep2cert.ParseCertificatePEM(servingCACertPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificatePEM(servingCA): %v", err)
+	}
+	if !servingCACert.IsCA {
+		t.Errorf("minted serving CA cert has IsCA = false")
 	}
 
 	serverCertPEM, err := os.ReadFile(certFile)
@@ -75,9 +91,94 @@ func TestEnsureServerIdentityMintsWhenAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCertificatePEM(server): %v", err)
 	}
-	if err := serverCert.CheckSignatureFrom(caCert); err != nil {
-		t.Errorf("minted server cert is not signed by the minted CA: %v", err)
+	// #118: the server's own leaf is signed by the SERVING CA, not the
+	// device CA that caFile returns; see
+	// TestEnsureServerIdentityMintsCrossCheckedCAs for the negative half
+	// of this assertion (the leaf must NOT verify under the device CA).
+	if err := serverCert.CheckSignatureFrom(servingCACert); err != nil {
+		t.Errorf("minted server cert is not signed by the minted serving CA: %v", err)
 	}
+}
+
+// TestEnsureServerIdentityMintsCrossCheckedCAs is the regression test
+// for #118 done-when criterion 2: a directory holding both CAs produces
+// a serving certificate under the serving CA and device certificates
+// under the device CA, each asserted against the CA that did NOT sign
+// it, so a regression back to one CA signing everything fails this test
+// even though TestEnsureServerIdentityMintsWhenAbsent's positive checks
+// alone would not catch it.
+func TestEnsureServerIdentityMintsCrossCheckedCAs(t *testing.T) {
+	t.Parallel()
+
+	certDir := t.TempDir()
+
+	certFile, _, caFile, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
+	if err != nil {
+		t.Fatalf("ensureServerIdentity: %v", err)
+	}
+	identities, err := EnsureDeviceIdentities(certDir, DeviceCertModeDevMint, []string{"device-1"})
+	if err != nil {
+		t.Fatalf("EnsureDeviceIdentities: %v", err)
+	}
+	if _, ok := identities["device-1"]; !ok {
+		t.Fatalf("EnsureDeviceIdentities did not mint device-1")
+	}
+
+	deviceCACert := readCert(t, caFile)
+	servingCACert := readCert(t, filepath.Join(certDir, servingCACertFileName))
+	serverCert := readCert(t, certFile)
+	deviceBase, err := deviceCertFileBase("device-1")
+	if err != nil {
+		t.Fatalf("deviceCertFileBase: %v", err)
+	}
+	deviceCert := readDERCert(t, filepath.Join(certDir, deviceCertDirName, deviceBase+".x509"))
+
+	if err := serverCert.CheckSignatureFrom(servingCACert); err != nil {
+		t.Errorf("server cert must verify under the serving CA: %v", err)
+	}
+	if err := serverCert.CheckSignatureFrom(deviceCACert); err == nil {
+		t.Errorf("server cert must NOT verify under the device CA once the CAs are split")
+	}
+
+	if err := deviceCert.CheckSignatureFrom(deviceCACert); err != nil {
+		t.Errorf("device cert must verify under the device CA: %v", err)
+	}
+	if err := deviceCert.CheckSignatureFrom(servingCACert); err == nil {
+		t.Errorf("device cert must NOT verify under the serving CA")
+	}
+}
+
+// readCert reads and parses the PEM certificate at path, failing the
+// test on any error. A small helper to keep the cross-check assertions
+// above readable as a sequence of comparisons rather than a wall of
+// read-and-parse boilerplate.
+func readCert(t *testing.T, path string) *x509.Certificate {
+	t.Helper()
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", path, err)
+	}
+	cert, err := sep2cert.ParseCertificatePEM(pemBytes)
+	if err != nil {
+		t.Fatalf("ParseCertificatePEM(%q): %v", path, err)
+	}
+	return cert
+}
+
+// readDERCert is readCert's twin for a device certificate, which
+// ensureDeviceCert writes as raw DER (the ".x509" extension), not PEM;
+// see its doc comment for why.
+func readDERCert(t *testing.T, path string) *x509.Certificate {
+	t.Helper()
+	der, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", path, err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate(%q): %v", path, err)
+	}
+	return cert
 }
 
 func TestEnsureServerIdentityLoadsWhenAllFourPresent(t *testing.T) {
@@ -283,4 +384,46 @@ func TestEnsureServerIdentityRefusesPartiallyPopulatedDir(t *testing.T) {
 	for _, name := range []string{caKeyFileName, serverCertFileName, serverKeyFileName} {
 		assertNoFile(t, certDir, name)
 	}
+}
+
+// TestEnsureServerIdentityRefusesHalfServingCAPair is
+// TestEnsureServerIdentityRefusesPartiallyPopulatedDir's #118 companion:
+// the original four files are COMPLETE, so the refusal here can only
+// come from the serving CA pair being half-present, which is what "a
+// directory missing one file of either pair refuses to start and names
+// what is missing" (done-when criterion 3) requires of the NEW pair,
+// not only the original one.
+func TestEnsureServerIdentityRefusesHalfServingCAPair(t *testing.T) {
+	t.Parallel()
+
+	certDir := t.TempDir()
+	material := writePreprovisionedServerMaterial(t, certDir)
+	// writePreprovisionedServerMaterial deliberately omits ca-key.pem;
+	// this test signs in DevMint mode, so put it back.
+	if err := os.WriteFile(filepath.Join(certDir, caKeyFileName), []byte("stub-ca-key"), certFilePerm); err != nil {
+		t.Fatalf("WriteFile ca-key.pem: %v", err)
+	}
+	stub := []byte("operator started splitting and stopped here")
+	if err := os.WriteFile(filepath.Join(certDir, servingCACertFileName), stub, certFilePerm); err != nil {
+		t.Fatalf("WriteFile stub serving-ca.pem: %v", err)
+	}
+
+	_, _, _, err := ensureServerIdentity(certDir, DeviceCertModeDevMint)
+	if err == nil {
+		t.Fatal("ensureServerIdentity with serving-ca.pem but no serving-ca-key.pem: want an error, got nil")
+	}
+	if !errors.Is(err, errCertDirPartial) {
+		t.Errorf("error = %v, want one matching errCertDirPartial", err)
+	}
+	if !strings.Contains(err.Error(), servingCAKeyFileName) {
+		t.Errorf("error message does not name the missing %s: %v", servingCAKeyFileName, err)
+	}
+
+	// Nothing was touched: neither the operator's original material nor
+	// the serving CA cert the operator had already staged.
+	assertFileBytes(t, certDir, caCertFileName, material.caCertPEM)
+	assertFileBytes(t, certDir, serverCertFileName, material.serverCertPEM)
+	assertFileBytes(t, certDir, serverKeyFileName, material.serverKeyPEM)
+	assertFileBytes(t, certDir, servingCACertFileName, stub)
+	assertNoFile(t, certDir, servingCAKeyFileName)
 }

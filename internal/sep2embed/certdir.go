@@ -49,7 +49,11 @@ var (
 // empty just because the configured mode does not require that file: an
 // operator put something there, and minting a fresh set alongside it
 // would produce a directory whose CA certificate and CA key do not match.
-var allServerCertFileNames = []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName}
+//
+// The serving CA pair (#118) is appended after the original four rather
+// than interleaved, so present/missing lists built from this order stay
+// stable for a directory that has not adopted the split.
+var allServerCertFileNames = []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName, servingCACertFileName, servingCAKeyFileName}
 
 // requiresCASigningKey reports whether mode signs certificates in this
 // process and therefore needs the CA private key present on the host.
@@ -111,11 +115,34 @@ func (m DeviceCertMode) String() string {
 
 // requiredServerCertFiles returns the file names that must already exist
 // under a cert dir for mode to start without minting, in a stable order.
+//
+// The serving CA pair is never in this set: it is optional as a whole
+// (see requiredServingCAFiles), not mode-dependent, so a caller wanting
+// the full required set for a given directory's contents combines both.
 func requiredServerCertFiles(mode DeviceCertMode) []string {
 	if requiresCASigningKey(mode) {
 		return []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName}
 	}
 	return []string{caCertFileName, serverCertFileName, serverKeyFileName}
+}
+
+// requiredServingCAFiles returns the serving CA's two file names when
+// either is already present in found, or nil when neither is.
+//
+// The pair is optional as a WHOLE: a directory with no serving CA files
+// at all keeps classifying on the original four, so an existing
+// deployment needs no operator action (#118). But once an operator (or
+// this process's own mint path) has put one serving CA file in place,
+// both are required; a lone serving-ca.pem with no key, or the reverse,
+// is a directory someone started splitting and did not finish, and
+// classifyCertDir already refuses that shape for the original CA pair
+// rather than guessing at it. This is the identical rule applied to the
+// second pair.
+func requiredServingCAFiles(found map[string]bool) []string {
+	if found[servingCACertFileName] || found[servingCAKeyFileName] {
+		return []string{servingCACertFileName, servingCAKeyFileName}
+	}
+	return nil
 }
 
 // certDirState is a cert directory's classification for one mode.
@@ -169,7 +196,8 @@ func classifyCertDir(dir string, mode DeviceCertMode) (state certDirState, prese
 		}
 	}
 
-	for _, name := range requiredServerCertFiles(mode) {
+	required := append(append([]string{}, requiredServerCertFiles(mode)...), requiredServingCAFiles(found)...)
+	for _, name := range required {
 		if !found[name] {
 			missing = append(missing, name)
 		}
@@ -323,6 +351,30 @@ func describeCertFiles(names []string) string {
 // decompile is a refusal that becomes a support ticket.
 func incompleteCertDirError(sentinel error, dir string, mode DeviceCertMode, present, missing []string, remedy string) error {
 	return fmt.Errorf("%w: mode %q requires %s in directory %q; found %s; missing %s. %s",
-		sentinel, mode, describeCertFiles(requiredServerCertFiles(mode)), dir,
+		sentinel, mode, describeCertFiles(requiredCertFiles(present, missing)), dir,
 		describeCertFiles(present), describeCertFiles(missing), remedy)
+}
+
+// requiredCertFiles reconstructs the exact required set classifyCertDir
+// used to produce present and missing, without re-deriving mode or
+// presence here: since the serving CA pair is required exactly when one
+// of its files is present or missing (never merely possible), present
+// union missing IS the required set. Filtering allServerCertFileNames
+// keeps that reconstruction in the same stable order every other
+// operator-facing list uses.
+func requiredCertFiles(present, missing []string) []string {
+	named := make(map[string]bool, len(present)+len(missing))
+	for _, name := range present {
+		named[name] = true
+	}
+	for _, name := range missing {
+		named[name] = true
+	}
+	var required []string
+	for _, name := range allServerCertFileNames {
+		if named[name] {
+			required = append(required, name)
+		}
+	}
+	return required
 }
