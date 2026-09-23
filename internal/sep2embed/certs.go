@@ -21,10 +21,17 @@ import (
 // listener verifies device certificates against (ensureServerIdentity's
 // caFile), and what loadDeviceSigningCA signs new device certs with.
 // serving-ca.pem/serving-ca-key.pem (#118) is the SERVING CA: it signs
-// only the bridge's own leaf, server.pem/server-key.pem. The pair is
-// optional as a whole; when absent, the device CA fills both roles, so
-// an existing certificate directory with no serving CA files keeps
-// working unchanged.
+// only the bridge's own leaf, server.pem/server-key.pem.
+//
+// The pair is optional as a whole ONLY for an existing, already-complete
+// directory: when neither serving CA file is present, an EXISTING
+// server.pem was signed before the split and the device CA still fills
+// both roles, so a pre-#118 deployment loads unchanged with no operator
+// action. This does NOT extend to the mint path: an empty directory
+// always mints two distinct CAs (see ensureServerIdentity), because
+// there is no pre-split leaf to stay compatible with. A client that
+// holds only ca.pem cannot verify a freshly minted bridge; it needs
+// serving-ca.pem instead. See ensureServerIdentity's mint-path log line.
 const (
 	caCertFileName        = "ca.pem"
 	caKeyFileName         = "ca-key.pem"
@@ -142,8 +149,9 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 		return "", "", "", fmt.Errorf("sep2embed: unhandled certificate directory state %d for %q", state, dir)
 	}
 
-	log.Printf("sep2embed: WARNING: certificate directory %q is empty; minting a development-only self-signed device CA, serving CA, and server certificate. DO NOT use this material in production; provide preprovisioned %s, %s, %s, and %s instead (plus %s and %s only if this process must sign certificates).",
-		dir, caCertFileName, servingCACertFileName, serverCertFileName, serverKeyFileName, caKeyFileName, servingCAKeyFileName)
+	log.Printf("sep2embed: WARNING: certificate directory %q is empty; minting a development-only self-signed device CA, serving CA, and server certificate. DO NOT use this material in production; provide preprovisioned %s, %s, %s, and %s instead (plus %s and %s only if this process must sign certificates). The server leaf is signed by the SERVING CA (%s), not the device CA (%s): a client that trusts only %s cannot verify this server and will fail with an unknown-authority error. Distribute %s as the server's trust anchor, and %s only to sign device certificates you mint yourself.",
+		dir, caCertFileName, servingCACertFileName, serverCertFileName, serverKeyFileName, caKeyFileName, servingCAKeyFileName,
+		servingCACertFileName, caCertFileName, caCertFileName, servingCACertFileName, caCertFileName)
 
 	// The device CA is minted here but not parsed or used to sign
 	// anything in this call: loadDeviceSigningCA re-reads and parses it

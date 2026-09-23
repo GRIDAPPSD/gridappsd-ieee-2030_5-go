@@ -126,23 +126,33 @@ func requiredServerCertFiles(mode DeviceCertMode) []string {
 	return []string{caCertFileName, serverCertFileName, serverKeyFileName}
 }
 
-// requiredServingCAFiles returns the serving CA's two file names when
-// either is already present in found, or nil when neither is.
+// requiredServingCAFiles returns the serving CA file names that mode
+// requires, given which of the pair is already present in found; nil
+// when neither is present.
 //
 // The pair is optional as a WHOLE: a directory with no serving CA files
 // at all keeps classifying on the original four, so an existing
 // deployment needs no operator action (#118). But once an operator (or
 // this process's own mint path) has put one serving CA file in place,
-// both are required; a lone serving-ca.pem with no key, or the reverse,
-// is a directory someone started splitting and did not finish, and
-// classifyCertDir already refuses that shape for the original CA pair
-// rather than guessing at it. This is the identical rule applied to the
-// second pair.
-func requiredServingCAFiles(found map[string]bool) []string {
-	if found[servingCACertFileName] || found[servingCAKeyFileName] {
+// the certificate is always required; a lone serving-ca.pem with no
+// key, or the reverse, is a directory someone started splitting and did
+// not finish, and classifyCertDir already refuses that shape for the
+// original CA pair rather than guessing at it.
+//
+// The KEY is required only when requiresCASigningKey(mode): a mode that
+// never signs (Preprovisioned) has no use for it, the same asymmetry
+// requiredServerCertFiles already applies to ca-key.pem. Without this
+// gate a preprovisioned directory that happens to hold a stray
+// serving-ca.pem is told it also needs serving-ca-key.pem, a signing
+// key that mode will never read.
+func requiredServingCAFiles(found map[string]bool, mode DeviceCertMode) []string {
+	if !found[servingCACertFileName] && !found[servingCAKeyFileName] {
+		return nil
+	}
+	if requiresCASigningKey(mode) {
 		return []string{servingCACertFileName, servingCAKeyFileName}
 	}
-	return nil
+	return []string{servingCACertFileName}
 }
 
 // certDirState is a cert directory's classification for one mode.
@@ -196,7 +206,7 @@ func classifyCertDir(dir string, mode DeviceCertMode) (state certDirState, prese
 		}
 	}
 
-	required := append(append([]string{}, requiredServerCertFiles(mode)...), requiredServingCAFiles(found)...)
+	required := append(append([]string{}, requiredServerCertFiles(mode)...), requiredServingCAFiles(found, mode)...)
 	for _, name := range required {
 		if !found[name] {
 			missing = append(missing, name)
@@ -351,30 +361,40 @@ func describeCertFiles(names []string) string {
 // decompile is a refusal that becomes a support ticket.
 func incompleteCertDirError(sentinel error, dir string, mode DeviceCertMode, present, missing []string, remedy string) error {
 	return fmt.Errorf("%w: mode %q requires %s in directory %q; found %s; missing %s. %s",
-		sentinel, mode, describeCertFiles(requiredCertFiles(present, missing)), dir,
+		sentinel, mode, describeCertFiles(requiredCertFiles(mode, present)), dir,
 		describeCertFiles(present), describeCertFiles(missing), remedy)
 }
 
-// requiredCertFiles reconstructs the exact required set classifyCertDir
-// used to produce present and missing, without re-deriving mode or
-// presence here: since the serving CA pair is required exactly when one
-// of its files is present or missing (never merely possible), present
-// union missing IS the required set. Filtering allServerCertFileNames
-// keeps that reconstruction in the same stable order every other
-// operator-facing list uses.
-func requiredCertFiles(present, missing []string) []string {
-	named := make(map[string]bool, len(present)+len(missing))
+// requiredCertFiles reports the exact set mode requires, given which
+// managed files are present.
+//
+// It does NOT reconstruct that set from present union missing: present
+// is every managed file classifyCertDir found, required or not (a
+// preprovisioned directory holding a spare ca-key.pem still lists it in
+// present), so treating present as part of the required set told an
+// operator that a non-signing mode needed a signing key it will never
+// read. present is used only to answer the one question
+// requiredServingCAFiles needs, whether either serving CA file exists,
+// by rebuilding the same found map classifyCertDir built; every other
+// name's presence is irrelevant to what is required. Filtering
+// allServerCertFileNames keeps the result in the same stable order
+// every other operator-facing list uses.
+func requiredCertFiles(mode DeviceCertMode, present []string) []string {
+	found := make(map[string]bool, len(present))
 	for _, name := range present {
+		found[name] = true
+	}
+	required := append(append([]string{}, requiredServerCertFiles(mode)...), requiredServingCAFiles(found, mode)...)
+
+	named := make(map[string]bool, len(required))
+	for _, name := range required {
 		named[name] = true
 	}
-	for _, name := range missing {
-		named[name] = true
-	}
-	var required []string
+	var ordered []string
 	for _, name := range allServerCertFileNames {
 		if named[name] {
-			required = append(required, name)
+			ordered = append(ordered, name)
 		}
 	}
-	return required
+	return ordered
 }

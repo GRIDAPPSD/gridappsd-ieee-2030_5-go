@@ -233,8 +233,11 @@ drive_valid_client() {
 		local path
 		for path in /dcap /edev /dcap /edev; do
 			printf '#### GET %s ####\n' "${path}"
+			# --cacert verifies the SERVER's certificate, not the client's:
+			# #118 signs the bridge's own leaf under serving-ca.pem, not
+			# ca.pem (the device CA, which only signs client certs).
 			curl -sS -i \
-				--cacert "${CERT_DIR}/ca.pem" \
+				--cacert "${CERT_DIR}/serving-ca.pem" \
 				--cert "${cert_pem}" \
 				--key "${key}" \
 				"https://${SEP2_ADDR}${path}" 2>&1 || printf '(curl rc=%s)\n' "$?"
@@ -291,8 +294,10 @@ drive_bad_client() {
 		printf '# rogue-CA-signed leaf; openssl LFDI: %s\n\n' "${BAD_LFDI}"
 		printf '#### GET /dcap (expected: handshake rejected) ####\n'
 		set +e
+		# --cacert verifies the server, per #118 signed under serving-ca.pem;
+		# see the valid-client leg above for why ca.pem is the wrong file.
 		curl -sS -i -v \
-			--cacert "${CERT_DIR}/ca.pem" \
+			--cacert "${CERT_DIR}/serving-ca.pem" \
 			--cert "${bad_crt}" \
 			--key "${bad_key}" \
 			"https://${SEP2_ADDR}/dcap" 2>&1
