@@ -49,7 +49,11 @@ var (
 // empty just because the configured mode does not require that file: an
 // operator put something there, and minting a fresh set alongside it
 // would produce a directory whose CA certificate and CA key do not match.
-var allServerCertFileNames = []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName}
+//
+// The serving CA pair (#118) is appended after the original four rather
+// than interleaved, so present/missing lists built from this order stay
+// stable for a directory that has not adopted the split.
+var allServerCertFileNames = []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName, servingCACertFileName, servingCAKeyFileName}
 
 // requiresCASigningKey reports whether mode signs certificates in this
 // process and therefore needs the CA private key present on the host.
@@ -111,11 +115,44 @@ func (m DeviceCertMode) String() string {
 
 // requiredServerCertFiles returns the file names that must already exist
 // under a cert dir for mode to start without minting, in a stable order.
+//
+// The serving CA pair is never in this set: it is optional as a whole
+// (see requiredServingCAFiles), not mode-dependent, so a caller wanting
+// the full required set for a given directory's contents combines both.
 func requiredServerCertFiles(mode DeviceCertMode) []string {
 	if requiresCASigningKey(mode) {
 		return []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName}
 	}
 	return []string{caCertFileName, serverCertFileName, serverKeyFileName}
+}
+
+// requiredServingCAFiles returns the serving CA file names that mode
+// requires, given which of the pair is already present in found; nil
+// when neither is present.
+//
+// The pair is optional as a WHOLE: a directory with no serving CA files
+// at all keeps classifying on the original four, so an existing
+// deployment needs no operator action (#118). But once an operator (or
+// this process's own mint path) has put one serving CA file in place,
+// the certificate is always required; a lone serving-ca.pem with no
+// key, or the reverse, is a directory someone started splitting and did
+// not finish, and classifyCertDir already refuses that shape for the
+// original CA pair rather than guessing at it.
+//
+// The KEY is required only when requiresCASigningKey(mode): a mode that
+// never signs (Preprovisioned) has no use for it, the same asymmetry
+// requiredServerCertFiles already applies to ca-key.pem. Without this
+// gate a preprovisioned directory that happens to hold a stray
+// serving-ca.pem is told it also needs serving-ca-key.pem, a signing
+// key that mode will never read.
+func requiredServingCAFiles(found map[string]bool, mode DeviceCertMode) []string {
+	if !found[servingCACertFileName] && !found[servingCAKeyFileName] {
+		return nil
+	}
+	if requiresCASigningKey(mode) {
+		return []string{servingCACertFileName, servingCAKeyFileName}
+	}
+	return []string{servingCACertFileName}
 }
 
 // certDirState is a cert directory's classification for one mode.
@@ -138,7 +175,9 @@ const (
 
 // classifyCertDir inspects dir and reports whether it is complete for
 // mode, empty, or partially populated, along with the managed files
-// found and the required ones missing.
+// found, the required ones missing, and the full required set for mode
+// (in allServerCertFileNames order, the same set incompleteCertDirError
+// reports; the classifier is the only place that builds it).
 //
 // It re-reads the filesystem on EVERY call and caches nothing, by
 // design. Nothing in this package may memoize the result: a
@@ -156,12 +195,12 @@ const (
 // there, producing a directory that looks provisioned and cannot
 // verify a single chain. Refusing costs a startup failure with a message
 // naming the exact files; guessing costs a trust anchor.
-func classifyCertDir(dir string, mode DeviceCertMode) (state certDirState, present, missing []string, err error) {
+func classifyCertDir(dir string, mode DeviceCertMode) (state certDirState, present, missing, required []string, err error) {
 	found := make(map[string]bool, len(allServerCertFileNames))
 	for _, name := range allServerCertFileNames {
 		exists, existsErr := certFileExists(filepath.Join(dir, name))
 		if existsErr != nil {
-			return 0, nil, nil, existsErr
+			return 0, nil, nil, nil, existsErr
 		}
 		found[name] = exists
 		if exists {
@@ -169,7 +208,8 @@ func classifyCertDir(dir string, mode DeviceCertMode) (state certDirState, prese
 		}
 	}
 
-	for _, name := range requiredServerCertFiles(mode) {
+	required = append(append([]string{}, requiredServerCertFiles(mode)...), requiredServingCAFiles(found, mode)...)
+	for _, name := range required {
 		if !found[name] {
 			missing = append(missing, name)
 		}
@@ -177,11 +217,11 @@ func classifyCertDir(dir string, mode DeviceCertMode) (state certDirState, prese
 
 	switch {
 	case len(missing) == 0:
-		return certDirComplete, present, nil, nil
+		return certDirComplete, present, nil, required, nil
 	case len(present) == 0:
-		return certDirEmpty, nil, missing, nil
+		return certDirEmpty, nil, missing, required, nil
 	default:
-		return certDirPartial, present, missing, nil
+		return certDirPartial, present, missing, required, nil
 	}
 }
 
@@ -321,8 +361,16 @@ func describeCertFiles(names []string) string {
 // which files that mode requires, where it looked, what it found, what
 // was missing, and what to do about it. A refusal an operator has to
 // decompile is a refusal that becomes a support ticket.
-func incompleteCertDirError(sentinel error, dir string, mode DeviceCertMode, present, missing []string, remedy string) error {
+//
+// required is classifyCertDir's own computed set for mode, passed
+// through rather than rebuilt here. It must NOT be reconstructed from
+// present union missing: present is every managed file classifyCertDir
+// found, required or not (a preprovisioned directory holding a spare
+// ca-key.pem still lists it in present), so treating present as part of
+// the required set would tell an operator that a non-signing mode needs
+// a signing key it will never read.
+func incompleteCertDirError(sentinel error, dir string, mode DeviceCertMode, present, missing, required []string, remedy string) error {
 	return fmt.Errorf("%w: mode %q requires %s in directory %q; found %s; missing %s. %s",
-		sentinel, mode, describeCertFiles(requiredServerCertFiles(mode)), dir,
+		sentinel, mode, describeCertFiles(required), dir,
 		describeCertFiles(present), describeCertFiles(missing), remedy)
 }

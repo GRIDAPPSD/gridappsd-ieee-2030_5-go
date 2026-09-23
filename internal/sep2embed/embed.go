@@ -44,6 +44,13 @@ type Config struct {
 	// server's CA and leaf certificate/key material: ca.pem, ca-key.pem,
 	// server.pem, server-key.pem. Required.
 	//
+	// serving-ca.pem and serving-ca-key.pem (#118) are an OPTIONAL second
+	// pair: when present, they sign server.pem instead of ca.pem, so the
+	// CA that authenticates devices (ca.pem, the device CA) can later be
+	// replaced without stranding the certificate every client verifies
+	// the bridge with. Absent, ca.pem fills both roles, unchanged from
+	// before the split.
+	//
 	// New classifies it once, at startup, per ensureServerIdentity: a set
 	// that is complete for DeviceCertMode is loaded as-is and nothing is
 	// written; in dev-mint mode an empty writable directory receives

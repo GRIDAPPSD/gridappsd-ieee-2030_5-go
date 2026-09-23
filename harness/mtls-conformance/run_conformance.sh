@@ -72,6 +72,7 @@ WORK_DIR="$(mktemp -d /tmp/gago093-work.XXXXXX)"
 
 BRIDGE_PID=""
 BRIDGE_LOG="${WORK_DIR}/bridge.log"
+SERVER_ANCHOR=""
 
 # Transcript and matrix artifact paths.
 TS_VALID="${OUT_DIR}/gago-093-valid-client-transcript.txt"
@@ -183,6 +184,22 @@ start_bridge() {
 	die "bridge did not reach a populated-registry ready state within 60s"
 }
 
+# --- server anchor resolution ------------------------------------------------
+
+# The bridge's own leaf is signed by the serving CA (#118: serving-ca.pem),
+# so that is the anchor both curl legs below verify the server with. An
+# operator-supplied CERT_DIR carried over from before the serving/device
+# split has no serving-ca.pem; ca.pem is what such a directory calls its
+# only CA. Resolved once here, not at each call site.
+resolve_server_anchor() {
+	if [ -f "${CERT_DIR}/serving-ca.pem" ]; then
+		SERVER_ANCHOR="${CERT_DIR}/serving-ca.pem"
+	else
+		SERVER_ANCHOR="${CERT_DIR}/ca.pem"
+	fi
+	printf '  server verification anchor: %s\n' "${SERVER_ANCHOR}" >&2
+}
+
 # --- LFDI derivation (independent openssl cross-check) ----------------------
 
 # lfdi_of_der <der-file>: spec 6.3.4 LFDI = SHA-256 over the DER bytes,
@@ -233,8 +250,11 @@ drive_valid_client() {
 		local path
 		for path in /dcap /edev /dcap /edev; do
 			printf '#### GET %s ####\n' "${path}"
+			# --cacert verifies the SERVER's certificate, not the client's:
+			# SERVER_ANCHOR (resolved once above) is serving-ca.pem, not
+			# ca.pem (the device CA, which only signs client certs).
 			curl -sS -i \
-				--cacert "${CERT_DIR}/ca.pem" \
+				--cacert "${SERVER_ANCHOR}" \
 				--cert "${cert_pem}" \
 				--key "${key}" \
 				"https://${SEP2_ADDR}${path}" 2>&1 || printf '(curl rc=%s)\n' "$?"
@@ -291,8 +311,10 @@ drive_bad_client() {
 		printf '# rogue-CA-signed leaf; openssl LFDI: %s\n\n' "${BAD_LFDI}"
 		printf '#### GET /dcap (expected: handshake rejected) ####\n'
 		set +e
+		# --cacert verifies the server with SERVER_ANCHOR (resolved once
+		# above); see the valid-client leg for why ca.pem alone is wrong.
 		curl -sS -i -v \
-			--cacert "${CERT_DIR}/ca.pem" \
+			--cacert "${SERVER_ANCHOR}" \
 			--cert "${bad_crt}" \
 			--key "${bad_key}" \
 			"https://${SEP2_ADDR}/dcap" 2>&1
@@ -428,6 +450,7 @@ write_matrix() {
 
 preflight
 start_bridge
+resolve_server_anchor
 drive_valid_client
 drive_bad_client
 assert_observer

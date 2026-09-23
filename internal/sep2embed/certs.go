@@ -13,13 +13,32 @@ import (
 
 // File names within Config.CertDir. Fixed, not configurable: the
 // directory classification in classifyCertDir depends on checking for
-// exactly these four names, and which of them a given mode requires is
-// decided by requiredServerCertFiles.
+// exactly these six names, and which of them a given mode or directory
+// state requires is decided by requiredServerCertFiles and
+// requiredServingCAFiles.
+//
+// ca.pem/ca-key.pem is the DEVICE CA: the trust bundle the mTLS
+// listener verifies device certificates against (ensureServerIdentity's
+// caFile), and what loadDeviceSigningCA signs new device certs with.
+// serving-ca.pem/serving-ca-key.pem (#118) is the SERVING CA: it signs
+// only the bridge's own leaf, server.pem/server-key.pem.
+//
+// The pair is optional as a whole ONLY for an existing, already-complete
+// directory: when neither serving CA file is present, an EXISTING
+// server.pem was signed before the split and the device CA still fills
+// both roles, so a pre-#118 deployment loads unchanged with no operator
+// action. This does NOT extend to the mint path: an empty directory
+// always mints two distinct CAs (see ensureServerIdentity), because
+// there is no pre-split leaf to stay compatible with. A client that
+// holds only ca.pem cannot verify a freshly minted bridge; it needs
+// serving-ca.pem instead. See ensureServerIdentity's mint-path log line.
 const (
-	caCertFileName     = "ca.pem"
-	caKeyFileName      = "ca-key.pem"
-	serverCertFileName = "server.pem"
-	serverKeyFileName  = "server-key.pem"
+	caCertFileName        = "ca.pem"
+	caKeyFileName         = "ca-key.pem"
+	serverCertFileName    = "server.pem"
+	serverKeyFileName     = "server-key.pem"
+	servingCACertFileName = "serving-ca.pem"
+	servingCAKeyFileName  = "serving-ca-key.pem"
 
 	certDirPerm  = 0o700
 	certFilePerm = 0o600
@@ -41,12 +60,12 @@ const (
 //     any circumstances, which is what makes a read-only bind-mounted
 //     certificate volume the SUPPORTED deployment shape rather than one
 //     that happens to work.
-//   - Empty and writable, in a mode that may write: a fresh self-signed
-//     CA plus a server leaf signed by it is minted and written at 0600
-//     (dir at 0700). The dev path. All four files are written even in a
-//     mode whose required set is three, so the resulting directory is
-//     complete under either mode and a later start cannot classify this
-//     process's own output as partial.
+//   - Empty and writable, in a mode that may write: a fresh device CA, a
+//     fresh serving CA, and a server leaf signed by the SERVING CA are
+//     minted and written at 0600 (dir at 0700). The dev path. All six
+//     files are written even in a mode whose required set is smaller,
+//     so the resulting directory is complete under either mode and a
+//     later start cannot classify this process's own output as partial.
 //   - Empty and not writable: a fatal error naming the missing files and
 //     saying the directory could not be written to.
 //   - Partially populated: a fatal error, EVEN when dir is writable. See
@@ -93,8 +112,10 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 	caKeyFile := filepath.Join(dir, caKeyFileName)
 	certFile = filepath.Join(dir, serverCertFileName)
 	keyFile = filepath.Join(dir, serverKeyFileName)
+	servingCAFile := filepath.Join(dir, servingCACertFileName)
+	servingCAKeyFile := filepath.Join(dir, servingCAKeyFileName)
 
-	state, present, missing, err := classifyCertDir(dir, mode)
+	state, present, missing, required, err := classifyCertDir(dir, mode)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -109,18 +130,18 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 	// expected to exit non-zero rather than start degraded; there is no
 	// serviceable state to start into, because the server has no identity.
 	if !modeMayWriteCertMaterial(mode) {
-		return "", "", "", incompleteCertDirError(errCertDirWriteForbidden, dir, mode, present, missing,
+		return "", "", "", incompleteCertDirError(errCertDirWriteForbidden, dir, mode, present, missing, required,
 			"This mode never creates certificate material, so it cannot supply the missing files and did not write anything. Place them in that directory before starting, or start in dev-mint mode if this is a development host.")
 	}
 
 	switch state {
 	case certDirPartial:
-		return "", "", "", incompleteCertDirError(errCertDirPartial, dir, mode, present, missing,
+		return "", "", "", incompleteCertDirError(errCertDirPartial, dir, mode, present, missing, required,
 			"Nothing was written. Minting the missing files would create a CA private key that does not match the CA certificate already there, so this process refuses rather than guessing. Either add the missing files, or move the existing ones aside to let a fresh development set be minted.")
 
 	case certDirEmpty:
 		if werr := certDirWritable(dir); werr != nil {
-			return "", "", "", incompleteCertDirError(errCertDirNotWritable, dir, mode, present, missing,
+			return "", "", "", incompleteCertDirError(errCertDirNotWritable, dir, mode, present, missing, required,
 				fmt.Sprintf("Nothing was written. The directory could not be written to, so nothing can be minted either: %v. Either preprovision the missing files, or make the directory writable by this process.", werr))
 		}
 
@@ -128,23 +149,37 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 		return "", "", "", fmt.Errorf("sep2embed: unhandled certificate directory state %d for %q", state, dir)
 	}
 
-	log.Printf("sep2embed: WARNING: certificate directory %q is empty; minting a development-only self-signed CA and server certificate. DO NOT use this material in production; provide preprovisioned %s, %s, and %s instead (plus %s only if this process must sign certificates).",
-		dir, caCertFileName, serverCertFileName, serverKeyFileName, caKeyFileName)
+	log.Printf("sep2embed: WARNING: certificate directory %q is empty; minting a development-only self-signed device CA, serving CA, and server certificate. DO NOT use this material in production; provide preprovisioned %s, %s, %s, and %s instead (plus %s and %s only if this process must sign certificates). The server leaf is signed by the SERVING CA (%s), not the device CA (%s): a client that trusts only %s cannot verify this server and will fail with an unknown-authority error. Distribute %s as the server's trust anchor, and %s only to sign device certificates you mint yourself.",
+		dir, caCertFileName, servingCACertFileName, serverCertFileName, serverKeyFileName, caKeyFileName, servingCAKeyFileName,
+		servingCACertFileName, caCertFileName, caCertFileName, servingCACertFileName, caCertFileName)
 
+	// The device CA is minted here but not parsed or used to sign
+	// anything in this call: loadDeviceSigningCA re-reads and parses it
+	// from disk, later, per device. Signing the server's own leaf below
+	// with the SERVING CA rather than this one is the entire change #118
+	// makes; everything else about the mint path is unchanged.
 	caCertPEM, caKeyPEM, err := sep2cert.GenerateCA(sep2cert.CAOptions{
 		Organization: "gridappsd-ieee-2030_5-go dev-mint",
-		CommonName:   "gridappsd-ieee-2030_5-go dev CA",
+		CommonName:   "gridappsd-ieee-2030_5-go dev device CA",
 	})
 	if err != nil {
-		return "", "", "", fmt.Errorf("mint dev CA: %w", err)
+		return "", "", "", fmt.Errorf("mint dev device CA: %w", err)
 	}
 
-	caCert, caKey, err := parseCAPair(caCertPEM, caKeyPEM)
+	servingCACertPEM, servingCAKeyPEM, err := sep2cert.GenerateCA(sep2cert.CAOptions{
+		Organization: "gridappsd-ieee-2030_5-go dev-mint",
+		CommonName:   "gridappsd-ieee-2030_5-go dev serving CA",
+	})
 	if err != nil {
-		return "", "", "", fmt.Errorf("parse minted dev CA: %w", err)
+		return "", "", "", fmt.Errorf("mint dev serving CA: %w", err)
 	}
 
-	serverCertPEM, serverKeyPEM, err := sep2cert.GenerateServerCert(caCert, caKey, sep2cert.ServerCertOptions{
+	servingCACert, servingCAKey, err := parseCAPair(servingCACertPEM, servingCAKeyPEM)
+	if err != nil {
+		return "", "", "", fmt.Errorf("parse minted dev serving CA: %w", err)
+	}
+
+	serverCertPEM, serverKeyPEM, err := sep2cert.GenerateServerCert(servingCACert, servingCAKey, sep2cert.ServerCertOptions{
 		CommonName: "gridappsd-ieee-2030_5-go embedded server",
 		Hosts:      []string{"localhost", "127.0.0.1"},
 	})
@@ -158,6 +193,8 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 	}{
 		{caFile, caCertPEM},
 		{caKeyFile, caKeyPEM},
+		{servingCAFile, servingCACertPEM},
+		{servingCAKeyFile, servingCAKeyPEM},
 		{certFile, serverCertPEM},
 		{keyFile, serverKeyPEM},
 	}

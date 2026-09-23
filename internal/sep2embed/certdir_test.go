@@ -597,6 +597,56 @@ func TestClassifyCertDirModeRequiredSets(t *testing.T) {
 			mode:      DeviceCertModePreprovisioned,
 			wantState: certDirEmpty,
 		},
+		{
+			// #118: the serving CA pair is optional as a whole. A directory
+			// holding only the original four names, with neither serving CA
+			// file present, keeps classifying as it did before the split.
+			name:      "all four base files with no serving CA is still complete",
+			write:     []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName},
+			mode:      DeviceCertModeDevMint,
+			wantState: certDirComplete,
+		},
+		{
+			// #118: once EITHER serving CA file exists, both are required.
+			// The base four being complete does not excuse a half-written
+			// serving CA pair.
+			name:      "serving CA cert with no serving CA key is partial even though the base four are complete",
+			write:     []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName, servingCACertFileName},
+			mode:      DeviceCertModeDevMint,
+			wantState: certDirPartial,
+		},
+		{
+			name:      "serving CA key with no serving CA cert is partial even though the base four are complete",
+			write:     []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName, servingCAKeyFileName},
+			mode:      DeviceCertModeDevMint,
+			wantState: certDirPartial,
+		},
+		{
+			// #118: all six files, both CA pairs complete.
+			name:      "both CA pairs plus the server leaf is complete",
+			write:     []string{caCertFileName, caKeyFileName, serverCertFileName, serverKeyFileName, servingCACertFileName, servingCAKeyFileName},
+			mode:      DeviceCertModeDevMint,
+			wantState: certDirComplete,
+		},
+		{
+			// Preprovisioned mode never signs, so it has no use
+			// for the serving CA's private key; a stray serving-ca.pem
+			// with no key must not force one, the same asymmetry
+			// requiredServerCertFiles already gives ca-key.pem.
+			name:      "preprovisioned with a serving CA cert and no serving CA key is complete",
+			write:     []string{caCertFileName, serverCertFileName, serverKeyFileName, servingCACertFileName},
+			mode:      DeviceCertModePreprovisioned,
+			wantState: certDirComplete,
+		},
+		{
+			// The reverse asymmetry does not hold: a serving CA key with
+			// no matching certificate is still a half-finished pair in
+			// any mode, preprovisioned included, and still refuses.
+			name:      "preprovisioned with a serving CA key and no serving CA cert is still partial",
+			write:     []string{caCertFileName, serverCertFileName, serverKeyFileName, servingCAKeyFileName},
+			mode:      DeviceCertModePreprovisioned,
+			wantState: certDirPartial,
+		},
 	}
 
 	for _, tc := range cases {
@@ -610,7 +660,7 @@ func TestClassifyCertDirModeRequiredSets(t *testing.T) {
 				}
 			}
 
-			state, _, _, err := classifyCertDir(dir, tc.mode)
+			state, _, _, _, err := classifyCertDir(dir, tc.mode)
 			if err != nil {
 				t.Fatalf("classifyCertDir: %v", err)
 			}

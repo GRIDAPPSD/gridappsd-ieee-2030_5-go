@@ -22,10 +22,11 @@ import (
 )
 
 // The CA file names below are the documented, public contract of
-// sep2embed.Config.CertDir ("ca.pem, ca-key.pem, server.pem,
-// server-key.pem"), not an internal detail of the sep2embed package;
-// cmd/bridge relies on that doc-commented layout the same way an
-// operator standing up preprovisioned material would.
+// sep2embed.Config.CertDir ("ca.pem, ca-key.pem, serving-ca.pem,
+// serving-ca-key.pem, server.pem, server-key.pem"), not an internal
+// detail of the sep2embed package; cmd/bridge relies on that
+// doc-commented layout the same way an operator standing up
+// preprovisioned material would.
 const (
 	testCACertFileName = "ca.pem"
 	testCAKeyFileName  = "ca-key.pem"

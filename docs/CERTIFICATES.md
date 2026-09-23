@@ -11,32 +11,55 @@ changed.
 checkout or a workspace path.** Every example below writes to an
 absolute path outside any git working tree. Treat every `.pem` and
 `.x509` file the bridge produces as secret, regardless of which of
-the four it is.
+the six it is.
 
-## What the server identity needs
+## Two CAs: the device CA and the serving CA
 
 `SEP2_SERVER_CERT_DIR` (default `./sep2-certs`, resolved relative to
-the process's working directory) holds four fixed file names:
+the process's working directory) holds six fixed file names, one pair
+per CA plus the server's own leaf:
 
 | File | Purpose |
 |---|---|
-| `ca.pem` | The CA certificate, the trust anchor every device and client cert chains to. |
-| `ca-key.pem` | The CA's private key. Needed only to sign new certificates. |
-| `server.pem` | The embedded server's own leaf certificate. |
+| `ca.pem` | The **device CA** certificate. Signs every device certificate; the protocol listener's trust bundle for verifying devices. A device never needs this file. |
+| `ca-key.pem` | The device CA's private key. Needed only to sign new device certificates. |
+| `serving-ca.pem` | The **serving CA** certificate. Signs the bridge's own leaf (`server.pem`) and nothing else. **This is the anchor a device or client is given to verify a freshly minted bridge**, not `ca.pem`; an existing directory that predates the split keeps verifying against `ca.pem` alone, see below. |
+| `serving-ca-key.pem` | The serving CA's private key. Needed only to sign the server leaf. |
+| `server.pem` | The embedded server's own leaf certificate, signed by the serving CA. |
 | `server-key.pem` | The embedded server's private key. |
 
-Which of them are *required* depends on `SEP2_DEVICE_CERT_MODE`,
+Splitting the two CAs means a device-CA replacement never strands the
+server's own identity, and a serving-CA compromise never lets an
+attacker mint a trusted device certificate. Losing either key is bad in
+its own way; neither is more expendable than the other.
+
+**The pair is optional as a whole, but only for an existing, already
+complete directory.** A directory holding just the original four names
+(`ca.pem`, `ca-key.pem`, `server.pem`, `server-key.pem`) with neither
+`serving-ca.pem` nor `serving-ca-key.pem` present loads exactly as it
+did before the split: the server leaf there was signed before the split
+existed, so the device CA still verifies it. **This does not apply to a
+fresh mint.** An empty directory in `dev-mint` mode always mints two
+distinct CAs; there is no pre-split leaf to stay compatible with, so a
+client that holds only `ca.pem` cannot verify a freshly minted bridge.
+The bridge logs a loud warning naming both files when this happens; read
+it.
+
+Which of the six files are *required* depends on `SEP2_DEVICE_CERT_MODE`,
 because only one of the two modes signs anything:
 
 | Mode | Signs? | Required files |
 |---|---|---|
-| `dev-mint` | yes | all four |
-| `preprovisioned` | no | `ca.pem`, `server.pem`, `server-key.pem` |
+| `dev-mint` | yes | `ca.pem`, `ca-key.pem`, `server.pem`, `server-key.pem`, and, once either serving CA file is present, both `serving-ca.pem` and `serving-ca-key.pem` |
+| `preprovisioned` | no | `ca.pem`, `server.pem`, `server-key.pem`; once either serving CA file is present, `serving-ca.pem` becomes required too, but `serving-ca-key.pem` never is |
 
-**`preprovisioned` does not require `ca-key.pem` and never reads it.**
-Keep the CA signing key off the bridge host entirely; issue
-certificates wherever you keep it, and copy only the public
-certificate across.
+**`preprovisioned` does not require `ca-key.pem` or `serving-ca-key.pem`,
+and never reads either.** Keep both signing keys off the bridge host
+entirely; issue certificates wherever you keep them, and copy only the
+public certificates across. A stray `ca-key.pem` or `serving-ca-key.pem`
+an operator forgot to remove is reported as found, but never as
+required: the refusal message for this mode never asks for a signing
+key it will not read.
 
 The directory is created at mode `0700` and each file at mode `0600`
 when the bridge writes them. Match those permissions if you supply
@@ -54,8 +77,10 @@ It inspects the directory on every start and does exactly one of:
 - **Complete for the mode**: loads the files and writes nothing. The
   directory may be read-only.
 - **Empty, in `dev-mint`, and writable**: mints a self-signed
-  development CA and server certificate, writes all four files, and
-  logs a loud warning.
+  development device CA, a self-signed development serving CA, and a
+  server leaf signed by the serving CA; writes all six files; and logs
+  a loud warning naming both CAs by file and saying which one a client
+  must be given.
 - **Anything else**: refuses to start.
 
 **No existing file is ever overwritten.** A directory holding some but
@@ -104,6 +129,20 @@ directory "/etc/sep2/certs"; found ca.pem, server.pem, server-key.pem;
 missing ca-key.pem. Nothing was written. ...
 ```
 
+The *found* list can name a file the *requires* list does not. Here a
+`preprovisioned` directory holds nothing but a stray `ca-key.pem`, left
+over from, say, a `dev-mint` directory copied by mistake: every file
+this mode actually needs is missing, and the message says so without
+also claiming the mode needs the signing key it will never read:
+
+```
+... sep2embed: certificate material is missing and this mode never
+creates it: mode "preprovisioned" requires ca.pem, server.pem,
+server-key.pem in directory "/etc/sep2/certs"; found ca-key.pem;
+missing ca.pem, server.pem, server-key.pem. This mode never creates
+certificate material, ...
+```
+
 A device with no preprovisioned certificate fails the same way, naming
 the mRID and the exact path it looked for:
 
@@ -132,13 +171,22 @@ mkdir -p -m 0700 /home/youruser/sep2-certs
 export SEP2_SERVER_CERT_DIR=/home/youruser/sep2-certs
 ```
 
-On first boot, the bridge generates a self-signed CA, a server leaf
-certificate, and one device certificate per DER it discovers via CIM,
-all signed by that same CA. The material persists in that directory
-across restarts, which matters: if the directory is deleted or
-recreated, the bridge mints a new CA and every previously trusted
-device certificate stops chaining to it. This material is
-development-only. Do not point a production deployment at it.
+On first boot, the bridge generates a self-signed **device CA**, a
+self-signed **serving CA**, a server leaf certificate signed by the
+serving CA, and one device certificate per DER it discovers via CIM,
+signed by the device CA. **Give a client `serving-ca.pem`, not
+`ca.pem`, as the anchor it uses to verify the bridge**: `ca.pem` only
+signs device certificates and cannot verify the server. A client
+configured against a pre-#118 single-CA directory that trusted `ca.pem`
+for both purposes must be repointed at `serving-ca.pem` the first time
+it talks to a freshly minted directory; the bridge's startup log names
+both files and this distinction when it mints.
+
+The material persists in that directory across restarts, which
+matters: if the directory is deleted or recreated, the bridge mints
+fresh CAs and every previously trusted certificate, device and server
+alike, stops chaining to them. This material is development-only. Do
+not point a production deployment at it.
 
 ## Manual path: generating your own CA and server certificate
 
@@ -146,6 +194,16 @@ Use this if you want to inspect, version, or preprovision the server
 identity yourself, for example ahead of a `preprovisioned` deployment.
 The bridge's own certificate generation uses ECDSA P-256 keys; the
 commands below match that.
+
+This walkthrough signs `server.pem` with the SAME CA that would sign
+device certificates, i.e. it does not split. That is a valid choice in
+`preprovisioned` mode: the bridge never checks `server.pem`'s issuer
+against anything, so a device-CA-only setup here loads and runs exactly
+as before #118. If you want the split's actual benefit, that a
+device-CA replacement cannot strand the server's own identity, repeat
+the CA-generation step under `serving-ca.pem`/`serving-ca-key.pem` with
+a different `-subj`, and sign `server.pem` with that pair instead of
+`ca.pem`/`ca-key.pem`.
 
 ```bash
 CERT_DIR=/etc/sep2/certs   # any absolute path outside a repository checkout
@@ -180,11 +238,12 @@ export SEP2_SERVER_CERT_DIR=/etc/sep2/certs
 
 The bridge loads what is there and mints nothing.
 
-For a production deployment, do not leave the CA private key alongside
-the server key. Generate the CA somewhere else, copy only `ca.pem`,
-`server.pem` and `server-key.pem` to the bridge host, and run with
-`SEP2_DEVICE_CERT_MODE=preprovisioned`, which requires exactly those
-three and never reads the fourth.
+For a production deployment, do not leave a CA private key alongside
+the server key. Generate the CA (or CAs) somewhere else, copy only
+`ca.pem`, `server.pem` and `server-key.pem` (and `serving-ca.pem`, if
+you split) to the bridge host, and run with
+`SEP2_DEVICE_CERT_MODE=preprovisioned`, which requires those files and
+never reads `ca-key.pem` or `serving-ca-key.pem`.
 
 ## Device certificates in preprovisioned mode
 
