@@ -23,7 +23,7 @@ per CA plus the server's own leaf:
 |---|---|
 | `ca.pem` | The **device CA** certificate. Signs every device certificate; the protocol listener's trust bundle for verifying devices. A device never needs this file. |
 | `ca-key.pem` | The device CA's private key. Needed only to sign new device certificates. |
-| `serving-ca.pem` | The **serving CA** certificate. Signs the bridge's own leaf (`server.pem`) and nothing else. **This is the anchor a device or client is given to verify the bridge**, not `ca.pem`. |
+| `serving-ca.pem` | The **serving CA** certificate. Signs the bridge's own leaf (`server.pem`) and nothing else. **This is the anchor a device or client is given to verify a freshly minted bridge**, not `ca.pem`; an existing directory that predates the split keeps verifying against `ca.pem` alone, see below. |
 | `serving-ca-key.pem` | The serving CA's private key. Needed only to sign the server leaf. |
 | `server.pem` | The embedded server's own leaf certificate, signed by the serving CA. |
 | `server-key.pem` | The embedded server's private key. |
