@@ -1,15 +1,21 @@
 package sep2embed
 
 import (
+	"context"
 	"crypto/ecdsa"
+	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
+
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
 func TestEnsureServerIdentityMintsWhenAbsent(t *testing.T) {
@@ -145,6 +151,137 @@ func TestEnsureServerIdentityMintsCrossCheckedCAs(t *testing.T) {
 	}
 	if err := deviceCert.CheckSignatureFrom(servingCACert); err == nil {
 		t.Errorf("device cert must NOT verify under the serving CA")
+	}
+}
+
+// TestFreshMintServerAuthNeedsServingCAAnchor is #118 item 1's decision,
+// pinned by a REAL TLS handshake against the production listener
+// construction (New, the same one cmd/bridge runs), not by an offline
+// CheckSignatureFrom chain check: it proves what a client actually
+// experiences, with certificate verification genuinely on.
+//
+// It deliberately does not reuse dialCapturingServerLeaf or
+// mintTestDeviceClient's InsecureSkipVerify pattern: the security lane's
+// review of this PR found that flag disables ALL chain verification, not
+// only the hostname match its comment claims, which is a pre-existing,
+// out-of-scope defect (P6) and exactly why no in-repo test could see
+// this issue. This test's tls.Config never sets it.
+//
+// The decision: a fresh mint keeps minting two distinct CAs (matching
+// the design's section 11.5 and the existing cross-checked-CA test
+// above), rather than collapsing to one CA on mint. A client holding
+// only the device CA (ca.pem) genuinely cannot verify a freshly minted
+// bridge; that is asserted below as the expected, not silent, half of
+// this test. What #118 P2 required was making that impossible to miss:
+// ensureServerIdentity's mint-path warning now names both CAs' roles
+// explicitly (see certs.go), and the conformance harness and docs are
+// updated in this same fix round to use the serving CA as the anchor a
+// client is actually given.
+func TestFreshMintServerAuthNeedsServingCAAnchor(t *testing.T) {
+	t.Parallel()
+
+	certDir := t.TempDir()
+
+	reg := registry.New()
+	if err := reg.AddBatch(fixtureEntries()); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e, err := New(ctx, Config{
+		Addr:                   "127.0.0.1:0",
+		CertDir:                certDir,
+		DeviceCertMode:         DeviceCertModeDevMint,
+		ResolveRegistrationPIN: testResolvePIN,
+		ShutdownTimeout:        time.Second,
+	}, reg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- e.Run(ctx) }()
+
+	deviceCACertPEM, err := os.ReadFile(filepath.Join(certDir, caCertFileName))
+	if err != nil {
+		t.Fatalf("read %s: %v", caCertFileName, err)
+	}
+	servingCACertPEM, err := os.ReadFile(filepath.Join(certDir, servingCACertFileName))
+	if err != nil {
+		t.Fatalf("read %s: %v", servingCACertFileName, err)
+	}
+
+	// A probe device certificate, signed by the device CA the server just
+	// loaded, so the server's own mTLS verification of the CLIENT accepts
+	// it in both dial attempts below: only the client's verification of
+	// the SERVER (via RootCAs) differs between them.
+	identities, err := EnsureDeviceIdentities(certDir, DeviceCertModeDevMint, []string{"probe-device"})
+	if err != nil {
+		t.Fatalf("EnsureDeviceIdentities: %v", err)
+	}
+	if _, ok := identities["probe-device"]; !ok {
+		t.Fatalf("EnsureDeviceIdentities did not mint probe-device")
+	}
+	deviceBase, err := deviceCertFileBase("probe-device")
+	if err != nil {
+		t.Fatalf("deviceCertFileBase: %v", err)
+	}
+	devCertDER, err := os.ReadFile(filepath.Join(certDir, deviceCertDirName, deviceBase+".x509"))
+	if err != nil {
+		t.Fatalf("read probe device cert: %v", err)
+	}
+	devKeyPEM, err := os.ReadFile(filepath.Join(certDir, deviceCertDirName, deviceBase+".pem"))
+	if err != nil {
+		t.Fatalf("read probe device key: %v", err)
+	}
+	devCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: devCertDER})
+	deviceCert, err := tls.X509KeyPair(devCertPEM, devKeyPEM)
+	if err != nil {
+		t.Fatalf("X509KeyPair(probe device): %v", err)
+	}
+
+	dial := func(rootPEM []byte) error {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(rootPEM) {
+			t.Fatalf("AppendCertsFromPEM: no certificate parsed from the %d-byte root PEM", len(rootPEM))
+		}
+		cfg := &tls.Config{
+			RootCAs:      pool,
+			Certificates: []tls.Certificate{deviceCert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		conn, dialErr := tls.Dial("tcp", e.Addr(), cfg)
+		if dialErr == nil {
+			conn.Close()
+		}
+		return dialErr
+	}
+
+	// The anchor the split actually gives a client (section 11.3 of the
+	// design: "a device's own trust store holds the serving CA
+	// certificate"). This must succeed against a bridge that just minted
+	// fresh material, with no other configuration.
+	if err := dial(servingCACertPEM); err != nil {
+		t.Errorf("a client trusting the serving CA could not verify a freshly minted bridge: %v", err)
+	}
+
+	// The anchor a pre-split client held. This is the P2 finding's
+	// stranding case, pinned here as an explicit, asserted expectation
+	// rather than a silent gap: it must keep failing, loudly, with a
+	// chain-trust error rather than succeeding by accident.
+	err = dial(deviceCACertPEM)
+	if err == nil {
+		t.Fatal("a client trusting only the device CA verified a freshly minted bridge; the serving/device split must hold in both directions")
+	}
+	if !strings.Contains(err.Error(), "unknown authority") {
+		t.Errorf("dial with the device CA failed for an unexpected reason, want a chain-trust (unknown authority) error: %v", err)
+	}
+
+	cancel()
+	if err := <-runErr; err != nil && !errors.Is(err, context.Canceled) {
+		t.Errorf("Run: %v", err)
 	}
 }
 
@@ -426,4 +563,72 @@ func TestEnsureServerIdentityRefusesHalfServingCAPair(t *testing.T) {
 	assertFileBytes(t, certDir, serverKeyFileName, material.serverKeyPEM)
 	assertFileBytes(t, certDir, servingCACertFileName, stub)
 	assertNoFile(t, certDir, servingCAKeyFileName)
+}
+
+// requiredClause extracts the file list between "requires " and " in
+// directory" from an incompleteCertDirError message, so a test can
+// assert on exactly what the message claims is required without also
+// matching the (deliberately different) "found" and "missing" clauses,
+// which legitimately name files the message must not call required.
+func requiredClause(t *testing.T, msg string) string {
+	t.Helper()
+	const start = "requires "
+	const end = " in directory"
+	i := strings.Index(msg, start)
+	if i < 0 {
+		t.Fatalf("message has no %q clause: %s", start, msg)
+	}
+	rest := msg[i+len(start):]
+	j := strings.Index(rest, end)
+	if j < 0 {
+		t.Fatalf("message has no %q terminator: %s", end, msg)
+	}
+	return rest[:j]
+}
+
+// TestEnsureServerIdentityPreprovisionedSpareCAKeyMessageNamesOnlyRequired
+// is the regression test for #118 P3: incompleteCertDirError's "requires"
+// clause used to be built as present union missing, and present is every
+// managed file classifyCertDir found, required or not. A preprovisioned
+// directory holding nothing but a spare ca-key.pem (left over from, say,
+// a dev-mint directory copied by mistake) is missing every file the mode
+// actually needs, but the old message also claimed ca-key.pem itself was
+// required, telling an operator to put a CA signing key on a host that
+// mode never reads it from.
+func TestEnsureServerIdentityPreprovisionedSpareCAKeyMessageNamesOnlyRequired(t *testing.T) {
+	t.Parallel()
+
+	certDir := t.TempDir()
+	if err := os.MkdirAll(certDir, certDirPerm); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	stub := []byte("a device CA key that does not belong on this host")
+	if err := os.WriteFile(filepath.Join(certDir, caKeyFileName), stub, certFilePerm); err != nil {
+		t.Fatalf("WriteFile stub ca-key.pem: %v", err)
+	}
+
+	_, _, _, err := ensureServerIdentity(certDir, DeviceCertModePreprovisioned)
+	if err == nil {
+		t.Fatal("ensureServerIdentity on a directory holding only a spare ca-key.pem: want an error, got nil")
+	}
+	// Preprovisioned mode never writes, so incompleteness of any shape
+	// (partial or empty) reports errCertDirWriteForbidden, checked ahead
+	// of the partial/empty switch in ensureServerIdentity; this is not
+	// errCertDirPartial's case.
+	if !errors.Is(err, errCertDirWriteForbidden) {
+		t.Errorf("error = %v, want one matching errCertDirWriteForbidden", err)
+	}
+
+	want := "ca.pem, server.pem, server-key.pem"
+	if got := requiredClause(t, err.Error()); got != want {
+		t.Errorf("requires clause = %q, want %q (preprovisioned mode never reads %s, so it must not be told the directory requires it, even though it is present)",
+			got, want, caKeyFileName)
+	}
+
+	// The spare key is still reported as found and untouched: this is a
+	// message-accuracy fix, not a licence to hide or delete it.
+	if !strings.Contains(err.Error(), "found "+caKeyFileName) {
+		t.Errorf("error message does not report %s as found: %v", caKeyFileName, err)
+	}
+	assertFileBytes(t, certDir, caKeyFileName, stub)
 }
