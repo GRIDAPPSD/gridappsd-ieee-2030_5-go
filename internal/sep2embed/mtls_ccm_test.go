@@ -335,6 +335,12 @@ func TestCCMListenerServesAuthenticatedRequest(t *testing.T) {
 // so it needs its own check that a core change has not silently dropped
 // verification. Table-driven over the config shape a future core bump
 // could plausibly return, proving each case actually trips the guard.
+//
+// The CipherSuites cases (PR 126 review HIGH, P4) cover only the
+// CONSTRUCTION-time config buildCCMServerConfig returns, before
+// newObservedMTLSListener's GetConfigForClient ever clones it: they do
+// NOT reach a mutation to that per-connection clone, which is
+// TestPerConnectionConfigPreservesCipherSuites's job instead.
 func TestRequireCCMVerification(t *testing.T) {
 	t.Parallel()
 
@@ -342,6 +348,7 @@ func TestRequireCCMVerification(t *testing.T) {
 		return &gotls.Config{
 			ClientAuth:            gotls.RequireAnyClientCert,
 			VerifyPeerCertificate: func([][]byte, [][]*x509.Certificate) error { return nil },
+			CipherSuites:          []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8},
 		}
 	}
 
@@ -354,6 +361,10 @@ func TestRequireCCMVerification(t *testing.T) {
 		{"VerifyPeerCertificate nil", func(c *gotls.Config) { c.VerifyPeerCertificate = nil }, true},
 		{"ClientAuth relaxed to NoClientCert", func(c *gotls.Config) { c.ClientAuth = gotls.NoClientCert }, true},
 		{"ClientAuth relaxed to RequestClientCert", func(c *gotls.Config) { c.ClientAuth = gotls.RequestClientCert }, true},
+		{"CipherSuites widened to add GCM", func(c *gotls.Config) {
+			c.CipherSuites = append(c.CipherSuites, gotls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256)
+		}, true},
+		{"CipherSuites narrowed to empty", func(c *gotls.Config) { c.CipherSuites = nil }, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
