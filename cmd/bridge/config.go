@@ -125,7 +125,8 @@ type config struct {
 	// requires: without it, validate refuses to start rather than
 	// silently dropping the connection observer under CCM. Defaults
 	// false, mirroring AllowPlaintext's explicit-opt-in shape. Setting it
-	// accepts, until GRIDAPPSD/ieee-2030_5-server-go#583 ships:
+	// accepts, kept as configuration surface pending issue 127 (which
+	// removes this flag pair):
 	//   - the loss of the rejected-device record, per-LFDI last-seen, and
 	//     request counts and paths the observer would otherwise carry;
 	//   - the admin UI's served-status table showing every served
@@ -487,7 +488,7 @@ func loadConfig(args []string) (config, error) {
 	fs.BoolVar(&cfg.SEP2EnableCCM, "sep2-enable-ccm", cfg.SEP2EnableCCM,
 		"serve ONLY the mandatory TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 suite (a client unable to offer it is refused, not served over GCM); requires -sep2-ccm-allow-no-observer (default false)")
 	fs.BoolVar(&cfg.SEP2CCMAllowNoObserver, "sep2-ccm-allow-no-observer", cfg.SEP2CCMAllowNoObserver,
-		"accept running -sep2-enable-ccm with the connection observer disabled, losing the rejected-device record until GRIDAPPSD/ieee-2030_5-server-go#583 ships (default false)")
+		"accept running -sep2-enable-ccm with the connection observer disabled, losing the rejected-device record (kept pending issue 127; default false)")
 	fs.StringVar(&cfg.SEP2AdminUIAddr, "admin-ui-addr", cfg.SEP2AdminUIAddr, "admin UI read only HTTP listener host:port (defaults to loopback only)")
 	fs.BoolVar(&cfg.SEP2AdminUIAllowNonLoopback, "admin-ui-allow-non-loopback", cfg.SEP2AdminUIAllowNonLoopback, "bind the admin UI listener to a non-loopback host (dev-only; default false)")
 	// admin-ui-key registers with an empty default so flag.PrintDefaults
