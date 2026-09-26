@@ -62,21 +62,21 @@ func mintTestDeviceClient(t *testing.T, certDir string) *http.Client {
 		t.Fatalf("GenerateDeviceCert: %v", err)
 	}
 
-	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(devCertPEM, devKeyPEM, caCertPEM)
+	cfg, err := sepTLS.NewCCMClientConfigFromPEM(devCertPEM, devKeyPEM, caCertPEM)
 	if err != nil {
-		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
+		t.Fatalf("NewCCMClientConfigFromPEM: %v", err)
 	}
 	// InsecureSkipVerify is safe here: the test dials by IP/port, not by
 	// the server cert's SAN hostname, and RootCAs (set above) already
 	// pins trust to the minted CA. Full hostname verification is
 	// exercised by the "localhost"/"127.0.0.1" SANs the server cert
 	// carries; skip only the hostname match, not chain trust.
-	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped
+	cfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped
 
-	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-		Timeout:   5 * time.Second,
-	}
+	// gotlsHTTPClient (mtls_ccm_test.go) wires DialTLSContext over the
+	// gotls fork: this server serves CCM-8 only since core v0.20.0, a
+	// suite stdlib crypto/tls's TLSClientConfig cannot negotiate.
+	return gotlsHTTPClient(cfg)
 }
 
 func TestEmbedServesSeededDevicesOverMTLS(t *testing.T) {

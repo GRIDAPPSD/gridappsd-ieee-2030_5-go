@@ -2,7 +2,6 @@ package sep2embed
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"net"
 	"net/http"
@@ -177,34 +176,46 @@ func TestCCMListenerRefusesGCMOnlyClient(t *testing.T) {
 	}
 }
 
-// TestDefaultListenerNegotiatesGCM is TestCCMFlagNegotiatesCCM8Suite's
-// sibling: with Config.EnableCCM left at its zero value (false), the
-// listener is the plain stdlib crypto/tls GCM path, which has no CCM_8
-// cipher suite to offer at all. A listener that always served one thing
-// would pass both tests; this one is what tells them apart, and it is
-// what a bridge deployed with today's default config actually serves.
-func TestDefaultListenerNegotiatesGCM(t *testing.T) {
+// TestDefaultListenerNegotiatesCCM8 is TestCCMFlagNegotiatesCCM8Suite's
+// sibling for the delegated path: with Config.EnableCCM left at its zero
+// value (false) and Observer nil, New falls through to server-go's
+// sep2srv.New (embed.go), which as of core v0.20.0 also builds a CCM-8
+// only listener (wrapMTLS -> sepTLS.NewCCMServerConfigWithExtraCAs), the
+// same core call newCCMOnlyListener uses. Before that bump this path
+// served the plain stdlib crypto/tls GCM suite instead; a client
+// offering only GCM now gets exactly TestCCMListenerRefusesGCMOnlyClient's
+// refusal, proven separately below rather than re-run here.
+func TestDefaultListenerNegotiatesCCM8(t *testing.T) {
 	t.Parallel()
 
 	addr, caPool, deviceCert := ccmTestServer(t, false)
 
-	tlsCert := tls.Certificate{Certificate: deviceCert.Certificate, PrivateKey: deviceCert.PrivateKey}
-	cfg := &tls.Config{
+	raw, err := (&net.Dialer{Timeout: 3 * time.Second}).Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial tcp: %v", err)
+	}
+	defer func() { _ = raw.Close() }()
+
+	cfg := &gotls.Config{
 		RootCAs:            caPool,
-		Certificates:       []tls.Certificate{tlsCert},
-		MinVersion:         tls.VersionTLS12,
-		MaxVersion:         tls.VersionTLS12,
+		Certificates:       []gotls.Certificate{deviceCert},
+		MinVersion:         gotls.VersionTLS12,
+		MaxVersion:         gotls.VersionTLS12,
+		CipherSuites:       []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8},
+		CurvePreferences:   []gotls.CurveID{gotls.CurveP256},
 		InsecureSkipVerify: true, //nolint:gosec // test dials by IP; this skips server cert verification entirely (RootCAs above is unused), which is fine here: only the negotiated suite is asserted
 	}
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", addr, cfg)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
+	conn := gotls.Client(raw, cfg)
+	hsCtx, hsCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer hsCancel()
+	if err := conn.HandshakeContext(hsCtx); err != nil {
+		t.Fatalf("handshake: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
 
 	state := conn.ConnectionState()
-	if state.CipherSuite != tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 {
-		t.Errorf("negotiated cipher = %#04x, want %#04x (TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, the default fallback)", state.CipherSuite, tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256)
+	if state.CipherSuite != gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 {
+		t.Errorf("negotiated cipher = %#04x, want %#04x (TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8, the only suite core v0.20.0 offers)", state.CipherSuite, gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8)
 	}
 }
 

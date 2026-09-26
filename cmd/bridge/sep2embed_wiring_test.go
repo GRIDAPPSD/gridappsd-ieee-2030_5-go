@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"encoding/xml"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
+	gotls "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls/gotls"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
@@ -69,20 +71,17 @@ func mintTestDeviceClient(t *testing.T, certDir string) *http.Client {
 		t.Fatalf("GenerateDeviceCert: %v", err)
 	}
 
-	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(devCertPEM, devKeyPEM, caCertPEM)
+	cfg, err := sepTLS.NewCCMClientConfigFromPEM(devCertPEM, devKeyPEM, caCertPEM)
 	if err != nil {
-		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
+		t.Fatalf("NewCCMClientConfigFromPEM: %v", err)
 	}
 	// InsecureSkipVerify is safe here: the test dials by IP/port, not by
 	// the server cert's SAN hostname, and RootCAs (set above) already
 	// pins trust to the minted CA. Only the hostname match is skipped,
 	// matching sep2embed's own embed_test.go pattern.
-	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped
+	cfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped
 
-	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-		Timeout:   5 * time.Second,
-	}
+	return gotlsHTTPClient(cfg)
 }
 
 // deviceClient builds an mTLS *http.Client presenting certPEM/keyPEM,
@@ -92,17 +91,43 @@ func mintTestDeviceClient(t *testing.T, certDir string) *http.Client {
 func deviceClient(t *testing.T, certPEM, keyPEM, caCertPEM []byte) *http.Client {
 	t.Helper()
 
-	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(certPEM, keyPEM, caCertPEM)
+	cfg, err := sepTLS.NewCCMClientConfigFromPEM(certPEM, keyPEM, caCertPEM)
 	if err != nil {
-		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
+		t.Fatalf("NewCCMClientConfigFromPEM: %v", err)
 	}
 	// InsecureSkipVerify is safe here for the same reason as
 	// mintTestDeviceClient above.
-	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped
+	cfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped
 
+	return gotlsHTTPClient(cfg)
+}
+
+// gotlsHTTPClient returns an *http.Client that dials over the gotls fork
+// via DialTLSContext, mirroring
+// internal/sep2embed/mtls_ccm_test.go's helper of the same name
+// (duplicated rather than exported for the same reason mintTestDeviceClient
+// is: this package tests the bridge's own wiring, not sep2embed's
+// internals). The embedded server serves TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8
+// only since core v0.20.0, a suite stdlib crypto/tls's TLSClientConfig
+// cannot negotiate; net/http never populates resp.TLS for a connection
+// returned through DialTLSContext, but no test in this file reads it.
+func gotlsHTTPClient(cfg *gotls.Config) *http.Client {
 	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-		Timeout:   5 * time.Second,
+		Transport: &http.Transport{
+			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				raw, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				conn := gotls.Client(raw, cfg)
+				if err := conn.HandshakeContext(ctx); err != nil {
+					_ = raw.Close()
+					return nil, err
+				}
+				return conn, nil
+			},
+		},
+		Timeout: 5 * time.Second,
 	}
 }
 

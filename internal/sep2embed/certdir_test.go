@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/xml"
@@ -21,6 +20,7 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
+	gotls "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls/gotls"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
@@ -259,7 +259,9 @@ func TestCompletePreprovisionedDirIsUsableReadOnly(t *testing.T) {
 
 // dialCapturingServerLeaf completes one mTLS handshake against addr,
 // presenting a device certificate signed by material's CA, and returns
-// the DER bytes of the leaf certificate the SERVER presented.
+// the DER bytes of the leaf certificate the SERVER presented. Dials
+// through gotls: the embedded server serves CCM-8 only since core
+// v0.20.0, a suite stdlib crypto/tls cannot negotiate.
 func dialCapturingServerLeaf(t *testing.T, addr string, material preprovisionedMaterial) []byte {
 	t.Helper()
 
@@ -271,18 +273,18 @@ func dialCapturingServerLeaf(t *testing.T, addr string, material preprovisionedM
 	if err != nil {
 		t.Fatalf("GenerateDeviceCert: %v", err)
 	}
-	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(devCertPEM, devKeyPEM, material.caCertPEM)
+	cfg, err := sepTLS.NewCCMClientConfigFromPEM(devCertPEM, devKeyPEM, material.caCertPEM)
 	if err != nil {
-		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
+		t.Fatalf("NewCCMClientConfigFromPEM: %v", err)
 	}
 	// Trust stays pinned to the operator's CA via RootCAs; only the
 	// hostname match is skipped, since the test dials by IP:port. Same
 	// posture as embed_test.go's mintTestDeviceClient.
-	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above
+	cfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above
 
-	conn, err := tls.Dial("tcp", addr, tlsCfg)
+	conn, err := gotls.Dial("tcp", addr, cfg)
 	if err != nil {
-		t.Fatalf("tls.Dial(%q): %v", addr, err)
+		t.Fatalf("gotls.Dial(%q): %v", addr, err)
 	}
 	defer conn.Close()
 

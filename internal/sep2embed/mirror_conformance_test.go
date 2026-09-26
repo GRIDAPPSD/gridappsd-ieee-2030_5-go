@@ -125,13 +125,13 @@ func newEmbedTestServer(t *testing.T, tune func(*Config), serials ...string) (st
 		if err != nil {
 			t.Fatalf("GenerateDeviceCert(%s): %v", serial, err)
 		}
-		tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(devCertPEM, devKeyPEM, caCertPEM)
+		cfg, err := sepTLS.NewCCMClientConfigFromPEM(devCertPEM, devKeyPEM, caCertPEM)
 		if err != nil {
-			t.Fatalf("NewClientTLSConfigFromPEM(%s): %v", serial, err)
+			t.Fatalf("NewCCMClientConfigFromPEM(%s): %v", serial, err)
 		}
 		// Trust is pinned via RootCAs above; only the hostname match is
 		// skipped, because the test dials 127.0.0.1 by address.
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs
+		cfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs
 
 		pair, err := tls.X509KeyPair(devCertPEM, devKeyPEM)
 		if err != nil {
@@ -139,12 +139,12 @@ func newEmbedTestServer(t *testing.T, tune func(*Config), serials ...string) (st
 		}
 		lfdi := sepTLS.LFDI(pair.Leaf)
 
+		// gotlsHTTPClient (mtls_ccm_test.go): the embedded server serves
+		// CCM-8 only since core v0.20.0, a suite stdlib crypto/tls's
+		// TLSClientConfig cannot negotiate.
 		devices = append(devices, mupTestDevice{
-			client: &http.Client{
-				Transport: &http.Transport{TLSClientConfig: tlsCfg},
-				Timeout:   5 * time.Second,
-			},
-			lfdi: lfdi,
+			client: gotlsHTTPClient(cfg),
+			lfdi:   lfdi,
 		})
 		entries = append(entries, registry.Entry{
 			MRID: "mrid-" + serial,
