@@ -250,8 +250,9 @@ type Config struct {
 	// CCM-only listener itself (newCCMOnlyListener), which has no
 	// handshake-observation seam of its own. When non-nil, every
 	// authenticated request is recorded via Observer.RecordRequest, and
-	// (GCM/default listener only; see errObserverRequiresGCM) every mTLS
-	// connection attempt that reaches certificate verification (i.e. the
+	// (the observed listener path only, i.e. Observer non-nil; see
+	// newObservedMTLSListener) every mTLS connection attempt that reaches
+	// certificate verification (i.e. the
 	// client presented a certificate and chain-building ran), accepted
 	// or rejected, is recorded via Observer.RecordHandshake; a connection
 	// that fails before that point (no certificate presented, TLS

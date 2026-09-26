@@ -100,10 +100,12 @@ func dialWithClientCertLocalAddr(t *testing.T, addr string, certPEM, keyPEM, tru
 
 // waitForHandshake polls hook.Snapshot() until at least want handshake
 // attempts have been recorded, or fails the test after a short timeout.
-// The additive wrapper runs on the TLS server goroutine spawned by the
-// standard library's own Accept/handshake machinery, so a client Dial
-// returning is not itself synchronized with RecordHandshake having
-// already run; a short poll avoids a flaky race against that goroutine.
+// The additive wrapper runs inside WrapCCMListener's own per-connection
+// handshake goroutine (core's ccmserver.go), which performs the
+// handshake eagerly before Accept ever hands the connection to net/http,
+// so a client Dial returning is not itself synchronized with
+// RecordHandshake having already run; a short poll avoids a flaky race
+// against that goroutine.
 func waitForHandshake(t *testing.T, hook *connobs.Hook, want int) connobs.HandshakeAttempt {
 	t.Helper()
 

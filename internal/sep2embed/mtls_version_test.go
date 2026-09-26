@@ -121,12 +121,14 @@ func dialCCMPinnedVersion(t *testing.T, addr string, caPool *x509.CertPool, devi
 // TestNewObservedMTLSListenerCapsAtTLS12's sibling for the CCM-only
 // production path (newCCMOnlyListener): PR 108 review MEDIUM (round 2)
 // found no test covering this listener's own version range. Mutation,
-// applied and diffed before trusting it: adding
-// `cfg.MaxVersion = gotls.VersionTLS13` after the CipherSuites overwrite
-// in newCCMOnlyListener left the whole suite green; against that mutant a
-// TLS 1.2-1.3 client offering no CCM-8 suite was ACCEPTED at TLS 1.3,
-// where CipherSuites is not consulted. This test is what would notice
-// that regression.
+// applied and diffed before trusting it: at the time this test was
+// written, adding `cfg.MaxVersion = gotls.VersionTLS13` after the
+// CipherSuites narrowing then done by hand in newCCMOnlyListener (since
+// moved into core's own NewCCMServerConfigWithExtraCAs, and checked once
+// more at construction by requireCCMVerification) left the whole suite
+// green; against that mutant a TLS 1.2-1.3 client offering no CCM-8
+// suite was ACCEPTED at TLS 1.3, where CipherSuites is not consulted.
+// This test is what would notice that regression.
 func TestCCMOnlyListenerCapsAtTLS12(t *testing.T) {
 	t.Parallel()
 
