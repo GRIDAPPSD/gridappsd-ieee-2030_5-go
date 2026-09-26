@@ -7,8 +7,8 @@ require github.com/go-stomp/stomp/v3 v3.1.5
 require github.com/GRIDAPPSD/gridappsd-go v0.1.0
 
 require (
-	github.com/GRIDAPPSD/ieee-2030_5-core-go v0.17.0
-	github.com/GRIDAPPSD/ieee-2030_5-server-go v0.4.0
+	github.com/GRIDAPPSD/ieee-2030_5-core-go v0.20.0
+	github.com/GRIDAPPSD/ieee-2030_5-server-go v0.7.0
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 )

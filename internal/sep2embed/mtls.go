@@ -2,11 +2,9 @@ package sep2embed
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"time"
@@ -20,35 +18,40 @@ import (
 )
 
 // errObserverRequiresGCM is returned by New when Config.Observer is set
-// together with Config.EnableCCM. core's forked gotls listener (the CCM-8
-// path) has its own, separate VerifyPeerCertificate/VerifyConnection
-// plumbing (pkg/sep2tls/gotls), and this package's handshake-observation
-// wrapper below only reconstructs the GCM/default listener core's
-// sep2srv.New would otherwise build. Rather than silently skip handshake
-// observation under CCM (an invisible gap), New fails closed and says so.
-var errObserverRequiresGCM = errors.New("sep2embed: Config.Observer is not supported with Config.EnableCCM (the CCM-8 listener has no handshake-observation seam yet)")
+// together with Config.EnableCCM.
+//
+// The technical reason this error used to describe (the CCM-8 path had no
+// handshake-observation seam) no longer holds: core v0.20.0 dropped the
+// GCM/default *tls.Config constructor entirely, so both listener builders
+// below now build a *gotls.Config from the same core call
+// (buildCCMServerConfig), and newObservedMTLSListener's wrapping works on
+// either. The refusal is kept for now as configuration surface only,
+// pending a follow-up that retires Config.EnableCCM (and cmd/bridge's
+// SEP2_ENABLE_CCM/SEP2_CCM_ALLOW_NO_OBSERVER) now that setting it changes
+// nothing observable.
+var errObserverRequiresGCM = errors.New("sep2embed: Config.Observer is not supported with Config.EnableCCM (kept as configuration surface pending removal; see buildCCMServerConfig)")
 
 // observedMTLSServer is a drop-in replacement for *sep2srv.Server (it
 // satisfies the protocolServer interface embed.go defines). Built by
 // newObservedMTLSListener below when Config.Observer is set: it builds the
-// SAME mTLS tls.Config core's own sep2srv.New would build for the
-// GCM/default path (via the same exported
-// sepTLS.NewServerTLSConfigWithExtraCAs call, with the same cert/key/CA
-// inputs), but wraps VerifyPeerCertificate to additively RECORD each
-// connection attempt's accept/reject verdict, reason, and LFDI-match
-// into hook before returning the verifier's own real result unchanged.
-// The CCM-only path (newCCMOnlyListener) reuses this same struct as a
-// plain listener/httpSrv container: no hook, no recording wrapper.
+// SAME CCM-8 gotls.Config core's own sep2srv.New would build (via
+// buildCCMServerConfig, the shared call both this file's listener
+// constructors now use), but wraps VerifyPeerCertificate to additively
+// RECORD each connection attempt's accept/reject verdict, reason, and
+// LFDI-match into hook before returning the verifier's own real result
+// unchanged. The CCM-only path (newCCMOnlyListener) reuses this same
+// struct as a plain listener/httpSrv container: no hook, no recording
+// wrapper.
 //
 // Why this exists: core's pkg/sep2srv exposes no seam from outside the
 // package for observing the mTLS handshake (no VerifyConnection or
 // VerifyPeerCertificate hook on Options, no way to inject a pre-built
-// tls.Config or net.Listener; wrapMTLS, which does the real
-// construction, is unexported). Reproducing the identical GCM
+// gotls.Config or net.Listener; wrapMTLS, which does the real
+// construction, is unexported). Reproducing the identical CCM
 // construction here, then layering an additive wrapper on top, is the
 // only way to add handshake observation without a change to core. It
 // deliberately reuses core's exported building blocks
-// (sepTLS.NewServerTLSConfigWithExtraCAs for the tls.Config,
+// (sepTLS.NewCCMServerConfigWithExtraCAs for the gotls.Config,
 // sepTLS.LFDI/SFDI for identity derivation, and sep2srv's exported
 // Default* timeout constants for the http.Server) rather than
 // reimplementing any of their internal logic, so this stays a thin
@@ -60,58 +63,73 @@ type observedMTLSServer struct {
 	shutdownTimeout time.Duration
 }
 
-// newObservedMTLSListener builds the GCM/default mTLS listener with an
+// buildCCMServerConfig builds and validates the gotls.Config shared by
+// newObservedMTLSListener and newCCMOnlyListener. Core's own
+// NewCCMServerConfigWithExtraCAs already narrows CipherSuites to CCM-8
+// only (ccmserver.go): since core v0.20.0 dropped the separate
+// GCM/default *tls.Config constructor, both listeners in this file now
+// build the identical base config and differ only in whether
+// VerifyPeerCertificate is wrapped for observation.
+func buildCCMServerConfig(certFile, keyFile, caFile string, extraClientCAs []string) (*gotls.Config, error) {
+	cfg, err := sepTLS.NewCCMServerConfigWithExtraCAs(certFile, keyFile, caFile, extraClientCAs)
+	if err != nil {
+		return nil, fmt.Errorf("sep2embed: CCM TLS config: %w", err)
+	}
+	if err := requireCCMVerification(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// newObservedMTLSListener builds the CCM-8 mTLS listener with an
 // additive VerifyPeerCertificate wrapper. innerVerify (the verifier
-// sepTLS.NewServerTLSConfigWithExtraCAs already wires onto the returned
-// tls.Config) is captured and called FIRST on every connection attempt;
-// its return value is what actually decides accept or reject, and is
-// also what this function returns unchanged. The wrapper only ever
-// observes that decision after the fact: it can log an accept as a
-// reject or vice versa, it cannot flip which one actually happens.
+// buildCCMServerConfig already wires onto the returned gotls.Config) is
+// captured and called FIRST on every connection attempt; its return
+// value is what actually decides accept or reject, and is also what this
+// function returns unchanged. The wrapper only ever observes that
+// decision after the fact: it can log an accept as a reject or vice
+// versa, it cannot flip which one actually happens.
 //
 // reg is consulted (LFDI lookup only, never mutated) to populate each
 // attempt's Known field: whether the presented certificate's LFDI
 // matches an entry already in the bridge's mRID-to-LFDI registry. reg
 // may be nil, in which case Known is always false.
 func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClientCAs []string, hook *connobs.Hook, reg *registry.Registry) (net.Listener, sep2srv.Identity, error) {
-	tlsCfg, err := sepTLS.NewServerTLSConfigWithExtraCAs(certFile, keyFile, caFile, extraClientCAs)
+	cfg, err := buildCCMServerConfig(certFile, keyFile, caFile, extraClientCAs)
 	if err != nil {
-		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: TLS config: %w", err)
+		return nil, sep2srv.Identity{}, err
 	}
 
-	innerVerify := tlsCfg.VerifyPeerCertificate
-	if innerVerify == nil {
-		return nil, sep2srv.Identity{}, errors.New("sep2embed: TLS config has no VerifyPeerCertificate to wrap (core API changed?)")
-	}
+	innerVerify := cfg.VerifyPeerCertificate
 
-	// GetConfigForClient is the only seam crypto/tls exposes with access
-	// to the underlying net.Conn before certificate verification runs:
-	// VerifyPeerCertificate itself receives only the raw certificate
-	// bytes, never the connection, so there is no way to read
-	// conn.RemoteAddr() from inside it directly. GetConfigForClient is
-	// called once per incoming connection, after the ClientHello, and
-	// its ClientHelloInfo carries .Conn; returning a per-connection
-	// clone of tlsCfg whose VerifyPeerCertificate closure
+	// GetConfigForClient is the only seam gotls exposes (mirroring
+	// stdlib crypto/tls) with access to the underlying net.Conn before
+	// certificate verification runs: VerifyPeerCertificate itself
+	// receives only the raw certificate bytes, never the connection, so
+	// there is no way to read conn.RemoteAddr() from inside it directly.
+	// GetConfigForClient is called once per incoming connection, after
+	// the ClientHello, and its ClientHelloInfo carries .Conn; returning a
+	// per-connection clone of cfg whose VerifyPeerCertificate closure
 	// (newRecordingVerifier below) has this connection's remote address
 	// baked in is the standard way to thread that address through to the
 	// verifier without altering verification itself: newRecordingVerifier
 	// still calls innerVerify FIRST, unconditionally, and returns exactly
 	// what it returns.
-	tlsCfg.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+	cfg.GetConfigForClient = func(chi *gotls.ClientHelloInfo) (*gotls.Config, error) {
 		var remoteAddr string
 		if chi.Conn != nil {
 			remoteAddr = chi.Conn.RemoteAddr().String()
 		}
-		perConn := tlsCfg.Clone()
+		perConn := cfg.Clone()
 		perConn.GetConfigForClient = nil // must not recurse
 		perConn.VerifyPeerCertificate = newRecordingVerifier(innerVerify, hook, reg, remoteAddr)
 		return perConn, nil
 	}
 
-	if len(tlsCfg.Certificates) == 0 {
+	if len(cfg.Certificates) == 0 {
 		return nil, sep2srv.Identity{}, errors.New("sep2embed: TLS config has no server certificate")
 	}
-	identity, err := deriveServerIdentity(tlsCfg.Certificates[0].Certificate)
+	identity, err := deriveServerIdentity(cfg.Certificates[0].Certificate)
 	if err != nil {
 		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: derive server identity: %w", err)
 	}
@@ -121,52 +139,31 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: listen: %w", err)
 	}
 
-	return tls.NewListener(listener, tlsCfg), identity, nil
+	// WrapCCMListener forces the handshake eagerly and logs a failure the
+	// way net/http logs one for *tls.Conn; that case never fires for the
+	// forked *gotls.Conn type net.Listen/gotls.NewListener returns on
+	// their own. A nil errorLog logs through the standard logger,
+	// matching this package's unset http.Server.ErrorLog on this path.
+	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), nil), identity, nil
 }
 
-// newCCMOnlyListener builds a CCM-8-only mTLS listener: the operator's
-// requirement (issue 82) is that a client unable to offer
-// TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 is refused, not silently served
-// over GCM. server-go's sep2srv.New has no seam for this: its wrapMTLS
-// always calls core's sepTLS.NewCCMServerConfigWithExtraCAs, whose
-// returned *gotls.Config hardcodes CipherSuites as
-// []uint16{CCM_8, 0xC02B (GCM fallback)}, and neither sep2srv.Options nor
-// any other exported core/server-go symbol lets a caller narrow that
-// list. This function calls the SAME exported constructor and then
-// overwrites CipherSuites on the returned config before building the
-// listener, reusing every other part of core's CCM setup (cert loading,
-// ClientAuth, the HardwareModuleName-aware VerifyPeerCertificate, the
-// TLS 1.2 cap) unchanged. Unlike server-go's own wrapMTLS, the listener is
-// wrapped with sepTLS.WrapCCMListener so a refused handshake reaches a log
-// line the way net/http's own "TLS handshake error" case does for
-// *tls.Conn: that case never fires for the forked *gotls.Conn type
-// WrapCCMListener wraps. Measured against a live listener, this covers a
-// rejected certificate, a cipher-suite mismatch, and a version mismatch
-// alike, not only the pre-certificate case core issue #170 tracks.
+// newCCMOnlyListener builds a CCM-8-only mTLS listener with no
+// handshake-observation wrapper: the plain sibling of
+// newObservedMTLSListener, sharing the same buildCCMServerConfig base
+// and the same WrapCCMListener/gotls.NewListener wiring for a refused
+// handshake to reach the process log the way net/http logs one for
+// *tls.Conn (mirrors server-go's own wrapMTLS, pkg/sep2srv/server.go).
 //
-// Identity is derived the same way newObservedMTLSListener's GCM path
-// does (deriveServerIdentity), since sep2srv's own deriveIdentity is
+// Identity is derived the same way newObservedMTLSListener's does
+// (deriveServerIdentity), since sep2srv's own deriveIdentity is
 // unexported. The caller must additionally wire
 // sepTLS.SetupCCMServer(httpSrv) and sepTLS.CCMIdentityMiddleware
-// (outermost), matching sep2srv.New's own CCM wiring in server.go,
-// since the standard identity middleware reads r.TLS, which crypto/tls
+// (outermost), matching sep2srv.New's own CCM wiring in server.go, since
+// the standard identity middleware reads r.TLS, which crypto/tls
 // populates automatically but the gotls fork does not.
-//
-// errorLog is forwarded to WrapCCMListener unchanged (nil is a valid
-// value there: it logs through the standard logger, as net/http does
-// when its own ErrorLog is nil). The caller passes the SAME value it
-// sets on the serving http.Server's own ErrorLog field, from one
-// variable, so the refusal log and the server's other error logging
-// cannot drift apart the day either one is pointed somewhere other than
-// the standard logger.
-func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs []string, errorLog *log.Logger) (net.Listener, sep2srv.Identity, error) {
-	cfg, err := sepTLS.NewCCMServerConfigWithExtraCAs(certFile, keyFile, caFile, extraClientCAs)
+func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs []string) (net.Listener, sep2srv.Identity, error) {
+	cfg, err := buildCCMServerConfig(certFile, keyFile, caFile, extraClientCAs)
 	if err != nil {
-		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: CCM TLS config: %w", err)
-	}
-	cfg.CipherSuites = []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8}
-
-	if err := requireCCMVerification(cfg); err != nil {
 		return nil, sep2srv.Identity{}, err
 	}
 
@@ -183,17 +180,17 @@ func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs [
 		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: listen: %w", err)
 	}
 
-	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), errorLog), identity, nil
+	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), nil), identity, nil
 }
 
 // requireCCMVerification refuses a CCM config that no longer enforces
 // client-certificate verification. Unlike newObservedMTLSListener above,
 // which only WRAPS an existing VerifyPeerCertificate it does not own,
-// newCCMOnlyListener mutates a *gotls.Config another module builds
-// (NewCCMServerConfigWithExtraCAs): the same class of breakage the GCM
-// sibling's own nil-VerifyPeerCertificate check (above) guards against,
-// applied here so a future core change weakening ClientAuth or dropping
-// VerifyPeerCertificate cannot silently serve an unverified listener.
+// buildCCMServerConfig's caller mutates nothing but must not trust a
+// *gotls.Config another module builds (NewCCMServerConfigWithExtraCAs)
+// blindly: this guards against a future core change weakening ClientAuth
+// or dropping VerifyPeerCertificate, so it cannot silently serve an
+// unverified listener.
 func requireCCMVerification(cfg *gotls.Config) error {
 	if cfg.VerifyPeerCertificate == nil {
 		return errors.New("sep2embed: CCM TLS config has no VerifyPeerCertificate (core API changed?)")

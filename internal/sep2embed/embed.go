@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -389,70 +390,33 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	// client's postRate untouched.
 	cfg.Router.PostRateProvider = cfg.ResolvePostRate
 
-	// Observer wired: build the mTLS listener ourselves, with the
-	// additive handshake-observation wrapper (see mtls.go's doc comment
-	// for why server-go's sep2srv.New cannot be used for this path). Observer
-	// unset: fall through unchanged to the
-	// prior sep2srv.New path below.
-	if cfg.Observer != nil {
-		if cfg.EnableCCM {
+	// Observer or EnableCCM: build the mTLS listener ourselves, either
+	// with the additive handshake-observation wrapper (Observer) or
+	// without one (EnableCCM alone). Both build the identical CCM-8
+	// gotls.Config (buildCCMServerConfig, mtls.go) since core v0.20.0
+	// dropped the separate GCM/default constructor, so both need the
+	// same gotls http.Server wiring below. Neither set: fall through
+	// unchanged to the sep2srv.New delegation, which builds that same
+	// CCM-8 listener itself (server-go's own wrapMTLS).
+	if cfg.Observer != nil || cfg.EnableCCM {
+		if cfg.Observer != nil && cfg.EnableCCM {
 			return nil, errObserverRequiresGCM
 		}
 
-		listener, identity, err := newObservedMTLSListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, cfg.Observer, reg)
+		var (
+			listener net.Listener
+			identity sep2srv.Identity
+			err      error
+		)
+		if cfg.Observer != nil {
+			listener, identity, err = newObservedMTLSListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, cfg.Observer, reg)
+		} else {
+			listener, identity, err = newCCMOnlyListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs)
+		}
 		if err != nil {
 			return nil, err
 		}
 
-		handler := buildHandler(cfg.Router, stores, reg, identity, notifier, cfg.Observer)
-
-		shutdownTimeout := cfg.ShutdownTimeout
-		if shutdownTimeout <= 0 {
-			shutdownTimeout = sep2srv.DefaultShutdownTimeout
-		}
-
-		srv := &observedMTLSServer{
-			identity: identity,
-			listener: listener,
-			httpSrv: &http.Server{
-				Handler:           handler,
-				ReadHeaderTimeout: sep2srv.DefaultReadHeaderTimeout,
-				ReadTimeout:       sep2srv.DefaultReadTimeout,
-				WriteTimeout:      sep2srv.DefaultWriteTimeout,
-				IdleTimeout:       sep2srv.DefaultIdleTimeout,
-			},
-			shutdownTimeout: shutdownTimeout,
-		}
-
-		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger()}, nil
-	}
-
-	// EnableCCM with no Observer: build a CCM-8-ONLY listener ourselves
-	// rather than delegating to sep2srv.New, whose CCM path (via core's
-	// sepTLS.NewCCMServerConfigWithExtraCAs) always keeps GCM as a
-	// fallback suite. See newCCMOnlyListener's doc comment (mtls.go) for
-	// why this repository issue 82's "the mandatory suite is served, not
-	// merely offered" criterion cannot be met by any sep2srv.Options
-	// field.
-	if cfg.EnableCCM {
-		// ccmErrorLog is passed to both the CCM listener's refusal-log
-		// wrapper (newCCMOnlyListener, mtls.go) and the http.Server's
-		// own ErrorLog field below, from this one variable, so the two
-		// can never drift apart: a literal nil passed only to the
-		// wrapper would stay wired to the standard logger even after a
-		// future change gave the http.Server its own ErrorLog.
-		var ccmErrorLog *log.Logger
-
-		listener, identity, err := newCCMOnlyListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, ccmErrorLog)
-		if err != nil {
-			return nil, err
-		}
-
-		// cfg.Observer is nil on this path (the branch above returns
-		// early whenever it is non-nil), so this is exactly the
-		// no-observation handler buildHandler already builds for that
-		// case; passing cfg.Observer rather than a literal nil keeps the
-		// call symmetric with the two sibling branches.
 		handler := buildHandler(cfg.Router, stores, reg, identity, notifier, cfg.Observer)
 
 		shutdownTimeout := cfg.ShutdownTimeout
@@ -472,7 +436,6 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			ReadTimeout:       sep2srv.DefaultReadTimeout,
 			WriteTimeout:      sep2srv.DefaultWriteTimeout,
 			IdleTimeout:       sep2srv.DefaultIdleTimeout,
-			ErrorLog:          ccmErrorLog,
 		}
 		sepTLS.SetupCCMServer(httpSrv)
 
@@ -486,8 +449,9 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger()}, nil
 	}
 
-	// Neither Observer nor EnableCCM: the plain GCM path, delegated to
-	// server-go's sep2srv.New unchanged.
+	// Neither Observer nor EnableCCM: delegate to server-go's sep2srv.New,
+	// which builds the identical CCM-8-only listener (wrapMTLS) the
+	// branch above builds by hand for the EnableCCM-alone case.
 	opts := sep2srv.Options{
 		Addr:            cfg.Addr,
 		CertFile:        certFile,

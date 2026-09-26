@@ -97,15 +97,17 @@ type config struct {
 	// shape for the "this is production" signal.
 	SEP2DeviceCertMode string
 
-	// SEP2EnableCCM selects the TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8
-	// (0xC0AE) cipher suite IEEE 2030.5-2018 section 6.7 makes mandatory,
-	// via sep2embed.Config.EnableCCM. Defaults false (the stdlib GCM
-	// fallback), mirroring AllowPlaintext's explicit-opt-in shape. CCM is
-	// EXCLUSIVE when set, not merely preferred: the listener offers
-	// TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 and nothing else
-	// (sep2embed.newCCMOnlyListener strips the GCM fallback core's own
-	// CCM config carries by default), so a client unable to offer it
-	// fails the handshake rather than being served over GCM.
+	// SEP2EnableCCM selects sep2embed.Config.EnableCCM, which builds the
+	// embedded listener without the connection observer. As of core
+	// v0.20.0 this changes nothing about which cipher suite is served:
+	// core dropped the GCM/default constructor entirely, so every
+	// embedded listener path (this flag set or not) now offers only
+	// TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 (0xC0AE), the suite IEEE
+	// 2030.5-2018 section 6.7 makes mandatory. Defaults false, mirroring
+	// AllowPlaintext's explicit-opt-in shape; kept as configuration
+	// surface pending a follow-up that retires this flag along with
+	// SEP2CCMAllowNoObserver, since setting it now only trades away the
+	// connection observer for no other effect.
 	//
 	// sep2embed.New refuses Config.Observer and Config.EnableCCM together
 	// (the CCM-8 listener has no handshake-observation seam yet; see
