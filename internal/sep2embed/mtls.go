@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"time"
 
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
@@ -120,10 +121,7 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 		if chi.Conn != nil {
 			remoteAddr = chi.Conn.RemoteAddr().String()
 		}
-		perConn := cfg.Clone()
-		perConn.GetConfigForClient = nil // must not recurse
-		perConn.VerifyPeerCertificate = newRecordingVerifier(innerVerify, hook, reg, remoteAddr)
-		return perConn, nil
+		return newPerConnectionConfig(cfg, innerVerify, hook, reg, remoteAddr), nil
 	}
 
 	if len(cfg.Certificates) == 0 {
@@ -145,6 +143,22 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 	// their own. A nil errorLog logs through the standard logger,
 	// matching this package's unset http.Server.ErrorLog on this path.
 	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), nil), identity, nil
+}
+
+// newPerConnectionConfig builds the *gotls.Config newObservedMTLSListener's
+// GetConfigForClient returns for one connection: base cloned with
+// GetConfigForClient cleared (must not recurse) and VerifyPeerCertificate
+// replaced by a recording wrapper. Split out as its own function so a test
+// can assert, directly and without a network dial, that every OTHER field
+// on the clone (CipherSuites included) is untouched: the CCM-8 exclusivity
+// this guards is a property of the whole suite set copied from base, not
+// of any one suite a future edit here happens to add or drop, so the test
+// checks equality with base rather than enumerating suites.
+func newPerConnectionConfig(base *gotls.Config, innerVerify func([][]byte, [][]*x509.Certificate) error, hook *connobs.Hook, reg *registry.Registry, remoteAddr string) *gotls.Config {
+	perConn := base.Clone()
+	perConn.GetConfigForClient = nil // must not recurse
+	perConn.VerifyPeerCertificate = newRecordingVerifier(innerVerify, hook, reg, remoteAddr)
+	return perConn
 }
 
 // newCCMOnlyListener builds a CCM-8-only mTLS listener with no
@@ -180,23 +194,39 @@ func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs [
 		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: listen: %w", err)
 	}
 
+	// nil errorLog here must stay in sync with newObservedMTLSListener's
+	// identical nil above: both log through the standard logger, matching
+	// this package's unset http.Server.ErrorLog on both paths.
 	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), nil), identity, nil
 }
 
 // requireCCMVerification refuses a CCM config that no longer enforces
-// client-certificate verification. Unlike newObservedMTLSListener above,
+// client-certificate verification, or that no longer restricts the
+// listener to CCM-8 exclusively. Unlike newObservedMTLSListener above,
 // which only WRAPS an existing VerifyPeerCertificate it does not own,
 // buildCCMServerConfig's caller mutates nothing but must not trust a
 // *gotls.Config another module builds (NewCCMServerConfigWithExtraCAs)
-// blindly: this guards against a future core change weakening ClientAuth
-// or dropping VerifyPeerCertificate, so it cannot silently serve an
-// unverified listener.
+// blindly: this guards against a future core change weakening ClientAuth,
+// dropping VerifyPeerCertificate, or widening CipherSuites, so it cannot
+// silently serve an unverified or GCM-reachable listener.
+//
+// The CipherSuites check runs once, here, against the base config
+// buildCCMServerConfig returns; it does NOT reach a mutation to the
+// per-connection clone newPerConnectionConfig builds inside
+// newObservedMTLSListener's GetConfigForClient, since that clone is made
+// fresh per connection, after this check has already run. That gap is
+// covered separately (newPerConnectionConfig's own equality-with-base
+// test), not by construction-time validation alone.
 func requireCCMVerification(cfg *gotls.Config) error {
 	if cfg.VerifyPeerCertificate == nil {
 		return errors.New("sep2embed: CCM TLS config has no VerifyPeerCertificate (core API changed?)")
 	}
 	if cfg.ClientAuth != gotls.RequireAnyClientCert {
 		return fmt.Errorf("sep2embed: CCM TLS config ClientAuth = %v, want RequireAnyClientCert (core API changed?)", cfg.ClientAuth)
+	}
+	wantSuites := []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8}
+	if !slices.Equal(cfg.CipherSuites, wantSuites) {
+		return fmt.Errorf("sep2embed: CCM TLS config CipherSuites = %#04x, want %#04x only (core API changed?)", cfg.CipherSuites, wantSuites)
 	}
 	return nil
 }
@@ -239,7 +269,16 @@ func newRecordingVerifier(innerVerify func([][]byte, [][]*x509.Certificate) erro
 			// and would itself have already failed) carries the real
 			// reason.
 		}
-		hook.RecordHandshake(attempt)
+		// hook is never nil from this function's one caller today
+		// (newObservedMTLSListener only builds this closure when
+		// Config.Observer, threaded through as hook, is non-nil), but a
+		// method call on a nil *Hook would panic inside RecordHandshake's
+		// own mutex lock; guarding here treats hook the same as the
+		// already-nil-safe reg above rather than trusting a caller
+		// invariant this function cannot enforce.
+		if hook != nil {
+			hook.RecordHandshake(attempt)
+		}
 
 		return verifyErr
 	}
