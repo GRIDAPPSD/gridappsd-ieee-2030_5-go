@@ -664,9 +664,10 @@ func logCCMObserverDisabledChoice(cfg config) {
 // additive request- and handshake-observation path sep2embed.New
 // builds when Config.Observer is set. cmd/bridge passes its own
 // non-nil *connobs.Hook (connHook) UNLESS cfg.SEP2EnableCCM is set: New
-// refuses Config.Observer and Config.EnableCCM together (the CCM-8
-// listener has no handshake-observation seam yet;
-// GRIDAPPSD/ieee-2030_5-server-go#583 adds one). By the time this runs,
+// still refuses Config.Observer and Config.EnableCCM together
+// (errObserverRequiresGCM), but only as configuration surface now, not
+// because the CCM-8 listener lacks a seam; see issue 127, which removes
+// both SEP2EnableCCM and this refusal. By the time this runs,
 // cfg has already passed validate (called from loadConfig, before run
 // ever starts), so SEP2EnableCCM true here implies
 // SEP2CCMAllowNoObserver is also true: validate refuses to start

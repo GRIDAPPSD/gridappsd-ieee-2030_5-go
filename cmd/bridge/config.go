@@ -109,14 +109,16 @@ type config struct {
 	// SEP2CCMAllowNoObserver, since setting it now only trades away the
 	// connection observer for no other effect.
 	//
-	// sep2embed.New refuses Config.Observer and Config.EnableCCM together
-	// (the CCM-8 listener has no handshake-observation seam yet; see
-	// sep2EmbedConfig's doc comment for the wiring), so validate below
-	// refuses to start with this set unless SEP2CCMAllowNoObserver is
-	// also set: the operator must choose to lose the rejected-device
-	// record explicitly, not have it implied by this flag alone. See
-	// GRIDAPPSD/ieee-2030_5-server-go#583 for the seam that removes the
-	// conflict.
+	// sep2embed.New still refuses Config.Observer and Config.EnableCCM
+	// together (errObserverRequiresGCM; see sep2EmbedConfig's doc comment
+	// for the wiring), but that refusal is configuration surface only now:
+	// the CCM-8 listener has had a handshake-observation seam since this
+	// package's mtls.go migration, and both listener builders share one
+	// config call. validate below still refuses to start with this set
+	// unless SEP2CCMAllowNoObserver is also set, so the operator chooses
+	// to lose the rejected-device record explicitly rather than have it
+	// implied by this flag alone; that choice, not a missing seam, is the
+	// only remaining reason. See issue 127 for removing both flags.
 	SEP2EnableCCM bool
 
 	// SEP2CCMAllowNoObserver is the explicit second setting SEP2EnableCCM
@@ -1213,26 +1215,27 @@ func (c config) validate() error {
 		return fmt.Errorf("config: SEP2_DEVICE_CERT_MODE / -sep2-device-cert-mode must be %q or %q, got %q",
 			deviceCertModeDevMintFlag, deviceCertModePreprovisionedFlag, c.SEP2DeviceCertMode)
 	}
-	// The CCM-8 listener has no handshake-observation seam yet
-	// (sep2embed.New's errObserverRequiresGCM), so SEP2EnableCCM alone
-	// would silently drop the connection observer: no rejected-device
-	// record, no per-LFDI last-seen, no request counts or paths, and
-	// nothing in the admin UI or the logs to show it happened. Refuse to
-	// start rather than let that loss be implied; the operator must
-	// choose it explicitly via SEP2CCMAllowNoObserver, or it is not
-	// chosen at all. See GRIDAPPSD/ieee-2030_5-server-go#583 for the seam
-	// that will let both be set together without a loss.
+	// cmd/bridge forces the connection observer off whenever SEP2EnableCCM
+	// is set (ccmObservationDisabled, main.go), even though the CCM-8
+	// listener has had a handshake-observation seam since this package's
+	// mtls.go migration: SEP2EnableCCM and SEP2CCMAllowNoObserver are kept
+	// as configuration surface pending issue 127, which removes both. So
+	// SEP2EnableCCM alone would silently drop the connection observer: no
+	// rejected-device record, no per-LFDI last-seen, no request counts or
+	// paths, and nothing in the admin UI or the logs to show it happened.
+	// Refuse to start rather than let that loss be implied; the operator
+	// must choose it explicitly via SEP2CCMAllowNoObserver, or it is not
+	// chosen at all.
 	if c.SEP2EnableCCM && !c.SEP2CCMAllowNoObserver {
 		return fmt.Errorf(
 			"config: SEP2_ENABLE_CCM / -sep2-enable-ccm is set without SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer: " +
-				"the CCM-8 listener has no handshake-observation seam yet, so serving it would silently drop the connection observer, " +
+				"this flag pair is kept as configuration surface pending issue 127 (both settings are scheduled for removal), and setting it drops the connection observer, " +
 				"losing the rejected-device record, per-LFDI last-seen, and request counts and paths; " +
 				"the admin UI panel's served-status table would show every served device's connection status as unknown, not connected or disconnected; " +
 				"its connected-clients table would show no clients rather than admitting it cannot tell; " +
 				"its handshake-attempts table would show no handshakes rather than admitting it cannot tell; " +
 				"and a client unable to offer CCM-8 would be refused with the refusal reaching the process log but never the panel; " +
-				"set SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer=true to accept those losses until " +
-				"GRIDAPPSD/ieee-2030_5-server-go#583 adds the seam, or leave SEP2_ENABLE_CCM unset")
+				"set SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer=true to accept those losses, or leave SEP2_ENABLE_CCM unset")
 	}
 	return nil
 }
