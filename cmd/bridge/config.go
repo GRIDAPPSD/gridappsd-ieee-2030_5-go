@@ -134,9 +134,14 @@ type config struct {
 	//     (ConnectedClients.svelte's observationDisabled state);
 	//   - the same panel's connected-clients and handshake-attempts
 	//     tables showing no data rather than admitting they cannot tell,
-	//     for the same reason;
-	//   - a refused handshake (a client that cannot offer CCM-8) reaching
-	//     the process log (sepTLS.WrapCCMListener) but never the panel.
+	//     for the same reason.
+	//
+	// A refused handshake (a client that cannot offer CCM-8) reaching the
+	// process log (sepTLS.WrapCCMListener) but never the panel is NOT one
+	// of those consequences: it is true on every listener path this
+	// package builds, observer enabled or not, so it does not belong in a
+	// list of what setting this flag costs. It is a separate limitation,
+	// tracked as issue 128, unrelated to this flag or to issue 127.
 	SEP2CCMAllowNoObserver bool
 
 	// SEP2NotificationAllowLoopback lets subscription notificationURIs
