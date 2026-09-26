@@ -54,20 +54,20 @@ func mintDeviceIdentity(t *testing.T, caCert *x509.Certificate, caKey *ecdsa.Pri
 func deviceClient(t *testing.T, certPEM, keyPEM, caCertPEM []byte) *http.Client {
 	t.Helper()
 
-	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(certPEM, keyPEM, caCertPEM)
+	cfg, err := sepTLS.NewCCMClientConfigFromPEM(certPEM, keyPEM, caCertPEM)
 	if err != nil {
-		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
+		t.Fatalf("NewCCMClientConfigFromPEM: %v", err)
 	}
 	// InsecureSkipVerify is safe here: the test dials by IP/port, not by
 	// the server cert's SAN hostname, and RootCAs (set above) already
 	// pins trust to the minted CA. Only the hostname match is skipped;
 	// see embed_test.go's mintTestDeviceClient for the identical rationale.
-	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped
+	cfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped
 
-	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-		Timeout:   5 * time.Second,
-	}
+	// gotlsHTTPClient (mtls_ccm_test.go): the embedded server serves
+	// CCM-8 only since core v0.20.0, a suite stdlib crypto/tls cannot
+	// negotiate.
+	return gotlsHTTPClient(cfg)
 }
 
 // TestACLTwoDeviceCrossAccessMatrix is the centerpiece test: it boots

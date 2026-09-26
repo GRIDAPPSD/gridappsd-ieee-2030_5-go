@@ -3,7 +3,6 @@ package sep2embed
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
+	gotls "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls/gotls"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
@@ -165,7 +165,7 @@ func TestEnsureServerIdentityMintsCrossCheckedCAs(t *testing.T) {
 // review of this PR found that flag disables ALL chain verification, not
 // only the hostname match its comment claims, which is a pre-existing,
 // out-of-scope defect and exactly why no in-repo test could see
-// this issue. This test's tls.Config never sets it.
+// this issue. This test's gotls.Config never sets it.
 //
 // The decision: a fresh mint keeps minting two distinct CAs (matching
 // the design's section 11.5 and the existing cross-checked-CA test
@@ -237,22 +237,28 @@ func TestFreshMintServerAuthNeedsServingCAAnchor(t *testing.T) {
 		t.Fatalf("read probe device key: %v", err)
 	}
 	devCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: devCertDER})
-	deviceCert, err := tls.X509KeyPair(devCertPEM, devKeyPEM)
+	deviceCert, err := gotls.X509KeyPair(devCertPEM, devKeyPEM)
 	if err != nil {
 		t.Fatalf("X509KeyPair(probe device): %v", err)
 	}
 
+	// Dials through gotls: e (the default-path Embed under test, Observer
+	// nil and EnableCCM false) serves CCM-8 only since core v0.20.0, a
+	// suite stdlib crypto/tls cannot negotiate.
 	dial := func(rootPEM []byte) error {
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(rootPEM) {
 			t.Fatalf("AppendCertsFromPEM: no certificate parsed from the %d-byte root PEM", len(rootPEM))
 		}
-		cfg := &tls.Config{
-			RootCAs:      pool,
-			Certificates: []tls.Certificate{deviceCert},
-			MinVersion:   tls.VersionTLS12,
+		cfg := &gotls.Config{
+			RootCAs:          pool,
+			Certificates:     []gotls.Certificate{deviceCert},
+			MinVersion:       gotls.VersionTLS12,
+			MaxVersion:       gotls.VersionTLS12,
+			CipherSuites:     []uint16{gotls.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8},
+			CurvePreferences: []gotls.CurveID{gotls.CurveP256},
 		}
-		conn, dialErr := tls.Dial("tcp", e.Addr(), cfg)
+		conn, dialErr := gotls.Dial("tcp", e.Addr(), cfg)
 		if dialErr == nil {
 			conn.Close()
 		}

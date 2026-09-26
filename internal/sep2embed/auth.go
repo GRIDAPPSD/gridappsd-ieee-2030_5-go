@@ -88,16 +88,17 @@ type deviceIdentity struct {
 
 // identityMiddleware extracts the caller's LFDI/SFDI from the verified
 // TLS peer certificate (r.TLS.PeerCertificates[0]) and stores it on the
-// request context. Works uniformly for both the GCM (stdlib crypto/tls)
-// and CCM (core's gotls fork) listener modes: sep2srv.New wraps the
-// handler in sepTLS.CCMIdentityMiddleware when EnableCCM is set, which
-// bridges gotls connection state into r.TLS before this middleware runs.
+// request context. Works uniformly across every listener path this
+// package and sep2srv.New build: since core v0.20.0 all of them are
+// CCM-8 only, and every one wraps its handler in
+// sepTLS.CCMIdentityMiddleware, which bridges gotls connection state into
+// r.TLS before this middleware runs.
 //
 // A request with no verified peer certificate passes through with no
 // identity attached; identityFromContext then reports ok=false and the
 // downstream handler denies (see assembly.BuildProtocolRouter's F1
 // deny-all stub). This should not occur in practice: the mTLS listener's
-// tls.Config sets ClientAuth: RequireAnyClientCert, so an uncertificated
+// gotls.Config sets ClientAuth: RequireAnyClientCert, so an uncertificated
 // client fails the handshake before any request reaches this
 // middleware. The no-identity path exists as a fail-closed defense in
 // depth, not an expected route.

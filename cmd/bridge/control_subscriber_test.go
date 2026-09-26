@@ -215,13 +215,10 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	bus.deliver(body)
 
 	// Verify the DERControl actually landed, over real mTLS as the
-	// owning device would see it.
-	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(devCertPEM, devKeyPEM, caCertPEM)
-	if err != nil {
-		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
-	}
-	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped, matching this package's other mTLS test clients
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}, Timeout: 5 * time.Second}
+	// owning device would see it. deviceClient (sep2embed_wiring_test.go,
+	// same package) dials over gotls: the embedded server serves CCM-8
+	// only since core v0.20.0, a suite stdlib crypto/tls cannot negotiate.
+	client := deviceClient(t, devCertPEM, devKeyPEM, caCertPEM)
 
 	baseURL := "https://" + embed.Addr()
 

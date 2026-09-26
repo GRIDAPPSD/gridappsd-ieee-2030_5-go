@@ -1,7 +1,6 @@
 package sep2embed
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"net"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2cert"
 	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
+	gotls "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls/gotls"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -40,25 +40,29 @@ func serveOneRequest(listener net.Listener) {
 // client presents certPEM/keyPEM unconditionally, even when the server's
 // CertificateRequest advertises an acceptable-CA list the client's own
 // certificate does not chain to (the rogue-CA reject-path test's exact
-// case): crypto/tls's stdlib client silently sends an empty certificate
-// when Certificates does not match that list, which would make the
-// server observe "no certificate presented" rather than the "wrong
-// signer" rejection this test needs to drive.
+// case): gotls's client silently sends an empty certificate when
+// Certificates does not match that list (mirroring stdlib crypto/tls),
+// which would make the server observe "no certificate presented" rather
+// than the "wrong signer" rejection this test needs to drive.
+//
+// Dials through gotls, not stdlib crypto/tls: the listener under test
+// (newObservedMTLSListener) serves TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8
+// only, a suite stdlib crypto/tls does not implement (golang/go#27484).
 func dialWithClientCert(t *testing.T, addr string, certPEM, keyPEM, trustedCACertPEM []byte) error {
 	t.Helper()
 
-	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(certPEM, keyPEM, trustedCACertPEM)
+	tlsCfg, err := sepTLS.NewCCMClientConfigFromPEM(certPEM, keyPEM, trustedCACertPEM)
 	if err != nil {
-		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
+		t.Fatalf("NewCCMClientConfigFromPEM: %v", err)
 	}
 	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped, same posture as embed_test.go's mintTestDeviceClient
 	clientCert := tlsCfg.Certificates[0]
 	tlsCfg.Certificates = nil
-	tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	tlsCfg.GetClientCertificate = func(*gotls.CertificateRequestInfo) (*gotls.Certificate, error) {
 		return &clientCert, nil
 	}
 
-	conn, dialErr := tls.Dial("tcp", addr, tlsCfg)
+	conn, dialErr := gotls.Dial("tcp", addr, tlsCfg)
 	if dialErr != nil {
 		return dialErr
 	}
@@ -75,18 +79,18 @@ func dialWithClientCert(t *testing.T, addr string, certPEM, keyPEM, trustedCACer
 func dialWithClientCertLocalAddr(t *testing.T, addr string, certPEM, keyPEM, trustedCACertPEM []byte) (localAddr string, dialErr error) {
 	t.Helper()
 
-	tlsCfg, err := sepTLS.NewClientTLSConfigFromPEM(certPEM, keyPEM, trustedCACertPEM)
+	tlsCfg, err := sepTLS.NewCCMClientConfigFromPEM(certPEM, keyPEM, trustedCACertPEM)
 	if err != nil {
-		t.Fatalf("NewClientTLSConfigFromPEM: %v", err)
+		t.Fatalf("NewCCMClientConfigFromPEM: %v", err)
 	}
 	tlsCfg.InsecureSkipVerify = true //nolint:gosec // trust pinned via RootCAs above; only hostname match is skipped, same posture as embed_test.go's mintTestDeviceClient
 	clientCert := tlsCfg.Certificates[0]
 	tlsCfg.Certificates = nil
-	tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	tlsCfg.GetClientCertificate = func(*gotls.CertificateRequestInfo) (*gotls.Certificate, error) {
 		return &clientCert, nil
 	}
 
-	conn, dialErr := tls.Dial("tcp", addr, tlsCfg)
+	conn, dialErr := gotls.Dial("tcp", addr, tlsCfg)
 	if dialErr != nil {
 		return "", dialErr
 	}
@@ -96,10 +100,12 @@ func dialWithClientCertLocalAddr(t *testing.T, addr string, certPEM, keyPEM, tru
 
 // waitForHandshake polls hook.Snapshot() until at least want handshake
 // attempts have been recorded, or fails the test after a short timeout.
-// The additive wrapper runs on the TLS server goroutine spawned by the
-// standard library's own Accept/handshake machinery, so a client Dial
-// returning is not itself synchronized with RecordHandshake having
-// already run; a short poll avoids a flaky race against that goroutine.
+// The additive wrapper runs inside WrapCCMListener's own per-connection
+// handshake goroutine (core's ccmserver.go), which performs the
+// handshake eagerly before Accept ever hands the connection to net/http,
+// so a client Dial returning is not itself synchronized with
+// RecordHandshake having already run; a short poll avoids a flaky race
+// against that goroutine.
 func waitForHandshake(t *testing.T, hook *connobs.Hook, want int) connobs.HandshakeAttempt {
 	t.Helper()
 
