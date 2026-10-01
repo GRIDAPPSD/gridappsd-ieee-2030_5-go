@@ -128,12 +128,12 @@ func assertBadge(t *testing.T, where string, c wireCell, variant, text string) {
 	}
 }
 
-// TestUIListsTheSixGridappsdTabs is the issue's first done-when line: the
-// shell loads with the key, and its panel manifest lists the six bridge
+// TestUIListsTheSevenGridappsdTabs is the issue's first done-when line: the
+// shell loads with the key, and its panel manifest lists the seven bridge
 // tabs, in rank order, and nothing else. The core tabs are
 // the shell's own and never appear in the manifest; the extension band
 // always sorts after them.
-func TestUIListsTheSixGridappsdTabs(t *testing.T) {
+func TestUIListsTheSevenGridappsdTabs(t *testing.T) {
 	t.Parallel()
 
 	s := newServer(t, Config{Key: testKey}, testSources())
@@ -157,6 +157,7 @@ func TestUIListsTheSixGridappsdTabs(t *testing.T) {
 		{"gridappsd-served", "Served resources"},
 		{"gridappsd-clients", "Connected clients"},
 		{"gridappsd-controlflow", "Control flow"},
+		{"gridappsd-graph-input", "Graph: input topic"},
 	}
 	if len(manifest) != len(want) {
 		t.Fatalf("manifest = %+v, want %d panels", manifest, len(want))

@@ -37,6 +37,7 @@ func (s *Server) panels() []sep2admin.Panel {
 		{panelServed, "Served resources", s.servedView},
 		{panelClients, "Connected clients", s.clientsView},
 		{panelControlFlow, "Control flow", s.controlFlowView},
+		{panelGraphInput, "Graph: input topic", s.graphInputView},
 	}
 	out := make([]sep2admin.Panel, 0, len(views))
 	for i, v := range views {

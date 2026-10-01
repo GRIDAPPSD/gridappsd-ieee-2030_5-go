@@ -345,6 +345,7 @@ func run(ctx context.Context, cfg config) error {
 		Stomp:    bus,
 		Clients:  &connHook,
 		Protocol: embed,
+		History:  &inputHistory,
 	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):

@@ -38,6 +38,7 @@ type historyHarness struct {
 	bus     *fakeControlBus
 	hook    *controlobs.Hook
 	history *telemetryhistory.Store
+	embed   *sep2embed.Embed
 	done    chan error
 }
 
@@ -54,7 +55,7 @@ func startHistoryHarness(t *testing.T, history *telemetryhistory.Store) *history
 	if err != nil {
 		t.Fatalf("newSEP2Embed: %v", err)
 	}
-	h := &historyHarness{reg: reg, bus: &fakeControlBus{}, hook: &controlobs.Hook{}, history: history, done: make(chan error, 1)}
+	h := &historyHarness{reg: reg, bus: &fakeControlBus{}, hook: &controlobs.Hook{}, history: history, embed: embed, done: make(chan error, 1)}
 	go func() {
 		sink := &historySink{store: history, logf: newRateLimitedLogf(historyLogInterval, time.Now, log.Printf)}
 		h.done <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(h.bus), embed, reg, "sim-1", h.hook, sink)
