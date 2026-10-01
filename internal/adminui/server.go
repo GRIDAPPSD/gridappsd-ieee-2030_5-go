@@ -1,6 +1,6 @@
 // Package adminui serves the bridge's admin listener: the server's admin
 // UI and admin API (pkg/sep2adminplane) as the root handler, with the
-// bridge's own read-only views registered as six gridappsd-* panels that
+// bridge's own read-only views registered as seven gridappsd-* panels that
 // the server's shell renders after its own tabs.
 //
 // Two bridge JSON routes, /api/health and /api/clients, stay beside the
@@ -31,6 +31,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
 // ErrDisabled is returned by New when Config.Key is unset or blank. It is
@@ -114,6 +115,12 @@ type ControlFlowSource interface {
 	Snapshot() controlobs.Snapshot
 }
 
+// HistorySource is the read surface Server needs from
+// *telemetryhistory.Store for the graph panels.
+type HistorySource interface {
+	Snapshot() []telemetryhistory.SeriesSnapshot
+}
+
 // IdentitySource is the read surface Server needs from *sep2embed.Embed
 // for the health view's server identity and mTLS listener address.
 type IdentitySource interface {
@@ -151,6 +158,8 @@ type Sources struct {
 	Stomp    StompSource
 	Clients  ClientObserverSource
 	Protocol ProtocolSource
+	// History holds the input topic's samples, read by the graph panel.
+	History HistorySource
 }
 
 // Server is the admin listener: a bound, not yet serving listener and
@@ -164,9 +173,12 @@ type Server struct {
 	identity IdentitySource
 	stomp    StompSource
 	clients  ClientObserverSource
+	history  HistorySource
 
 	startedAt time.Time
-	timeouts  timeouts
+	// now is the clock the graph panel ages samples against.
+	now      func() time.Time
+	timeouts timeouts
 
 	ln      net.Listener
 	handler http.Handler
@@ -191,7 +203,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		return nil, errors.New("adminui: Config.Addr is required")
 	}
 	if src.Registry == nil || src.Devices == nil || src.Programs == nil || src.Flow == nil ||
-		src.Identity == nil || src.Stomp == nil || src.Clients == nil || src.Protocol == nil {
+		src.Identity == nil || src.Stomp == nil || src.Clients == nil || src.Protocol == nil || src.History == nil {
 		return nil, errors.New("adminui: every Sources field is required")
 	}
 
@@ -212,7 +224,9 @@ func New(cfg Config, src Sources) (*Server, error) {
 		identity:  src.Identity,
 		stomp:     src.Stomp,
 		clients:   src.Clients,
+		history:   src.History,
 		startedAt: time.Now(),
+		now:       time.Now,
 		timeouts:  defaultTimeouts,
 	}
 

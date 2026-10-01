@@ -14,6 +14,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
 // fakeRegistry is a minimal RegistrySource test double: Snapshot
@@ -102,6 +103,7 @@ func testSources() Sources {
 		Stomp:    &fakeStomp{},
 		Clients:  &fakeClientObserver{},
 		Protocol: newFakeProtocol(),
+		History:  &telemetryhistory.Store{},
 	}
 }
 
