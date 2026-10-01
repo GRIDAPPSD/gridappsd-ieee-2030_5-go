@@ -31,7 +31,7 @@ func (s *Server) buildHandler(plane http.Handler) http.Handler {
 		mux.Handle(p, gated)
 	}
 	mux.Handle("/", plane)
-	return mux
+	return keepStreamsOpen(mux)
 }
 
 // bearerAuth rejects any request whose Authorization header is not

@@ -39,19 +39,23 @@ import (
 // failure. A short key wraps the plane's own refusal as well.
 var ErrDisabled = errors.New("adminui: SEP2_ADMIN_UI_KEY unset or too short, admin UI disabled")
 
-// defaultShutdownTimeout bounds Run's graceful drain after ctx is
-// cancelled, mirroring sep2embed's own shutdown timeout pattern.
-const defaultShutdownTimeout = 5 * time.Second
-
-// HTTP server timeouts. Every one is bounded: an http.Server with no
+// timeouts bound the listener. Every one is set: an http.Server with no
 // timeouts is exposed to a slow client holding a connection open, which
-// matters once Config.AllowNonLoopback binds somewhere reachable.
-const (
-	defaultReadHeaderTimeout = 5 * time.Second
-	defaultReadTimeout       = 10 * time.Second
-	defaultWriteTimeout      = 10 * time.Second
-	defaultIdleTimeout       = 60 * time.Second
-)
+// matters once Config.AllowNonLoopback binds somewhere reachable. Tests
+// shorten them.
+type timeouts struct {
+	readHeader, read, write, idle time.Duration
+	// shutdown bounds Run's drain after ctx is cancelled.
+	shutdown time.Duration
+}
+
+var defaultTimeouts = timeouts{
+	readHeader: 5 * time.Second,
+	read:       10 * time.Second,
+	write:      10 * time.Second,
+	idle:       60 * time.Second,
+	shutdown:   5 * time.Second,
+}
 
 // Config configures a Server.
 type Config struct {
@@ -163,6 +167,7 @@ type Server struct {
 	clients  ClientObserverSource
 
 	startedAt time.Time
+	timeouts  timeouts
 
 	ln      net.Listener
 	handler http.Handler
@@ -208,6 +213,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		stomp:     src.Stomp,
 		clients:   src.Clients,
 		startedAt: time.Now(),
+		timeouts:  defaultTimeouts,
 	}
 
 	plane, err := sep2adminplane.New(sep2adminplane.Config{
@@ -269,24 +275,31 @@ func (s *Server) Handler() http.Handler {
 }
 
 // Run serves on the listener bound by New until ctx is cancelled, then
-// shuts down within defaultShutdownTimeout. A graceful shutdown returns
+// shuts down within the shutdown timeout. A graceful shutdown returns
 // nil; a serve failure independent of ctx, or a shutdown that does not
 // finish in time, returns an error, matching cmd/bridge's runner contract.
 func (s *Server) Run(ctx context.Context) error {
+	// Shutdown waits for handlers but never cancels them, so an open event
+	// stream would hold it to its deadline. Every request context derives
+	// from base, which shutdown cancels first.
+	base, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
 	httpSrv := &http.Server{
 		Handler:           s.handler,
-		ReadHeaderTimeout: defaultReadHeaderTimeout,
-		ReadTimeout:       defaultReadTimeout,
-		WriteTimeout:      defaultWriteTimeout,
-		IdleTimeout:       defaultIdleTimeout,
+		BaseContext:       func(net.Listener) context.Context { return base },
+		ReadHeaderTimeout: s.timeouts.readHeader,
+		ReadTimeout:       s.timeouts.read,
+		WriteTimeout:      s.timeouts.write,
+		IdleTimeout:       s.timeouts.idle,
 	}
+	httpSrv.RegisterOnShutdown(cancelBase)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.Serve(s.ln) }()
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.timeouts.shutdown)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			<-serveErr
