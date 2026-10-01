@@ -348,9 +348,8 @@ func run(ctx context.Context, cfg config) error {
 	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
-		// The error names the reason (unset or blank), never
-		// the key itself.
-		log.Printf("bridge: admin UI disabled: %v", err)
+		// ErrDisabled already says the UI is disabled and why, never the key.
+		log.Printf("bridge: %v", err)
 	case err != nil:
 		return fmt.Errorf("admin ui: %w", err)
 	default:

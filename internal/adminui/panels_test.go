@@ -130,7 +130,7 @@ func assertBadge(t *testing.T, where string, c wireCell, variant, text string) {
 
 // TestUIListsTheSixGridappsdTabs is the issue's first done-when line: the
 // shell loads with the key, and its panel manifest lists the six bridge
-// tabs, in the old bridge nav order, and nothing else. The core tabs are
+// tabs, in rank order, and nothing else. The core tabs are
 // the shell's own and never appear in the manifest; the extension band
 // always sorts after them.
 func TestUIListsTheSixGridappsdTabs(t *testing.T) {
@@ -170,7 +170,7 @@ func TestUIListsTheSixGridappsdTabs(t *testing.T) {
 
 // TestRegistryPanelRowsMatchTheRegistryFieldForField is the issue's
 // second done-when line: one row per registry entry, in order, carrying
-// every field the old view showed, with placeholder as its own badge.
+// every registry field, with placeholder as its own badge.
 func TestRegistryPanelRowsMatchTheRegistryFieldForField(t *testing.T) {
 	t.Parallel()
 

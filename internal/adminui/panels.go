@@ -25,7 +25,7 @@ const (
 )
 
 // panels are the bridge's views as admin plane tabs. The shell lists
-// extension panels by (Rank, ID), so Rank keeps the old bridge nav order.
+// extension panels by (Rank, ID), so Rank fixes the tab order.
 func (s *Server) panels() []sep2admin.Panel {
 	views := []struct {
 		id, label string
@@ -78,7 +78,7 @@ func timeCell(t time.Time) sep2admin.Cell {
 	return sep2admin.TimeCell(t, sep2admin.Value(t.Format(timeFormat)))
 }
 
-// orDash shows an empty value as "-", as the old views did.
+// orDash shows an empty value as "-", so a blank cell reads as no value.
 func orDash(v string) sep2admin.Cell {
 	if v == "" {
 		return text("-")
@@ -236,7 +236,8 @@ func (s *Server) controlFlowView(context.Context) (sep2admin.Descriptor, error) 
 	return descriptor(state, last), nil
 }
 
-// jsonText renders a delta value as the JSON route encoded it.
+// jsonText renders a delta value as JSON, so a string, a number and an
+// object stay distinguishable.
 func jsonText(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -293,7 +294,8 @@ func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) 
 // client snapshot by LFDI, so a device that never made a request reads
 // "never connected". With the observer off nothing can show a
 // connection, so every device reads "unknown" instead of a false claim.
-// A roster read failure empties only this section, as the old view did.
+// A roster read failure empties only this section, so the client
+// snapshot still shows.
 func (s *Server) servedStatusSection(ctx context.Context, clients []connobs.ClientSnapshot, disabled bool) tableSpec {
 	const heading = "Served EndDevices: connection status"
 	columns := []string{"EndDevice", "LFDI", "Status", "Last seen", "Requests"}
