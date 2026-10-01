@@ -55,9 +55,10 @@ shorter than 16 characters disables it entirely (logged at start-up) rather
 than serving anything unauthenticated.
 
 Every route needs the key, from loopback too, except the login page and
-form. DER control and flow reservation writes are not mounted; the FSA and
-device writes the server's UI offers are. `/api/health` and `/api/clients`
-stay as Bearer-only JSON routes for scripts.
+form. The plane is read-only: no admin write route is mounted (the bridge
+seeds and writes the stores itself), so a write button in the server's UI
+gets 404 or 405. `/api/health` and `/api/clients` stay as Bearer-only JSON
+routes for scripts.
 
 | Env var | Flag | Default | Notes |
 |---|---|---|---|

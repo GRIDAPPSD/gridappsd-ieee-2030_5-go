@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,7 +16,8 @@ import (
 // TestAdminPlaneServesTheEmbedStores builds the admin plane over the
 // store set and notifier an Embed's protocol listener serves, as
 // cmd/bridge does, and reads a seeded device back through the plane: the
-// admin view and the protocol view are one store set, not two.
+// admin view and the protocol view are one store set, not two. Read-only, as
+// the bridge builds it, the plane mounts no write but the two auth POSTs.
 func TestAdminPlaneServesTheEmbedStores(t *testing.T) {
 	t.Parallel()
 
@@ -38,6 +40,7 @@ func TestAdminPlaneServesTheEmbedStores(t *testing.T) {
 		Notifier:     e.Notifier(),
 		AdminKey:     key,
 		AllowedHosts: []string{"localhost"},
+		ReadOnly:     true,
 	})
 	if err != nil {
 		t.Fatalf("sep2adminplane.New over the embed stores: %v", err)
@@ -60,5 +63,7 @@ func TestAdminPlaneServesTheEmbedStores(t *testing.T) {
 			writes = append(writes, p)
 		}
 	}
-	t.Logf("non-GET admin routes over the embed stores: %q", writes)
+	if want := []string{"POST /auth/login", "POST /auth/ticket"}; !slices.Equal(writes, want) {
+		t.Errorf("non-GET admin routes over the embed stores = %q, want only %q", writes, want)
+	}
 }

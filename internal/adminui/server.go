@@ -216,9 +216,12 @@ func New(cfg Config, src Sources) (*Server, error) {
 		AllowedHosts: s.allowedHosts(),
 		Notifier:     src.Protocol.Notifier(),
 		// The bridge has always required a credential on loopback, and it
-		// writes DER controls itself; a second writer would race it.
+		// seeds and writes these stores itself: an admin write (an FSA
+		// assignment, a new EndDevice, a DER control) would be a second
+		// writer behind its back, so the plane mounts no write route.
 		LoopbackBypass: false,
 		ControlWrites:  false,
+		ReadOnly:       true,
 		Panels:         s.panels(),
 	})
 	switch {

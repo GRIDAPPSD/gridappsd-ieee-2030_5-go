@@ -611,3 +611,33 @@ func TestNoControlWriteRouteIsMounted(t *testing.T) {
 		}
 	}
 }
+
+// TestListenerMountsNoWriteRoute: the bridge seeds and writes the stores
+// itself, so every route on the listener reads, except the two auth POSTs
+// that login and the SSE ticket need. A plane pattern with no method
+// would accept every method, so it fails too; the bridge JSON routes are
+// method-less but sit behind requireGET.
+func TestListenerMountsNoWriteRoute(t *testing.T) {
+	t.Parallel()
+
+	s := newServer(t, Config{Key: testKey}, testSources())
+	allowed := map[string]bool{"POST /auth/login": true, "POST /auth/ticket": true}
+	if len(s.planePatterns) == 0 {
+		t.Fatal("the plane reports no patterns, so this test checks nothing")
+	}
+	for _, p := range s.planePatterns {
+		method, _, ok := strings.Cut(p, " ")
+		switch {
+		case allowed[p]:
+		case !ok || strings.HasPrefix(method, "/"):
+			t.Errorf("plane pattern %q has no method, so it admits writes", p)
+		case method != http.MethodGet && method != http.MethodHead:
+			t.Errorf("write route %q is mounted", p)
+		}
+	}
+	for _, route := range bridgeJSONRoutes {
+		if rec := doRequest(t, s.Handler(), http.MethodPost, route, "Bearer "+testKey, "localhost"); rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s with the key: %d, want 405", route, rec.Code)
+		}
+	}
+}
