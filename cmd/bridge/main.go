@@ -309,11 +309,10 @@ func run(ctx context.Context, cfg config) error {
 
 	// adminSrv is the admin listener: the server's admin plane with the
 	// bridge's panels. It is off by default: adminui.New returns
-	// ErrDisabled when SEP2_ADMIN_UI_KEY is unset, blank or under 16
-	// characters, in which case no listener is opened and no runner
-	// goroutine is started at all. Any other error from New (an invalid
-	// Addr, or a non-loopback Addr without the explicit opt-in) is a
-	// genuine startup failure, not the disabled state.
+	// ErrDisabled when SEP2_ADMIN_UI_KEY is unset or blank, in which case no
+	// listener is opened and no runner goroutine is started at all. Any
+	// other error from New (a key under 16 characters, an invalid Addr, or a
+	// non-loopback Addr without the explicit opt-in) fails start.
 	// telemetryRun is the UP path: an independent timer-driven
 	// publisher that reads the embed's DERStatus store and sends one
 	// aggregate per interval. It is a peer of the embed and the admin UI,
@@ -349,7 +348,7 @@ func run(ctx context.Context, cfg config) error {
 	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
-		// The error names the reason (unset, blank or too short), never
+		// The error names the reason (unset or blank), never
 		// the key itself.
 		log.Printf("bridge: admin UI disabled: %v", err)
 	case err != nil:

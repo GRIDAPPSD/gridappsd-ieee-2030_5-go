@@ -13,23 +13,38 @@ import (
 // shortest key the plane accepts.
 const testKey = "test-admin-token"
 
-// TestNewReturnsErrDisabledForABlankOrShortKey is the fail closed test:
-// a key that is unset, blank or under the plane's minimum must produce
-// ErrDisabled, so cmd/bridge opens no listener rather than serving an
-// unauthenticated or weakly keyed admin plane.
-func TestNewReturnsErrDisabledForABlankOrShortKey(t *testing.T) {
+// TestNewReturnsErrDisabledForAnUnsetOrBlankKey: an unset or blank key is
+// the "admin UI is off" state, so cmd/bridge opens no listener and keeps
+// running.
+func TestNewReturnsErrDisabledForAnUnsetOrBlankKey(t *testing.T) {
 	t.Parallel()
 
-	short := testKey[:len(testKey)-1]
-	for _, key := range []string{"", "   ", short} {
+	for _, key := range []string{"", "   "} {
 		_, err := New(Config{Addr: "127.0.0.1:0", Key: key}, testSources())
 		if !errors.Is(err, ErrDisabled) {
 			t.Errorf("New(Key=%q) error = %v, want ErrDisabled", key, err)
 		}
-		if key == short && err != nil && strings.Contains(err.Error(), short) {
-			t.Errorf("New(Key=%q) error %q echoes the key", key, err)
-		}
 	}
+}
+
+// TestNewRefusesAShortKey: a key that is set but under the plane's
+// minimum is a configuration error that fails start, not "disabled". The
+// error names the length rule and never the key.
+func TestNewRefusesAShortKey(t *testing.T) {
+	t.Parallel()
+
+	short := testKey[:len(testKey)-1]
+	_, err := New(Config{Addr: "127.0.0.1:0", Key: short}, testSources())
+	if err == nil || errors.Is(err, ErrDisabled) {
+		t.Fatalf("New(short key) error = %v, want a start failure that is not ErrDisabled", err)
+	}
+	if !strings.Contains(err.Error(), "16 characters") {
+		t.Errorf("error %q does not name the length rule", err)
+	}
+	if strings.Contains(err.Error(), short) {
+		t.Errorf("error %q echoes the key", err)
+	}
+
 	if len(testKey) != sep2adminplane.MinAdminKeyLength {
 		t.Fatalf("testKey is %d characters; the boundary case needs %d", len(testKey), sep2adminplane.MinAdminKeyLength)
 	}

@@ -8,9 +8,9 @@
 // the mTLS conformance harness reads them.
 //
 // The listener is off by default: New returns ErrDisabled when Config.Key
-// is blank or shorter than sep2adminplane.MinAdminKeyLength, so cmd/bridge
-// opens no listener rather than serving an unauthenticated or weakly
-// keyed admin plane.
+// is unset or blank, so cmd/bridge opens no listener rather than serving
+// an unauthenticated admin plane. A key that is set but too short fails
+// start instead.
 package adminui
 
 import (
@@ -33,11 +33,10 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
-// ErrDisabled is returned by New when Config.Key is blank or too short
-// for the admin plane. It is the fail closed "admin UI is off" state:
-// cmd/bridge treats it as "do not start a runner", not as a startup
-// failure. A short key wraps the plane's own refusal as well.
-var ErrDisabled = errors.New("adminui: SEP2_ADMIN_UI_KEY unset or too short, admin UI disabled")
+// ErrDisabled is returned by New when Config.Key is unset or blank. It is
+// the fail closed "admin UI is off" state: cmd/bridge treats it as "do not
+// start a runner", not as a startup failure.
+var ErrDisabled = errors.New("adminui: SEP2_ADMIN_UI_KEY unset or blank, admin UI disabled")
 
 // timeouts bound the listener. Every one is set: an http.Server with no
 // timeouts is exposed to a slow client holding a connection open, which
@@ -69,8 +68,8 @@ type Config struct {
 	AllowNonLoopback bool
 
 	// Key is the admin credential: the Bearer token and the plane's login
-	// password. Blank or shorter than sep2adminplane.MinAdminKeyLength
-	// disables the admin UI (ErrDisabled).
+	// password. Unset or blank disables the admin UI (ErrDisabled); set, it
+	// must be at least sep2adminplane.MinAdminKeyLength characters.
 	Key string
 
 	// AllowedHosts are Host header values accepted beyond the loopback
@@ -180,7 +179,8 @@ type Server struct {
 // New validates cfg, builds the admin plane with the bridge's panels, and
 // binds the listener. It does NOT start serving; call Run to do that.
 //
-// It returns ErrDisabled, not a general error, for a blank or short key.
+// It returns ErrDisabled, not a general error, for an unset or blank key,
+// and an error naming the length rule for a key that is set but short.
 // A non-loopback Addr without AllowNonLoopback is refused before any
 // socket opens.
 func New(cfg Config, src Sources) (*Server, error) {
@@ -231,8 +231,11 @@ func New(cfg Config, src Sources) (*Server, error) {
 		Panels:         s.panels(),
 	})
 	switch {
-	case errors.Is(err, sep2adminplane.ErrNoCredential), errors.Is(err, sep2adminplane.ErrShortCredential):
+	case errors.Is(err, sep2adminplane.ErrNoCredential):
 		return nil, fmt.Errorf("%w: %w", ErrDisabled, err)
+	case errors.Is(err, sep2adminplane.ErrShortCredential):
+		// The plane's error never carries the key, and neither does this one.
+		return nil, fmt.Errorf("adminui: SEP2_ADMIN_UI_KEY must be at least %d characters: %w", sep2adminplane.MinAdminKeyLength, err)
 	case err != nil:
 		return nil, fmt.Errorf("adminui: %w", err)
 	}

@@ -50,9 +50,10 @@ make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
 The admin listener serves the IEEE 2030.5 server's admin UI (at `/ui/`) and
 admin API, with six bridge tabs after the server's own: bridge health,
 registry, discovered DERs, served resources, connected clients and control
-flow. It is off by default: a `SEP2_ADMIN_UI_KEY` that is unset, blank or
-shorter than 16 characters disables it entirely (logged at start-up) rather
-than serving anything unauthenticated.
+flow. It is off by default: an unset or blank `SEP2_ADMIN_UI_KEY` disables
+it entirely (logged at start-up) rather than serving anything
+unauthenticated. A key that is set but shorter than 16 characters stops the
+bridge at start-up with an error naming the rule.
 
 Every route needs the key, from loopback too, except the login page and
 form. The plane is read-only: no admin write route is mounted (the bridge
