@@ -63,6 +63,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
 
@@ -261,6 +262,11 @@ func run(ctx context.Context, cfg config) error {
 	// observation state.
 	var controlHook controlobs.Hook
 
+	// inputHistory retains the input topic's plottable samples. It is
+	// fed only by runControlSubscriber and sized by telemetryhistory's
+	// fixed caps.
+	var inputHistory telemetryhistory.Store
+
 	// stompRun adapts the SimulationID branch (idle-wait, or the
 	// measurement pump plus the control-delta subscriber) to
 	// the func(context.Context) error shape runEmbedAndStomp expects
@@ -294,7 +300,7 @@ func run(ctx context.Context, cfg config) error {
 		subs := gridappsdclient.NewSupervisor(bus,
 			gridappsdclient.WithProbeDestination(sim.LogTopic(cfg.SimulationID)))
 
-		return runSimSide(runCtx, subs, embed, reg, cfg.SimulationID, &controlHook)
+		return runSimSide(runCtx, subs, embed, reg, cfg.SimulationID, &controlHook, &inputHistory)
 	}
 
 	// adminSrv is the read only operator HTTP API. It is off by
@@ -1415,7 +1421,7 @@ func runPump(ctx context.Context, subs sim.SubscribeClient, reg *registry.Regist
 // does not depend on either loop actually receiving a frame. hook may be
 // nil (tests that do not care about observation can omit it); every
 // call below guards for that.
-func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook) error {
+func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook, history *telemetryhistory.Store) error {
 	if hook != nil {
 		hook.SetTopics(sim.OutputTopic(simID), sim.InputTopic(simID))
 	}
@@ -1423,7 +1429,7 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 	pumpErr := make(chan error, 1)
 	go func() { pumpErr <- runPump(ctx, subs, reg, simID) }()
 
-	ctrlErr := runControlSubscriber(ctx, subs, embed, reg, simID, hook)
+	ctrlErr := runControlSubscriber(ctx, subs, embed, reg, simID, hook, history)
 
 	perr := <-pumpErr
 	pGraceful := perr == nil || errors.Is(perr, context.Canceled)
@@ -1438,6 +1444,20 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 		return perr
 	default:
 		return errors.Join(perr, ctrlErr)
+	}
+}
+
+// feedHistory appends the plottable samples of envelope to history. It
+// is a no-op for a nil store, never returns an error and does no I/O, so
+// it cannot block or alter the control path that calls it. The decoder's
+// per-attribute skips are discarded (nil logf): every DERStatus frame
+// carries non-plottable fields, so logging them would flood the log.
+func feedHistory(history *telemetryhistory.Store, envelope diff.Message) {
+	if history == nil {
+		return
+	}
+	for _, d := range telemetryhistory.DecodeMessage(envelope, nil) {
+		history.Append(d.Key, d.Sample)
 	}
 }
 
@@ -1482,6 +1502,10 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // itself is not re-litigated by this comment; only the prefix
 // discipline that currently makes it safe is).
 //
+// history, when non-nil, also receives every decodable frame's plottable
+// samples (see feedHistory) before the deltas are applied; a malformed
+// frame is never fed to it.
+//
 // Decode and per-delta apply errors are logged and skipped; the loop
 // continues, matching runPump's resilience style (a malformed or
 // inapplicable frame must not take down the whole subscriber).
@@ -1492,7 +1516,7 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // resolves to a delta is not counted at all (there is no delta to
 // report skipping); only a decoded delta that ApplyControlDelta accepts
 // or rejects is counted.
-func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook) error {
+func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook, history *telemetryhistory.Store) error {
 	dest := sim.InputTopic(simID)
 	log.Printf("bridge: subscribing to %s for control deltas", dest)
 
@@ -1507,6 +1531,7 @@ func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *
 			log.Printf("control subscriber: skip malformed frame on %s: %v", dest, derr)
 			continue
 		}
+		feedHistory(history, envelope)
 		for _, delta := range envelope.Input.Message.ForwardDifferences {
 			if aerr := embed.ApplyControlDelta(ctx, reg, delta); aerr != nil {
 				log.Printf("control subscriber: skip delta object=%q attribute=%q: %v",

@@ -144,7 +144,8 @@ type Decoded struct {
 // the allowlisted ones), not a failure.
 //
 // The sample timestamp is always msg.Input.Message.Timestamp, the
-// envelope's own publisher-stamped time. A device-reported per-field
+// envelope's own publisher-stamped time, never local receipt time: a
+// frame redelivered after a reconnect keeps the instant it describes. A device-reported per-field
 // dateTime inside Value, if present, is never read: an observed EPRI
 // client reported stateOfChargeStatus/dateTime landing in the year
 // 1785, and a decoded sample must never carry that.

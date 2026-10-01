@@ -42,8 +42,10 @@ const (
 	SamplesPerSeries = 1440
 )
 
-// Sample is one retained point: a receipt-time Unix-second timestamp
-// (At) and the decoded, already-scaled value. Exactly 16 bytes (int64 +
+// Sample is one retained point: a Unix-second timestamp (At) taken from
+// the difference message envelope's own publisher-stamped time, not from
+// local receipt (see DecodeMessage), and the decoded, already-scaled
+// value. Exactly 16 bytes (int64 +
 // float64, no pointers, no padding); TestSampleIsSixteenBytes in this
 // package asserts that with unsafe.Sizeof so the documented memory
 // ceiling above stays true if this struct is ever edited.

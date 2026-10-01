@@ -22,6 +22,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
 // fakeControlBus is a minimal fieldbus.MessageBus test double: Subscribe
@@ -181,12 +182,13 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	bus := &fakeControlBus{}
 	subErr := make(chan error, 1)
 	var hook controlobs.Hook
+	var history telemetryhistory.Store
 	// The unsupervised gridappsdclient.Subscriber is deliberate here:
 	// this test covers control-delta decode and apply, not subscription
 	// health. Supervisor behavior is covered by the Supervisor tests
 	// in internal/gridappsdclient.
 	go func() {
-		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "sim-1", &hook)
+		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "sim-1", &hook, &history)
 	}()
 
 	waitFor(2*time.Second, func() bool {
@@ -282,6 +284,13 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	}
 	if snap.Last == nil || snap.Last.Object != deviceMRID {
 		t.Errorf("hook.Snapshot().Last = %+v, want Object=%q", snap.Last, deviceMRID)
+	}
+
+	// The same DERControl frame also lands in the history store as an
+	// opModTargetW sample, scaled by its multiplier.
+	hs, ok := findSeries(history.Snapshot(), deviceMRID, controlAttr)
+	if !ok || len(hs.Samples) != 1 || hs.Samples[0].Value != 4200 {
+		t.Errorf("history series %s = %+v (found=%v), want one sample at 4200", controlAttr, hs, ok)
 	}
 
 	cancel()
