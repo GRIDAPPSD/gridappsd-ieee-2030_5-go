@@ -767,3 +767,40 @@ func TestPanelsNeverFailOnSize(t *testing.T) {
 		t.Errorf("notice %q with %d rows, want %q and some but not all rows", got, len(sec.Body.Rows), want)
 	}
 }
+
+// TestServedPanelFailsWhenAProgramReadFails: an unreadable DERProgram
+// list fails the panel rather than reading "No DERPrograms served".
+func TestServedPanelFailsWhenAProgramReadFails(t *testing.T) {
+	t.Parallel()
+
+	src := testSources()
+	src.Devices = &fakeEndDevices{edevs: []sep2embed.EndDeviceSnapshot{{ID: "edev-1"}}}
+	src.Programs = &fakePrograms{err: errors.New("program store down")}
+	s := newServer(t, Config{Key: testKey}, src)
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelServed, "Bearer "+testKey, "localhost")
+	if body := rec.Body.String(); rec.Code != http.StatusInternalServerError || strings.Contains(body, "No DERPrograms served") || strings.Contains(body, "program store down") {
+		t.Errorf("served panel with a failing program read: %d %s, want 500 without the error text", rec.Code, body)
+	}
+}
+
+// TestClientsPanelSaysWhenTheRosterIsUnreadable: a failed roster read
+// empties only the served-status section, and says the roster is
+// unavailable rather than "No EndDevices served". The other sections
+// still show the client snapshot.
+func TestClientsPanelSaysWhenTheRosterIsUnreadable(t *testing.T) {
+	t.Parallel()
+
+	src := testSources()
+	src.Devices = &fakeEndDevices{err: errors.New("store down")}
+	src.Clients = manyClients(1)
+	s := newServer(t, Config{Key: testKey}, src)
+	d := getPanel(t, s, panelClients)
+
+	served := section(t, d, "Served EndDevices: connection status")
+	if len(served.Body.Rows) != 0 || served.Empty != "Served EndDevice roster unavailable." {
+		t.Errorf("served status section = %+v, want no rows and the roster-unavailable text", served)
+	}
+	if got := len(section(t, d, "Connected clients").Body.Rows); got != 1 {
+		t.Errorf("connected clients rows = %d, want 1", got)
+	}
+}
