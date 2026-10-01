@@ -498,28 +498,57 @@ func TestLoadConfigSEP2AdminUIKeyFlagShadowsEnv(t *testing.T) {
 	}
 }
 
-// TestLoadConfigSEP2AdminUIKeyFlagDefaultHidden verifies that even when
-// SEP2_ADMIN_UI_KEY is set in the environment, parsing -h does not echo
-// the token value, matching TestLoadConfigCredentialFlagDefaultsHidden's
-// coverage for -stomp-user / -stomp-password.
+// TestLoadConfigSEP2AdminUIKeyFlagDefaultHidden reads the real -h output
+// of loadConfig: with SEP2_ADMIN_UI_KEY set it must not echo the key, and
+// the -admin-ui-key help must name the env var and the length rule, so the
+// test fails when that help text drifts from what adminui.New enforces.
 func TestLoadConfigSEP2AdminUIKeyFlagDefaultHidden(t *testing.T) {
 	t.Setenv("SEP2_ADMIN_UI_KEY", "topsecret-admin-token")
 
-	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
-	var key string
-	fs.StringVar(&key, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
-
-	var buf bytes.Buffer
-	fs.SetOutput(&buf)
-	fs.PrintDefaults()
-	usage := buf.String()
-
+	usage := loadConfigUsage(t)
 	if strings.Contains(usage, "topsecret-admin-token") {
 		t.Errorf("usage banner echoed admin UI token value: %q", usage)
 	}
-	if !strings.Contains(usage, "SEP2_ADMIN_UI_KEY") {
-		t.Errorf("usage banner should mention env var SEP2_ADMIN_UI_KEY: %q", usage)
+	const want = "admin UI key, the Bearer token and login password, at least 16 characters; unset disables the admin UI (env: SEP2_ADMIN_UI_KEY)"
+	if !strings.Contains(usage, "-admin-ui-key") || !strings.Contains(usage, want) {
+		t.Errorf("usage banner lacks the -admin-ui-key help %q:\n%s", want, usage)
 	}
+}
+
+// loadConfigUsage runs loadConfig with -h and returns what it printed.
+// loadConfig keeps its flag set to itself and prints usage to the
+// process's stderr, so stderr is swapped for a pipe for the call; tests
+// in this package that use t.Setenv never run in parallel, so nothing
+// else writes there meanwhile.
+func loadConfigUsage(t *testing.T) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	// Drained concurrently, so usage longer than the pipe buffer cannot
+	// block loadConfig.
+	var buf bytes.Buffer
+	read := make(chan error, 1)
+	go func() {
+		_, err := buf.ReadFrom(r)
+		read <- err
+	}()
+	saved := os.Stderr
+	os.Stderr = w
+	_, loadErr := loadConfig([]string{"-h"})
+	os.Stderr = saved
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe: %v", err)
+	}
+	if err := <-read; err != nil {
+		t.Fatalf("read usage: %v", err)
+	}
+	if !errors.Is(loadErr, flag.ErrHelp) {
+		t.Fatalf("loadConfig(-h) error = %v, want flag.ErrHelp", loadErr)
+	}
+	return buf.String()
 }
 
 // TestLoadConfigSEP2AdminUIAddrEnvOverride verifies a non-loopback bind

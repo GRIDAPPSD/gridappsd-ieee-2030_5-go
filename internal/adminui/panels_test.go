@@ -804,3 +804,45 @@ func TestClientsPanelSaysWhenTheRosterIsUnreadable(t *testing.T) {
 		t.Errorf("connected clients rows = %d, want 1", got)
 	}
 }
+
+// TestServedPanelSharesTheBudgetBetweenUnequalSections: one device with
+// 1001 programs. The EndDevices section needs one row and gets it; the
+// programs section gets the 999 left, not an equal half and not a budget
+// that forgot the row already given.
+func TestServedPanelSharesTheBudgetBetweenUnequalSections(t *testing.T) {
+	t.Parallel()
+
+	src := testSources()
+	src.Devices = &fakeEndDevices{edevs: []sep2embed.EndDeviceSnapshot{{ID: "edev-1"}}}
+	programs := make([]sep2embed.DERProgramSnapshot, 1001)
+	for i := range programs {
+		programs[i] = sep2embed.DERProgramSnapshot{ID: fmt.Sprint(i), MRID: fmt.Sprintf("derp-%04d", i)}
+	}
+	src.Programs = &fakePrograms{byEdevID: map[string][]sep2embed.DERProgramSnapshot{"edev-1": programs}}
+	s := newServer(t, Config{Key: testKey}, src)
+	d := getPanel(t, s, panelServed)
+
+	edevs := section(t, d, "EndDevices")
+	if len(edevs.Body.Rows) != 1 || notice(edevs) != "" {
+		t.Errorf("EndDevices: %d rows, notice %q; want 1 row and no notice", len(edevs.Body.Rows), notice(edevs))
+	}
+	progs := section(t, d, "DER programs")
+	if len(progs.Body.Rows) != 999 || !strings.HasPrefix(notice(progs), "Showing 999 of 1001 rows") {
+		t.Errorf("DER programs: %d rows, notice %q; want 999 rows and \"Showing 999 of 1001 rows\"", len(progs.Body.Rows), notice(progs))
+	}
+}
+
+// TestASectionTrimmedToNothingSaysWhy: a single row too large for the
+// byte cap leaves its section empty, and the empty text is the notice,
+// not "No registry entries yet."
+func TestASectionTrimmedToNothingSaysWhy(t *testing.T) {
+	t.Parallel()
+
+	src := testSources()
+	src.Registry = &fakeRegistry{entries: manyEntries(1, 1200*1024)}
+	s := newServer(t, Config{Key: testKey}, src)
+	sec := section(t, getPanel(t, s, panelRegistry), "Registry map")
+	if len(sec.Body.Rows) != 0 || !strings.HasPrefix(sec.Empty, "Showing 0 of 1 rows") {
+		t.Errorf("registry section: %d rows, empty text %q; want 0 rows and \"Showing 0 of 1 rows\"", len(sec.Body.Rows), sec.Empty)
+	}
+}
