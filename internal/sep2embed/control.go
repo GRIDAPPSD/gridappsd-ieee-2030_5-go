@@ -232,7 +232,7 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // subscribers of that device's DERProgramList, mirroring the
 // server-of-record's own handleDERControlAdd test-mutation hook
 // (internal/server/test_mutations.go) end to end: same scope key, same
-// notify target, same NotificationStatusChanged.
+// notify target, same NotificationStatusDefault.
 //
 // Owner scoping (data-invariants): delta.Object is a CIM
 // device mRID, resolved to the owning device's LFDI via reg (the SAME
@@ -505,7 +505,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	}
 
 	if notifier != nil {
-		notifier.Notify(ctx, derProgramListHref(edevID, controlFSAID), sep2.NotificationStatusChanged)
+		notifier.Notify(ctx, derProgramListHref(edevID, controlFSAID), sep2.NotificationStatusDefault)
 	}
 
 	return nil

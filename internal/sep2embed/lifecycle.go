@@ -448,7 +448,7 @@ func expireEndedControls(ctx context.Context, stores *assembly.Stores, notifier 
 			continue
 		}
 		if n > 0 && notifier != nil {
-			notifier.Notify(ctx, derProgramListHref(edevID, controlFSAID), sep2.NotificationStatusChanged)
+			notifier.Notify(ctx, derProgramListHref(edevID, controlFSAID), sep2.NotificationStatusDefault)
 		}
 	}
 
