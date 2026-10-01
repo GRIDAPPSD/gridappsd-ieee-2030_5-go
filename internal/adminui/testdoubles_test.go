@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2server"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
@@ -77,25 +79,41 @@ type fakeClientObserver struct {
 
 func (f *fakeClientObserver) Snapshot() connobs.Snapshot { return f.snap }
 
-// newTestServer builds a Server wired to the pre-existing fakes, plus a
-// zero-value fakeIdentity/fakeStomp/fakeClientObserver set, bound to an
-// ephemeral loopback port, for tests that only need s.Handler() via
-// httptest and never call Run. Most existing tests do not care about
-// identity/STOMP/client-observer state, so this keeps their call sites
-// unchanged (additive only, per this package's hard rules);
-// tests that DO need to control those sources use
-// newTestServerWithSources below instead.
-func newTestServer(t *testing.T, key string, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource) *Server {
-	t.Helper()
-	return newTestServerWithSources(t, key, reg, devices, programs, flow, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
+// fakeProtocol is a ProtocolSource over the server's default in-memory
+// store set, with no notifier.
+type fakeProtocol struct {
+	stores *assembly.Stores
 }
 
-// newTestServerWithSources is newTestServer plus explicit control over
-// the IdentitySource, StompSource, and ClientObserverSource fakes, for
-// tests that assert on /api/health's or /api/clients' extended fields.
-func newTestServerWithSources(t *testing.T, key string, reg RegistrySource, devices EndDeviceSource, programs DERProgramSource, flow ControlFlowSource, identity IdentitySource, stomp StompSource, clients ClientObserverSource) *Server {
+func newFakeProtocol() *fakeProtocol { return &fakeProtocol{stores: sep2server.NewStores()} }
+
+func (f *fakeProtocol) Stores() *assembly.Stores            { return f.stores }
+func (f *fakeProtocol) Notifier() assembly.ResourceNotifier { return nil }
+
+// testSources is a Sources with every reader a zero-value fake. Tests
+// replace the fields they assert on.
+func testSources() Sources {
+	return Sources{
+		Registry: &fakeRegistry{},
+		Devices:  &fakeEndDevices{},
+		Programs: &fakePrograms{},
+		Flow:     &fakeFlow{},
+		Identity: &fakeIdentity{},
+		Stomp:    &fakeStomp{},
+		Clients:  &fakeClientObserver{},
+		Protocol: newFakeProtocol(),
+	}
+}
+
+// newServer builds a Server on an ephemeral loopback port, for tests
+// that drive s.Handler() and never call Run. Config.Addr defaults to
+// 127.0.0.1:0.
+func newServer(t *testing.T, cfg Config, src Sources) *Server {
 	t.Helper()
-	s, err := New(Config{Addr: "127.0.0.1:0", Key: key}, reg, devices, programs, flow, identity, stomp, clients)
+	if cfg.Addr == "" {
+		cfg.Addr = "127.0.0.1:0"
+	}
+	s, err := New(cfg, src)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -103,21 +121,7 @@ func newTestServerWithSources(t *testing.T, key string, reg RegistrySource, devi
 	return s
 }
 
-// newTestServerObservationDisabled is newTestServer plus
-// Config.ObservationDisabled=true, for the one test asserting
-// /api/clients' observationDisabled field (PR 108 review).
-func newTestServerObservationDisabled(t *testing.T, key string, clients ClientObserverSource) *Server {
-	t.Helper()
-	s, err := New(Config{Addr: "127.0.0.1:0", Key: key, ObservationDisabled: true},
-		&fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, clients)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	t.Cleanup(func() { _ = s.ln.Close() })
-	return s
-}
-
-// doRequest issues a single in-process request against handler via
+// doRequest issues a single loopback request against handler via
 // httptest, with the given method, path, Authorization header value
 // (empty means omit the header entirely), and Host header (empty means
 // leave httptest's own default). It returns the recorded response so
@@ -125,6 +129,9 @@ func newTestServerObservationDisabled(t *testing.T, key string, clients ClientOb
 func doRequest(t *testing.T, handler http.Handler, method, path, authHeader, host string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
+	// Loopback, so a test proves the credential is needed even where the
+	// standalone server would bypass it.
+	req.RemoteAddr = "127.0.0.1:40000"
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}

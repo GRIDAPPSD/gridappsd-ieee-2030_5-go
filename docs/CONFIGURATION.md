@@ -47,16 +47,24 @@ make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
 
 ## Admin UI
 
-The admin UI is a read-only HTTP API and single-page app for
-observing the bridge (registry contents, discovered DERs, connected
-clients, control flow). It is off by default: an empty
-`SEP2_ADMIN_UI_KEY` disables it entirely rather than serving anything
-unauthenticated.
+The admin listener serves the IEEE 2030.5 server's admin UI (at `/ui/`) and
+admin API, with six bridge tabs after the server's own: bridge health,
+registry, discovered DERs, served resources, connected clients and control
+flow. It is off by default: an unset or blank `SEP2_ADMIN_UI_KEY` disables
+it entirely (logged at start-up) rather than serving anything
+unauthenticated. A key that is set but shorter than 16 characters stops the
+bridge at start-up with an error naming the rule.
+
+Every route needs the key, from loopback too, except the login page and
+form. The plane is read-only: no admin write route is mounted (the bridge
+seeds and writes the stores itself), so a write button in the server's UI
+gets 404 or 405. `/api/health` and `/api/clients` stay as Bearer-only JSON
+routes for scripts.
 
 | Env var | Flag | Default | Notes |
 |---|---|---|---|
 | `SEP2_ADMIN_UI_ADDR` | `-admin-ui-addr` | `127.0.0.1:8444` | Admin UI listener bind address. Loopback only unless `SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK` is also set. |
-| `SEP2_ADMIN_UI_KEY` | `-admin-ui-key` | (empty, disabled) | Bearer token every admin UI request must present. Credential; see the note above. |
+| `SEP2_ADMIN_UI_KEY` | `-admin-ui-key` | (empty, disabled) | Admin credential: the Bearer token and the login password, at least 16 characters. Credential; see the note above. |
 | `SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK` | `-admin-ui-allow-non-loopback` | `false` | Explicit opt-in to bind the admin UI to a non-loopback host. |
 | `SEP2_ADMIN_UI_ALLOWED_HOSTS` | (none) | (empty) | Comma-separated extra accepted `Host` header values, in addition to the built-in `localhost`, `127.0.0.1`, and `::1`. |
 | `SEP2_ADMIN_UI_SOR_LINK` | `-admin-ui-sor-link` | (empty) | Optional server-of-record dashboard URL, returned read-only from `/api/health`. Not a credential. |

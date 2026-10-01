@@ -1,9 +1,8 @@
 name: CI
 
-# GitHub-hosted runners are acceptable here: both jobs are read-only
-# verification (build, vet, test, and a local frontend rebuild diffed
-# against the committed bundle), and neither job deploys, pushes to a
-# registry, or writes anything: self-hosted runners are reserved for
+# GitHub-hosted runners are acceptable here: the jobs are read-only
+# verification (build, vet, test, gofmt), and none of them deploys,
+# pushes to a registry, or writes anything: self-hosted runners are reserved for
 # deploy-bearing jobs. The build-and-test job does read one secret pair (the CI
 # GitHub App credentials) purely to resolve GRIDAPPSD module
 # dependencies; it is not an infrastructure credential and grants no
@@ -13,7 +12,7 @@ on:
   push:
     branches: [main]
     # Doc-only changes do not affect build artifacts, so skip the full
-    # build/vet/test/dist-drift matrix for them.
+    # build/vet/test/gofmt jobs for them.
     paths-ignore: ['**/*.md', 'docs/**', 'CHANGELOG.md']
   pull_request:
     branches: [main]
@@ -162,32 +161,11 @@ jobs:
       - name: Test (race)
         run: go test -race ./...
 
-  ui-drift-check:
-    name: Admin UI dist drift check
-    runs-on: ubuntu-latest
-    # No App token here on purpose: `make ui-check` runs npm and a local
-    # `git status`, and never resolves a Go module, so this job needs no
-    # module-access credential at all.
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: internal/adminui/web/frontend/package-lock.json
-
-      - name: Rebuild frontend and diff against committed dist/
-        run: make ui-check
-
   gofmt:
     name: gofmt check
     runs-on: ubuntu-latest
-    # No App token here either, for the same reason as ui-drift-check:
-    # gofmt -l only reads and parses the local tree, it never resolves
-    # a Go module or touches network.
+    # No App token here: gofmt -l only reads and parses the local tree,
+    # it never resolves a Go module or touches network.
     steps:
       - name: Checkout
         uses: actions/checkout@v7

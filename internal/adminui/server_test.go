@@ -2,70 +2,105 @@ package adminui
 
 import (
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 
-	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2adminplane"
 )
 
-// TestNewReturnsErrDisabledWhenKeyEmpty is the fail closed
-// acceptance test: an unset SEP2_ADMIN_UI_KEY (an empty Config.Key)
-// must produce ErrDisabled, not a listening server, so cmd/bridge never
-// starts an unauthenticated admin UI runner by accident.
-func TestNewReturnsErrDisabledWhenKeyEmpty(t *testing.T) {
+// testKey is exactly sep2adminplane.MinAdminKeyLength characters, the
+// shortest key the plane accepts.
+const testKey = "test-admin-token"
+
+// TestNewReturnsErrDisabledForAnUnsetOrBlankKey: an unset or blank key is
+// the "admin UI is off" state, so cmd/bridge opens no listener and keeps
+// running.
+func TestNewReturnsErrDisabledForAnUnsetOrBlankKey(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(Config{Addr: "127.0.0.1:0", Key: ""}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
-	if !errors.Is(err, ErrDisabled) {
-		t.Fatalf("New(empty Key) error = %v, want ErrDisabled", err)
+	for _, key := range []string{"", "   "} {
+		_, err := New(Config{Addr: "127.0.0.1:0", Key: key}, testSources())
+		if !errors.Is(err, ErrDisabled) {
+			t.Errorf("New(Key=%q) error = %v, want ErrDisabled", key, err)
+		}
 	}
 }
 
-// TestNewBindsLoopbackAddrByDefault confirms a loopback Addr (the
-// SEP2_ADMIN_UI_ADDR default shape) is accepted with no opt-in flag.
+// TestNewRefusesAShortKey: a key that is set but under the plane's
+// minimum is a configuration error that fails start, not "disabled". The
+// error names the length rule and never the key.
+func TestNewRefusesAShortKey(t *testing.T) {
+	t.Parallel()
+
+	short := testKey[:len(testKey)-1]
+	_, err := New(Config{Addr: "127.0.0.1:0", Key: short}, testSources())
+	if err == nil || errors.Is(err, ErrDisabled) {
+		t.Fatalf("New(short key) error = %v, want a start failure that is not ErrDisabled", err)
+	}
+	if !strings.Contains(err.Error(), "16 characters") {
+		t.Errorf("error %q does not name the length rule", err)
+	}
+	if strings.Contains(err.Error(), short) {
+		t.Errorf("error %q echoes the key", err)
+	}
+
+	if len(testKey) != sep2adminplane.MinAdminKeyLength {
+		t.Fatalf("testKey is %d characters; the boundary case needs %d", len(testKey), sep2adminplane.MinAdminKeyLength)
+	}
+	s, err := New(Config{Addr: "127.0.0.1:0", Key: testKey}, testSources())
+	if err != nil {
+		t.Fatalf("New(Key of exactly the minimum length): %v", err)
+	}
+	_ = s.ln.Close()
+}
+
+// TestNewRequiresEverySource confirms a missing reader is refused rather
+// than left to fail on the first request.
+func TestNewRequiresEverySource(t *testing.T) {
+	t.Parallel()
+
+	src := testSources()
+	src.Protocol = nil
+	if _, err := New(Config{Addr: "127.0.0.1:0", Key: testKey}, src); err == nil {
+		t.Fatal("New with no Protocol source: error = nil, want a refusal")
+	}
+}
+
+// TestNewBindsLoopbackAddrByDefault confirms a loopback Addr is accepted
+// with no opt-in flag.
 func TestNewBindsLoopbackAddrByDefault(t *testing.T) {
 	t.Parallel()
 
-	s, err := New(Config{Addr: "127.0.0.1:0", Key: "secret"}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer s.ln.Close()
-
+	s := newServer(t, Config{Key: testKey}, testSources())
 	if s.Addr() == "" {
 		t.Errorf("Addr() = %q, want a bound loopback address", s.Addr())
 	}
 }
 
-// TestNewRejectsNonLoopbackWithoutOptIn is the "explicit opt-in for
-// non-loopback" acceptance test: binding a non-loopback host without
-// AllowNonLoopback must fail closed, before any socket opens.
+// TestNewRejectsNonLoopbackWithoutOptIn: binding a non-loopback host
+// without AllowNonLoopback must fail closed, before any socket opens.
 func TestNewRejectsNonLoopbackWithoutOptIn(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(Config{Addr: "0.0.0.0:0", Key: "secret"}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
+	_, err := New(Config{Addr: "0.0.0.0:0", Key: testKey}, testSources())
 	if err == nil {
 		t.Fatal("New(non-loopback Addr, AllowNonLoopback=false) error = nil, want a rejection")
 	}
 }
 
-// TestNewAllowsNonLoopbackWithOptIn confirms the explicit opt-in flag
-// actually permits binding a non-loopback host.
+// TestNewAllowsNonLoopbackWithOptIn confirms the opt-in permits it.
 func TestNewAllowsNonLoopbackWithOptIn(t *testing.T) {
 	t.Parallel()
 
-	s, err := New(Config{Addr: "0.0.0.0:0", Key: "secret", AllowNonLoopback: true}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
-	if err != nil {
-		t.Fatalf("New(non-loopback Addr, AllowNonLoopback=true): %v", err)
-	}
-	defer s.ln.Close()
+	newServer(t, Config{Addr: "0.0.0.0:0", Key: testKey, AllowNonLoopback: true}, testSources())
 }
 
-// TestNewRejectsEmptyAddr confirms Addr is a required field regardless
-// of Key.
+// TestNewRejectsEmptyAddr confirms Addr is required.
 func TestNewRejectsEmptyAddr(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(Config{Addr: "", Key: "secret"}, &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{}, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
+	_, err := New(Config{Addr: "", Key: testKey}, testSources())
 	if err == nil {
 		t.Fatal("New(empty Addr) error = nil, want a rejection")
 	}
@@ -108,88 +143,66 @@ func TestIsLoopbackHostFieldValues(t *testing.T) {
 	}
 }
 
-// TestBearerAuthAcceptsExactToken confirms the correct token is
-// accepted and the request reaches the wrapped handler.
-func TestBearerAuthAcceptsExactToken(t *testing.T) {
+// TestBridgeJSONRoutesAcceptTheExactToken confirms the correct Bearer
+// reaches the bridge JSON routes.
+func TestBridgeJSONRoutesAcceptTheExactToken(t *testing.T) {
 	t.Parallel()
 
-	s := newTestServer(t, "correct-token", &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{controlobs.Snapshot{}})
-	assertGETWithHost(t, s.Handler(), "/api/health", "Bearer correct-token", "localhost", 200)
-}
-
-// TestBearerAuthRejectsMissingOrWrongToken is the "401 on bad
-// token" acceptance test, covering both a wrong token and a completely
-// absent Authorization header.
-func TestBearerAuthRejectsMissingOrWrongToken(t *testing.T) {
-	t.Parallel()
-
-	s := newTestServer(t, "correct-token", &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{controlobs.Snapshot{}})
-
-	cases := []struct {
-		name   string
-		header string
-	}{
-		{"wrong token", "Bearer wrong-token"},
-		{"missing header", ""},
-		{"missing bearer prefix", "correct-token"},
-	}
-	for _, c := range cases {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			assertGETWithHost(t, s.Handler(), "/api/health", c.header, "localhost", 401)
-		})
+	s := newServer(t, Config{Key: testKey}, testSources())
+	for _, route := range bridgeJSONRoutes {
+		assertGETWithHost(t, s.Handler(), route, "Bearer "+testKey, "localhost", http.StatusOK)
 	}
 }
 
-// TestHostAllowlistAcceptsDefaultsAndConfiguredHosts is the
-// host allowlist acceptance test: the built in defaults are always
-// accepted, and a name added via Config.AllowedHosts is also accepted.
+// TestBridgeJSONRoutesRejectAMissingOrWrongToken covers a wrong token,
+// no header and a token without the Bearer prefix.
+func TestBridgeJSONRoutesRejectAMissingOrWrongToken(t *testing.T) {
+	t.Parallel()
+
+	s := newServer(t, Config{Key: testKey}, testSources())
+	for _, header := range []string{"Bearer wrong-token-0123456789", "", testKey} {
+		for _, route := range bridgeJSONRoutes {
+			assertGETWithHost(t, s.Handler(), route, header, "localhost", http.StatusUnauthorized)
+		}
+	}
+}
+
+// TestHostAllowlistAcceptsDefaultsAndConfiguredHosts: the loopback names
+// are always accepted, and so is a name in Config.AllowedHosts, on the
+// bridge routes and on the plane alike.
 func TestHostAllowlistAcceptsDefaultsAndConfiguredHosts(t *testing.T) {
 	t.Parallel()
 
-	s, err := New(Config{Addr: "127.0.0.1:0", Key: "secret", AllowedHosts: []string{"admin.internal.example"}},
-		&fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{controlobs.Snapshot{}}, &fakeIdentity{}, &fakeStomp{}, &fakeClientObserver{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer s.ln.Close()
-
+	s := newServer(t, Config{Key: testKey, AllowedHosts: []string{"admin.internal.example", " "}}, testSources())
 	for _, host := range []string{"localhost", "127.0.0.1", "admin.internal.example", "ADMIN.INTERNAL.EXAMPLE"} {
-		host := host
-		t.Run(host, func(t *testing.T) {
-			t.Parallel()
-			assertGETWithHost(t, s.Handler(), "/api/health", "Bearer secret", host, 200)
-		})
+		assertGETWithHost(t, s.Handler(), "/api/health", "Bearer "+testKey, host, http.StatusOK)
+		assertGETWithHost(t, s.Handler(), "/api/ui/panels", "Bearer "+testKey, host, http.StatusOK)
 	}
 }
 
-// TestHostAllowlistRejectsUnrecognizedHost confirms a Host header not
-// covered by the defaults or Config.AllowedHosts is rejected with 403,
-// even when the Bearer token is correct: the allowlist check runs
-// before the auth check in buildHandler's chain.
+// TestHostAllowlistRejectsUnrecognizedHost: an unknown Host is refused
+// even with the right token, by the bridge routes (403) and the plane.
 func TestHostAllowlistRejectsUnrecognizedHost(t *testing.T) {
 	t.Parallel()
 
-	s := newTestServer(t, "secret", &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{controlobs.Snapshot{}})
-	assertGETWithHost(t, s.Handler(), "/api/health", "Bearer secret", "evil.example.com", 403)
+	s := newServer(t, Config{Key: testKey}, testSources())
+	assertGETWithHost(t, s.Handler(), "/api/health", "Bearer "+testKey, "evil.example.com", http.StatusForbidden)
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels", "Bearer "+testKey, "evil.example.com")
+	if rec.Code == http.StatusOK {
+		t.Errorf("plane answered 200 to an unlisted Host; body = %s", rec.Body.String())
+	}
 }
 
-// TestRequireGETRejectsNonGETMethods is the "GET only, 405 on
-// others" acceptance test.
+// TestRequireGETRejectsNonGETMethods: the bridge JSON routes stay GET
+// only.
 func TestRequireGETRejectsNonGETMethods(t *testing.T) {
 	t.Parallel()
 
-	s := newTestServer(t, "secret", &fakeRegistry{}, &fakeEndDevices{}, &fakePrograms{}, &fakeFlow{controlobs.Snapshot{}})
-
+	s := newServer(t, Config{Key: testKey}, testSources())
 	for _, method := range []string{"POST", "PUT", "DELETE", "PATCH"} {
-		method := method
-		t.Run(method, func(t *testing.T) {
-			t.Parallel()
-			rec := doRequest(t, s.Handler(), method, "/api/health", "Bearer secret", "localhost")
-			if rec.Code != 405 {
-				t.Errorf("%s /api/health status = %d, want 405", method, rec.Code)
-			}
-		})
+		rec := doRequest(t, s.Handler(), method, "/api/health", "Bearer "+testKey, "localhost")
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s /api/health status = %d, want 405", method, rec.Code)
+		}
 	}
 }

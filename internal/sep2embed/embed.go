@@ -486,6 +486,19 @@ func (e *Embed) Identity() sep2srv.Identity {
 	return e.identity
 }
 
+// Stores returns the store set the protocol listener serves, for the
+// admin plane: it must read and write the same instances a device does.
+func (e *Embed) Stores() *assembly.Stores {
+	return e.stores
+}
+
+// Notifier returns the subscription fan-out the protocol listener uses,
+// so a write through the admin plane notifies subscribers as a protocol
+// write does.
+func (e *Embed) Notifier() assembly.ResourceNotifier {
+	return e.notifier
+}
+
 // ApplyControlDelta maps one GridAPPS-D control delta onto this Embed's
 // own resource stores and subscription notifier (the DOWN path).
 // See the package-level ApplyControlDelta function for the full

@@ -307,13 +307,12 @@ func run(ctx context.Context, cfg config) error {
 		return runSimSide(runCtx, subs, embed, reg, cfg.SimulationID, &controlHook, inputSink)
 	}
 
-	// adminSrv is the read only operator HTTP API. It is off by
-	// default: adminui.New returns ErrDisabled when
-	// SEP2_ADMIN_UI_KEY is unset, in which case no listener is opened and
-	// no runner goroutine is started at all, matching the "off by
-	// default" hard rule. Any other error from New (an invalid Addr, or
-	// a non-loopback Addr without the explicit opt-in) is a genuine
-	// startup failure, not the disabled state.
+	// adminSrv is the admin listener: the server's admin plane with the
+	// bridge's panels. It is off by default: adminui.New returns
+	// ErrDisabled when SEP2_ADMIN_UI_KEY is unset or blank, in which case no
+	// listener is opened and no runner goroutine is started at all. Any
+	// other error from New (a key under 16 characters, an invalid Addr, or a
+	// non-loopback Addr without the explicit opt-in) fails start.
 	// telemetryRun is the UP path: an independent timer-driven
 	// publisher that reads the embed's DERStatus store and sends one
 	// aggregate per interval. It is a peer of the embed and the admin UI,
@@ -337,10 +336,20 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	var adminUIRun func(context.Context) error
-	adminSrv, err := adminui.New(adminUIConfig(cfg), reg, embed, embed, &controlHook, embed, bus, &connHook)
+	adminSrv, err := adminui.New(adminUIConfig(cfg), adminui.Sources{
+		Registry: reg,
+		Devices:  embed,
+		Programs: embed,
+		Flow:     &controlHook,
+		Identity: embed,
+		Stomp:    bus,
+		Clients:  &connHook,
+		Protocol: embed,
+	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
-		log.Printf("bridge: admin UI disabled, SEP2_ADMIN_UI_KEY unset")
+		// ErrDisabled already says the UI is disabled and why, never the key.
+		log.Printf("bridge: %v", err)
 	case err != nil:
 		return fmt.Errorf("admin ui: %w", err)
 	default:

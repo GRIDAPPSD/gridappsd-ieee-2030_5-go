@@ -131,7 +131,7 @@ type config struct {
 	//     request counts and paths the observer would otherwise carry;
 	//   - the admin UI's served-status table showing every served
 	//     device's status as unknown, not connected or never connected
-	//     (ConnectedClients.svelte's observationDisabled state);
+	//     (the gridappsd-clients panel's observer-disabled state);
 	//   - the same panel's connected-clients and handshake-attempts
 	//     tables showing no data rather than admitting they cannot tell,
 	//     for the same reason.
@@ -154,8 +154,9 @@ type config struct {
 	// set in production.
 	SEP2NotificationAllowLoopback bool
 
-	// SEP2AdminUIAddr is the "host:port" the read only admin UI HTTP
-	// listener (internal/adminui) binds. See adminui.Config.Addr:
+	// SEP2AdminUIAddr is the "host:port" the admin listener
+	// (internal/adminui: the server's read-only admin plane plus the
+	// bridge's panels) binds. See adminui.Config.Addr:
 	// loopback only unless SEP2AdminUIAllowNonLoopback is set. Defaults
 	// to loopback so an operator opts in to any wider exposure
 	// explicitly, mirroring SEP2ServerAddr's own default shape.
@@ -166,11 +167,11 @@ type config struct {
 	// adminui.Config.AllowNonLoopback.
 	SEP2AdminUIAllowNonLoopback bool
 
-	// SEP2AdminUIKey is the Bearer token the admin UI requires on every
-	// request. Deliberately NOT validated as required by config.validate:
-	// an empty key is the intentional "admin UI disabled" state per
-	// adminui.New's fail closed ErrDisabled contract. An
-	// operator opts in to the admin UI by setting this explicitly.
+	// SEP2AdminUIKey is the admin credential: the Bearer token and the
+	// login password, at least 16 characters. Deliberately NOT validated
+	// as required by config.validate: an unset key is the intentional
+	// "admin UI disabled" state per adminui.New's ErrDisabled contract,
+	// and adminui.New refuses a short one at start-up.
 	SEP2AdminUIKey string
 
 	// SEP2AdminUIAllowedHosts is an additional, comma separated set of
@@ -180,8 +181,8 @@ type config struct {
 	SEP2AdminUIAllowedHosts []string
 
 	// SEP2AdminUISORLink is an optional, operator supplied URL to a
-	// server of record dashboard, exposed read only via the admin UI's
-	// /api/health endpoint. Not a credential: unlike
+	// server of record dashboard, shown by /api/health and the bridge
+	// health panel. Not a credential: unlike
 	// SEP2AdminUIKey, this value is safe to return in an API response
 	// and is never scrubbed from the environment or logged specially.
 	// Empty means unset: no link, no error, no admin UI behavior
@@ -494,13 +495,13 @@ func loadConfig(args []string) (config, error) {
 		"serve ONLY the mandatory TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 suite (a client unable to offer it is refused, not served over GCM); requires -sep2-ccm-allow-no-observer (default false)")
 	fs.BoolVar(&cfg.SEP2CCMAllowNoObserver, "sep2-ccm-allow-no-observer", cfg.SEP2CCMAllowNoObserver,
 		"accept running -sep2-enable-ccm with the connection observer disabled, losing the rejected-device record (kept pending issue 127; default false)")
-	fs.StringVar(&cfg.SEP2AdminUIAddr, "admin-ui-addr", cfg.SEP2AdminUIAddr, "admin UI read only HTTP listener host:port (defaults to loopback only)")
+	fs.StringVar(&cfg.SEP2AdminUIAddr, "admin-ui-addr", cfg.SEP2AdminUIAddr, "admin UI HTTP listener host:port (defaults to loopback only)")
 	fs.BoolVar(&cfg.SEP2AdminUIAllowNonLoopback, "admin-ui-allow-non-loopback", cfg.SEP2AdminUIAllowNonLoopback, "bind the admin UI listener to a non-loopback host (dev-only; default false)")
 	// admin-ui-key registers with an empty default so flag.PrintDefaults
 	// never echoes a real token, matching -stomp-user / -stomp-password
 	// above. The precedence merge happens below after Parse.
 	var adminUIKeyFlag string
-	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI Bearer token; unset disables the admin UI entirely (env: SEP2_ADMIN_UI_KEY)")
+	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI key, the Bearer token and login password, at least 16 characters; unset disables the admin UI (env: SEP2_ADMIN_UI_KEY)")
 	fs.StringVar(&cfg.SEP2AdminUISORLink, "admin-ui-sor-link", cfg.SEP2AdminUISORLink, "optional server of record dashboard URL exposed via the admin UI (env: SEP2_ADMIN_UI_SOR_LINK)")
 	fs.BoolVar(&cfg.SEP2NotificationAllowLoopback, "sep2-notification-allow-loopback", cfg.SEP2NotificationAllowLoopback,
 		"allow subscription notificationURIs to target any loopback destination on the host (dev/test-only; default false)")

@@ -235,34 +235,6 @@ make test-race
 make coverage
 ```
 
-**The admin-UI drift check is release-relevant and unique to this
-repository.**
-
-```
-make ui-check
-```
-
-The admin UI's built bundle under `internal/adminui/web/dist/` is COMMITTED to
-the repository and embedded into the binary. That means `go build ./...`
-succeeds against whatever bundle is on disk, current or stale, and so does
-every test: a frontend source change released without its rebuild produces a
-binary that serves the OLD interface with no error anywhere. `ui-check`
-rebuilds the frontend and fails if the committed bundle differs, and it is the
-only gate that catches this.
-
-Two things about running it:
-
-- **Run it on a CLEAN checkout.** It uses `git status --porcelain` scoped to
-  `internal/adminui/web/dist/`, so an unrelated uncommitted file under that
-  directory reads as drift.
-- **It deliberately does not use `git diff`.** The frontend build
-  content-hashes asset filenames, so a source change produces a NEW untracked
-  file under `dist/assets/` rather than a modified line in a tracked one.
-  `git diff` reports only tracked-path changes, so it would miss exactly the
-  case that happens in practice and the guard would fail open. If you find
-  yourself substituting a `git diff` check because `ui-check` needs a Node
-  toolchain, you have removed the gate rather than run it.
-
 **Env-gated suites in this repository are the integration targets**, not a
 schema gate:
 
@@ -280,8 +252,8 @@ release verified only by unit tests has verified the least interesting half.
 
 **These gates are the machine half of what runs before a tag.** Section 17 is
 the other half: an independent read of the whole commit range by somebody who
-did not write it. `ui-check` and the integration targets above are that
-reviewer's evidence too. In this repository the pass must be finished and
+did not write it. The integration targets above are that reviewer's evidence
+too. In this repository the pass must be finished and
 recorded BEFORE the tag is pushed rather than before publication, because the
 tag push starts the release (section 16 and 17.6).
 ## 7. Env-gated test suites: confirm they RAN, and name the tests
@@ -415,7 +387,7 @@ Silently reinterpreting a key is worse than removing it, because removal
 produces an error and reinterpretation produces wrong behaviour.
 
 **In-repo consumers count**: `cmd/bridge`, the harness under `harness/`, the
-`docker-compose.yml` topology and the admin UI frontend are all downstream of
+`docker-compose.yml` topology and the admin UI panels are all downstream of
 a change to an internal package.
 
 **The bridge consumes core and `gridappsd-go`**, both pinned by exact version.
@@ -620,9 +592,9 @@ The bridge has no `NOTICE` file and does not consume the IEEE normative schema
 or WADL directly; it has no schema-gated or WADL-gated tests of its own.
 Section 8's check still runs unchanged, for two reasons: the check is cheap,
 and its purpose is to PROVE nothing crept in rather than to confirm a belief
-that nothing did. This repository embeds build output into its binary
-(`internal/adminui/web/dist/`), which is precisely the mechanism by which a
-file nobody intended to ship ends up inside a published artifact. Report both
+that nothing did. The binary embeds the server module's committed admin UI
+bundle, which is precisely the mechanism by which a file nobody intended to
+ship ends up inside a published artifact. Report both
 numbers, per section 8.
 
 ## 17. Independent verification of the range before tagging
@@ -787,16 +759,6 @@ is the cheapest way to check a claim about the built artifact: it exercises the
 build, the link-time version stamp and the canary smoke test without creating a
 release.
 
-**`make ui-check` is the mechanical answer to a claim nobody can eyeball.** The
-admin UI's built bundle is committed and embedded into the binary (section 6),
-so a claim that a frontend change is in this release cannot be settled by
-reading Go code, and cannot be settled from the diff either: the frontend build
-content-hashes asset filenames, so a stale bundle shows up as a missing
-untracked file rather than as a changed line. The reviewer runs `ui-check` on a
-clean checkout. If the notes mention the admin UI and nobody ran `ui-check`,
-that claim is UNVERIFIABLE, and substituting a `git diff` for it removes the
-gate rather than running it.
-
 **The seam is the product, so the evidence comes from a run.**
 `make test-integration`, `make test-gridappsd` and `make bridge-e2e` need a
 broker, a running platform, or both (section 6), and `harness/mtls-conformance`
@@ -815,11 +777,8 @@ checked against the code that READS the key, not the code that declares it: a
 default no reader consults is the same class of finding as a ledger with no
 reader (17.8).
 
-**A light pass here is the diff, the claim list, and `ui-check`.** The
-integration and federation runs belong to the full pass, but `ui-check` stays
-in the light pass: it is fast, and the failure it catches (a committed bundle
-that does not match its source) can ride along in a range that is otherwise
-entirely fixes and chores.
+**A light pass here is the diff and the claim list.** The integration and
+federation runs belong to the full pass.
 ### 17.7 Recording the outcome
 
 The verification record lives in the release notes' Verified section (section

@@ -6,35 +6,32 @@ import (
 	"strings"
 )
 
-// defaultAllowedHosts are always accepted by the host allowlist
-// middleware, in addition to whatever Config.AllowedHosts supplies.
-// These three cover the loopback address forms a browser or curl on
-// this same host is likely to send as the Host header.
+// defaultAllowedHosts are the loopback names always accepted, by the
+// plane and by the bridge JSON routes, beside Config.AllowedHosts.
 var defaultAllowedHosts = []string{"localhost", "127.0.0.1", "::1"}
 
-// buildHandler composes the admin UI's middleware chain around mux, in
-// the order that makes each layer's precondition hold for the layers
-// inside it:
-//
-//  1. hostAllowlist runs first: an unrecognized Host header is rejected
-//     before the request's Authorization header is even inspected, so a
-//     misdirected or spoofed-Host request never gets a chance to probe
-//     the bearer check.
-//  2. bearerAuth runs second: every remaining request must present the
-//     configured token before any handler, including the GET-only
-//     check, ever sees it. Rejecting on auth before method is
-//     deliberate: a 401 leaks no information about which methods a
-//     route supports, whereas a 405-before-401 would.
-//  3. requireGET runs innermost, immediately before mux: it is the last
-//     gate before a handler actually runs, matching this package's
-//     "read only, GET only" contract at the narrowest possible point.
-//
-// This mirrors sep2embed/auth.go's buildHandler doc comment convention:
-// the ordering is load bearing and is documented here so a future
-// change does not casually reorder these calls.
-func (s *Server) buildHandler() http.Handler {
-	mux := s.mux()
-	return s.hostAllowlist(s.bearerAuth(requireGET(mux)))
+// bridgeJSONRoutes are the bridge's own JSON routes kept beside the plane.
+// The plane mounts neither path, and TestPlaneMountsNoBridgeJSONRoute
+// pins that, so the exact patterns below never shadow a plane route.
+var bridgeJSONRoutes = []string{"/api/health", "/api/clients"}
+
+// buildHandler puts the bridge JSON routes in front of the plane, which
+// takes every other path. The JSON routes keep the bridge's own chain, in
+// an order that is load bearing: the Host check runs before the Bearer
+// check, so a spoofed Host never probes the token, and the Bearer check
+// runs before the method check, so a 401 says nothing about methods.
+func (s *Server) buildHandler(plane http.Handler) http.Handler {
+	jsonMux := http.NewServeMux()
+	jsonMux.HandleFunc("/api/health", s.handleHealth)
+	jsonMux.HandleFunc("/api/clients", s.handleClients)
+	gated := s.hostAllowlist(s.bearerAuth(requireGET(jsonMux)))
+
+	mux := http.NewServeMux()
+	for _, p := range bridgeJSONRoutes {
+		mux.Handle(p, gated)
+	}
+	mux.Handle("/", plane)
+	return keepStreamsOpen(mux)
 }
 
 // bearerAuth rejects any request whose Authorization header is not
