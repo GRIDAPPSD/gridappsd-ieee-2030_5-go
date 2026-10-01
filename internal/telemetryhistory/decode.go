@@ -135,16 +135,19 @@ type Decoded struct {
 // when:
 //   - its attribute matches neither known lane prefix (classifyLane)
 //   - its attribute is not on the retained allowlist (isAllowed)
-//   - its Value is a shape decodeValue does not recognize
+//   - its Value is a shape decodeValue does not recognize, or is NaN or Inf
 //
-// Skips are reported to logf (nil-safe: pass nil to discard) with a
-// human-readable reason describing the object and attribute; they never
-// surface as an error, since a partially-decodable frame is expected
-// traffic (DERStatus carries several non-numeric-line fields alongside
-// the allowlisted ones), not a failure.
+// Only faults are reported to logf (nil-safe: pass nil to discard): an
+// allowlisted attribute whose Value has an unrecognized shape, or decodes
+// to NaN or Inf (a huge multiplier). The routine skips (an unrecognized
+// prefix, an attribute off the allowlist) are silent, since a
+// partially-decodable frame is expected traffic (DERStatus carries
+// several non-numeric-line fields alongside the allowlisted ones). No
+// skip surfaces as an error.
 //
 // The sample timestamp is always msg.Input.Message.Timestamp, the
-// envelope's own publisher-stamped time. A device-reported per-field
+// envelope's own publisher-stamped time, never local receipt time: a
+// frame redelivered after a reconnect keeps the instant it describes. A device-reported per-field
 // dateTime inside Value, if present, is never read: an observed EPRI
 // client reported stateOfChargeStatus/dateTime landing in the year
 // 1785, and a decoded sample must never carry that.
@@ -161,16 +164,18 @@ func DecodeMessage(msg diff.Message, logf func(format string, args ...any)) []De
 	for _, d := range fwd {
 		lane, ok := classifyLane(d.Attribute)
 		if !ok {
-			log("telemetryhistory: skip object=%q attribute=%q: unrecognized attribute prefix", d.Object, d.Attribute)
 			continue
 		}
 		if !isAllowed(d.Attribute) {
-			log("telemetryhistory: skip object=%q attribute=%q: not on retained allowlist", d.Object, d.Attribute)
 			continue
 		}
 		value, ok := decodeValue(d.Value)
 		if !ok {
 			log("telemetryhistory: skip object=%q attribute=%q: unrecognized value shape %T", d.Object, d.Attribute, d.Value)
+			continue
+		}
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			log("telemetryhistory: skip object=%q attribute=%q: non-finite value", d.Object, d.Attribute)
 			continue
 		}
 		out = append(out, Decoded{

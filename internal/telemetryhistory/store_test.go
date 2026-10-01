@@ -1,9 +1,12 @@
 package telemetryhistory
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -64,7 +67,7 @@ func TestStore_RingEvictsOldestSampleWithoutReallocating(t *testing.T) {
 	const overflow = 5
 	total := SamplesPerSeries + overflow
 	for i := 0; i < total; i++ {
-		s.Append(key, Sample{At: int64(i), Value: float64(i)})
+		s.Append(key, Sample{At: int64(i + 1), Value: float64(i)})
 	}
 
 	entry := s.series[key]
@@ -82,17 +85,17 @@ func TestStore_RingEvictsOldestSampleWithoutReallocating(t *testing.T) {
 	if len(samples) != SamplesPerSeries {
 		t.Fatalf("ring.snapshot() returned %d samples, want %d", len(samples), SamplesPerSeries)
 	}
-	// The first `overflow` samples (At 0..overflow-1) were pushed out;
-	// the oldest surviving sample must be At == overflow, and the newest
-	// must be At == total-1. If the ring dropped the NEWEST sample
-	// instead of the oldest, samples[0].At would be 0 and
-	// samples[len-1].At would be total-1-overflow: this assertion fails
+	// The first `overflow` samples (At 1..overflow) were pushed out;
+	// the oldest surviving sample must be At == overflow+1, and the newest
+	// must be At == total. If the ring dropped the NEWEST sample
+	// instead of the oldest, samples[0].At would be 1 and
+	// samples[len-1].At would be total-overflow: this assertion fails
 	// under that bug.
-	if got := samples[0].At; got != int64(overflow) {
-		t.Fatalf("oldest surviving sample At = %d, want %d (oldest %d samples should have been dropped)", got, overflow, overflow)
+	if got := samples[0].At; got != int64(overflow+1) {
+		t.Fatalf("oldest surviving sample At = %d, want %d (oldest %d samples should have been dropped)", got, overflow+1, overflow)
 	}
-	if got := samples[len(samples)-1].At; got != int64(total-1) {
-		t.Fatalf("newest sample At = %d, want %d", got, total-1)
+	if got := samples[len(samples)-1].At; got != int64(total) {
+		t.Fatalf("newest sample At = %d, want %d", got, total)
 	}
 }
 
@@ -112,7 +115,7 @@ func TestStore_SeriesCapEvictsLeastRecentlyAppended(t *testing.T) {
 	// series at this point: it was appended first and never touched
 	// again.
 	for i := 0; i < MaxSeries; i++ {
-		s.Append(keyFor(i), Sample{At: int64(i), Value: float64(i)})
+		s.Append(keyFor(i), Sample{At: int64(i + 1), Value: float64(i)})
 	}
 	if got := len(s.series); got != MaxSeries {
 		t.Fatalf("len(series) after filling to cap = %d, want %d", got, MaxSeries)
@@ -179,7 +182,7 @@ func TestStore_ConcurrentAppendAndSnapshot(t *testing.T) {
 			defer wg.Done()
 			key := SeriesKey{Object: fmt.Sprintf("dev-%d", g), Attribute: "DERStatus.stateOfChargeStatus"}
 			for i := 0; i < 200; i++ {
-				s.Append(key, Sample{At: int64(i), Value: float64(i)})
+				s.Append(key, Sample{At: int64(i + 1), Value: float64(i)})
 			}
 		}(g)
 	}
@@ -193,4 +196,109 @@ func TestStore_ConcurrentAppendAndSnapshot(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func atTimes(samples []Sample) []int64 {
+	out := make([]int64, len(samples))
+	for i, s := range samples {
+		out[i] = s.At
+	}
+	return out
+}
+
+func TestStore_RefusesZeroNonFiniteAndFutureSamples(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1700000100, 0)
+	s := &Store{now: func() time.Time { return now }}
+	key := SeriesKey{Object: "dev-1", Attribute: "DERStatus.stateOfChargeStatus"}
+
+	if err := s.Append(key, Sample{At: 1700000000, Value: 1}); err != nil {
+		t.Fatalf("valid append: %v", err)
+	}
+	cases := []struct {
+		name   string
+		sample Sample
+		want   error
+	}{
+		{"zero time", Sample{At: 0, Value: 2}, ErrBadTime},
+		{"negative time", Sample{At: -5, Value: 2}, ErrBadTime},
+		{"NaN", Sample{At: 1700000010, Value: math.NaN()}, ErrNonFinite},
+		{"+Inf", Sample{At: 1700000010, Value: math.Inf(1)}, ErrNonFinite},
+		{"just past the skew bound", Sample{At: now.Add(MaxFutureSkew).Unix() + 1, Value: 2}, ErrFutureTime},
+	}
+	for _, c := range cases {
+		if err := s.Append(key, c.sample); !errors.Is(err, c.want) {
+			t.Errorf("%s: Append err = %v, want %v", c.name, err, c.want)
+		}
+	}
+	// Exactly at the bound is kept.
+	if err := s.Append(key, Sample{At: now.Add(MaxFutureSkew).Unix(), Value: 3}); err != nil {
+		t.Errorf("sample exactly at the skew bound refused: %v", err)
+	}
+	snap := s.Snapshot()
+	if got := atTimes(snap[0].Samples); len(got) != 2 {
+		t.Errorf("times = %v, want only the valid sample and the one at the bound", got)
+	}
+}
+
+func TestStore_KeepsSeriesSortedAndReplacesDuplicateTime(t *testing.T) {
+	t.Parallel()
+	s := &Store{}
+	key := SeriesKey{Object: "dev-1", Attribute: "DERStatus.stateOfChargeStatus"}
+	for _, x := range []Sample{{30, 3}, {10, 1}, {20, 2}, {20, 2.5}, {40, 4}, {10, 1.5}} {
+		if err := s.Append(key, x); err != nil {
+			t.Fatalf("Append(%+v): %v", x, err)
+		}
+	}
+	got := s.Snapshot()[0].Samples
+	want := []Sample{{10, 1.5}, {20, 2.5}, {30, 3}, {40, 4}}
+	if len(got) != len(want) {
+		t.Fatalf("samples = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("sample[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A full ring must stay at capacity when an older sample is inserted, and
+// the oldest sample is the one lost.
+func TestStore_OutOfOrderInsertIntoFullRingDropsOldest(t *testing.T) {
+	t.Parallel()
+	s := &Store{}
+	key := SeriesKey{Object: "dev-1", Attribute: "DERStatus.stateOfChargeStatus"}
+	for i := 0; i < SamplesPerSeries; i++ {
+		// Even times only, leaving odd gaps to insert into.
+		s.Append(key, Sample{At: int64(2 * (i + 1)), Value: float64(i)})
+	}
+	if err := s.Append(key, Sample{At: 3, Value: -1}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got := s.Snapshot()[0].Samples
+	if len(got) != SamplesPerSeries {
+		t.Fatalf("len = %d, want %d", len(got), SamplesPerSeries)
+	}
+	if got[0].At != 3 || got[1].At != 4 {
+		t.Errorf("head = %v, want [3 4 ...] (At 2 dropped, 3 inserted in order)", atTimes(got[:3]))
+	}
+	if got[len(got)-1].At != int64(2*SamplesPerSeries) {
+		t.Errorf("newest At = %d, want %d", got[len(got)-1].At, 2*SamplesPerSeries)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].At <= got[i-1].At {
+			t.Fatalf("not strictly ascending at %d: %v", i, atTimes(got[i-1:i+1]))
+		}
+	}
+}
+
+func TestStore_CountsEvictions(t *testing.T) {
+	t.Parallel()
+	s := &Store{}
+	for i := 0; i < MaxSeries+3; i++ {
+		s.Append(SeriesKey{Object: fmt.Sprintf("d%d", i), Attribute: "a"}, Sample{At: 1700000000, Value: 1})
+	}
+	if got := s.Evictions(); got != 3 {
+		t.Errorf("Evictions = %d, want 3", got)
+	}
 }
