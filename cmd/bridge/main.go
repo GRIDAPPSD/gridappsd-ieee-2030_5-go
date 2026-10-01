@@ -266,6 +266,10 @@ func run(ctx context.Context, cfg config) error {
 	// fed only by runControlSubscriber and sized by telemetryhistory's
 	// fixed caps.
 	var inputHistory telemetryhistory.Store
+	inputSink := &historySink{
+		store: &inputHistory,
+		logf:  newRateLimitedLogf(historyLogInterval, time.Now, log.Printf),
+	}
 
 	// stompRun adapts the SimulationID branch (idle-wait, or the
 	// measurement pump plus the control-delta subscriber) to
@@ -300,7 +304,7 @@ func run(ctx context.Context, cfg config) error {
 		subs := gridappsdclient.NewSupervisor(bus,
 			gridappsdclient.WithProbeDestination(sim.LogTopic(cfg.SimulationID)))
 
-		return runSimSide(runCtx, subs, embed, reg, cfg.SimulationID, &controlHook, &inputHistory)
+		return runSimSide(runCtx, subs, embed, reg, cfg.SimulationID, &controlHook, inputSink)
 	}
 
 	// adminSrv is the read only operator HTTP API. It is off by
@@ -1421,7 +1425,7 @@ func runPump(ctx context.Context, subs sim.SubscribeClient, reg *registry.Regist
 // does not depend on either loop actually receiving a frame. hook may be
 // nil (tests that do not care about observation can omit it); every
 // call below guards for that.
-func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook, history *telemetryhistory.Store) error {
+func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook, history *historySink) error {
 	if hook != nil {
 		hook.SetTopics(sim.OutputTopic(simID), sim.InputTopic(simID))
 	}
@@ -1444,20 +1448,6 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 		return perr
 	default:
 		return errors.Join(perr, ctrlErr)
-	}
-}
-
-// feedHistory appends the plottable samples of envelope to history. It
-// is a no-op for a nil store, never returns an error and does no I/O, so
-// it cannot block or alter the control path that calls it. The decoder's
-// per-attribute skips are discarded (nil logf): every DERStatus frame
-// carries non-plottable fields, so logging them would flood the log.
-func feedHistory(history *telemetryhistory.Store, envelope diff.Message) {
-	if history == nil {
-		return
-	}
-	for _, d := range telemetryhistory.DecodeMessage(envelope, nil) {
-		history.Append(d.Key, d.Sample)
 	}
 }
 
@@ -1502,9 +1492,9 @@ func feedHistory(history *telemetryhistory.Store, envelope diff.Message) {
 // itself is not re-litigated by this comment; only the prefix
 // discipline that currently makes it safe is).
 //
-// history, when non-nil, also receives every decodable frame's plottable
-// samples (see feedHistory) before the deltas are applied; a malformed
-// frame is never fed to it.
+// history, when non-nil, also receives each delta's plottable samples
+// (see historySink.record) right after the control path handles it; a
+// malformed frame is never fed to it.
 //
 // Decode and per-delta apply errors are logged and skipped; the loop
 // continues, matching runPump's resilience style (a malformed or
@@ -1516,7 +1506,7 @@ func feedHistory(history *telemetryhistory.Store, envelope diff.Message) {
 // resolves to a delta is not counted at all (there is no delta to
 // report skipping); only a decoded delta that ApplyControlDelta accepts
 // or rejects is counted.
-func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook, history *telemetryhistory.Store) error {
+func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook, history *historySink) error {
 	dest := sim.InputTopic(simID)
 	log.Printf("bridge: subscribing to %s for control deltas", dest)
 
@@ -1531,9 +1521,10 @@ func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *
 			log.Printf("control subscriber: skip malformed frame on %s: %v", dest, derr)
 			continue
 		}
-		feedHistory(history, envelope)
 		for _, delta := range envelope.Input.Message.ForwardDifferences {
-			if aerr := embed.ApplyControlDelta(ctx, reg, delta); aerr != nil {
+			aerr := embed.ApplyControlDelta(ctx, reg, delta)
+			history.record(reg, envelope, delta, aerr == nil)
+			if aerr != nil {
 				log.Printf("control subscriber: skip delta object=%q attribute=%q: %v",
 					delta.Object, delta.Attribute, aerr)
 				if hook != nil {

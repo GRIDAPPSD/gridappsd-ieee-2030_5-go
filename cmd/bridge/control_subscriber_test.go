@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -188,7 +189,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	// health. Supervisor behavior is covered by the Supervisor tests
 	// in internal/gridappsdclient.
 	go func() {
-		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "sim-1", &hook, &history)
+		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "sim-1", &hook, &historySink{store: &history, logf: log.Printf})
 	}()
 
 	waitFor(2*time.Second, func() bool {

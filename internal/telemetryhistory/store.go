@@ -20,9 +20,33 @@
 package telemetryhistory
 
 import (
+	"errors"
+	"math"
 	"sort"
 	"sync"
+	"time"
 )
+
+// Errors returned by Store.Append for a sample the store refuses. A
+// refused sample is never stored and never alters the series.
+var (
+	// ErrBadTime is a zero or negative timestamp: the chart encoder
+	// refuses such points, and a zero usually means an unstamped frame.
+	ErrBadTime = errors.New("telemetryhistory: non-positive sample time")
+
+	// ErrFutureTime is a timestamp later than receipt plus MaxFutureSkew.
+	ErrFutureTime = errors.New("telemetryhistory: sample time too far in the future")
+
+	// ErrNonFinite is a NaN or infinite value, which json.Marshal of a
+	// snapshot cannot encode.
+	ErrNonFinite = errors.New("telemetryhistory: non-finite sample value")
+)
+
+// MaxFutureSkew is how far ahead of the local clock a sample time may
+// be and still be kept. Five minutes tolerates ordinary publisher clock
+// drift; a later time would otherwise sit as the series' newest sample
+// and push every real sample behind it.
+const MaxFutureSkew = 5 * time.Minute
 
 const (
 	// MaxSeries bounds the number of distinct (object, attribute) series
@@ -101,6 +125,32 @@ func (r *ring) append(s Sample) {
 	}
 }
 
+// put inserts s keeping the ring ordered by At: a time newer than every
+// stored sample is appended, an equal time replaces the stored sample,
+// and an older time is inserted in place (dropping the oldest sample if
+// that overflows the ring). Never reallocates buf.
+func (r *ring) put(s Sample) {
+	if r.filled == 0 || s.At > r.buf[(r.next-1+SamplesPerSeries)%SamplesPerSeries].At {
+		r.append(s)
+		return
+	}
+	cur := r.snapshot()
+	i := sort.Search(len(cur), func(i int) bool { return cur[i].At >= s.At })
+	if i < len(cur) && cur[i].At == s.At {
+		cur[i] = s
+	} else {
+		cur = append(cur, Sample{})
+		copy(cur[i+1:], cur[i:])
+		cur[i] = s
+		if len(cur) > SamplesPerSeries {
+			cur = cur[1:]
+		}
+	}
+	copy(r.buf, cur)
+	r.filled = len(cur)
+	r.next = len(cur) % SamplesPerSeries
+}
+
 // snapshot returns a freshly allocated copy of the ring's current
 // contents, oldest sample first. Mutating the result never affects the
 // ring.
@@ -132,20 +182,51 @@ type seriesEntry struct {
 // is ready to use: no constructor is required, matching internal/connobs
 // and internal/controlobs's Hook types.
 type Store struct {
-	mu      sync.Mutex
-	series  map[SeriesKey]*seriesEntry
-	seenSeq uint64
+	mu        sync.Mutex
+	series    map[SeriesKey]*seriesEntry
+	seenSeq   uint64
+	evictions uint64
+
+	// now is the clock for the MaxFutureSkew check; nil means time.Now.
+	now func() time.Time
+}
+
+// Evictions returns how many series the store has evicted to stay under
+// MaxSeries since it was created.
+func (s *Store) Evictions() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.evictions
 }
 
 // Append records one sample under key, creating the series if this is
-// the first sample seen for it. If key is new and the Store already
+// the first sample seen for it. A sample with a non-positive time, a time
+// beyond MaxFutureSkew ahead of the local clock, or a NaN or infinite
+// value is refused with ErrBadTime, ErrFutureTime or ErrNonFinite and
+// changes nothing. Each series is kept ordered by time: a sample whose
+// time equals a stored one replaces it, and an older time is inserted in
+// order, so the newest sample is always the latest time seen. If key is new and the Store already
 // holds MaxSeries series, the least-recently-appended existing series is
 // evicted first. Within a series, once SamplesPerSeries samples have
 // been recorded, the oldest sample is overwritten; the ring never
 // reallocates past that capacity.
-func (s *Store) Append(key SeriesKey, sample Sample) {
+func (s *Store) Append(key SeriesKey, sample Sample) error {
+	if sample.At <= 0 {
+		return ErrBadTime
+	}
+	if math.IsNaN(sample.Value) || math.IsInf(sample.Value, 0) {
+		return ErrNonFinite
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	if sample.At > now().Add(MaxFutureSkew).Unix() {
+		return ErrFutureTime
+	}
 
 	if s.series == nil {
 		s.series = make(map[SeriesKey]*seriesEntry)
@@ -158,9 +239,10 @@ func (s *Store) Append(key SeriesKey, sample Sample) {
 		e = &seriesEntry{ring: newRing()}
 		s.series[key] = e
 	}
-	e.ring.append(sample)
+	e.ring.put(sample)
 	s.seenSeq++
 	e.lastAppendSeq = s.seenSeq
+	return nil
 }
 
 // evictLeastRecentlyAppendedLocked removes the series whose
@@ -182,6 +264,7 @@ func (s *Store) evictLeastRecentlyAppendedLocked() {
 	}
 	if found {
 		delete(s.series, oldestKey)
+		s.evictions++
 	}
 }
 

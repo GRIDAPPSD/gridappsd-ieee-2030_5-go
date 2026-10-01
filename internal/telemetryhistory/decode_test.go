@@ -2,8 +2,10 @@ package telemetryhistory
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
@@ -304,4 +306,43 @@ func TestDecodeMessage_UnrecognizedValueShapeSkipped(t *testing.T) {
 	if !logged {
 		t.Fatalf("logf was not called for a skipped difference")
 	}
+}
+
+func TestDecodeMessage_NonFiniteValueSkippedAndLogged(t *testing.T) {
+	t.Parallel()
+	msg := diff.Message{
+		Input: diff.Input{
+			Message: diff.MessagePayload{
+				Timestamp: 1700000000,
+				ForwardDifferences: []diff.Difference{
+					{Object: "dev-1", Attribute: "DERStatus.stateOfChargeStatus",
+						Value: map[string]any{"multiplier": 400.0, "value": 1.0}},
+				},
+			},
+		},
+	}
+	var logged string
+	out := DecodeMessage(msg, func(f string, a ...any) { logged = fmt.Sprintf(f, a...) })
+	if len(out) != 0 {
+		t.Fatalf("DecodeMessage(+Inf) = %+v, want no samples", out)
+	}
+	if !strings.Contains(logged, "non-finite") {
+		t.Errorf("logged = %q, want a non-finite fault", logged)
+	}
+}
+
+func TestDecodeMessage_RoutineSkipsAreSilent(t *testing.T) {
+	t.Parallel()
+	msg := diff.Message{
+		Input: diff.Input{
+			Message: diff.MessagePayload{
+				Timestamp: 1700000000,
+				ForwardDifferences: []diff.Difference{
+					{Object: "dev-1", Attribute: "DERStatus.readingTime", Value: 1.0},
+					{Object: "dev-1", Attribute: "Other.thing", Value: 1.0},
+				},
+			},
+		},
+	}
+	DecodeMessage(msg, func(f string, a ...any) { t.Errorf("routine skip logged: "+f, a...) })
 }
