@@ -96,9 +96,8 @@ Three layers, slowest last:
    stack cloned, then run this target from this repo.
 
 Other useful targets: `make vet`, `make fmt-check`, `make coverage`,
-and `make test-race`. `make ui-build` and `make ui-check` rebuild and
-verify the admin UI's embedded frontend assets; see the Makefile for
-details.
+and `make test-race`. The admin UI is the server's; this repository ships
+no frontend of its own.
 
 ## License
 

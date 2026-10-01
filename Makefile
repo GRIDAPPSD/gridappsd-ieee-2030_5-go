@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage ui-build ui-check
+.PHONY: build test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
 
 # VERSION is stamped into internal/buildinfo.Version at link time via
 # LDFLAGS below. `git describe` gives the nearest tag plus a
@@ -14,55 +14,6 @@ build:
 
 test:
 	go test ./...
-
-# ui-build builds the admin UI's Svelte frontend
-# (internal/adminui/web/frontend/) and writes the static assets into
-# internal/adminui/web/dist/, then rebuilds the Go binary so the
-# freshly built assets are embedded via internal/adminui/web/embed.go's
-# "//go:embed all:dist" directive.
-#
-# Node and npm are needed to RUN this target, but not to run the
-# resulting binary: the embedded bundle in dist/ is committed to the
-# repo, so `go build ./...` alone (with no Node toolchain at all)
-# already succeeds on a fresh checkout using whatever dist/ content is
-# currently committed. Run this target only when the frontend source
-# under frontend/ has changed and dist/ needs regenerating.
-ui-build:
-	cd internal/adminui/web/frontend && npm ci && npm run build
-	go build -ldflags "$(LDFLAGS)" ./...
-
-# ui-check rebuilds the frontend into internal/adminui/web/dist/ and
-# then checks that directory for any difference against what is
-# committed, so a frontend source change landed WITHOUT a matching
-# `make ui-build` (a stale embedded bundle) fails loudly instead of
-# shipping silently. `go build ./...` alone cannot catch this: it
-# succeeds against whatever dist/ content is on disk, committed or
-# not.
-#
-# The check uses `git status --porcelain`, not `git diff`, because
-# Vite content-hashes asset filenames: a source change produces a
-# NEW hashed file under dist/assets/ rather than a modified line in
-# an existing tracked file. `git diff` only reports changes to
-# already-tracked paths, so a new hashed asset is invisible to it and
-# the guard would fail open. `git status --porcelain` reports both
-# modified tracked files and new untracked files, so it catches the
-# case that actually happens in practice.
-#
-# The check is scoped to internal/adminui/web/dist/ only, so an
-# unrelated dirty file elsewhere in the working tree does not produce
-# a false positive here. This target is meant to run against a clean
-# checkout (CI's default); running it locally on a dirty tree may
-# report drift caused by unrelated uncommitted changes under dist/.
-ui-check:
-	cd internal/adminui/web/frontend && npm ci && npm run build
-	@if [ -n "$$(git status --porcelain -- internal/adminui/web/dist/)" ]; then \
-	  echo "ui-check: internal/adminui/web/dist/ is stale."; \
-	  echo "The committed build output does not match what the frontend source in"; \
-	  echo "internal/adminui/web/frontend/ currently builds. Run 'make ui-build'"; \
-	  echo "and commit the updated dist/ directory."; \
-	  git status --porcelain -- internal/adminui/web/dist/; \
-	  exit 1; \
-	fi
 
 test-race:
 	go test -race ./...
