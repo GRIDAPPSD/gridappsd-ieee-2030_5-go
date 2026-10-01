@@ -55,15 +55,6 @@ func descriptor(sections ...sep2admin.Section) sep2admin.Descriptor {
 	return sep2admin.Descriptor{Version: sep2admin.CurrentDescriptorVersion, Sections: sections}
 }
 
-func table(heading, empty string, prose []string, columns []string, rows []sep2admin.Row) sep2admin.Section {
-	return sep2admin.Section{
-		Heading: heading,
-		Prose:   prose,
-		Empty:   empty,
-		Body:    sep2admin.NewTableBody(sep2admin.TableBody{Columns: columns, Rows: rows}),
-	}
-}
-
 func definitions(heading, empty string, groups ...sep2admin.DefinitionGroup) sep2admin.Section {
 	return sep2admin.Section{
 		Heading: heading,
@@ -144,7 +135,7 @@ func (s *Server) registryView(context.Context) (sep2admin.Descriptor, error) {
 		}
 		rows = append(rows, sep2admin.Row{text(e.MRID), text(e.Name), text(e.LFDI), text(e.SFDI), identity})
 	}
-	return descriptor(table("Registry map", "No registry entries yet.",
+	return tables(table("Registry map", "No registry entries yet.",
 		[]string{"mRID to LFDI/SFDI identity mapping. Read only."},
 		[]string{"mRID", "Name", "LFDI", "SFDI", "Identity"}, rows)), nil
 }
@@ -158,7 +149,7 @@ func (s *Server) dersView(ctx context.Context) (sep2admin.Descriptor, error) {
 	for _, d := range ders {
 		rows = append(rows, sep2admin.Row{text(d.EndDeviceID), text(d.ID), text(d.Href), text(d.FeederMRID)})
 	}
-	return descriptor(table("Discovered DERs",
+	return tables(table("Discovered DERs",
 		"No DERs discovered (the feeder model had no PowerElectronicsConnection).",
 		[]string{
 			"DER resources discovered from the CIM model, joined to the owning EndDevice. Read only.",
@@ -205,7 +196,7 @@ func (s *Server) servedView(ctx context.Context) (sep2admin.Descriptor, error) {
 		})
 	}
 
-	return descriptor(
+	return tables(
 		table("EndDevices", "No EndDevices served.",
 			[]string{"EndDevices, DERs, and DERPrograms as served by the embedded server. Read only."},
 			[]string{"ID", "LFDI", "SFDI", "Href", "Enabled", "DERs", "DER IDs"}, edevRows),
@@ -288,7 +279,7 @@ func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) 
 		handshakesEmpty = "Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show handshake attempts."
 	}
 
-	return descriptor(
+	return tables(
 		table("Connected clients", clientsEmpty,
 			[]string{"LFDIs that have issued authenticated requests. Read only."},
 			[]string{"LFDI", "Last seen", "Requests", "Paths touched"}, clientRows),
@@ -303,7 +294,7 @@ func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) 
 // "never connected". With the observer off nothing can show a
 // connection, so every device reads "unknown" instead of a false claim.
 // A roster read failure empties only this section, as the old view did.
-func (s *Server) servedStatusSection(ctx context.Context, clients []connobs.ClientSnapshot, disabled bool) sep2admin.Section {
+func (s *Server) servedStatusSection(ctx context.Context, clients []connobs.ClientSnapshot, disabled bool) tableSpec {
 	const heading = "Served EndDevices: connection status"
 	columns := []string{"EndDevice", "LFDI", "Status", "Last seen", "Requests"}
 	prose := []string{"Cross references the served roster against the connected-client snapshot by LFDI."}

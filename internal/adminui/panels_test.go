@@ -3,6 +3,7 @@ package adminui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -639,5 +640,130 @@ func TestListenerMountsNoWriteRoute(t *testing.T) {
 		if rec := doRequest(t, s.Handler(), http.MethodPost, route, "Bearer "+testKey, "localhost"); rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("POST %s with the key: %d, want 405", route, rec.Code)
 		}
+	}
+}
+
+// manyEntries returns n registry entries, each name padded to pad bytes.
+func manyEntries(n, pad int) []registry.Entry {
+	out := make([]registry.Entry, n)
+	for i := range out {
+		out[i] = registry.Entry{MRID: fmt.Sprintf("mrid-%04d", i), Name: strings.Repeat("n", pad), LFDI: fmt.Sprintf("LFDI%04d", i)}
+	}
+	return out
+}
+
+// manyDevices returns n served EndDevices, each with one DERProgram.
+func manyDevices(n int) (*fakeEndDevices, *fakePrograms) {
+	devices := &fakeEndDevices{}
+	programs := &fakePrograms{byEdevID: map[string][]sep2embed.DERProgramSnapshot{}}
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("edev-%04d", i)
+		devices.edevs = append(devices.edevs, sep2embed.EndDeviceSnapshot{ID: id, LFDI: "L" + id})
+		programs.byEdevID[id] = []sep2embed.DERProgramSnapshot{{ID: "1", MRID: "derp-" + id}}
+	}
+	return devices, programs
+}
+
+// manyClients returns n connected clients.
+func manyClients(n int) *fakeClientObserver {
+	obs := &fakeClientObserver{}
+	for i := 0; i < n; i++ {
+		obs.snap.Clients = append(obs.snap.Clients, connobs.ClientSnapshot{LFDI: fmt.Sprintf("LFDI%04d", i), LastSeen: time.Unix(1700000000, 0), RequestCount: 1})
+	}
+	return obs
+}
+
+// notice reports whether a section says it shows only part of its rows.
+func notice(s wireSection) string {
+	for _, p := range s.Prose {
+		if strings.HasPrefix(p, "Showing ") {
+			return p
+		}
+	}
+	return ""
+}
+
+// TestPanelsNeverFailOnRowCount: the plane refuses a Descriptor of more
+// than 1000 rows in total, across its sections. At the cap every row is
+// shown with no notice; one past it the panel still answers 200, showing
+// the rows that fit and saying how many it left out.
+func TestPanelsNeverFailOnRowCount(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name, panel string
+		src         func(Sources) Sources
+		want        map[string]string // section heading -> notice, "" for none
+		rows        map[string]int
+	}{
+		{"registry at the cap", panelRegistry,
+			func(s Sources) Sources { s.Registry = &fakeRegistry{entries: manyEntries(1000, 1)}; return s },
+			map[string]string{"Registry map": ""}, map[string]int{"Registry map": 1000}},
+		{"registry past the cap", panelRegistry,
+			func(s Sources) Sources { s.Registry = &fakeRegistry{entries: manyEntries(1001, 1)}; return s },
+			map[string]string{"Registry map": "Showing 1000 of 1001 rows"}, map[string]int{"Registry map": 1000}},
+		{"served at the cap", panelServed,
+			func(s Sources) Sources { s.Devices, s.Programs = manyDevices(500); return s },
+			map[string]string{"EndDevices": "", "DER programs": ""}, map[string]int{"EndDevices": 500, "DER programs": 500}},
+		{"served past the cap", panelServed,
+			func(s Sources) Sources { s.Devices, s.Programs = manyDevices(501); return s },
+			map[string]string{"EndDevices": "Showing 500 of 501 rows", "DER programs": "Showing 500 of 501 rows"},
+			map[string]int{"EndDevices": 500, "DER programs": 500}},
+		{"clients at the cap", panelClients,
+			func(s Sources) Sources { s.Clients = manyClients(1000); return s },
+			map[string]string{"Connected clients": ""}, map[string]int{"Connected clients": 1000}},
+		{"clients past the cap", panelClients,
+			func(s Sources) Sources { s.Clients = manyClients(1001); return s },
+			map[string]string{"Connected clients": "Showing 1000 of 1001 rows"}, map[string]int{"Connected clients": 1000}},
+		{"ders past the cap", panelDERs,
+			func(s Sources) Sources {
+				d := &fakeEndDevices{edevs: []sep2embed.EndDeviceSnapshot{{ID: "edev-1"}}}
+				for i := 0; i < 1001; i++ {
+					d.edevs[0].DERs = append(d.edevs[0].DERs, sep2embed.DERSnapshot{ID: fmt.Sprint(i)})
+				}
+				s.Devices = d
+				return s
+			},
+			map[string]string{"Discovered DERs": "Showing 1000 of 1001 rows"}, map[string]int{"Discovered DERs": 1000}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newServer(t, Config{Key: testKey}, tc.src(testSources()))
+			d := getPanel(t, s, tc.panel)
+			for heading, want := range tc.want {
+				sec := section(t, d, heading)
+				if got := notice(sec); !strings.HasPrefix(got, want) || (want == "") != (got == "") {
+					t.Errorf("%s notice = %q, want %q", heading, got, want)
+				}
+				if got := len(sec.Body.Rows); got != tc.rows[heading] {
+					t.Errorf("%s rows = %d, want %d", heading, got, tc.rows[heading])
+				}
+			}
+		})
+	}
+}
+
+// TestPanelsNeverFailOnSize: the plane also refuses a Descriptor that
+// encodes past 1 MiB. Under the row cap but over the size cap, the panel
+// sheds rows until it fits and says so.
+func TestPanelsNeverFailOnSize(t *testing.T) {
+	t.Parallel()
+
+	src := testSources()
+	src.Registry = &fakeRegistry{entries: manyEntries(900, 2000)}
+	s := newServer(t, Config{Key: testKey}, src)
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelRegistry, "Bearer "+testKey, "localhost")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("registry of 900 large rows: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := rec.Body.Len(); n > 1<<20 {
+		t.Errorf("body is %d bytes, over 1 MiB", n)
+	}
+	var d wireDescriptor
+	decodeJSON(t, rec.Body.Bytes(), &d)
+	sec := section(t, d, "Registry map")
+	if got, want := notice(sec), fmt.Sprintf("Showing %d of 900 rows", len(sec.Body.Rows)); !strings.HasPrefix(got, want) || len(sec.Body.Rows) == 0 || len(sec.Body.Rows) >= 900 {
+		t.Errorf("notice %q with %d rows, want %q and some but not all rows", got, len(sec.Body.Rows), want)
 	}
 }
