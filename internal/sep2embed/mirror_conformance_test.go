@@ -437,13 +437,11 @@ func TestMirrorUsagePointAndRegistrationRootElementsDiffer(t *testing.T) {
 	}
 }
 
-// TestPOSTMirrorUsagePointStampsCallerLFDIOverClaimedValue asserts the
-// ownership invariant that already governs this function set: the
-// server derives deviceLFDI from the caller's verified client
-// certificate and overrides whatever the document claimed. Without
-// this, any device could publish metering data attributed to another
-// device.
-func TestPOSTMirrorUsagePointStampsCallerLFDIOverClaimedValue(t *testing.T) {
+// TestPOSTMirrorUsagePointRefusesAForeignLFDIClaim asserts the ownership
+// invariant on POST /mup: no device may publish metering data attributed
+// to another device. A deviceLFDI claim naming a device the caller does
+// not manage is refused with 403 and nothing is stored.
+func TestPOSTMirrorUsagePointRefusesAForeignLFDIClaim(t *testing.T) {
 	t.Parallel()
 
 	baseURL, devices := newMUPTestServer(t, "mup-owner-a", "mup-owner-b")
@@ -454,49 +452,40 @@ func TestPOSTMirrorUsagePointStampsCallerLFDIOverClaimedValue(t *testing.T) {
 	}
 
 	// Device B POSTs a MirrorUsagePoint claiming device A's LFDI.
-	const mrid = "5EB2C2C5C2E1E1E1E1E1E1E1E1E1E1E1"
-	status, location, body := postMirrorUsagePoint(t, deviceB, baseURL, mrid, deviceA.lfdi)
-	if status != http.StatusCreated {
-		t.Fatalf("POST /mup status = %d, want 201; body=%s", status, body)
+	const foreignMRID = "5EB2C2C5C2E1E1E1E1E1E1E1E1E1E1E1"
+	status, location, body := postMirrorUsagePoint(t, deviceB, baseURL, foreignMRID, deviceA.lfdi)
+	if status != http.StatusForbidden {
+		t.Fatalf("POST /mup claiming another device's LFDI: status = %d, want 403; body=%s", status, body)
+	}
+	if location != "" {
+		t.Errorf("refused POST /mup carried Location %q; nothing should have been created", location)
 	}
 
-	// Section 10.11.3 rule (a)(3): the 201 carries the Location header and no
-	// body. Assert both halves, so a regression that starts
-	// echoing the created resource back is caught here rather than by a
-	// strict client in the field.
-	if len(bytes.TrimSpace(body)) != 0 {
-		t.Errorf("POST /mup 201 carried a body, want none per section 10.11.3 rule (a)(3); body=%s", body)
+	// The same device claiming its own LFDI is accepted, so the refusal is
+	// by ownership rather than of every claim.
+	const ownMRID = "5EB2C2C5C2E1E1E1E1E1E1E1E1E1E1E2"
+	status, location, body = postMirrorUsagePoint(t, deviceB, baseURL, ownMRID, deviceB.lfdi)
+	if status != http.StatusCreated {
+		t.Fatalf("POST /mup claiming the caller's own LFDI: status = %d, want 201; body=%s", status, body)
 	}
 	if location == "" {
 		t.Fatal("POST /mup 201 has no Location header; a client has no way to reach the created resource")
 	}
 
-	// The created resource must be attributed to device B, the actual
-	// authenticated caller, never to the LFDI it tried to claim. Read it
-	// back at its own URL, the way the EPRI client does, since the POST no
-	// longer echoes it.
-	status, created := getSEP2(t, deviceB, baseURL+location)
-	if status != http.StatusOK {
-		t.Fatalf("GET %s (Location from POST) status = %d, want 200; body=%s", location, status, created)
-	}
-	if !bytes.Contains(created, []byte("<deviceLFDI>"+deviceB.lfdi+"</deviceLFDI>")) {
-		t.Errorf("created MirrorUsagePoint did not stamp the caller's own LFDI; body=%s", created)
-	}
-	if bytes.Contains(created, []byte(deviceA.lfdi)) {
-		t.Errorf("created MirrorUsagePoint carries the claimed foreign LFDI, allowing identity spoofing; body=%s", created)
-	}
-
-	// The stored resource, read back, must carry the same attribution:
-	// the override has to survive persistence, not just the response.
+	// The stored set holds only the accepted mirror, attributed to its
+	// creator, and nothing attributed to the device that was claimed.
 	status, listBody := getSEP2(t, deviceB, baseURL+"/mup")
 	if status != http.StatusOK {
 		t.Fatalf("GET /mup status = %d, want 200; body=%s", status, listBody)
 	}
 	if !bytes.Contains(listBody, []byte("<deviceLFDI>"+deviceB.lfdi+"</deviceLFDI>")) {
-		t.Errorf("stored MirrorUsagePoint lost the caller-derived LFDI; body=%s", listBody)
+		t.Errorf("stored MirrorUsagePoint lost the caller's LFDI; body=%s", listBody)
 	}
 	if strings.Contains(string(listBody), deviceA.lfdi) {
 		t.Errorf("stored MirrorUsagePoint is attributed to a device that did not create it; body=%s", listBody)
+	}
+	if strings.Contains(string(listBody), foreignMRID) {
+		t.Errorf("the refused MirrorUsagePoint was stored anyway; body=%s", listBody)
 	}
 }
 
