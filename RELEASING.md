@@ -588,8 +588,9 @@ than every merge since the repository began.
 
 ### Licensed material
 
-The bridge has no `NOTICE` file and does not consume the IEEE normative schema
-or WADL directly; it has no schema-gated or WADL-gated tests of its own.
+The bridge's `NOTICE` file records that the IEEE normative schema and WADL are
+not distributed. The bridge does not consume either directly; it has no
+schema-gated or WADL-gated tests of its own.
 Section 8's check still runs unchanged, for two reasons: the check is cheap,
 and its purpose is to PROVE nothing crept in rather than to confirm a belief
 that nothing did. The binary embeds the server module's committed admin UI

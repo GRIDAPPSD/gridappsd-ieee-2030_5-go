@@ -111,4 +111,4 @@ no frontend of its own.
 
 ## License
 
-See LICENSE.
+See LICENSE and NOTICE.
