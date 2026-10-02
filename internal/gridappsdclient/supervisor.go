@@ -211,8 +211,8 @@ var _ sim.SubscribeClient = (*Supervisor)(nil)
 // permanently unrecoverable.
 //
 // The first Subscribe also starts the health watchdog, bound to that
-// call's ctx. cmd/bridge subscribes both simulation destinations under
-// the same run context, so one watchdog covers both.
+// call's ctx. cmd/bridge subscribes every destination under the same run
+// context, so one watchdog covers them all.
 func (s *Supervisor) Subscribe(ctx context.Context, destination string) (sim.Subscription, error) {
 	raw := make(chan cimstomp.Message) // unbuffered handoff from handler to relay
 	ss := &supervisedSub{
