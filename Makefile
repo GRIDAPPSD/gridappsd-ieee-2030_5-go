@@ -1,4 +1,12 @@
-.PHONY: build run test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
+.PHONY: help build run test test-shell test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
+
+.DEFAULT_GOAL := help
+
+# help lists every target that carries a ## description, the same way the
+# server's Makefile does. It is the default goal, so a bare `make` prints it.
+help:                     ## Show this help
+	@/usr/bin/grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | sort | \
+		awk 'BEGIN {FS = ":.*## "}; {printf "  %-20s %s\n", $$1, $$2}'
 
 # VERSION is stamped into internal/buildinfo.Version at link time via
 # LDFLAGS below. `git describe` gives the nearest tag plus a
@@ -51,13 +59,18 @@ run: build                ## Build and start the bridge (needs SEP2_ADMIN_UI_KEY
 test:                     ## Run all Go tests
 	go test ./...
 
-test-race:
+# test-shell runs the bats suite for `make run`; it needs bats on PATH and
+# is separate from `test` so `test` stays plain `go test ./...`.
+test-shell:               ## Run the bats suite for the run target (needs bats)
+	bats test/run.bats
+
+test-race:            ## Run all Go tests with the race detector
 	go test -race ./...
 
 # test-integration brings up an ActiveMQ classic broker via docker compose,
 # runs the cimstomp.Client integration tests with the `integration` build
 # tag, and tears the broker down. Requires docker compose on PATH.
-test-integration:
+test-integration:     ## Run cimstomp integration tests against ActiveMQ (needs docker compose)
 	docker compose up -d
 	# Give ActiveMQ a moment to bind 61613.
 	sleep 5
@@ -96,7 +109,7 @@ test-integration:
 # not bash. `nc` is present on essentially every Linux dev box; if it is
 # missing on yours, install netcat (`apt install netcat-openbsd` or
 # equivalent) before running this target.
-test-gridappsd:
+test-gridappsd:       ## Run cimstomp tests against a running GridAPPS-D stack
 	@if ! command -v nc >/dev/null 2>&1; then \
 	  echo "test-gridappsd requires nc (netcat) for the port probe."; \
 	  echo "Install with one of:"; \
@@ -151,7 +164,7 @@ SEP2_SIMULATION_ID ?=
 SEP2_FEEDER_MRID ?= _F49D1288-9EC6-47DB-8769-57E2B6EDB124
 SEP2_STOMP_ALLOW_PLAINTEXT ?= true
 
-bridge-e2e:
+bridge-e2e:           ## Run the bridge against a running STOMP broker
 	@set -e; \
 	if ! command -v nc >/dev/null 2>&1; then \
 	  echo "bridge-e2e requires nc (netcat) for the port probe."; \
@@ -177,10 +190,10 @@ bridge-e2e:
 	SEP2_STOMP_ALLOW_PLAINTEXT=$(SEP2_STOMP_ALLOW_PLAINTEXT) \
 	go run ./cmd/bridge
 
-vet:
+vet:                  ## Run go vet
 	go vet ./...
 
-fmt-check:
+fmt-check:            ## Fail if gofmt would change anything
 	@diff=$$(gofmt -s -d . internal cmd); \
 	  if [ -n "$$diff" ]; then \
 	    echo "gofmt diff:"; \
@@ -188,5 +201,5 @@ fmt-check:
 	    exit 1; \
 	  fi
 
-coverage:
+coverage:             ## Print cimstomp test coverage
 	go test -cover ./internal/cimstomp/

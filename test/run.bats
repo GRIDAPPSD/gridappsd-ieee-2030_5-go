@@ -13,6 +13,7 @@ setup() {
   printf 'ARGS:'
   for a in "$@"; do printf ' [%s]' "$a"; done
   printf '\n'
+  printf 'ARGV:%s\n' "$*"
   printf 'KEY=%s\n' "${SEP2_ADMIN_UI_KEY-unset}"
   printf 'KEYLEN=%s\n' "${#SEP2_ADMIN_UI_KEY}"
   printf 'SIM=%s\n' "${SEP2_SIMULATION_ID-unset}"
@@ -99,4 +100,48 @@ mk() {
 @test "run depends on build and build writes BRIDGE" {
   run make -C "$repo" -n run BRIDGE="$stub"
   [[ "$output" == *"-o $stub ./cmd/bridge"* ]]
+}
+
+@test "admin key never appears in the binary's argv" {
+  SEP2_ADMIN_UI_KEY="$goodkey" run mk
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -q '^ARGV:' "$STUB_OUT"
+  [ "$(/usr/bin/grep '^ARGV:' "$STUB_OUT" | /usr/bin/grep -cF "$goodkey")" -eq 0 ]
+  printf '%s\n' "$goodkey" >"$work/keyfile"
+  run mk ADMIN_UI_KEY_FILE="$work/keyfile"
+  [ "$(/usr/bin/grep '^ARGV:' "$STUB_OUT" | /usr/bin/grep -cF "$goodkey")" -eq 0 ]
+}
+
+@test "key length boundary: 15 refused, 16 accepted" {
+  k15=123456789012345
+  k16=1234567890123456
+  SEP2_ADMIN_UI_KEY="$k15" run mk
+  [ "$status" -ne 0 ]
+  [ ! -e "$STUB_OUT" ]
+  SEP2_ADMIN_UI_KEY="$k16" run mk
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qx "KEYLEN=16" "$STUB_OUT"
+}
+
+@test "bare make prints help and does not build" {
+  mkdir "$work/bin"
+  printf '#!/bin/sh\ntouch "%s/go-called"\n' "$work" >"$work/bin/go"
+  chmod +x "$work/bin/go"
+  PATH="$work/bin:$PATH" run make -C "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Show this help"* ]]
+  [ ! -e "$work/go-called" ]
+}
+
+@test "every target with a ## description appears in help" {
+  targets=$(/usr/bin/grep -E '^[a-zA-Z0-9_-]+:.*## ' "$repo/Makefile" | cut -d: -f1)
+  [ -n "$targets" ]
+  run make -C "$repo" help
+  [ "$status" -eq 0 ]
+  n=0
+  for t in $targets; do
+    n=$((n + 1))
+    [[ "$output" == *"  $t "* ]] || { echo "missing from help: $t"; return 1; }
+  done
+  [ "$n" -ge 11 ]
 }
