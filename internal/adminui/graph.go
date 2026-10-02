@@ -139,31 +139,50 @@ func (s *Server) graphInputView(context.Context) (sep2admin.Descriptor, error) {
 	return s.graphDescriptor(nil), nil
 }
 
-// graphChoices offers every battery with a chartable series. A battery
-// whose mRID the plane's selection pattern refuses is left out rather than
-// failing the whole panel with a 500; the default view still charts it.
-// Labels are the series labels, unique unless a name collides with another
-// battery's mRID, and then the later one is left out.
+// graphChoices offers every battery the picker can carry.
 func (s *Server) graphChoices(context.Context) ([]sep2admin.Choice, error) {
 	series, _ := s.socSeries()
-	choices := make([]sep2admin.Choice, 0, len(series))
-	seen := map[string]bool{}
+	return pickableChoices(series), nil
+}
+
+// pickableChoices turns series into choices the server's ValidateChoices
+// accepts, so one odd battery never turns the choices route and every
+// selection into a 500. A battery whose mRID the id pattern refuses is
+// left out (the default view still charts it). A label that is not valid
+// UTF-8, is over the length limit, or equals another battery's mRID falls
+// back to the battery's own mRID, and a label still taken gets a suffix,
+// so no battery is dropped for its name. Choices are sorted by label and
+// cut at sep2admin.MaxChoices.
+func pickableChoices(series []chartSeries) []sep2admin.Choice {
+	mrids := make(map[string]bool, len(series))
 	for _, cs := range series {
-		label := cs.name
-		if utf8.RuneCountInString(label) > sep2admin.MaxChoiceLabel {
-			label = cs.mrid
-		}
-		if sep2admin.ValidateSelectionIDs([]string{cs.mrid}) != nil || seen[label] {
+		mrids[cs.mrid] = true
+	}
+	used := make(map[string]bool, len(series))
+	choices := make([]sep2admin.Choice, 0, len(series))
+	for _, cs := range series {
+		if sep2admin.ValidateSelectionIDs([]string{cs.mrid}) != nil {
 			continue
 		}
-		seen[label] = true
+		label := cs.name
+		if !utf8.ValidString(label) || utf8.RuneCountInString(label) > sep2admin.MaxChoiceLabel ||
+			(label != cs.mrid && mrids[label]) {
+			label = cs.mrid
+		}
+		// An mRID is at most 64 characters, so the suffix keeps the label
+		// under the limit; ids are unique, so the first suffix is free in
+		// practice, and the loop only guards a pathological name.
+		for n := 2; used[label]; n++ {
+			label = fmt.Sprintf("%s #%d", cs.mrid, n)
+		}
+		used[label] = true
 		choices = append(choices, sep2admin.Choice{ID: cs.mrid, Label: label})
 	}
 	sort.SliceStable(choices, func(a, b int) bool { return choices[a].Label < choices[b].Label })
 	if len(choices) > sep2admin.MaxChoices {
 		choices = choices[:sep2admin.MaxChoices]
 	}
-	return choices, nil
+	return choices
 }
 
 func (s *Server) graphSelectView(_ context.Context, sel sep2admin.Selection) (sep2admin.Descriptor, error) {
@@ -191,6 +210,11 @@ func (s *Server) graphDescriptor(selected []string) sep2admin.Descriptor {
 	series, notes := fitChart(pool, planeChartLimits)
 	if dropped > 0 {
 		notes = append(notes, fmt.Sprintf("%d samples were not charted: unstamped, non-finite or out of order.", dropped))
+	}
+
+	if offered := len(pickableChoices(all)); offered < len(all) {
+		notes = append(notes, fmt.Sprintf("%d of %d batteries are not offered in the picker: it holds at most %d, and an id with unusual characters cannot be picked. The default view still charts the newest.",
+			len(all)-offered, len(all), sep2admin.MaxChoices))
 	}
 
 	charted := make(map[string]bool, len(series))

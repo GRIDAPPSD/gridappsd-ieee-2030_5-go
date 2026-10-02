@@ -578,3 +578,165 @@ func TestGraphPickerThroughThePlane(t *testing.T) {
 		}
 	}
 }
+
+// choiceFor serves one battery named name and returns its choice.
+func choicesFor(t *testing.T, snap []telemetryhistory.SeriesSnapshot, names ...registry.Entry) []sep2admin.Choice {
+	t.Helper()
+	s := graphServer(t, &fakeHistory{snap: snap}, time.Unix(graphEpoch+10, 0), names...)
+	got, err := s.graphChoices(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sep2admin.ValidateChoices(got); err != nil {
+		t.Fatalf("ValidateChoices: %v for %+v", err, got)
+	}
+	return got
+}
+
+func TestGraphChoicesFallBackToTheMRIDForANameThatIsNotUTF8(t *testing.T) {
+	t.Parallel()
+
+	got := choicesFor(t, []telemetryhistory.SeriesSnapshot{soc("M-1", sample(graphEpoch, 1))},
+		registry.Entry{MRID: "M-1", Name: "bad\xffname"})
+	if want := []sep2admin.Choice{{ID: "M-1", Label: "M-1"}}; !slices.Equal(got, want) {
+		t.Errorf("choices = %+v, want %+v", got, want)
+	}
+}
+
+func TestGraphChoicesLabelLengthBoundary(t *testing.T) {
+	t.Parallel()
+
+	keep, over := strings.Repeat("k", 128), strings.Repeat("o", 129)
+	got := choicesFor(t, []telemetryhistory.SeriesSnapshot{
+		soc("M-1", sample(graphEpoch, 1)), soc("M-2", sample(graphEpoch, 2)),
+	}, registry.Entry{MRID: "M-1", Name: keep}, registry.Entry{MRID: "M-2", Name: over})
+	want := []sep2admin.Choice{{ID: "M-2", Label: "M-2"}, {ID: "M-1", Label: keep}}
+	if !slices.Equal(got, want) {
+		t.Errorf("choices = %+v, want %+v", got, want)
+	}
+}
+
+// TestGraphChoicesKeepEveryBatteryWhenALabelCollides: battery A is named
+// like battery B's mRID. Both stay pickable and no label repeats.
+func TestGraphChoicesKeepEveryBatteryWhenALabelCollides(t *testing.T) {
+	t.Parallel()
+
+	got := choicesFor(t, []telemetryhistory.SeriesSnapshot{
+		soc("M-A", sample(graphEpoch, 1)), soc("M-B", sample(graphEpoch, 2)),
+	}, registry.Entry{MRID: "M-A", Name: "M-B"}, registry.Entry{MRID: "M-B", Name: "Bee"})
+	ids := map[string]string{}
+	for _, c := range got {
+		ids[c.ID] = c.Label
+	}
+	if len(got) != 2 || ids["M-A"] == "" || ids["M-B"] == "" {
+		t.Fatalf("choices = %+v, want both batteries", got)
+	}
+	if ids["M-A"] == "M-B" {
+		t.Errorf("M-A is labelled %q, which is another battery's mRID", ids["M-A"])
+	}
+}
+
+// TestGraphChoicesCapAtTheServerLimit: 300 batteries would make the
+// plane answer 500 to the choices route and to every selection.
+func TestGraphChoicesCapAtTheServerLimit(t *testing.T) {
+	t.Parallel()
+
+	h := &fakeHistory{snap: pickerHistory(300)}
+	s := graphServer(t, h, time.Unix(graphEpoch+1000, 0))
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelGraphInput+"/choices", "Bearer "+testKey, "localhost")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("choices: %d %s", rec.Code, rec.Body.String())
+	}
+	var cb struct{ Choices []struct{ ID, Label string } }
+	decodeJSON(t, rec.Body.Bytes(), &cb)
+	if len(cb.Choices) != sep2admin.MaxChoices {
+		t.Errorf("choices = %d, want %d", len(cb.Choices), sep2admin.MaxChoices)
+	}
+	chart, _ := getSelected(t, s, "?sel=M-10")
+	if got := chartNames(chart); !slices.Equal(got, []string{"M-10"}) {
+		t.Errorf("selection over 300 batteries charted %q, want M-10", got)
+	}
+	prose := strings.Join(getGraphChart(t, s).Prose, " ")
+	if !strings.Contains(prose, "44 of 300 batteries are not offered") {
+		t.Errorf("prose %q does not say 44 batteries cannot be picked", prose)
+	}
+}
+
+func getGraphChart(t *testing.T, s *Server) wireChartSection {
+	t.Helper()
+	c, _ := getSelected(t, s, "")
+	return c
+}
+
+func TestGraphBatteryWithAnUnpickableIDIsStillChartedByDefault(t *testing.T) {
+	t.Parallel()
+
+	s := graphServer(t, &fakeHistory{snap: []telemetryhistory.SeriesSnapshot{
+		soc("{bad id}", sample(graphEpoch, 4)), soc("M-1", sample(graphEpoch, 5)),
+	}}, time.Unix(graphEpoch+1, 0))
+	chart, d := getSelected(t, s, "")
+	if got := chartNames(chart); !slices.Equal(got, []string{"{bad id}", "M-1"}) {
+		t.Errorf("series = %q, want both batteries", got)
+	}
+	if rows := section(t, d, "Latest state of charge").Body.Rows; len(rows) != 2 {
+		t.Errorf("rows = %d, want 2", len(rows))
+	}
+}
+
+func TestGraphSelectionOfDepartedBatteries(t *testing.T) {
+	t.Parallel()
+
+	s := graphServer(t, &fakeHistory{snap: pickerHistory(20)}, time.Unix(graphEpoch+100, 0))
+	chart, _ := getSelected(t, s, "?sel=GONE-1&sel=GONE-2")
+	if names := chartNames(chart); len(names) != 16 || names[15] != "M-19" {
+		t.Errorf("all-departed selection charted %q, want the default 16 newest", names)
+	}
+	chart, _ = getSelected(t, s, "?sel=GONE-1&sel=M-04")
+	if got := chartNames(chart); !slices.Equal(got, []string{"M-04"}) {
+		t.Errorf("partly-departed selection charted %q, want only M-04", got)
+	}
+}
+
+func TestGraphPickerRefusesAMalformedSelection(t *testing.T) {
+	t.Parallel()
+
+	s := graphServer(t, &fakeHistory{snap: pickerHistory(20)}, time.Unix(graphEpoch+100, 0))
+	var seventeen []string
+	for i := 0; i < 17; i++ {
+		seventeen = append(seventeen, fmt.Sprintf("sel=M-%02d", i))
+	}
+	for name, q := range map[string]string{
+		"17 ids":      "?" + strings.Join(seventeen, "&"),
+		"unknown key": "?other=M-01",
+		"bad id":      "?sel=a%20b",
+		"duplicate":   "?sel=M-01&sel=M-01",
+	} {
+		rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelGraphInput+q, "Bearer "+testKey, "localhost")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "M-01") || strings.Contains(rec.Body.String(), "other") {
+			t.Errorf("%s: body %q echoes the request", name, rec.Body.String())
+		}
+	}
+}
+
+// TestPickableChoicesNeverRepeatALabel: the series labels socSeries builds
+// are unique today, but the choices contract is checked here on its own,
+// with two series that share a name.
+func TestPickableChoicesNeverRepeatALabel(t *testing.T) {
+	t.Parallel()
+
+	got := pickableChoices([]chartSeries{{mrid: "M-1", name: "Twin"}, {mrid: "M-2", name: "Twin"}})
+	if err := sep2admin.ValidateChoices(got); err != nil {
+		t.Fatalf("ValidateChoices: %v for %+v", err, got)
+	}
+	ids := []string{}
+	for _, c := range got {
+		ids = append(ids, c.ID)
+	}
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"M-1", "M-2"}) {
+		t.Errorf("choices = %+v, want both batteries kept", got)
+	}
+}
