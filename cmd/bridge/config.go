@@ -59,11 +59,9 @@ type config struct {
 	// Defaults to the IEEE 123-bus feeder shipped with gridappsd-docker.
 	FeederMRID string
 
-	// PublishOnStart, when true, publishes a small DifferenceBuilder
-	// envelope to the simulation input topic right after registry
-	// bootstrap. Useful as a smoke test of the publish path; defaults
-	// off because it requires a SimulationID to land somewhere
-	// observable.
+	// PublishOnStart is accepted but does nothing yet: main logs that the
+	// DifferenceBuilder envelope publish is a follow-up and skips it.
+	// validate still requires a SimulationID when it is set.
 	PublishOnStart bool
 
 	// AllowPlaintext opts into a plain TCP dial to the GridAPPS-D
@@ -367,8 +365,8 @@ var errVersionRequested = errors.New("version requested")
 // envDefaults are the gridappsd-docker dev-stack defaults. They are
 // safe to bake into the binary because:
 //
-//   - The credentials are public (documented in the gridappsd-docker
-//     README) and only useful against a localhost dev stack.
+//   - The credentials are the gridappsd-docker dev stack's well-known
+//     broker login and only useful against a localhost dev stack.
 //   - The feeder mRID is the IEEE 123-bus feeder included with the
 //     standard gridappsd-docker model catalog; it is a stable string
 //     and not a secret.

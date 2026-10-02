@@ -39,12 +39,14 @@ for testing connect and token bootstrap:
 docker compose up -d
 ```
 
-or the full GridAPPS-D platform, from wherever you have the
-`gridappsd-docker` stack cloned (allow 30 to 60 seconds for it to
-settle):
+or the full GridAPPS-D platform, started with the `run.sh` in
+wherever you have the `gridappsd-docker` stack cloned (allow 30 to 60
+seconds for it to settle). Do not use a bare `docker compose up -d`
+there: `run.sh` first sets up what the compose file expects, namely
+the image tag and the mysql dump it mounts.
 
 ```bash
-docker compose up -d
+./run.sh
 ```
 
 Then, from this repo's root:

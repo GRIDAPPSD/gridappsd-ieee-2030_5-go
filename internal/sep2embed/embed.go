@@ -94,11 +94,10 @@ type Config struct {
 	ExtraClientCAs []string
 
 	// EnableCCM selects the CCM-8 mandatory cipher suite (IEEE
-	// 2030.5-2018 section 6.7) via core's forked crypto/tls. False (the
-	// default) serves the stdlib GCM fallback, which is still mTLS: this
-	// knob selects the cipher suite, not whether TLS is required.
-	// EXCLUSIVE, not merely preferred: a client unable to offer CCM-8 is
-	// refused the handshake, never served over GCM (newCCMOnlyListener).
+	// 2030.5-2018 section 6.7) via core's forked crypto/tls. Every
+	// listener this package builds is CCM-8 only, so this no longer
+	// changes the suite served: a client unable to offer CCM-8 is refused
+	// the handshake, never served over GCM, whether or not this is set.
 	// Mutually exclusive with Observer; see errObserverRequiresGCM.
 	EnableCCM bool
 
