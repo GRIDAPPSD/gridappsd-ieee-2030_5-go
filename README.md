@@ -16,7 +16,7 @@ available for observing what the bridge is doing.
 
 ## Requirements
 
-- Go 1.26.3.
+- Go 1.26.3 or newer (the `go` line of `go.mod`); targets that compile check it first and stop with a message on an older Go.
 
 ## Quickstart
 
