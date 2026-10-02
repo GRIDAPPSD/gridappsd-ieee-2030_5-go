@@ -21,9 +21,9 @@ const historyLogInterval = 30 * time.Second
 // blocks and never returns an error, so it cannot change the path that
 // calls it. A nil sink is a no-op.
 //
-// Reported state is recorded at publish time (observe), from what the
-// status publisher is about to send, so the graph does not depend on the
-// bus echoing it back. Commanded setpoints are recorded by the control
+// Reported state is recorded when the bus accepts a status message
+// (observe), so the graph shows what was published and does not depend
+// on the bus echoing it back. Commanded setpoints are recorded by the control
 // subscriber (recordApplied), only for controls it applied.
 type historySink struct {
 	store *telemetryhistory.Store
@@ -31,14 +31,20 @@ type historySink struct {
 }
 
 // withHistory returns cfg with Observe set so every status message the
-// publisher builds is charted before it is sent.
+// bus accepted is charted.
 func withHistory(cfg telemetrypub.Config, sink *historySink, reg *registry.Registry) telemetrypub.Config {
 	cfg.Observe = func(m telemetrypub.Message) { sink.observe(reg, m) }
 	return cfg
 }
 
+// newStatusPublisher builds the status publisher exactly as the bridge
+// runs it: the configured destination and shape, charted into sink.
+func newStatusPublisher(cfg config, src telemetrypub.StatusSource, bus telemetrypub.BusPublisher, sink *historySink, reg *registry.Registry) (*telemetrypub.Publisher, error) {
+	return telemetrypub.New(withHistory(telemetryPublisherConfig(cfg, src, bus), sink, reg))
+}
+
 // observe records the reported-state samples of a status message the
-// publisher is about to send. A body that does not decode is skipped:
+// bus accepted. A body that does not decode is skipped:
 // the publisher built it, so a failure here must not affect the send.
 func (h *historySink) observe(reg *registry.Registry, msg telemetrypub.Message) {
 	if h == nil || h.store == nil {

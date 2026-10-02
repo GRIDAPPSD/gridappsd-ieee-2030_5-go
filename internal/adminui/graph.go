@@ -156,7 +156,7 @@ func (s *Server) graphInputView(context.Context) (sep2admin.Descriptor, error) {
 	}
 
 	prose := append([]string{
-		"Battery state of charge as reported on the simulation input topic. A line ends at its last report: a quiet battery is either unchanged or gone, and the panel cannot tell which. Read only.",
+		"Battery state of charge as the bridge last published it. A line ends at its last report: a quiet battery is either unchanged or gone, and the panel cannot tell which. Read only.",
 	}, notes...)
 	chart := sep2admin.Section{
 		Heading: "State of charge",

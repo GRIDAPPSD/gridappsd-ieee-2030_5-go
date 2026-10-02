@@ -183,19 +183,39 @@ func (h *sinkHarness) observe(body []byte) {
 	h.sink.observe(h.reg, telemetrypub.Message{ContentType: telemetrypub.ContentTypeJSON, Body: body})
 }
 
-// downBus is a bus whose every send fails and that delivers nothing, so
-// a history that fills proves it never needed the echo.
-type downBus struct{ sends atomic.Int64 }
-
-func (b *downBus) Send(context.Context, string, string, []byte) error {
-	b.sends.Add(1)
-	return errors.New("bus down")
+// switchBus is a bus that fails every send while down is set. tried
+// counts every send attempt, accepted counts the ones that succeeded.
+type switchBus struct {
+	down     atomic.Bool
+	tried    atomic.Int64
+	accepted atomic.Int64
 }
 
-type staticStatusSource []sep2embed.DERStatusSnapshot
+func (b *switchBus) Send(context.Context, string, string, []byte) error {
+	b.tried.Add(1)
+	if b.down.Load() {
+		return errors.New("bus down")
+	}
+	b.accepted.Add(1)
+	return nil
+}
 
-func (s staticStatusSource) DERStatusSnapshots(context.Context) ([]sep2embed.DERStatusSnapshot, error) {
-	return s, nil
+// mutableStatusSource is a StatusSource whose snapshot a test replaces.
+type mutableStatusSource struct {
+	mu    sync.Mutex
+	snaps []sep2embed.DERStatusSnapshot
+}
+
+func (s *mutableStatusSource) set(snaps ...sep2embed.DERStatusSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snaps = snaps
+}
+
+func (s *mutableStatusSource) DERStatusSnapshots(context.Context) ([]sep2embed.DERStatusSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]sep2embed.DERStatusSnapshot(nil), s.snaps...), nil
 }
 
 func socSnapshot(mrid string, hundredths uint16) sep2embed.DERStatusSnapshot {
@@ -207,12 +227,14 @@ func socSnapshot(mrid string, hundredths uint16) sep2embed.DERStatusSnapshot {
 	}
 }
 
-// publishToHistory runs the real publisher, wired as the bridge wires
-// it, against a bus that fails every send, until the bus has been tried
-// once. History must hold the status by then.
-func publishToHistory(t *testing.T, sink *historySink, reg *registry.Registry, src staticStatusSource) *downBus {
+// publishToHistory runs the publisher, wired through withHistory with a
+// fixed clock, against a bus that accepts every send, until one send has
+// been accepted. History holds the status by then.
+func publishToHistory(t *testing.T, sink *historySink, reg *registry.Registry, snaps ...sep2embed.DERStatusSnapshot) {
 	t.Helper()
-	bus := &downBus{}
+	src := &mutableStatusSource{}
+	src.set(snaps...)
+	bus := &switchBus{}
 	pub, err := telemetrypub.New(withHistory(telemetrypub.Config{
 		Source:      src,
 		Bus:         bus,
@@ -227,13 +249,12 @@ func publishToHistory(t *testing.T, sink *historySink, reg *registry.Registry, s
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- pub.Run(ctx) }()
-	waitFor(3*time.Second, func() bool { return bus.sends.Load() >= 1 })
+	waitFor(3*time.Second, func() bool { return bus.accepted.Load() >= 1 })
 	cancel()
 	<-done
-	if bus.sends.Load() < 1 {
-		t.Fatal("publisher never tried to send")
+	if bus.accepted.Load() < 1 {
+		t.Fatal("bus never accepted a send")
 	}
-	return bus
 }
 
 func findSeries(snap []telemetryhistory.SeriesSnapshot, object, attr string) (telemetryhistory.SeriesSnapshot, bool) {
@@ -245,37 +266,64 @@ func findSeries(snap []telemetryhistory.SeriesSnapshot, object, attr string) (te
 	return telemetryhistory.SeriesSnapshot{}, false
 }
 
-func TestPublishedStatusFillsHistoryWithNoBusEcho(t *testing.T) {
+// Built through newStatusPublisher, the function main uses, so a
+// publisher wired without the history hook fails here.
+func TestBridgePublisherChartsStatusOnlyAfterTheBusAccepts(t *testing.T) {
 	var store telemetryhistory.Store
 	h := newSinkHarness(t, &store, "bat-1", "bat-2")
-
-	bus := publishToHistory(t, h.sink, h.reg, staticStatusSource{socSnapshot("bat-1", 6500), socSnapshot("bat-2", 3000)})
-
-	if bus.sends.Load() < 1 {
-		t.Fatalf("test premise broken: the bus was never tried")
+	src := &mutableStatusSource{}
+	src.set(socSnapshot("bat-1", 6500), socSnapshot("bat-2", 3000))
+	bus := &switchBus{}
+	bus.down.Store(true)
+	pub, err := newStatusPublisher(config{SimulationID: "sim-1", SEP2TelemetryInterval: 5 * time.Millisecond},
+		src, bus, h.sink, h.reg)
+	if err != nil {
+		t.Fatalf("newStatusPublisher: %v", err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- pub.Run(ctx) }()
+	var once sync.Once
+	stop := func() { once.Do(func() { cancel(); <-done }) }
+	t.Cleanup(stop)
+
+	// Bus down for many cycles: nothing was accepted, so nothing is charted.
+	const cycles = 6
+	waitFor(3*time.Second, func() bool { return bus.tried.Load() >= cycles })
+	if bus.tried.Load() < cycles {
+		t.Fatalf("test premise broken: only %d send attempts", bus.tried.Load())
+	}
+	if snap := store.Snapshot(); len(snap) != 0 {
+		t.Fatalf("history after %d failed sends = %+v, want empty", bus.tried.Load(), snap)
+	}
+
+	// Bus up: each changed value is charted once, however many cycles run.
+	bus.down.Store(false)
+	waitFor(3*time.Second, func() bool { return bus.accepted.Load() >= 1 })
+	// Samples are stamped in whole seconds and a repeat of one second
+	// replaces the earlier sample, so let the clock move on.
+	time.Sleep(1100 * time.Millisecond)
+	src.set(socSnapshot("bat-1", 6400), socSnapshot("bat-2", 3000))
+	waitFor(3*time.Second, func() bool { return bus.accepted.Load() >= 2 })
+	time.Sleep(60 * time.Millisecond)
+	stop()
+
 	snap := store.Snapshot()
-	if len(snap) != 2 {
-		t.Fatalf("history = %+v, want two series", snap)
+	b1, ok1 := findSeries(snap, "bat-1", socAttr)
+	b2, ok2 := findSeries(snap, "bat-2", socAttr)
+	if !ok1 || !ok2 {
+		t.Fatalf("history = %+v, want both series", snap)
 	}
-	for mrid, want := range map[string]float64{"bat-1": 65.0, "bat-2": 30.0} {
-		s, ok := findSeries(snap, mrid, socAttr)
-		if !ok || len(s.Samples) == 0 {
-			t.Fatalf("series for %s/%s = %+v (found=%v), want samples", mrid, socAttr, s, ok)
-		}
-		got := s.Samples[0]
-		if got.Value != want {
-			t.Errorf("%s state of charge = %v, want %v", mrid, got.Value, want)
-		}
-		// The envelope's own time, not local receipt time.
-		if got.At != frameEpoch {
-			t.Errorf("%s sample At = %d, want envelope time %d", mrid, got.At, frameEpoch)
-		}
+	if len(b1.Samples) != 2 || b1.Samples[0].Value != 65.0 || b1.Samples[1].Value != 64.0 {
+		t.Errorf("bat-1 samples = %+v, want 65 then 64", b1.Samples)
+	}
+	if len(b2.Samples) != 1 || b2.Samples[0].Value != 30.0 {
+		t.Errorf("bat-2 samples = %+v, want one sample of 30", b2.Samples)
 	}
 }
 
 // An echoed status frame on the control path adds nothing: reported
-// state is recorded at publish time only.
+// state is recorded from the publisher only.
 func TestEchoedStatusFrameAddsNothingToHistory(t *testing.T) {
 	var store telemetryhistory.Store
 	h := startHistoryHarness(t, &store)
@@ -557,9 +605,39 @@ func TestAppliedControlRecordsCommandedSetpoint(t *testing.T) {
 		t.Errorf("commanded series = %+v (found=%v), want one sample of 50 at %d", s, ok, frameEpoch)
 	}
 
-	h.sink.recordApplied(h.reg, envelope, delta, false)
+	refusedEnvelope := diff.Message{}
+	refusedEnvelope.Input.Message.Timestamp = frameEpoch + 30
+	refused := diff.Difference{Object: "M", Attribute: controlAttr,
+		Value: map[string]any{"multiplier": 1.0, "value": 9.0}}
+	h.sink.recordApplied(h.reg, refusedEnvelope, refused, false)
 	if s, _ := findSeries(store.Snapshot(), "M", controlAttr); len(s.Samples) != 1 {
 		t.Errorf("refused control added a sample: %+v", s.Samples)
+	}
+}
+
+// A frame carrying both a status delta and an applied control charts
+// the control only: the reported state in it is an echo.
+func TestAppliedControlAlongsideEchoedStatusAddsNoReportedSample(t *testing.T) {
+	var store telemetryhistory.Store
+	h := newSinkHarness(t, &store, "M")
+	var envelope diff.Message
+	if err := json.Unmarshal(socFrame(t, "M", 6500, frameEpoch), &envelope); err != nil {
+		t.Fatalf("decode frame: %v", err)
+	}
+	var control diff.Difference
+	for _, d := range envelope.Input.Message.ForwardDifferences {
+		if d.Attribute == controlAttr {
+			control = d
+		}
+	}
+
+	h.sink.recordApplied(h.reg, envelope, control, true)
+
+	if _, ok := findSeries(store.Snapshot(), "M", socAttr); ok {
+		t.Errorf("echoed status charted alongside an applied control")
+	}
+	if _, ok := findSeries(store.Snapshot(), "M", controlAttr); !ok {
+		t.Errorf("applied control not charted")
 	}
 }
 

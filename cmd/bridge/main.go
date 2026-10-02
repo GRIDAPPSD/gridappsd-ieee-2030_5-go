@@ -264,7 +264,7 @@ func run(ctx context.Context, cfg config) error {
 	var controlHook controlobs.Hook
 
 	// inputHistory retains plottable samples: reported state from the
-	// status publisher at publish time, commanded setpoints from
+	// status publisher when the bus accepts it, commanded setpoints from
 	// runControlSubscriber. Sized by telemetryhistory's fixed caps.
 	var inputHistory telemetryhistory.Store
 	inputSink := &historySink{
@@ -329,7 +329,7 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.SimulationID == "" {
 		log.Printf("bridge: no SEP2_SIMULATION_ID set; DERStatus telemetry publisher disabled")
 	} else {
-		pub, perr := telemetrypub.New(withHistory(telemetryPublisherConfig(cfg, embed, bus), inputSink, reg))
+		pub, perr := newStatusPublisher(cfg, embed, bus, inputSink, reg)
 		if perr != nil {
 			return fmt.Errorf("telemetry publisher: %w", perr)
 		}

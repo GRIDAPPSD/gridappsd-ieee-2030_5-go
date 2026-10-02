@@ -534,9 +534,10 @@ func TestPublishOnceDeviceWithNoMappedFieldSendsNothingAndSettles(t *testing.T) 
 	}
 }
 
-// Observe runs before the send, with the exact bytes sent, whether or
-// not the send succeeds, and not at all for an interval with no change.
-func TestPublishOnceObservesBeforeSendEvenWhenSendFails(t *testing.T) {
+// Observe runs only after the bus accepts the send, with the exact
+// bytes sent: a dead bus charts nothing, each changed value is charted
+// once, and an unchanged interval records nothing.
+func TestPublishOnceObservesOnlyAfterTheBusAccepts(t *testing.T) {
 	t.Parallel()
 
 	src := &fakeSource{}
@@ -548,29 +549,32 @@ func TestPublishOnceObservesBeforeSendEvenWhenSendFails(t *testing.T) {
 		c.Observe = func(m Message) { observed = append(observed, m) }
 	})
 
-	if err := p.publishOnce(context.Background()); err == nil {
-		t.Fatal("publishOnce error = nil, want the send failure")
+	for i := 0; i < 5; i++ {
+		if err := p.publishOnce(context.Background()); err == nil {
+			t.Fatal("publishOnce error = nil, want the send failure")
+		}
 	}
-	if len(observed) != 1 {
-		t.Fatalf("Observe called %d times on a failed send, want 1", len(observed))
-	}
-	view := decodeDiffMessage(t, observed[0].Body)
-	if len(view.Input.Message.ForwardDifferences) != 1 || view.Input.Message.ForwardDifferences[0].Object != "mrid-a" {
-		t.Errorf("observed payload = %+v, want mrid-a's update", view.Input.Message.ForwardDifferences)
+	if len(observed) != 0 {
+		t.Fatalf("Observe called %d times over 5 failed sends, want 0", len(observed))
 	}
 
 	bus.setErr(nil)
 	if err := p.publishOnce(context.Background()); err != nil {
 		t.Fatalf("publishOnce after recovery: %v", err)
 	}
-	if len(observed) != 2 || !bytes.Equal(observed[1].Body, bus.snapshot()[0].body) {
-		t.Errorf("observed %d messages; the last must equal the bytes sent", len(observed))
+	sends := bus.snapshot()
+	if len(sends) != 1 || len(observed) != 1 || !bytes.Equal(observed[0].Body, sends[0].body) {
+		t.Fatalf("observed %d, sent %d; want one each with equal bytes", len(observed), len(sends))
+	}
+	view := decodeDiffMessage(t, observed[0].Body)
+	if len(view.Input.Message.ForwardDifferences) != 1 || view.Input.Message.ForwardDifferences[0].Object != "mrid-a" {
+		t.Errorf("observed payload = %+v, want mrid-a's update", view.Input.Message.ForwardDifferences)
 	}
 
 	if err := p.publishOnce(context.Background()); err != nil {
 		t.Fatalf("publishOnce unchanged: %v", err)
 	}
-	if len(observed) != 2 {
-		t.Errorf("Observe called %d times, want 2: an unchanged interval records nothing", len(observed))
+	if len(observed) != 1 {
+		t.Errorf("Observe called %d times, want 1: an unchanged interval records nothing", len(observed))
 	}
 }

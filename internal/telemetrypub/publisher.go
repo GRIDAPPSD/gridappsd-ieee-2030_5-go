@@ -102,10 +102,10 @@ type Config struct {
 	// Now is the clock stamped into each message. Nil uses time.Now.
 	Now func() time.Time
 
-	// Observe, when non-nil, receives each built message just before
-	// the bus send. It runs whether or not the send succeeds, so a
-	// consumer that must see what this publisher reports (the admin
-	// graph history) does not depend on the bus being up. It must not
+	// Observe, when non-nil, receives each message the bus accepted,
+	// with the exact bytes sent. A failed send is not observed: the
+	// batch stays pending and is retried, so observing it would chart
+	// the same value again every interval of an outage. It must not
 	// block and must not modify Message.Body.
 	Observe func(Message)
 }
@@ -254,14 +254,6 @@ func (p *Publisher) publishOnce(ctx context.Context) error {
 		return fmt.Errorf("telemetrypub: build message: %w", err)
 	}
 
-	// Before the send: recording only after a successful send would
-	// bring back the bus dependency. A failed send re-selects the batch
-	// and records it again next cycle with a later timestamp, which is
-	// acceptable.
-	if p.observe != nil {
-		p.observe(msg)
-	}
-
 	if err := p.bus.Send(ctx, p.dest, msg.ContentType, msg.Body); err != nil {
 		// Deliberately NOT clearing the batch: the update is still
 		// pending and must be republished next interval. Clearing here
@@ -270,6 +262,9 @@ func (p *Publisher) publishOnce(ctx context.Context) error {
 		return fmt.Errorf("telemetrypub: send to %s: %w", p.dest, err)
 	}
 
+	if p.observe != nil {
+		p.observe(msg)
+	}
 	p.tracker.Published(batch)
 	log.Printf("telemetrypub: published %d device DERStatus update(s) to %s", len(batch.Devices), p.dest)
 	return nil

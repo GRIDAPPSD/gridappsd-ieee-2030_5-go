@@ -34,15 +34,15 @@ func graphGet(t *testing.T, h http.Handler, auth string) *httptest.ResponseRecor
 	return rec
 }
 
-// TestGraphPanelShowsStateOfChargeDeliveredToTheSubscriber feeds state of
-// charge through the publisher's history hook against a bus that fails
-// every send, the only path it reaches the history by in the bridge, and
+// TestGraphPanelShowsStateOfChargeThePublisherSent feeds state of
+// charge through the publisher's history hook, the only path it reaches
+// the history by in the bridge, and
 // reads the panel the shell reads. Writing into the store directly would
 // pass while the publisher fed nothing.
-func TestGraphPanelShowsStateOfChargeDeliveredToTheSubscriber(t *testing.T) {
+func TestGraphPanelShowsStateOfChargeThePublisherSent(t *testing.T) {
 	var store telemetryhistory.Store
 	h := newSinkHarness(t, &store, "bat-1", "bat-2")
-	publishToHistory(t, h.sink, h.reg, staticStatusSource{socSnapshot("bat-1", 6500), socSnapshot("bat-2", 3000)})
+	publishToHistory(t, h.sink, h.reg, socSnapshot("bat-1", 6500), socSnapshot("bat-2", 3000))
 	// Later samples, at their own times, through the same hook.
 	h.observe(statusFrame(t, "bat-1", 6400, frameEpoch+15))
 
