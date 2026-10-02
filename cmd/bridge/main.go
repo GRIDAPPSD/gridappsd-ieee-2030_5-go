@@ -305,7 +305,7 @@ func run(ctx context.Context, cfg config) error {
 		subs := gridappsdclient.NewSupervisor(bus,
 			gridappsdclient.WithProbeDestination(sim.LogTopic(cfg.SimulationID)))
 
-		return runSimSide(runCtx, subs, embed, reg, cfg.SimulationID, &controlHook, inputSink)
+		return runSimSide(runCtx, subs, embed, reg, cfg.ApplicationID, cfg.SimulationID, &controlHook, inputSink)
 	}
 
 	// adminSrv is the admin listener: the server's admin plane with the
@@ -784,7 +784,7 @@ func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, polic
 // Destination is the ONLY place this bridge names the telemetry topic.
 // It uses internal/cim/sim.ApplicationOutputTopic, the topic the Python
 // service published to, never a goss.gridappsd.process.* destination
-// and never the simulation input topic the control subscriber reads.
+// and never the application input topic the control subscriber reads.
 // Changing it is this one line, because nothing inside telemetrypub
 // derives or inspects the destination.
 //
@@ -1440,15 +1440,15 @@ func runPump(ctx context.Context, subs sim.SubscribeClient, reg *registry.Regist
 // does not depend on either loop actually receiving a frame. hook may be
 // nil (tests that do not care about observation can omit it); every
 // call below guards for that.
-func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook, history *historySink) error {
+func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, appID, simID string, hook *controlobs.Hook, history *historySink) error {
 	if hook != nil {
-		hook.SetTopics(sim.OutputTopic(simID), sim.InputTopic(simID))
+		hook.SetTopics(sim.OutputTopic(simID), sim.ApplicationInputTopic(appID, simID))
 	}
 
 	pumpErr := make(chan error, 1)
 	go func() { pumpErr <- runPump(ctx, subs, reg, simID) }()
 
-	ctrlErr := runControlSubscriber(ctx, subs, embed, reg, simID, hook, history)
+	ctrlErr := runControlSubscriber(ctx, subs, embed, reg, appID, simID, hook, history)
 
 	perr := <-pumpErr
 	pGraceful := perr == nil || errors.Is(perr, context.Canceled)
@@ -1466,23 +1466,17 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 	}
 }
 
-// runControlSubscriber subscribes to the simulation input topic
-// (internal/cim/sim.InputTopic), decodes each frame as a diff.Message,
-// and applies every forward difference to embed via
-// sep2embed.Embed.ApplyControlDelta.
+// runControlSubscriber subscribes to the application input topic
+// (internal/cim/sim.ApplicationInputTopic), decodes each frame as a
+// diff.Message, and applies every forward difference to embed via
+// sep2embed.Embed.ApplyControlDelta. Nothing is read from the
+// simulation input topic.
 //
-// Topic-convention caveat: the Python upstream reference this bridge
-// reproduces (ieee_2030_5/adapters/gridappsd_adapter.py:_input_detected,
-// in the gridappsd-2030_5 project) subscribes to a dedicated
-// application-input topic (topics.application_input_topic), not the
-// shared simulation-input topic used here. Moving controls there is a
-// separate change; only the destination string needs to change.
-//
-// The bridge's own DERStatus reports no longer reach this topic: the
-// status publisher sends to the application output topic
-// (telemetryPublisherConfig). Any other publisher's frames here are
-// still handled by the skip path below, since ApplyControlDelta acts
-// only on "DERControl.DERControlBase."-prefixed attributes.
+// The bridge's own DERStatus reports go to the application output
+// topic (telemetryPublisherConfig), so they never reach this topic.
+// ApplyControlDelta acts only on "DERControl.DERControlBase."-prefixed
+// attributes, so any other attribute on this topic takes the skip path
+// below.
 //
 // history, when non-nil, receives each applied control's commanded
 // setpoint (see historySink.recordApplied); a malformed frame is never
@@ -1498,8 +1492,11 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // resolves to a delta is not counted at all (there is no delta to
 // report skipping); only a decoded delta that ApplyControlDelta accepts
 // or rejects is counted.
-func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, simID string, hook *controlobs.Hook, history *historySink) error {
-	dest := sim.InputTopic(simID)
+func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, appID, simID string, hook *controlobs.Hook, history *historySink) error {
+	dest := sim.ApplicationInputTopic(appID, simID)
+	if dest == "" {
+		return errors.New("control subscriber: empty application id")
+	}
 	log.Printf("bridge: subscribing to %s for control deltas", dest)
 
 	sub, err := subs.Subscribe(ctx, dest)

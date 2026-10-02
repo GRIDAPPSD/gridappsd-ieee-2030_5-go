@@ -54,3 +54,21 @@ func ApplicationOutputTopic(appID, simID string) string {
 	}
 	return baseTopic + "." + appID + ".output"
 }
+
+// ApplicationInputTopic returns the topic an application receives its
+// input on. It follows gridappsd-python v2026.09.0 topics.py
+// application_input_topic: with a simulation id the form is
+// "{BASE_SIMULATION_TOPIC}.{app}.{sim}.input", without one
+// "{BASE_TOPIC}.{app}.input". An empty appID returns "" so a caller
+// that hands the result to a subscriber fails closed instead of
+// listening on a malformed destination (the Python helper asserts
+// instead).
+func ApplicationInputTopic(appID, simID string) string {
+	if appID == "" {
+		return ""
+	}
+	if simID != "" {
+		return baseSimulationTopic + "." + appID + "." + simID + ".input"
+	}
+	return baseTopic + "." + appID + ".input"
+}

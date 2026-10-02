@@ -1,11 +1,14 @@
 // Package sim carries simulation-specific topic helpers and message
 // types for GridAPPS-D simulation pub/sub.
 //
-// The bridge subscribes to a per-simulation output topic for measurement
-// frames and publishes difference messages (built via the cim/diff
-// package) to the input topic. Topic strings are constructed by the
-// helpers in this package and match the wire form gridappsd-python's
-// topics.py emits.
+// The bridge subscribes to the per-simulation output topic
+// (OutputTopic) for measurement frames, subscribes to the application
+// input topic (ApplicationInputTopic) for control deltas, and publishes
+// device status to the application output topic (ApplicationOutputTopic).
+// It neither publishes to nor subscribes to the per-simulation input
+// topic (InputTopic). Topic strings are constructed by the helpers in
+// this package and match the wire form gridappsd-python's topics.py
+// emits.
 //
 // Subscribe is provided by cimstomp.Client (see internal/cimstomp).
 // Publishing difference messages is a direct call to cimstomp.Publisher

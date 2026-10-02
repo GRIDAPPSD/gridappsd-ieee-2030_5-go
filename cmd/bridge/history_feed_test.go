@@ -27,6 +27,8 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
 
+const testAppID = "IEEE_2030_5"
+
 const (
 	socAttr     = "DERStatus.stateOfChargeStatus"
 	controlAttr = "DERControl.DERControlBase.opModTargetW"
@@ -49,6 +51,11 @@ type historyHarness struct {
 
 func startHistoryHarness(t *testing.T, history *telemetryhistory.Store) *historyHarness {
 	t.Helper()
+	return startHistoryHarnessApp(t, history, testAppID)
+}
+
+func startHistoryHarnessApp(t *testing.T, history *telemetryhistory.Store, appID string) *historyHarness {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -63,7 +70,7 @@ func startHistoryHarness(t *testing.T, history *telemetryhistory.Store) *history
 	h := &historyHarness{reg: reg, bus: &fakeControlBus{}, hook: &controlobs.Hook{}, history: history, embed: embed, done: make(chan error, 1)}
 	go func() {
 		sink := &historySink{store: history, logf: newRateLimitedLogf(historyLogInterval, time.Now, log.Printf)}
-		h.done <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(h.bus), embed, reg, "sim-1", h.hook, sink)
+		h.done <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(h.bus), embed, reg, appID, "sim-1", h.hook, sink)
 	}()
 	waitFor(2*time.Second, func() bool {
 		h.bus.mu.Lock()
@@ -670,7 +677,7 @@ func TestRateLimitedLogfEmitsOncePerIntervalPerFormat(t *testing.T) {
 
 // The destination the bridge's real publisher sends to, read at the bus:
 // the application output topic, quoted from gridappsd-python v2026.09.0,
-// and never the simulation input topic the control subscriber listens on.
+// and never the application input topic the control subscriber listens on.
 func TestBridgePublisherSendsToTheApplicationOutputTopic(t *testing.T) {
 	var store telemetryhistory.Store
 	h := newSinkHarness(t, &store, "bat-1")
@@ -699,8 +706,8 @@ func TestBridgePublisherSendsToTheApplicationOutputTopic(t *testing.T) {
 		if d != want {
 			t.Errorf("destination = %q, want %q", d, want)
 		}
-		if d == sim.InputTopic("X") {
-			t.Errorf("destination %q is the simulation input topic the control subscriber reads, so status would echo back", d)
+		if d == sim.ApplicationInputTopic("IEEE_2030_5", "X") {
+			t.Errorf("destination %q is the application input topic the control subscriber reads, so status would echo back", d)
 		}
 	}
 }

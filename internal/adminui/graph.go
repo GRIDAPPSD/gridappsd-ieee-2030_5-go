@@ -15,8 +15,7 @@ import (
 
 // panelGraphInput charts device status: the DERStatus reports the
 // bridge's own publisher puts on the application output topic, plus
-// commanded setpoints from the control path. The panel id predates the
-// rename and is kept so existing links hold.
+// commanded setpoints from the control path.
 const panelGraphInput = "gridappsd-graph-input"
 
 // socAttribute is the history series attribute that carries battery state
