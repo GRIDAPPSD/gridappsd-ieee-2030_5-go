@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
+.PHONY: build run test test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
 
 # VERSION is stamped into internal/buildinfo.Version at link time via
 # LDFLAGS below. `git describe` gives the nearest tag plus a
@@ -9,10 +9,46 @@
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo.Version=$(VERSION)
 
-build:
-	go build -ldflags "$(LDFLAGS)" ./...
+# BRIDGE is the binary `build` writes and `run` starts.
+BRIDGE ?= ./bridge
 
-test:
+# build first compiles every package (the check this target always did),
+# then writes the bridge binary.
+build:                    ## Build every package and write the bridge binary
+	go build -ldflags "$(LDFLAGS)" ./...
+	go build -ldflags "$(LDFLAGS)" -o $(BRIDGE) ./cmd/bridge
+
+# run starts the bridge in the foreground against a local dev stack.
+# Override any of these on the make line, e.g.
+#   make run SEP2_SERVER_ADDR=127.0.0.1:9443 ADMIN_UI_KEY_FILE=~/bridge-admin.key
+# FEEDER_MRID and REGISTRATION_PIN default to empty, which leaves the
+# binary's own feeder default and no fleet-wide PIN. STOMP_ALLOW_PLAINTEXT
+# defaults true, like bridge-e2e, because the local dev brokers are plain
+# TCP; the binary's own default stays TLS. SEP2_SIMULATION_ID passes
+# through when set. The admin key is never a Makefile variable: it comes
+# from SEP2_ADMIN_UI_KEY in the environment or from the file named by
+# ADMIN_UI_KEY_FILE, and a missing or short key is refused before start
+# (the admin UI is not started disabled from here).
+SEP2_SERVER_ADDR ?= 127.0.0.1:18443
+ADMIN_UI_ADDR ?= 127.0.0.1:18444
+SEP2_SERVER_CERT_DIR ?= ./sep2-certs
+FEEDER_MRID ?=
+REGISTRATION_PIN ?=
+STOMP_ALLOW_PLAINTEXT ?= true
+ADMIN_UI_KEY_FILE ?=
+
+run: build                ## Build and start the bridge (needs SEP2_ADMIN_UI_KEY or ADMIN_UI_KEY_FILE)
+	@BRIDGE='$(BRIDGE)' \
+	SEP2_SERVER_ADDR='$(SEP2_SERVER_ADDR)' \
+	ADMIN_UI_ADDR='$(ADMIN_UI_ADDR)' \
+	SEP2_SERVER_CERT_DIR='$(SEP2_SERVER_CERT_DIR)' \
+	FEEDER_MRID='$(FEEDER_MRID)' \
+	REGISTRATION_PIN='$(REGISTRATION_PIN)' \
+	STOMP_ALLOW_PLAINTEXT='$(STOMP_ALLOW_PLAINTEXT)' \
+	ADMIN_UI_KEY_FILE='$(ADMIN_UI_KEY_FILE)' \
+	scripts/run-bridge.sh
+
+test:                     ## Run all Go tests
 	go test ./...
 
 test-race:
