@@ -41,13 +41,18 @@ func (s *Server) panels() []sep2admin.Panel {
 	}
 	out := make([]sep2admin.Panel, 0, len(views))
 	for i, v := range views {
-		out = append(out, sep2admin.Panel{
+		p := sep2admin.Panel{
 			ID:                v.id,
 			Label:             v.label,
 			Placement:         sep2admin.ExtensionSlot(i + 1),
 			DescriptorVersion: sep2admin.CurrentDescriptorVersion,
 			View:              v.view,
-		})
+		}
+		if v.id == panelGraphInput {
+			// View answers with no selection: the newest batteries.
+			p.Picker = &sep2admin.Picker{Choices: s.graphChoices, Select: s.graphSelectView}
+		}
+		out = append(out, p)
 	}
 	return out
 }
