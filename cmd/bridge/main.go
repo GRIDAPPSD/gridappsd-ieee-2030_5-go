@@ -51,6 +51,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-go/fieldbus"
 	"github.com/GRIDAPPSD/gridappsd-go/gridappsd"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo"
@@ -738,6 +739,13 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 		Observer:                    observer,
 		EnableCCM:                   cfg.SEP2EnableCCM,
 		NotifyAllowLoopback:         cfg.SEP2NotificationAllowLoopback,
+		// The router and the stores take the settings the admin plane also
+		// reads: the plane refuses an edition that disagrees with the stores.
+		Router: assembly.RouterConfig{
+			PEN:                     cfg.AdminPlane.PEN,
+			FlowReservationDeadline: cfg.AdminPlane.FlowReservationDeadline,
+		},
+		Edition2023: cfg.AdminPlane.Edition == "2023",
 	}
 }
 
@@ -758,6 +766,7 @@ func adminUIConfig(cfg config) adminui.Config {
 		FeederMRID:          cfg.FeederMRID,
 		SimulationID:        cfg.SimulationID,
 		SORLink:             cfg.SEP2AdminUISORLink,
+		Settings:            cfg.AdminPlane,
 		ObservationDisabled: ccmObservationDisabled(cfg),
 	}
 }

@@ -67,3 +67,45 @@ func TestAdminPlaneServesTheEmbedStores(t *testing.T) {
 		t.Errorf("non-GET admin routes over the embed stores = %q, want only %q", writes, want)
 	}
 }
+
+// SEP2_EDITION=2023 sets Edition2023 on the stores the protocol router
+// serves, and the plane then starts over them; New refuses an edition that
+// disagrees with the stores.
+func TestEdition2023StoresLetThePlaneStart(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		edition2023 bool
+		edition     string
+	}{
+		{"2023", true, "2023"},
+		{"2018", false, "2018"},
+		{"unset", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e, err := New(context.Background(), Config{
+				Addr:                   "127.0.0.1:0",
+				CertDir:                t.TempDir(),
+				ResolveRegistrationPIN: testResolvePIN,
+				Edition2023:            tc.edition2023,
+			}, registry.New())
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if got := e.Stores().Edition2023; got != tc.edition2023 {
+				t.Fatalf("Stores().Edition2023 = %v, want %v", got, tc.edition2023)
+			}
+			if _, err := sep2adminplane.New(sep2adminplane.Config{
+				Stores:       e.Stores(),
+				AdminKey:     "embed-admin-key-0123",
+				AllowedHosts: []string{"localhost"},
+				Edition:      tc.edition,
+				ReadOnly:     true,
+			}); err != nil {
+				t.Fatalf("plane over the stores: %v", err)
+			}
+		})
+	}
+}

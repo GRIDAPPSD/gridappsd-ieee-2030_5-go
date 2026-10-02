@@ -87,6 +87,11 @@ type Config struct {
 	// dashboard (SEP2_ADMIN_UI_SOR_LINK). It is not a secret.
 	SORLink string
 
+	// Settings are the server's four admin-plane values, parsed once at
+	// startup by cmd/bridge. A zero field means the server default. The
+	// plane refuses an Edition that disagrees with the stores.
+	Settings sep2adminplane.Settings
+
 	// ObservationDisabled is true when the connection observer is not
 	// wired to the listener (SEP2_ENABLE_CCM), so an empty client
 	// snapshot can be told apart from "nothing connected yet".
@@ -235,6 +240,11 @@ func New(cfg Config, src Sources) (*Server, error) {
 		AdminKey:     cfg.Key,
 		AllowedHosts: s.allowedHosts(),
 		Notifier:     src.Protocol.Notifier(),
+
+		Edition:                 cfg.Settings.Edition,
+		PEN:                     cfg.Settings.PEN,
+		FlowReservationDeadline: cfg.Settings.FlowReservationDeadline,
+		RetentionGrace:          cfg.Settings.RetentionGrace,
 		// The bridge has always required a credential on loopback, and it
 		// seeds and writes these stores itself: an admin write (an FSA
 		// assignment, a new EndDevice, a DER control) would be a second

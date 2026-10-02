@@ -4,6 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2adminplane"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
@@ -556,5 +559,45 @@ func TestLogCCMObserverDisabledChoiceSilentWhenDisabled(t *testing.T) {
 
 	if got := buf.String(); got != "" {
 		t.Errorf("log output = %q, want empty (SEP2EnableCCM false)", got)
+	}
+}
+
+// A deadline of 90 s parsed once reaches both the protocol router and the
+// admin plane, and the PEN and edition reach the same two places.
+func TestAdminPlaneSettingsReachRouterStoresAndPlane(t *testing.T) {
+	t.Parallel()
+
+	pen := uint32(12345)
+	cfg := config{AdminPlane: sep2adminplane.Settings{
+		Edition:                 "2023",
+		PEN:                     &pen,
+		FlowReservationDeadline: 90 * time.Second,
+		RetentionGrace:          time.Hour,
+	}}
+
+	embedCfg := sep2EmbedConfig(cfg, sep2config.DefaultPolicy(), nil, sep2embed.DeviceCertModeDevMint)
+	if got := embedCfg.Router.FlowReservationDeadline; got != 90*time.Second {
+		t.Errorf("router deadline: got %v, want 90s", got)
+	}
+	if embedCfg.Router.PEN == nil || *embedCfg.Router.PEN != pen {
+		t.Errorf("router PEN: got %v, want %d", embedCfg.Router.PEN, pen)
+	}
+	if !embedCfg.Edition2023 {
+		t.Error("embed Edition2023: got false, want true for SEP2_EDITION=2023")
+	}
+
+	adminCfg := adminUIConfig(cfg)
+	if adminCfg.Settings != cfg.AdminPlane {
+		t.Errorf("admin plane settings: got %+v, want %+v", adminCfg.Settings, cfg.AdminPlane)
+	}
+}
+
+func TestAdminPlaneSettingsZeroLeavesServerDefaults(t *testing.T) {
+	t.Parallel()
+
+	embedCfg := sep2EmbedConfig(config{}, sep2config.DefaultPolicy(), nil, sep2embed.DeviceCertModeDevMint)
+	if embedCfg.Router.FlowReservationDeadline != 0 || embedCfg.Router.PEN != nil || embedCfg.Edition2023 {
+		t.Errorf("zero config: got deadline %v PEN %v Edition2023 %v, want server defaults",
+			embedCfg.Router.FlowReservationDeadline, embedCfg.Router.PEN, embedCfg.Edition2023)
 	}
 }

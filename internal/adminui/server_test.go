@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2adminplane"
 )
@@ -205,4 +206,40 @@ func TestRequireGETRejectsNonGETMethods(t *testing.T) {
 			t.Errorf("%s /api/health status = %d, want 405", method, rec.Code)
 		}
 	}
+}
+
+// Config.Settings reaches the plane: each value the plane validates makes
+// New fail when it is out of range or disagrees with the stores, so a New
+// that dropped Settings would start instead.
+func TestNewPassesSettingsToThePlane(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		settings sep2adminplane.Settings
+		want     error
+	}{
+		{"edition disagrees with 2018 stores", sep2adminplane.Settings{Edition: "2023"}, sep2adminplane.ErrEditionMismatch},
+		{"unknown edition", sep2adminplane.Settings{Edition: "2099"}, sep2adminplane.ErrUnknownEdition},
+		{"deadline over an hour", sep2adminplane.Settings{FlowReservationDeadline: 2 * time.Hour}, nil},
+		{"grace under 15 minutes", sep2adminplane.Settings{RetentionGrace: time.Minute}, nil},
+	} {
+		_, err := New(Config{Addr: "127.0.0.1:0", Key: testKey, Settings: tc.settings}, testSources())
+		if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) {
+			t.Errorf("%s: New error = %v, want a refusal (%v)", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestNewStartsWithEdition2023StoresAndSettings(t *testing.T) {
+	t.Parallel()
+
+	src := testSources()
+	src.Protocol.(*fakeProtocol).stores.Edition2023 = true
+	s := newServer(t, Config{Key: testKey, Settings: sep2adminplane.Settings{
+		Edition:                 "2023",
+		FlowReservationDeadline: 90 * time.Second,
+		RetentionGrace:          time.Hour,
+	}}, src)
+	assertGET(t, s.Handler(), "/api/health", "Bearer "+testKey, "localhost", http.StatusOK)
 }

@@ -69,6 +69,21 @@ routes for scripts.
 | `SEP2_ADMIN_UI_ALLOWED_HOSTS` | (none) | (empty) | Comma-separated extra accepted `Host` header values, in addition to the built-in `localhost`, `127.0.0.1`, and `::1`. |
 | `SEP2_ADMIN_UI_SOR_LINK` | `-admin-ui-sor-link` | (empty) | Optional server-of-record dashboard URL, returned read-only from `/api/health`. Not a credential. |
 
+## Server admin-plane settings
+
+The bridge reads four settings the IEEE 2030.5 server defines, with the
+server's own parsers, at startup and whether or not the admin UI is enabled.
+A value out of range stops the bridge before it listens, and the error names
+the variable. They have no flags. An unset or empty variable takes the
+server default.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `SEP2_EDITION` | `2018` | `2018` or `2023`. `2023` sets the protocol router's stores and the admin plane to the 2023 edition together. |
+| `SEP2_PEN` | (unset) | IANA Private Enterprise Number, placed in the low 32 bits of minted mRIDs. Unset leaves minted mRIDs random. |
+| `SEP2_FLOW_RESERVATION_DEADLINE_SECONDS` | `300` | Whole seconds from 1 to 3600. Used by the protocol router and reported by the admin plane. |
+| `SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS` | `1800` | Whole seconds from 900 to 604800. Only changes what the admin view reports: the bridge runs no retention sweep. |
+
 ## Other
 
 `-version` prints the build version and exits. It takes no

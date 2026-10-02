@@ -107,8 +107,14 @@ type Config struct {
 	ShutdownTimeout time.Duration
 
 	// Router carries the scalar time-zone/DST configuration for the /tm
-	// resource. The zero value (UTC, no DST) is a valid configuration.
+	// resource, the PEN and the flow reservation deadline. The zero value
+	// (UTC, no DST, server defaults) is a valid configuration.
 	Router assembly.RouterConfig
+
+	// Edition2023 serves IEEE 2030.5-2023: it sets Stores.Edition2023, which
+	// the protocol router reads and which the admin plane's Edition must
+	// agree with.
+	Edition2023 bool
 
 	// NotifyWorkers and NotifyQueueSize size the subscription fan-out
 	// manager's worker pool and bounded queue. Zero or negative uses
@@ -359,6 +365,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	stores := newStores()
+	stores.Edition2023 = cfg.Edition2023
 	seeding := seedPolicy{
 		modesSupported:  cfg.ModesSupported,
 		resolvePIN:      cfg.ResolveRegistrationPIN,
