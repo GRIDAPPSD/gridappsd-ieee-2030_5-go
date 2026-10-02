@@ -782,8 +782,8 @@ func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, polic
 // be asserted by a unit test with no broker and no listener.
 //
 // Destination is the ONLY place this bridge names the telemetry topic.
-// It uses internal/cim/sim.ApplicationOutputTopic, the topic the Python
-// service published to, never a goss.gridappsd.process.* destination
+// It uses internal/cim/sim.ApplicationOutputTopic, the application
+// output topic, never a goss.gridappsd.process.* destination
 // and never the application input topic the control subscriber reads.
 // Changing it is this one line, because nothing inside telemetrypub
 // derives or inspects the destination.

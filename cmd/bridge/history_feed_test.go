@@ -676,7 +676,7 @@ func TestRateLimitedLogfEmitsOncePerIntervalPerFormat(t *testing.T) {
 }
 
 // The destination the bridge's real publisher sends to, read at the bus:
-// the application output topic, quoted from gridappsd-python v2026.09.0,
+// the application output topic,
 // and never the application input topic the control subscriber listens on.
 func TestBridgePublisherSendsToTheApplicationOutputTopic(t *testing.T) {
 	var store telemetryhistory.Store
@@ -701,7 +701,7 @@ func TestBridgePublisherSendsToTheApplicationOutputTopic(t *testing.T) {
 	if len(bus.dests) == 0 {
 		t.Fatal("bus saw no send")
 	}
-	const want = "/topic/goss.gridappsd.simulation.IEEE_2030_5.X.output"
+	const want = "/topic/goss.gridappsd.application.IEEE_2030_5.X.output"
 	for _, d := range bus.dests {
 		if d != want {
 			t.Errorf("destination = %q, want %q", d, want)

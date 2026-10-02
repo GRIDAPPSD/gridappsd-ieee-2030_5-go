@@ -6,10 +6,9 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
-// The topic string is the one gridappsd-python v2026.09.0 topics.py
-// application_input_topic builds for these arguments, written out
-// literally so a change to the helper cannot move the test with it.
-const wantControlTopic = "/topic/goss.gridappsd.simulation.IEEE_2030_5.sim-1.input"
+// Written out literally so a change to the helper cannot move the test
+// with it. The segment is "application" by operator decision.
+const wantControlTopic = "/topic/goss.gridappsd.application.IEEE_2030_5.sim-1.input"
 
 func TestControlSubscriberListensOnApplicationInputTopic(t *testing.T) {
 	var store telemetryhistory.Store
@@ -61,7 +60,7 @@ func TestApplicationIDSettingChangesControlTopic(t *testing.T) {
 	h.bus.mu.Lock()
 	got := h.bus.dest
 	h.bus.mu.Unlock()
-	const want = "/topic/goss.gridappsd.simulation.envapp.sim-1.input"
+	const want = "/topic/goss.gridappsd.application.envapp.sim-1.input"
 	if got != want {
 		t.Errorf("subscribed to %q, want %q", got, want)
 	}

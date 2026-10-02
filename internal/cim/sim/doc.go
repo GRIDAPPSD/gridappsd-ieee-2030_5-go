@@ -7,8 +7,9 @@
 // device status to the application output topic (ApplicationOutputTopic).
 // It neither publishes to nor subscribes to the per-simulation input
 // topic (InputTopic). Topic strings are constructed by the helpers in
-// this package and match the wire form gridappsd-python's topics.py
-// emits.
+// this package. The simulation topics match gridappsd-python's topics.py;
+// the application topics use the segment "application" where it uses
+// "simulation".
 //
 // Subscribe is provided by cimstomp.Client (see internal/cimstomp).
 // Publishing difference messages is a direct call to cimstomp.Publisher
