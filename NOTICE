@@ -1,0 +1,41 @@
+
+This project (gridappsd-ieee-2030_5-go) is licensed under the terms in the
+LICENSE file at the root of this repository. This NOTICE covers third-party
+material the project refers to but does not distribute.
+
+
+IEEE 2030.5, its schema (sep.xsd) and its WADL (sep_wadl.xml)
+-------------------------------------------------------------
+
+IEEE 2030.5, "IEEE Standard for Smart Energy Profile Application Protocol",
+and the artifacts published with it, including the XML Schema sep.xsd and the
+application description document sep_wadl.xml, are copyright (c) The Institute
+of Electrical and Electronics Engineers, Inc. (IEEE). All rights reserved.
+IEEE, the IEEE Standards Association, and the standard's authors are not
+affiliated with this project and do not endorse it.
+
+THE SCHEMA AND THE WADL ARE NOT DISTRIBUTED WITH THIS PROJECT.
+
+No copy of sep.xsd or sep_wadl.xml is contained in this repository, in any
+release artifact, or in any binary built from this module. Source comments and
+documentation here cite the schema and the WADL by section or line number, as
+references to the standard. This project has no schema-gated or WADL-gated
+tests of its own and nothing in it reads either file.
+
+sep_wadl.xml, unlike sep.xsd, carries no copyright notice within the file
+itself. That is not permission: copyright attaches without notice, and the
+WADL is published in the same IEEE distribution as the schema. This project
+treats both files as carrying the same restrictions and does not distribute
+either.
+
+IEEE 2030.5 is available at no charge through the IEEE GET Program:
+
+    https://standards.ieee.org/products-programs/ieee-get-program/
+
+Accept IEEE's terms and download the standard. Your use of the schema and the
+WADL is governed by IEEE's terms, not by this project's license.
+
+The schema and WADL conformance gates live in ieee-2030_5-core-go (sep.xsd,
+configured by SEP2_SCHEMA_PATH) and ieee-2030_5-server-go (sep_wadl.xml,
+configured by SEP2_WADL_PATH). Their NOTICE files carry the full attribution
+and the instructions for obtaining and pointing at a copy.
