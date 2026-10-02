@@ -38,6 +38,16 @@ func LogTopic(simID string) string {
 	return baseSimulationLogTopic + "." + simID
 }
 
+// HeartbeatTopic returns the application heartbeat topic,
+// "{BASE_TOPIC}.heartbeat". It follows gridappsd-python v2026.09.0
+// topics.py BASE_APPLICATION_HEARTBEAT ("goss.gridappsd.heartbeat"), with
+// the "/topic/" prefix the other helpers here add. The bridge neither
+// sends to it nor subscribes to it except for the supervisor's liveness
+// probe, so no other subscription holds it.
+func HeartbeatTopic() string {
+	return baseTopic + ".heartbeat"
+}
+
 // ApplicationOutputTopic returns the topic an application publishes its
 // output on. It follows gridappsd-python v2026.09.0 topics.py
 // application_output_topic: with a simulation id the form is
@@ -53,4 +63,22 @@ func ApplicationOutputTopic(appID, simID string) string {
 		return baseSimulationTopic + "." + appID + "." + simID + ".output"
 	}
 	return baseTopic + "." + appID + ".output"
+}
+
+// ApplicationInputTopic returns the topic an application receives its
+// input on. It follows gridappsd-python v2026.09.0 topics.py
+// application_input_topic: with a simulation id the form is
+// "{BASE_SIMULATION_TOPIC}.{app}.{sim}.input", without one
+// "{BASE_TOPIC}.{app}.input". An empty appID returns "" so a caller
+// that hands the result to a subscriber fails closed instead of
+// listening on a malformed destination (the Python helper asserts
+// instead).
+func ApplicationInputTopic(appID, simID string) string {
+	if appID == "" {
+		return ""
+	}
+	if simID != "" {
+		return baseSimulationTopic + "." + appID + "." + simID + ".input"
+	}
+	return baseTopic + "." + appID + ".input"
 }

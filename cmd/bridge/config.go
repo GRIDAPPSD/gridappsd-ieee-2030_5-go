@@ -43,16 +43,16 @@ type config struct {
 	STOMPPassword string
 
 	// SimulationID identifies the running simulation for the output
-	// topic the Pump subscribes to. May be empty in Stage 1; with no
-	// simulation_id the subscribe uses an empty suffix and never
-	// matches a real frame, but the connect-and-CIM-query path still
-	// validates without one.
+	// topic the Pump subscribes to. May be empty: the Pump is then not
+	// started, and status publishing and control subscription run
+	// unchanged.
 	SimulationID string
 
 	// ApplicationID names this bridge on the GridAPPS-D bus. The status
-	// publisher sends to the application output topic built from it and
-	// SimulationID. Defaults to defaultApplicationID, the service name
-	// the Python service used.
+	// publisher sends to the application output topic built from it, and
+	// the control subscriber reads the application input topic built from
+	// it; neither topic carries a simulation id. Defaults to
+	// defaultApplicationID, the service name the Python service used.
 	ApplicationID string
 
 	// FeederMRID identifies the CIM feeder model to query for DERs.
@@ -501,8 +501,8 @@ func loadConfig(args []string) (config, error) {
 	var stompUserFlag, stompPasswordFlag string
 	fs.StringVar(&stompUserFlag, "stomp-user", "", "STOMP login user (env: SEP2_STOMP_USER)")
 	fs.StringVar(&stompPasswordFlag, "stomp-password", "", "STOMP login password (env: SEP2_STOMP_PASSWORD)")
-	fs.StringVar(&cfg.SimulationID, "simulation-id", cfg.SimulationID, "GridAPPS-D simulation_id (empty disables sim subscribe)")
-	fs.StringVar(&cfg.ApplicationID, "application-id", cfg.ApplicationID, "GridAPPS-D application id the status publisher's output topic is built from")
+	fs.StringVar(&cfg.SimulationID, "simulation-id", cfg.SimulationID, "GridAPPS-D simulation_id (empty disables the simulation output subscribe only)")
+	fs.StringVar(&cfg.ApplicationID, "application-id", cfg.ApplicationID, "GridAPPS-D application id the status output topic and the control input topic are built from")
 	fs.StringVar(&cfg.FeederMRID, "feeder-mrid", cfg.FeederMRID, "CIM feeder mRID to enumerate DERs from")
 	fs.BoolVar(&cfg.PublishOnStart, "publish-on-start", cfg.PublishOnStart, "publish a smoke-test DifferenceBuilder envelope after registry bootstrap")
 	fs.BoolVar(&cfg.AllowPlaintext, "stomp-allow-plaintext", cfg.AllowPlaintext, "dial the GridAPPS-D broker over plain TCP instead of TLS (dev-only; default false)")

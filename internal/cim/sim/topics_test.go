@@ -116,3 +116,37 @@ func TestApplicationOutputTopic(t *testing.T) {
 		})
 	}
 }
+
+// The expected strings are what gridappsd-python v2026.09.0 topics.py
+// application_input_topic builds:
+//
+//	if simulation_id:
+//	    return f"{BASE_SIMULATION_TOPIC}.{application_id}.{simulation_id}.input"
+//	return f"{BASE_TOPIC}.{application_id}.input"
+func TestApplicationInputTopic(t *testing.T) {
+	cases := []struct {
+		name, appID, simID, want string
+	}{
+		{"default app with sim", "IEEE_2030_5", "X", "/topic/goss.gridappsd.simulation.IEEE_2030_5.X.input"},
+		{"mrid style sim", "IEEE_2030_5", "_49AD8E07", "/topic/goss.gridappsd.simulation.IEEE_2030_5._49AD8E07.input"},
+		{"custom app", "my_app", "12345", "/topic/goss.gridappsd.simulation.my_app.12345.input"},
+		{"no sim id", "IEEE_2030_5", "", "/topic/goss.gridappsd.IEEE_2030_5.input"},
+		{"empty app fails closed", "", "X", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ApplicationInputTopic(tc.appID, tc.simID); got != tc.want {
+				t.Errorf("ApplicationInputTopic(%q, %q) = %q, want %q", tc.appID, tc.simID, got, tc.want)
+			}
+		})
+	}
+}
+
+// gridappsd-python v2026.09.0 topics.py BASE_APPLICATION_HEARTBEAT is
+// "goss.gridappsd.heartbeat"; the helper adds the "/topic/" prefix.
+func TestHeartbeatTopic(t *testing.T) {
+	const want = "/topic/goss.gridappsd.heartbeat"
+	if got := HeartbeatTopic(); got != want {
+		t.Errorf("HeartbeatTopic() = %q, want %q", got, want)
+	}
+}

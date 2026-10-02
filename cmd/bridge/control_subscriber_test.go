@@ -34,6 +34,8 @@ import (
 type fakeControlBus struct {
 	mu      sync.Mutex
 	handler fieldbus.Handler
+	dest    string
+	dests   []string
 	tok     fieldbus.Token
 }
 
@@ -43,11 +45,13 @@ func (f *fakeControlBus) Connect(context.Context) error { return nil }
 func (f *fakeControlBus) Disconnect() error             { return nil }
 func (f *fakeControlBus) IsConnected() bool             { return true }
 
-func (f *fakeControlBus) Subscribe(_ context.Context, _ string, h fieldbus.Handler) (fieldbus.Token, error) {
+func (f *fakeControlBus) Subscribe(_ context.Context, dest string, h fieldbus.Handler) (fieldbus.Token, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tok++
 	f.handler = h
+	f.dest = dest
+	f.dests = append(f.dests, dest)
 	return f.tok, nil
 }
 
@@ -69,6 +73,19 @@ func (f *fakeControlBus) deliver(body []byte) {
 		return
 	}
 	h(nil, body)
+}
+
+// deliverTo delivers body only when the registered subscription is on
+// dest, as the broker would, and reports whether it did.
+func (f *fakeControlBus) deliverTo(dest string, body []byte) bool {
+	f.mu.Lock()
+	h, d := f.handler, f.dest
+	f.mu.Unlock()
+	if h == nil || d != dest {
+		return false
+	}
+	h(nil, body)
+	return true
 }
 
 // waitFor polls check every 10ms until it returns true or timeout
@@ -189,7 +206,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	// health. Supervisor behavior is covered by the Supervisor tests
 	// in internal/gridappsdclient.
 	go func() {
-		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "sim-1", &hook, &historySink{store: &history, logf: log.Printf})
+		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "IEEE_2030_5", &hook, &historySink{store: &history, logf: log.Printf})
 	}()
 
 	waitFor(2*time.Second, func() bool {

@@ -847,3 +847,21 @@ func TestASectionTrimmedToNothingSaysWhy(t *testing.T) {
 		t.Errorf("registry section: %d rows, empty text %q; want 0 rows and \"Showing 0 of 1 rows\"", len(sec.Body.Rows), sec.Empty)
 	}
 }
+
+func TestControlFlowPanelSaysNoSimulationIDInsteadOfBlank(t *testing.T) {
+	src := testSources()
+	src.Flow = &fakeFlow{snap: controlobs.Snapshot{
+		InputTopic: "/topic/goss.gridappsd.IEEE_2030_5.input",
+	}}
+	s := newServer(t, Config{Key: testKey}, src)
+	d := getPanel(t, s, panelControlFlow)
+
+	state := entries(t, section(t, d, "Control flow"))
+	const want = "not subscribed (no simulation id configured)"
+	if got := state["Simulation output topic"].Text; got != want {
+		t.Errorf("Simulation output topic = %q, want %q", got, want)
+	}
+	if got := state["Control delta input topic"].Text; got != "/topic/goss.gridappsd.IEEE_2030_5.input" {
+		t.Errorf("Control delta input topic = %q", got)
+	}
+}
