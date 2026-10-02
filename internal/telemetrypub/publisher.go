@@ -101,6 +101,13 @@ type Config struct {
 
 	// Now is the clock stamped into each message. Nil uses time.Now.
 	Now func() time.Time
+
+	// Observe, when non-nil, receives each message the bus accepted,
+	// with the exact bytes sent. A failed send is not observed: the
+	// batch stays pending and is retried, so observing it would chart
+	// the same value again every interval of an outage. It must not
+	// block and must not modify Message.Body.
+	Observe func(Message)
 }
 
 // Publisher reads DERStatus resources from a StatusSource on a timer and
@@ -114,6 +121,7 @@ type Publisher struct {
 	tracker  ChangeTracker
 	interval time.Duration
 	now      func() time.Time
+	observe  func(Message)
 }
 
 // New validates cfg and returns a Publisher. It performs no I/O and
@@ -157,6 +165,7 @@ func New(cfg Config) (*Publisher, error) {
 		tracker:  tracker,
 		interval: interval,
 		now:      now,
+		observe:  cfg.Observe,
 	}, nil
 }
 
@@ -253,6 +262,9 @@ func (p *Publisher) publishOnce(ctx context.Context) error {
 		return fmt.Errorf("telemetrypub: send to %s: %w", p.dest, err)
 	}
 
+	if p.observe != nil {
+		p.observe(msg)
+	}
 	p.tracker.Published(batch)
 	log.Printf("telemetrypub: published %d device DERStatus update(s) to %s", len(batch.Devices), p.dest)
 	return nil

@@ -11,6 +11,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
@@ -33,30 +34,36 @@ func graphGet(t *testing.T, h http.Handler, auth string) *httptest.ResponseRecor
 	return rec
 }
 
-// TestGraphPanelShowsStateOfChargeDeliveredToTheSubscriber feeds state of
-// charge through runControlSubscriber, the only path it reaches the
-// history by in the bridge, and reads the panel the shell reads. Writing
-// into the store directly would pass while the subscriber fed nothing.
-func TestGraphPanelShowsStateOfChargeDeliveredToTheSubscriber(t *testing.T) {
+// TestGraphPanelShowsStateOfChargeThePublisherSent feeds state of
+// charge through the publisher's history hook, the only path it reaches
+// the history by in the bridge, and
+// reads the panel the shell reads. Writing into the store directly would
+// pass while the publisher fed nothing.
+func TestGraphPanelShowsStateOfChargeThePublisherSent(t *testing.T) {
 	var store telemetryhistory.Store
-	h := startHistoryHarness(t, &store)
-	h.register(t, "bat-1", "bat-2")
-
-	h.bus.deliver(socFrame(t, "bat-1", 6500, frameEpoch))
-	h.bus.deliver(socFrame(t, "bat-2", 3000, frameEpoch+5))
-	h.bus.deliver(socFrame(t, "bat-1", 6400, frameEpoch+15))
-	h.waitFrames(t, 3)
+	h := newSinkHarness(t, &store, "bat-1", "bat-2")
+	publishToHistory(t, h.sink, h.reg, socSnapshot("bat-1", 6500), socSnapshot("bat-2", 3000))
+	// Later samples, at their own times, through the same hook.
+	h.observe(statusFrame(t, "bat-1", 6400, frameEpoch+15))
 
 	ctx, cancel := context.WithCancel(context.Background())
+	emb, err := newSEP2Embed(ctx, config{
+		SEP2ServerAddr:    "127.0.0.1:0",
+		SEP2ServerCertDir: t.TempDir(),
+	}, h.reg, testPolicyWithPIN(), nil, sep2embed.DeviceCertModeDevMint)
+	if err != nil {
+		cancel()
+		t.Fatalf("newSEP2Embed: %v", err)
+	}
 	srv, err := adminui.New(adminui.Config{Addr: "127.0.0.1:0", Key: graphTestKey}, adminui.Sources{
 		Registry: h.reg,
-		Devices:  h.embed,
-		Programs: h.embed,
+		Devices:  emb,
+		Programs: emb,
 		Flow:     &controlobs.Hook{},
-		Identity: h.embed,
+		Identity: emb,
 		Stomp:    stompUp{},
 		Clients:  &connobs.Hook{},
-		Protocol: h.embed,
+		Protocol: emb,
 		History:  &store,
 	})
 	if err != nil {
@@ -112,8 +119,8 @@ func TestGraphPanelShowsStateOfChargeDeliveredToTheSubscriber(t *testing.T) {
 		b1.Points[1] != [2]float64{float64(frameEpoch+15) * 1000, 64} {
 		t.Errorf("bat-1 = %+v, want 65 then 64 at the envelope times", b1)
 	}
-	if b2.Name != "bat-2" || len(b2.Points) != 1 || b2.Points[0] != [2]float64{float64(frameEpoch+5) * 1000, 30} {
-		t.Errorf("bat-2 = %+v, want 30 at its envelope time", b2)
+	if b2.Name != "bat-2" || len(b2.Points) != 1 || b2.Points[0] != [2]float64{float64(frameEpoch) * 1000, 30} {
+		t.Errorf("bat-2 = %+v, want 30 at the envelope time", b2)
 	}
 	rows := d.Sections[1].Body.Rows
 	if len(rows) != 2 || rows[0][0].Text != "bat-1" || rows[0][1].Text != "64" || rows[1][1].Text != "30" {

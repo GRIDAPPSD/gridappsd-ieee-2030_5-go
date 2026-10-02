@@ -533,3 +533,48 @@ func TestPublishOnceDeviceWithNoMappedFieldSendsNothingAndSettles(t *testing.T) 
 		t.Errorf("published %+v, want mrid-a operationalModeStatus 4", view.Input.Message.ForwardDifferences)
 	}
 }
+
+// Observe runs only after the bus accepts the send, with the exact
+// bytes sent: a dead bus charts nothing, each changed value is charted
+// once, and an unchanged interval records nothing.
+func TestPublishOnceObservesOnlyAfterTheBusAccepts(t *testing.T) {
+	t.Parallel()
+
+	src := &fakeSource{}
+	src.set(snapWithMode("mrid-a", 2))
+	bus := &fakeBus{}
+	bus.setErr(errors.New("broker down"))
+	var observed []Message
+	p := newTestPublisher(t, src, bus, func(c *Config) {
+		c.Observe = func(m Message) { observed = append(observed, m) }
+	})
+
+	for i := 0; i < 5; i++ {
+		if err := p.publishOnce(context.Background()); err == nil {
+			t.Fatal("publishOnce error = nil, want the send failure")
+		}
+	}
+	if len(observed) != 0 {
+		t.Fatalf("Observe called %d times over 5 failed sends, want 0", len(observed))
+	}
+
+	bus.setErr(nil)
+	if err := p.publishOnce(context.Background()); err != nil {
+		t.Fatalf("publishOnce after recovery: %v", err)
+	}
+	sends := bus.snapshot()
+	if len(sends) != 1 || len(observed) != 1 || !bytes.Equal(observed[0].Body, sends[0].body) {
+		t.Fatalf("observed %d, sent %d; want one each with equal bytes", len(observed), len(sends))
+	}
+	view := decodeDiffMessage(t, observed[0].Body)
+	if len(view.Input.Message.ForwardDifferences) != 1 || view.Input.Message.ForwardDifferences[0].Object != "mrid-a" {
+		t.Errorf("observed payload = %+v, want mrid-a's update", view.Input.Message.ForwardDifferences)
+	}
+
+	if err := p.publishOnce(context.Background()); err != nil {
+		t.Fatalf("publishOnce unchanged: %v", err)
+	}
+	if len(observed) != 1 {
+		t.Errorf("Observe called %d times, want 1: an unchanged interval records nothing", len(observed))
+	}
+}
