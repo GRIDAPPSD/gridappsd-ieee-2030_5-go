@@ -161,6 +161,14 @@ jobs:
       - name: Test (race)
         run: go test -race ./...
 
+      - name: Shell tests (bats)
+        # Covers scripts/run-bridge.sh and the run target; a stub binary
+        # stands in for the bridge, so nothing is started.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bats
+          make test-shell
+
   gofmt:
     name: gofmt check
     runs-on: ubuntu-latest

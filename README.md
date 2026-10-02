@@ -27,9 +27,27 @@ make build
 make test
 ```
 
-`make build` compiles every package, with the version stamped in from
-`git describe`. `make test` runs the unit test suite; no broker is
-required for it.
+`make build` compiles every package and writes `./bridge` (override the
+path with `BRIDGE=`), with its version stamped in from `git describe`.
+`make test` runs the unit test suite; no broker is required for it.
+
+`make run` builds, then starts the bridge in the foreground. It needs an
+admin key of at least 16 characters, from `SEP2_ADMIN_UI_KEY` or from a
+file named by `ADMIN_UI_KEY_FILE`, and refuses to start without one:
+
+```bash
+export SEP2_ADMIN_UI_KEY=...   # or use ADMIN_UI_KEY_FILE below
+make run
+make run SEP2_SERVER_ADDR=127.0.0.1:9443 ADMIN_UI_ADDR=127.0.0.1:9444 \
+  SEP2_SERVER_CERT_DIR=$HOME/bridge-certs FEEDER_MRID=_YOUR-FEEDER-MRID \
+  REGISTRATION_PIN=123455 STOMP_ALLOW_PLAINTEXT=false \
+  ADMIN_UI_KEY_FILE=$HOME/bridge-admin.key
+```
+
+The defaults are `127.0.0.1:18443` and `127.0.0.1:18444`, `./sep2-certs`,
+plaintext STOMP on (local dev brokers), the binary's own feeder, and no
+fleet-wide PIN. `SEP2_SIMULATION_ID` passes through when set. A bare
+`make` prints `make help`, the list of targets.
 
 Running the bridge for real needs two more things: a GridAPPS-D
 broker to talk to, and certificate material for its embedded IEEE
