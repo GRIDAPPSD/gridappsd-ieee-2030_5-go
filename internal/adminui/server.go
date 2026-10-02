@@ -98,6 +98,41 @@ type Config struct {
 	// wired to the listener (SEP2_ENABLE_CCM), so an empty client
 	// snapshot can be told apart from "nothing connected yet".
 	ObservationDisabled bool
+
+	// ReadHeaderTimeout, ReadTimeout, WriteTimeout, IdleTimeout and
+	// ShutdownTimeout override the listener timeouts. Zero keeps the
+	// default.
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+	ShutdownTimeout   time.Duration
+}
+
+// DefaultTimeouts reports the listener timeouts used when Config leaves
+// them zero, for callers that surface them as defaults.
+func DefaultTimeouts() (readHeader, read, write, idle, shutdown time.Duration) {
+	d := defaultTimeouts
+	return d.readHeader, d.read, d.write, d.idle, d.shutdown
+}
+
+// withOverrides returns t with each non-zero cfg timeout applied.
+func (t timeouts) withOverrides(cfg Config) timeouts {
+	for _, o := range []struct {
+		dst *time.Duration
+		v   time.Duration
+	}{
+		{&t.readHeader, cfg.ReadHeaderTimeout},
+		{&t.read, cfg.ReadTimeout},
+		{&t.write, cfg.WriteTimeout},
+		{&t.idle, cfg.IdleTimeout},
+		{&t.shutdown, cfg.ShutdownTimeout},
+	} {
+		if o.v > 0 {
+			*o.dst = o.v
+		}
+	}
+	return t
 }
 
 // RegistrySource is the read surface Server needs from *registry.Registry.
@@ -234,7 +269,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		history:   src.History,
 		startedAt: time.Now(),
 		now:       time.Now,
-		timeouts:  defaultTimeouts,
+		timeouts:  defaultTimeouts.withOverrides(cfg),
 	}
 
 	plane, err := sep2adminplane.New(sep2adminplane.Config{

@@ -347,6 +347,10 @@ type config struct {
 	// because suppression would then silently age out every device that
 	// has not moved.
 	SEP2TelemetryPublishUnchanged bool
+
+	// Tuning holds the remaining intervals, timeouts and counts, each
+	// with a flag and env var (see tuning.go).
+	Tuning tuning
 }
 
 // deviceCertMode* are the only two values config.validate accepts for
@@ -428,6 +432,7 @@ func loadConfig(args []string) (config, error) {
 		SEP2AdminUIAddr:         getenvDefault("SEP2_ADMIN_UI_ADDR", defaultSEP2AdminUIAddr),
 		SEP2AdminUIAllowedHosts: getenvList("SEP2_ADMIN_UI_ALLOWED_HOSTS"),
 		SEP2AdminUISORLink:      getenvDefault("SEP2_ADMIN_UI_SOR_LINK", ""),
+		Tuning:                  defaultTuning(),
 	}
 	pubFromEnv, err := getenvBool("SEP2_PUBLISH_ON_START", false)
 	if err != nil {
@@ -611,6 +616,9 @@ func loadConfig(args []string) (config, error) {
 	fs.BoolVar(&cfg.SEP2TelemetryPublishUnchanged, "sep2-telemetry-publish-unchanged", cfg.SEP2TelemetryPublishUnchanged,
 		"publish every device every interval instead of only those whose values changed (full-snapshot semantics; default false)")
 
+	knobs := tuningKnobs(&cfg.Tuning)
+	registerTuningFlags(fs, knobs)
+
 	var versionFlag bool
 	fs.BoolVar(&versionFlag, "version", false, "print the build version and exit")
 
@@ -792,6 +800,13 @@ func loadConfig(args []string) (config, error) {
 				"config: -sep2-telemetry-interval / SEP2_TELEMETRY_INTERVAL value %q must be greater than zero", telemetryIntervalFlag)
 		}
 		cfg.SEP2TelemetryInterval = interval
+	}
+
+	if err := resolveTuning(knobs); err != nil {
+		return config{}, err
+	}
+	if err := cfg.Tuning.validate(); err != nil {
+		return config{}, err
 	}
 
 	// Parsed here, not in internal/adminui, so a bridge with the UI off still

@@ -105,6 +105,21 @@ type Config struct {
 	// cancelled. Zero uses sep2srv.DefaultShutdownTimeout.
 	ShutdownTimeout time.Duration
 
+	// ReadHeaderTimeout, ReadTimeout, WriteTimeout and IdleTimeout set the
+	// protocol listener's http.Server timeouts. Zero uses the matching
+	// sep2srv.Default*Timeout. They apply only to the listener New builds
+	// itself (Observer or EnableCCM); sep2srv.New owns its own, so a
+	// value other than the default without either is refused rather than
+	// ignored.
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+
+	// ControlSweepInterval is how often ended DERControls are expired
+	// fleet-wide. Zero uses DefaultControlSweepInterval.
+	ControlSweepInterval time.Duration
+
 	// Router carries the scalar time-zone/DST configuration for the /tm
 	// resource, the PEN and the flow reservation deadline. The zero value
 	// (UTC, no DST, server defaults) is a valid configuration.
@@ -288,6 +303,10 @@ type Embed struct {
 	// of service, for the retention window (see lifecycle.go). It is never
 	// nil on an Embed built by New.
 	ended *endedControlLedger
+
+	// sweepInterval is the runControlSweep period. Zero (an Embed built
+	// without New) uses DefaultControlSweepInterval.
+	sweepInterval time.Duration
 }
 
 // New builds the resource stores, seeds EndDevices and DERs from reg,
@@ -369,15 +388,8 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return nil, fmt.Errorf("sep2embed: seed stores: %w", err)
 	}
 
-	workers := cfg.NotifyWorkers
-	if workers <= 0 {
-		workers = DefaultNotifyWorkers
-	}
-	queueSize := cfg.NotifyQueueSize
-	if queueSize <= 0 {
-		queueSize = DefaultNotifyQueueSize
-	}
-	notifier := buildNotifier(stores.Subscriptions, workers, queueSize, cfg.NotifyAllowLoopback)
+	workers, queueSize := notifySizing(cfg)
+	notifier := newNotifier(stores.Subscriptions, workers, queueSize, cfg.NotifyAllowLoopback)
 
 	// postRate reaches the wire through server-go's POST /mup handler, not
 	// through seeding: this bridge creates no MirrorUsagePoints, so
@@ -424,6 +436,10 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = sep2srv.DefaultShutdownTimeout
 		}
+		readHeaderTimeout := durationOrDefault(cfg.ReadHeaderTimeout, sep2srv.DefaultReadHeaderTimeout)
+		readTimeout := durationOrDefault(cfg.ReadTimeout, sep2srv.DefaultReadTimeout)
+		writeTimeout := durationOrDefault(cfg.WriteTimeout, sep2srv.DefaultWriteTimeout)
+		idleTimeout := durationOrDefault(cfg.IdleTimeout, sep2srv.DefaultIdleTimeout)
 
 		httpSrv := &http.Server{
 			// CCMIdentityMiddleware must wrap OUTERMOST: it populates
@@ -433,10 +449,10 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			// server-go's own sep2srv.New CCM wiring exactly
 			// (server.go: "sepTLS.CCMIdentityMiddleware(handler)").
 			Handler:           sepTLS.CCMIdentityMiddleware(handler),
-			ReadHeaderTimeout: sep2srv.DefaultReadHeaderTimeout,
-			ReadTimeout:       sep2srv.DefaultReadTimeout,
-			WriteTimeout:      sep2srv.DefaultWriteTimeout,
-			IdleTimeout:       sep2srv.DefaultIdleTimeout,
+			ReadHeaderTimeout: readHeaderTimeout,
+			ReadTimeout:       readTimeout,
+			WriteTimeout:      writeTimeout,
+			IdleTimeout:       idleTimeout,
 		}
 		sepTLS.SetupCCMServer(httpSrv)
 
@@ -447,7 +463,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			shutdownTimeout: shutdownTimeout,
 		}
 
-		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger()}, nil
+		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger(), sweepInterval: cfg.ControlSweepInterval}, nil
 	}
 
 	// Neither Observer nor EnableCCM: delegate to server-go's sep2srv.New,
@@ -466,12 +482,52 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return buildHandler(cfg.Router, stores, reg, identity, notifier, cfg.Observer)
 	}
 
+	if customListenerTimeouts(cfg) {
+		return nil, errors.New("sep2embed: listener timeouts need Observer or EnableCCM: the default listener sets its own")
+	}
+
 	srv, err := sep2srv.New(opts, build)
 	if err != nil {
 		return nil, fmt.Errorf("sep2embed: %w", err)
 	}
 
-	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, policy: policy, ended: newEndedControlLedger()}, nil
+	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, policy: policy, ended: newEndedControlLedger(), sweepInterval: cfg.ControlSweepInterval}, nil
+}
+
+// customListenerTimeouts reports whether cfg asks for a listener timeout
+// other than the default the sep2srv-built listener already uses.
+func customListenerTimeouts(cfg Config) bool {
+	for _, c := range []struct{ got, def time.Duration }{
+		{cfg.ReadHeaderTimeout, sep2srv.DefaultReadHeaderTimeout},
+		{cfg.ReadTimeout, sep2srv.DefaultReadTimeout},
+		{cfg.WriteTimeout, sep2srv.DefaultWriteTimeout},
+		{cfg.IdleTimeout, sep2srv.DefaultIdleTimeout},
+	} {
+		if c.got != 0 && c.got != c.def {
+			return true
+		}
+	}
+	return false
+}
+
+// notifySizing resolves the notifier's worker count and queue length,
+// substituting the default for a zero or negative value.
+func notifySizing(cfg Config) (workers, queueSize int) {
+	workers, queueSize = cfg.NotifyWorkers, cfg.NotifyQueueSize
+	if workers <= 0 {
+		workers = DefaultNotifyWorkers
+	}
+	if queueSize <= 0 {
+		queueSize = DefaultNotifyQueueSize
+	}
+	return workers, queueSize
+}
+
+func durationOrDefault(d, def time.Duration) time.Duration {
+	if d <= 0 {
+		return def
+	}
+	return d
 }
 
 // Addr returns the listener's actual bound address. Useful when
@@ -510,7 +566,7 @@ func (e *Embed) Notifier() assembly.ResourceNotifier {
 // Controls whose maximum Effective Scheduled Period has already closed are
 // swept out BEFORE the delta is applied. Sweeping here as well as
 // on Run's timer is what keeps the exposure at a live delta cadence rather
-// than at controlSweepInterval, and it also keeps the supersession pass
+// than at the control sweep interval, and it also keeps the supersession pass
 // honest: an event that is out of service is not a predecessor for the
 // incoming control to mark.
 func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, delta ControlDelta) error {
@@ -620,7 +676,7 @@ func (e *Embed) Run(ctx context.Context) error {
 	return err
 }
 
-// controlSweepInterval is how often runControlSweep re-checks the fleet for
+// DefaultControlSweepInterval is how often runControlSweep re-checks the fleet for
 // DERControls whose maximum Effective Scheduled Period has closed.
 //
 // It bounds the residual exposure this lifecycle exists to remove: between an
@@ -631,11 +687,20 @@ func (e *Embed) Run(ctx context.Context) error {
 // meantime, since Embed.ApplyControlDelta sweeps before it writes and a live
 // federation's delta cadence closes the gap further.
 //
-// It is a compiled-in constant rather than operator policy on purpose: it is
-// a sampling rate for an internal invariant, not a value a client ever
-// observes, and an operator who set it long would silently reintroduce the
-// defect.
-const controlSweepInterval = 10 * time.Second
+// Operators may lengthen it, but a long value widens that exposure in
+// proportion, so the default stays at ten seconds.
+const DefaultControlSweepInterval = 10 * time.Second
+
+// Seams for tests that assert the configured values reach the ticker and
+// the notifier, which expose neither.
+var (
+	newSweepTicker = time.NewTicker
+	newNotifier    = buildNotifier
+)
+
+func (e *Embed) controlSweepInterval() time.Duration {
+	return durationOrDefault(e.sweepInterval, DefaultControlSweepInterval)
+}
 
 // runControlSweep expires ended DERControls on a fixed timer until ctx is
 // cancelled. It is the fleet-wide half of the lifecycle; the per-delta half
@@ -652,7 +717,7 @@ const controlSweepInterval = 10 * time.Second
 // subsequent event in service forever on the strength of one bad record, and
 // the error is surfaced rather than swallowed so an operator sees it.
 func (e *Embed) runControlSweep(ctx context.Context) {
-	ticker := time.NewTicker(controlSweepInterval)
+	ticker := newSweepTicker(e.controlSweepInterval())
 	defer ticker.Stop()
 
 	for {

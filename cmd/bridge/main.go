@@ -70,14 +70,39 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
 
-// connectTimeout bounds the initial STOMP dial plus auth-token
-// bootstrap. The platform's broker normally responds in well under a
-// second; 15s leaves comfortable headroom for slow CI machines.
+// connectTimeout is the default bound on the initial STOMP dial plus
+// auth-token bootstrap. The platform's broker normally responds in well
+// under a second; 15s leaves comfortable headroom for slow CI machines.
 const connectTimeout = 15 * time.Second
 
-// queryTimeout bounds a single CIM SPARQL request. The 123-bus feeder
-// query returns in ~100 ms locally; 30 s tolerates a busy platform.
+// queryTimeout is the default bound on the start-up CIM SPARQL queries,
+// which share one budget. The 123-bus feeder query returns in ~100 ms
+// locally; 30 s tolerates a busy platform.
 const queryTimeout = 30 * time.Second
+
+// cimQueryContext bounds the start-up CIM queries by the configured
+// timeout.
+func cimQueryContext(ctx context.Context, cfg config) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, cfg.Tuning.CIMQueryTimeout)
+}
+
+// connectContext bounds the broker dial and token bootstrap by the
+// configured timeout.
+func connectContext(ctx context.Context, cfg config) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, cfg.Tuning.ConnectTimeout)
+}
+
+// supervisorOptions maps the bridge's config onto the bus supervisor.
+func supervisorOptions(cfg config) []gridappsdclient.SupervisorOption {
+	t := cfg.Tuning
+	return []gridappsdclient.SupervisorOption{
+		gridappsdclient.WithProbeDestination(probeDestination(cfg)),
+		gridappsdclient.WithProbeInterval(t.ProbeInterval),
+		gridappsdclient.WithProbeTimeout(t.ProbeTimeout),
+		gridappsdclient.WithRecoverBackoff(t.ReconnectBackoffBase, t.ReconnectBackoffMax),
+		gridappsdclient.WithUnsubscribeTimeout(t.UnsubscribeTimeout),
+	}
+}
 
 func main() {
 	cfg, err := loadConfig(os.Args[1:])
@@ -213,7 +238,9 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	reg, err := bootstrapRegistry(ctx, cimClient, cfg.FeederMRID, cfg.SEP2ServerCertDir, mode, cfg.SEP2BatteryLegs)
+	qctx, cancelQuery := cimQueryContext(ctx, cfg)
+	reg, err := bootstrapRegistry(qctx, cimClient, cfg.FeederMRID, cfg.SEP2ServerCertDir, mode, cfg.SEP2BatteryLegs)
+	cancelQuery()
 	if err != nil {
 		return err
 	}
@@ -270,10 +297,7 @@ func run(ctx context.Context, cfg config) error {
 	// status publisher when the bus accepts it, commanded setpoints from
 	// runControlSubscriber. Sized by telemetryhistory's fixed caps.
 	var inputHistory telemetryhistory.Store
-	inputSink := &historySink{
-		store: &inputHistory,
-		logf:  newRateLimitedLogf(historyLogInterval, time.Now, log.Printf),
-	}
+	inputSink := newHistorySink(cfg, &inputHistory)
 
 	// stompRun adapts the control-delta subscriber, plus the measurement
 	// pump when a SimulationID is set, to the func(context.Context) error
@@ -300,7 +324,7 @@ func run(ctx context.Context, cfg config) error {
 		// See probeDestination for the liveness-probe destination and
 		// WithProbeDestination for why one the broker would reject must
 		// not be used.
-		subs := gridappsdclient.NewSupervisor(bus, gridappsdclient.WithProbeDestination(probeDestination(cfg)))
+		subs := gridappsdclient.NewSupervisor(bus, supervisorOptions(cfg)...)
 
 		return runSimSide(runCtx, subs, embed, reg, cfg.ApplicationID, cfg.SimulationID, &controlHook, inputSink)
 	}
@@ -742,6 +766,14 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 		Observer:                    observer,
 		EnableCCM:                   cfg.SEP2EnableCCM,
 		NotifyAllowLoopback:         cfg.SEP2NotificationAllowLoopback,
+		ShutdownTimeout:             cfg.Tuning.ServerShutdownTimeout,
+		ReadHeaderTimeout:           cfg.Tuning.ServerReadHeaderTimeout,
+		ReadTimeout:                 cfg.Tuning.ServerReadTimeout,
+		WriteTimeout:                cfg.Tuning.ServerWriteTimeout,
+		IdleTimeout:                 cfg.Tuning.ServerIdleTimeout,
+		ControlSweepInterval:        cfg.Tuning.ControlSweepInterval,
+		NotifyWorkers:               cfg.Tuning.NotifyWorkers,
+		NotifyQueueSize:             cfg.Tuning.NotifyQueueSize,
 		Router: assembly.RouterConfig{
 			PEN:                     cfg.AdminPlane.PEN,
 			FlowReservationDeadline: cfg.AdminPlane.FlowReservationDeadline,
@@ -768,6 +800,11 @@ func adminUIConfig(cfg config) adminui.Config {
 		SORLink:             cfg.SEP2AdminUISORLink,
 		Settings:            cfg.AdminPlane,
 		ObservationDisabled: ccmObservationDisabled(cfg),
+		ReadHeaderTimeout:   cfg.Tuning.AdminReadHeaderTimeout,
+		ReadTimeout:         cfg.Tuning.AdminReadTimeout,
+		WriteTimeout:        cfg.Tuning.AdminWriteTimeout,
+		IdleTimeout:         cfg.Tuning.AdminIdleTimeout,
+		ShutdownTimeout:     cfg.Tuning.AdminShutdownTimeout,
 	}
 }
 
@@ -819,6 +856,7 @@ func busConfig(cfg config) gridappsd.Config {
 		User:           cfg.STOMPUser,
 		Password:       cfg.STOMPPassword,
 		AllowPlaintext: cfg.AllowPlaintext,
+		HeartBeat:      cfg.Tuning.Heartbeat,
 	}
 }
 
@@ -835,7 +873,7 @@ func busConfig(cfg config) gridappsd.Config {
 func connectClient(ctx context.Context, cfg config) (fieldbus.MessageBus, error) {
 	log.Printf("bridge: connecting to %s as %s", cfg.STOMPAddr, cfg.STOMPUser)
 
-	cctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	cctx, cancel := connectContext(ctx, cfg)
 	defer cancel()
 
 	bus := fieldbus.New(busConfig(cfg))
@@ -990,18 +1028,15 @@ func deviceCertMode(s string) (sep2embed.DeviceCertMode, error) {
 func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir string, mode sep2embed.DeviceCertMode, batteryLegs []string) (*registry.Registry, error) {
 	log.Printf("bridge: querying CIM feeder %s", feederMRID)
 
-	qctx, cancel := context.WithTimeout(ctx, queryTimeout)
-	defer cancel()
-
-	inverters, err := queryDevices(qctx, "inverter", c.QueryInverter, feederMRID)
+	inverters, err := queryDevices(ctx, "inverter", c.QueryInverter, feederMRID)
 	if err != nil {
 		return nil, err
 	}
-	solar, err := queryDevices(qctx, "solar", c.QuerySolar, feederMRID)
+	solar, err := queryDevices(ctx, "solar", c.QuerySolar, feederMRID)
 	if err != nil {
 		return nil, err
 	}
-	battery, err := queryDevices(qctx, "battery", c.QueryBattery, feederMRID)
+	battery, err := queryDevices(ctx, "battery", c.QueryBattery, feederMRID)
 	if err != nil {
 		return nil, err
 	}
@@ -1093,13 +1128,13 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 	// and produced a non-empty, usable fleet, so a problem with this
 	// purely-diagnostic second query should not block boot.
 	//
-	// QueryPECCount shares qctx (and its remaining queryTimeout budget)
+	// QueryPECCount shares ctx (and its remaining CIM query budget)
 	// with the three enumeration queries above rather than getting its
 	// own fresh timeout window; a slow broker can leave this fourth,
 	// purely-diagnostic query starved of time. Accepted as-is: a
 	// dedicated budget would need its own constant and context, which
 	// is more machinery than a diagnostic-only query warrants.
-	pecCountRes, pecCountErr := c.QueryPECCount(qctx, feederMRID)
+	pecCountRes, pecCountErr := c.QueryPECCount(ctx, feederMRID)
 	discovered, discoveredOK := parsePECCount(pecCountRes)
 	if pecCountErr != nil {
 		discoveredOK = false
@@ -1120,7 +1155,7 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 	// structure, not by the caller-supplied list. It runs strictly after
 	// the PEC drop-check above so that check's len(devices) stays
 	// PEC-sourced only, per issue #115's done-when.
-	ecRes, err := c.QueryEnergyConsumers(qctx, feederMRID)
+	ecRes, err := c.QueryEnergyConsumers(ctx, feederMRID)
 	if err != nil {
 		return nil, fmt.Errorf("query energy consumers: %w", err)
 	}

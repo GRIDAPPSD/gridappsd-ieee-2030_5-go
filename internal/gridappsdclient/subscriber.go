@@ -17,9 +17,13 @@ import (
 // transports present the same backpressure behavior to sim.Pump.
 const subscriptionMsgBuf = 16
 
-// unsubscribeTimeout bounds relay's shutdown call to bus.Unsubscribe. An
+// DefaultUnsubscribeTimeout bounds the shutdown call to bus.Unsubscribe. An
 // unresponsive broker must not stall teardown past SIGINT.
-const unsubscribeTimeout = 5 * time.Second
+const DefaultUnsubscribeTimeout = 5 * time.Second
+
+// unsubscribeTimeout is Subscriber's bound; Supervisor carries its own,
+// set by WithUnsubscribeTimeout.
+const unsubscribeTimeout = DefaultUnsubscribeTimeout
 
 // subscription adapts gridappsd-go's callback-based
 // fieldbus.MessageBus.Subscribe onto sim.Subscription. It is constructed

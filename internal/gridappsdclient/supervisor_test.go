@@ -465,7 +465,7 @@ func TestSupervisor_CtxCancelClosesAndUnsubscribes(t *testing.T) {
 }
 
 // TestBackoffFor pins the reconnect backoff schedule: doubling from
-// recoverBackoffBase, capped at recoverBackoffMax, never zero (a zero
+// DefaultRecoverBackoffBase, capped at DefaultRecoverBackoffMax, never zero (a zero
 // backoff would turn a dead broker into a hot reconnect loop).
 func TestBackoffFor(t *testing.T) {
 	t.Parallel()
@@ -479,10 +479,10 @@ func TestBackoffFor(t *testing.T) {
 		{3, 2 * time.Second},
 		{4, 4 * time.Second},
 		{5, 8 * time.Second},
-		{6, recoverBackoffMax},
-		{20, recoverBackoffMax},
+		{6, DefaultRecoverBackoffMax},
+		{20, DefaultRecoverBackoffMax},
 	} {
-		if got := backoffFor(tc.attempt); got != tc.want {
+		if got := backoffFor(tc.attempt, DefaultRecoverBackoffBase, DefaultRecoverBackoffMax); got != tc.want {
 			t.Errorf("backoffFor(%d) = %s, want %s", tc.attempt, got, tc.want)
 		}
 	}

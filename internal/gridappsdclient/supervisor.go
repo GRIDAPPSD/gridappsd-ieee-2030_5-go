@@ -67,10 +67,10 @@ const (
 	// recover for why exhaustion is fatal rather than silently degraded.
 	DefaultMaxRecoverAttempts = 10
 
-	// recoverBackoffBase and recoverBackoffMax bound the exponential
-	// backoff between reconnect attempts.
-	recoverBackoffBase = 500 * time.Millisecond
-	recoverBackoffMax  = 10 * time.Second
+	// DefaultRecoverBackoffBase and DefaultRecoverBackoffMax bound the
+	// exponential backoff between reconnect attempts.
+	DefaultRecoverBackoffBase = 500 * time.Millisecond
+	DefaultRecoverBackoffMax  = 10 * time.Second
 )
 
 // ErrBusUnrecovered is the sentinel wrapped into every Subscription.Err
@@ -123,6 +123,18 @@ func WithProbeTimeout(d time.Duration) SupervisorOption {
 	return func(s *Supervisor) { s.probeTimeout = d }
 }
 
+// WithRecoverBackoff overrides DefaultRecoverBackoffBase and
+// DefaultRecoverBackoffMax.
+func WithRecoverBackoff(base, max time.Duration) SupervisorOption {
+	return func(s *Supervisor) { s.backoffBase, s.backoffMax = base, max }
+}
+
+// WithUnsubscribeTimeout overrides DefaultUnsubscribeTimeout for the
+// teardown of each supervised subscription.
+func WithUnsubscribeTimeout(d time.Duration) SupervisorOption {
+	return func(s *Supervisor) { s.unsubscribeTimeout = d }
+}
+
 // WithMaxRecoverAttempts overrides DefaultMaxRecoverAttempts.
 func WithMaxRecoverAttempts(n int) SupervisorOption {
 	return func(s *Supervisor) { s.maxRecoverAttempts = n }
@@ -169,6 +181,9 @@ type Supervisor struct {
 	probeInterval      time.Duration
 	probeTimeout       time.Duration
 	maxRecoverAttempts int
+	backoffBase        time.Duration
+	backoffMax         time.Duration
+	unsubscribeTimeout time.Duration
 
 	// probe is the liveness check, a seam for tests. Defaults to
 	// probeBus.
@@ -191,6 +206,9 @@ func NewSupervisor(bus Bus, opts ...SupervisorOption) *Supervisor {
 		probeInterval:      DefaultProbeInterval,
 		probeTimeout:       DefaultProbeTimeout,
 		maxRecoverAttempts: DefaultMaxRecoverAttempts,
+		backoffBase:        DefaultRecoverBackoffBase,
+		backoffMax:         DefaultRecoverBackoffMax,
+		unsubscribeTimeout: DefaultUnsubscribeTimeout,
 		sleep:              sleepCtx,
 	}
 	for _, opt := range opts {
@@ -200,6 +218,28 @@ func NewSupervisor(bus Bus, opts ...SupervisorOption) *Supervisor {
 		s.probe = s.probeBus
 	}
 	return s
+}
+
+// SupervisorSettings is the tuning a Supervisor runs with.
+type SupervisorSettings struct {
+	ProbeDestination   string
+	ProbeInterval      time.Duration
+	ProbeTimeout       time.Duration
+	BackoffBase        time.Duration
+	BackoffMax         time.Duration
+	UnsubscribeTimeout time.Duration
+}
+
+// Settings reports the tuning in effect, defaults and options applied.
+func (s *Supervisor) Settings() SupervisorSettings {
+	return SupervisorSettings{
+		ProbeDestination:   s.probeDest,
+		ProbeInterval:      s.probeInterval,
+		ProbeTimeout:       s.probeTimeout,
+		BackoffBase:        s.backoffBase,
+		BackoffMax:         s.backoffMax,
+		UnsubscribeTimeout: s.unsubscribeTimeout,
+	}
 }
 
 // compile-time assertion: Supervisor must satisfy sim.SubscribeClient.
@@ -305,7 +345,7 @@ func (s *Supervisor) relay(ctx context.Context, ss *supervisedSub, raw <-chan ci
 	}
 }
 
-// teardown unsubscribes ss from the bus, bounded by unsubscribeTimeout.
+// teardown unsubscribes ss from the bus, bounded by s.unsubscribeTimeout.
 // It uses the same abandon-the-wait-not-the-goroutine shape as
 // Subscriber.relay's shutdown, and for the same reason: the production
 // bus delegates to go-stomp's Unsubscribe, which ignores ctx entirely
@@ -316,7 +356,7 @@ func (s *Supervisor) teardown(ss *supervisedSub) {
 	tok := ss.tok
 	s.mu.Unlock()
 
-	unsubCtx, cancel := context.WithTimeout(context.Background(), unsubscribeTimeout)
+	unsubCtx, cancel := context.WithTimeout(context.Background(), s.unsubscribeTimeout)
 	defer cancel()
 
 	resultCh := make(chan error, 1)
@@ -449,7 +489,7 @@ func (s *Supervisor) recover(ctx context.Context) error {
 		if attempt == s.maxRecoverAttempts {
 			break
 		}
-		if !s.sleep(ctx, backoffFor(attempt)) {
+		if !s.sleep(ctx, backoffFor(attempt, s.backoffBase, s.backoffMax)) {
 			return ctx.Err()
 		}
 	}
@@ -512,13 +552,13 @@ func (s *Supervisor) fail(cause error) {
 }
 
 // backoffFor returns the delay before reconnect attempt+1, doubling from
-// recoverBackoffBase and capped at recoverBackoffMax.
-func backoffFor(attempt int) time.Duration {
-	d := recoverBackoffBase
+// base and capped at max.
+func backoffFor(attempt int, base, max time.Duration) time.Duration {
+	d := base
 	for i := 1; i < attempt; i++ {
 		d *= 2
-		if d >= recoverBackoffMax {
-			return recoverBackoffMax
+		if d >= max {
+			return max
 		}
 	}
 	return d

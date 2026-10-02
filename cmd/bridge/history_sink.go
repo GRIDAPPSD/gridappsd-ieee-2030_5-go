@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
 
-// historyLogInterval is the minimum gap between two history log lines of
+// historyLogInterval is the default minimum gap between two history log lines of
 // the same kind. A faulty publisher sends a frame every few seconds, so
 // without it one fault would write a line per frame.
 const historyLogInterval = 30 * time.Second
@@ -28,6 +29,16 @@ const historyLogInterval = 30 * time.Second
 type historySink struct {
 	store *telemetryhistory.Store
 	logf  func(format string, args ...any)
+}
+
+// newHistorySink builds the sink the bridge runs, its log gap taken from
+// cfg.
+func newHistorySink(cfg config, store *telemetryhistory.Store) *historySink {
+	return &historySink{store: store, logf: historyLogf(cfg, time.Now, log.Printf)}
+}
+
+func historyLogf(cfg config, now func() time.Time, out func(string, ...any)) func(string, ...any) {
+	return newRateLimitedLogf(cfg.Tuning.HistoryLogInterval, now, out)
 }
 
 // withHistory returns cfg with Observe set so every status message the
