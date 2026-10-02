@@ -17,20 +17,12 @@ available for observing what the bridge is doing.
 ## Requirements
 
 - Go 1.26.3.
-- GitHub access to the `GRIDAPPSD` org, with read access to two
-  Go modules this bridge depends on:
-  `github.com/GRIDAPPSD/gridappsd-go` and
-  `github.com/GRIDAPPSD/ieee-2030_5-core-go`. Set
-  `GOPRIVATE=github.com/GRIDAPPSD/*` before building or running `go
-  mod download`; without it, the module proxy tries, and fails, to
-  fetch these modules publicly.
 
 ## Quickstart
 
 ```bash
 git clone <this repo>
 cd gridappsd-ieee-2030_5-go
-export GOPRIVATE=github.com/GRIDAPPSD/*
 make build
 make test
 ```
@@ -54,7 +46,8 @@ make run SEP2_SERVER_ADDR=127.0.0.1:9443 ADMIN_UI_ADDR=127.0.0.1:9444 \
 
 The defaults are `127.0.0.1:18443` and `127.0.0.1:18444`, `./sep2-certs`,
 plaintext STOMP on (local dev brokers), the binary's own feeder, and no
-fleet-wide PIN. `SEP2_SIMULATION_ID` passes through when set.
+fleet-wide PIN. `SEP2_SIMULATION_ID` passes through when set. A bare
+`make` prints `make help`, the list of targets.
 
 Running the bridge for real needs two more things: a GridAPPS-D
 broker to talk to, and certificate material for its embedded IEEE
