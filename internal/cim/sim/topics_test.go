@@ -141,3 +141,12 @@ func TestApplicationInputTopic(t *testing.T) {
 		})
 	}
 }
+
+// gridappsd-python v2026.09.0 topics.py BASE_APPLICATION_HEARTBEAT is
+// "goss.gridappsd.heartbeat"; the helper adds the "/topic/" prefix.
+func TestHeartbeatTopic(t *testing.T) {
+	const want = "/topic/goss.gridappsd.heartbeat"
+	if got := HeartbeatTopic(); got != want {
+		t.Errorf("HeartbeatTopic() = %q, want %q", got, want)
+	}
+}

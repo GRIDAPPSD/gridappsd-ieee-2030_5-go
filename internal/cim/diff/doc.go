@@ -5,7 +5,7 @@
 //
 // Pure construction: no broker IO, no goroutines, no auth. The bridge's
 // pub/sub layer consumes Builder.Bytes and sends the payload
-// to /topic/goss.gridappsd.simulation.input.<sim_id>.
+// to the topic sim.InputTopic(<sim_id>) names.
 //
 // The wire shape mirrors the Python upstream byte-for-byte:
 //

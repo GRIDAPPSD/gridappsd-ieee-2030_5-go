@@ -100,9 +100,11 @@ type SupervisorOption func(*Supervisor)
 // subscribe to: a destination the broker's ACL rejects makes the broker
 // answer with an ERROR frame, which go-stomp handles by closing the
 // connection (conn.go:376-388), turning the health check itself into an
-// outage. cmd/bridge passes the per-simulation log topic, a sibling of
-// the output and input topics the bridge already subscribes to, so if
-// it were denied the bridge's real subscriptions would be denied too.
+// outage. It must also be a destination no other subscription holds:
+// gridappsd-go's router adds a handler for a held destination without
+// touching the connection, so a probe there succeeds on a dead bus.
+// cmd/bridge passes the per-simulation log topic when a simulation id is
+// set, and the application heartbeat topic otherwise.
 //
 // With no probe destination set, Supervisor relays messages but cannot
 // detect a dead connection; it logs that at startup rather than

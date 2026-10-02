@@ -206,12 +206,21 @@ func (s *Server) servedView(ctx context.Context) (sep2admin.Descriptor, error) {
 	), nil
 }
 
+// simOutputTopicText shows that no simulation id is configured instead of
+// a blank cell, which reads as a fault.
+func simOutputTopicText(topic string) string {
+	if topic == "" {
+		return "not subscribed (no simulation id configured)"
+	}
+	return topic
+}
+
 func (s *Server) controlFlowView(context.Context) (sep2admin.Descriptor, error) {
 	snap := s.flow.Snapshot()
 	state := definitions("Control flow", "", sep2admin.DefinitionGroup{
 		Heading: "Topics",
 		Entries: []sep2admin.DefinitionEntry{
-			{Key: "Simulation output topic", Value: text(snap.OutputTopic)},
+			{Key: "Simulation output topic", Value: text(simOutputTopicText(snap.OutputTopic))},
 			{Key: "Control delta input topic", Value: text(snap.InputTopic)},
 		},
 	}, sep2admin.DefinitionGroup{

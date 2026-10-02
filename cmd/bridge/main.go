@@ -219,8 +219,9 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	if cfg.PublishOnStart {
-		// The publish smoke test wants to send a DifferenceBuilder
-		// envelope to /topic/goss.gridappsd.simulation.input.<sim_id>.
+		// The publish smoke test would send a DifferenceBuilder
+		// envelope to the simulation input topic,
+		// sim.InputTopic(<sim_id>).
 		// fieldbus.MessageBus.Send can carry an arbitrary body, but
 		// building the DifferenceBuilder envelope itself and wiring
 		// it through here is a deliberate Stage 2 follow-up, not part
@@ -291,21 +292,15 @@ func run(ctx context.Context, cfg config) error {
 		// why the subscribe path goes through a Supervisor
 		// rather than a bare Subscriber. The Supervisor polls the bus
 		// for liveness, and on a dead connection reconnects it (which
-		// re-runs the GOSS token bootstrap) and resubscribes BOTH
-		// simulation destinations, loudly, instead of leaving the
+		// re-runs the GOSS token bootstrap) and resubscribes every
+		// destination (the control topic, and the simulation output
+		// topic when a simulation id is set), loudly, instead of leaving the
 		// bridge alive-but-deaf.
 		//
-		// The probe destination is the per-simulation log topic when a
-		// simulation id is set: a sibling of the output topic subscribed
-		// below, so it carries no ACL risk the bridge is not already
-		// taking. Without one it is the application input topic, which
-		// the control subscriber already holds. See WithProbeDestination
-		// for why a destination the broker would reject must not be used.
-		probe := sim.ApplicationInputTopic(cfg.ApplicationID, "")
-		if cfg.SimulationID != "" {
-			probe = sim.LogTopic(cfg.SimulationID)
-		}
-		subs := gridappsdclient.NewSupervisor(bus, gridappsdclient.WithProbeDestination(probe))
+		// See probeDestination for the liveness-probe destination and
+		// WithProbeDestination for why one the broker would reject must
+		// not be used.
+		subs := gridappsdclient.NewSupervisor(bus, gridappsdclient.WithProbeDestination(probeDestination(cfg)))
 
 		return runSimSide(runCtx, subs, embed, reg, cfg.ApplicationID, cfg.SimulationID, &controlHook, inputSink)
 	}
@@ -355,6 +350,19 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	return runBridgeRunners(ctx, embed.Run, stompRun, adminUIRun, telemetryRun)
+}
+
+// probeDestination is the supervisor's liveness-probe destination. It
+// must be a destination no other subscription holds: gridappsd-go's
+// router answers a Subscribe on a held destination without touching the
+// connection, so a probe there succeeds on a dead bus. The log topic
+// serves when a simulation id is set; otherwise the application
+// heartbeat topic does.
+func probeDestination(cfg config) string {
+	if cfg.SimulationID != "" {
+		return sim.LogTopic(cfg.SimulationID)
+	}
+	return sim.HeartbeatTopic()
 }
 
 // runEmbedAndStomp runs the embedded IEEE 2030.5 server (embedRun) and

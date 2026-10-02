@@ -38,6 +38,16 @@ func LogTopic(simID string) string {
 	return baseSimulationLogTopic + "." + simID
 }
 
+// HeartbeatTopic returns the application heartbeat topic,
+// "{BASE_TOPIC}.heartbeat". It follows gridappsd-python v2026.09.0
+// topics.py BASE_APPLICATION_HEARTBEAT ("goss.gridappsd.heartbeat"), with
+// the "/topic/" prefix the other helpers here add. The bridge neither
+// sends to it nor subscribes to it except for the supervisor's liveness
+// probe, so no other subscription holds it.
+func HeartbeatTopic() string {
+	return baseTopic + ".heartbeat"
+}
+
 // ApplicationOutputTopic returns the topic an application publishes its
 // output on. It follows gridappsd-python v2026.09.0 topics.py
 // application_output_topic: with a simulation id the form is
