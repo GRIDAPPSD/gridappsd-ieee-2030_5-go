@@ -63,6 +63,34 @@ broker to talk to, and certificate material for its embedded IEEE
   a local run against a dev broker. [docs/DOCKER.md](docs/DOCKER.md)
   covers the container path.
 
+## Configuration
+
+The settings you will touch first. A flag beats its env var, which beats
+the default. `make run` takes the make variables shown; it does not pass
+the STOMP login or `SEP2_SIMULATION_ID`, which it inherits from your
+environment.
+
+| Setting | Flag | Env var | make run variable | Default | What it controls |
+|---|---|---|---|---|---|
+| Admin UI key (login) | `-admin-ui-key` | `SEP2_ADMIN_UI_KEY` | `ADMIN_UI_KEY_FILE` (path to a file holding the key) | none: no key, no admin UI (`make run` refuses to start) | The admin UI login password and the API Bearer token. At least 16 characters. |
+| STOMP user | `-stomp-user` | `SEP2_STOMP_USER` | none | built-in default | Login to the GridAPPS-D broker. |
+| STOMP password | `-stomp-password` | `SEP2_STOMP_PASSWORD` | none | built-in default | Login to the GridAPPS-D broker. |
+| 2030.5 address | `-sep2-server-addr` | `SEP2_SERVER_ADDR` | `SEP2_SERVER_ADDR` | `127.0.0.1:8443` (`make run`: `127.0.0.1:18443`) | Where the embedded IEEE 2030.5 mTLS server listens. |
+| Admin UI address | `-admin-ui-addr` | `SEP2_ADMIN_UI_ADDR` | `ADMIN_UI_ADDR` | `127.0.0.1:8444` (`make run`: `127.0.0.1:18444`) | Where the admin UI listens. |
+| Cert dir | `-sep2-server-cert-dir` | `SEP2_SERVER_CERT_DIR` | `SEP2_SERVER_CERT_DIR` | `./sep2-certs` | Where the server's CA and leaf certs are read or minted. |
+| Feeder mRID | `-feeder-mrid` | `SEP2_FEEDER_MRID` | `FEEDER_MRID` | the binary's built-in feeder (`make run`: empty, so the same) | The CIM feeder whose DERs are discovered. |
+| Registration PIN | `-sep2-registration-pin` | none | `REGISTRATION_PIN` | unset: no fleet-wide PIN | Fleet-wide fallback IEEE 2030.5 registration PIN. |
+| Plaintext STOMP | `-stomp-allow-plaintext` | `SEP2_STOMP_ALLOW_PLAINTEXT` | `STOMP_ALLOW_PLAINTEXT` | `false` (`make run`: `true`) | Dial the broker over plain TCP instead of TLS. Dev only. |
+| Simulation ID | `-simulation-id` | `SEP2_SIMULATION_ID` | none | empty | The GridAPPS-D simulation to subscribe to. Empty skips only the measurement subscribe. |
+| Application ID | `-application-id` | `SEP2_APPLICATION_ID` | none | `IEEE_2030_5` | The GridAPPS-D application id the status and control topics are built from. |
+| Edition | none | `SEP2_EDITION` | none | `2018` | IEEE 2030.5 edition. Only 2018 is supported; 2023 stops the bridge at startup. |
+
+**To change the login:** set the env var (or pass the flag), then restart
+the bridge. For the admin key under `make run`, put it in a file and
+point `ADMIN_UI_KEY_FILE` at it. The key never goes in the Makefile.
+
+Everything else is in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
 ## Layout
 
 - `cmd/bridge/`: the bridge binary's entry point and configuration
