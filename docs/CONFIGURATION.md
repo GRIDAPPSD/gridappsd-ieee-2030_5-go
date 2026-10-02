@@ -32,6 +32,15 @@ make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
 | `SEP2_FEEDER_MRID` | `-feeder-mrid` | `_C1C3E687-6FFD-C753-582B-632A27E28507` | CIM feeder mRID to enumerate DERs from. The default is the IEEE 123-bus feeder shipped with `gridappsd-docker`. |
 | `SEP2_BATTERY_LEG_LIST_FILE` | `-sep2-battery-leg-list-file` | unset | Path to a plain-text file of utility battery leg EnergyConsumer mRIDs, one per line, in the model's form (upper case, no leading underscore); blank lines and `#` comments are ignored. The CIM model carries no marker that tells a battery leg apart from any other load, so these must be named; each is checked at boot against the feeder named by `SEP2_FEEDER_MRID` (must be an EnergyConsumer there, and not also a house load) before it is registered. House loads need no such list: they are found by model structure (a `cim:House` link). Unset means no utility battery legs are registered. |
 | `SEP2_PUBLISH_ON_START` | `-publish-on-start` | `false` | Accepted but does nothing yet: the bridge logs that the `DifferenceBuilder` envelope publish is a follow-up and skips it, and sends nothing. Start-up still refuses it when `SEP2_SIMULATION_ID` is empty. |
+| `SEP2_STOMP_CONNECT_TIMEOUT` | `-stomp-connect-timeout` | `15s` | A Go duration such as `15s` or `1m`; must be greater than zero. Bounds the broker dial plus token bootstrap at start-up. |
+| `SEP2_STOMP_HEARTBEAT` | `-stomp-heartbeat` | `10s` | A Go duration such as `15s` or `1m`; must be greater than zero. STOMP heartbeat interval offered to the broker on both connection legs. |
+| `SEP2_STOMP_PROBE_INTERVAL` | `-stomp-probe-interval` | `5s` | A Go duration such as `15s` or `1m`; must be greater than zero. Gap between broker liveness probes; a dead connection is noticed within about one interval plus the probe timeout. |
+| `SEP2_STOMP_PROBE_TIMEOUT` | `-stomp-probe-timeout` | `10s` | A Go duration such as `15s` or `1m`; must be greater than zero. A probe that has not returned in this time counts as a failure and triggers a reconnect. |
+| `SEP2_STOMP_RECONNECT_BACKOFF_BASE` | `-stomp-reconnect-backoff-base` | `500ms` | A Go duration such as `15s` or `1m`; must be greater than zero. First delay between reconnect attempts; it doubles each attempt up to the max. |
+| `SEP2_STOMP_RECONNECT_BACKOFF_MAX` | `-stomp-reconnect-backoff-max` | `10s` | A Go duration such as `15s` or `1m`; must be greater than zero. Longest reconnect delay. Start-up refuses a max below the base. |
+| `SEP2_STOMP_UNSUBSCRIBE_TIMEOUT` | `-stomp-unsubscribe-timeout` | `5s` | A Go duration such as `15s` or `1m`; must be greater than zero. How long shutdown waits for the broker to acknowledge each unsubscribe. |
+| `SEP2_CIM_QUERY_TIMEOUT` | `-cim-query-timeout` | `30s` | A Go duration such as `15s` or `1m`; must be greater than zero. One budget shared by the start-up CIM feeder queries. |
+| `SEP2_HISTORY_LOG_INTERVAL` | `-history-log-interval` | `30s` | A Go duration such as `15s` or `1m`; must be greater than zero. Minimum gap between two history log lines of the same kind. |
 
 ## Embedded IEEE 2030.5 server
 
@@ -47,6 +56,14 @@ make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
 | `SEP2_NOTIFICATION_ALLOW_LOOPBACK` | `-sep2-notification-allow-loopback` | `false` | Fail-closed: with no override a subscription whose `notificationURI` resolves to a loopback address (127.0.0.0/8, `::1`; a hostname such as `localhost` that resolves there counts too) is refused with 400 at creation. Set `true` only for a test harness whose notification receiver listens on loopback. **Do not set this in production**: it admits any loopback destination on any port, reaching every service this bridge's network namespace exposes there, including its own STOMP broker (`SEP2_STOMP_ADDR`), IEEE 2030.5 listener (`SEP2_SERVER_ADDR`) and admin UI (`SEP2_ADMIN_UI_ADDR`) among others; the admin UI's Bearer auth does not narrow this. Logs a warning once at start-up when set. |
 | `SEP2_ENABLE_CCM` | `-sep2-enable-ccm` | `false` | Kept as configuration surface pending removal. Every embedded listener already offers only `TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8`, the suite IEEE 2030.5-2018 section 6.7 makes mandatory, so setting this changes no cipher suite; it only turns the connection observer off. Start-up refuses it unless `SEP2_CCM_ALLOW_NO_OBSERVER` is also set. |
 | `SEP2_CCM_ALLOW_NO_OBSERVER` | `-sep2-ccm-allow-no-observer` | `false` | The explicit second setting `SEP2_ENABLE_CCM` requires. Accepts losing the connection observer: no rejected-device record, and the admin UI's served-status table shows every device as unknown, with empty connected-clients and handshake-attempts tables. Setting it alone has no effect. Both settings are scheduled for removal. |
+| `SEP2_SERVER_READ_HEADER_TIMEOUT` | `-sep2-server-read-header-timeout` | `10s` | A Go duration such as `15s` or `1m`; must be greater than zero. Protocol listener: time to read a request's headers. |
+| `SEP2_SERVER_READ_TIMEOUT` | `-sep2-server-read-timeout` | `30s` | A Go duration such as `15s` or `1m`; must be greater than zero. Protocol listener: time to read a whole request. |
+| `SEP2_SERVER_WRITE_TIMEOUT` | `-sep2-server-write-timeout` | `30s` | A Go duration such as `15s` or `1m`; must be greater than zero. Protocol listener: time to write a response. |
+| `SEP2_SERVER_IDLE_TIMEOUT` | `-sep2-server-idle-timeout` | `120s` | A Go duration such as `15s` or `1m`; must be greater than zero. Protocol listener: keep-alive idle time. |
+| `SEP2_SERVER_SHUTDOWN_TIMEOUT` | `-sep2-server-shutdown-timeout` | `5s` | A Go duration such as `15s` or `1m`; must be greater than zero. Bound on the protocol listener's graceful drain at shutdown. |
+| `SEP2_CONTROL_SWEEP_INTERVAL` | `-sep2-control-sweep-interval` | `10s` | A Go duration such as `15s` or `1m`; must be greater than zero. How often ended DERControls are expired fleet-wide. A longer value lets a client that connects late be served an ended event for longer; it stays a sampling rate, not an event length. |
+| `SEP2_NOTIFY_WORKERS` | `-sep2-notify-workers` | `4` | Positive integer. Subscription notification worker count. |
+| `SEP2_NOTIFY_QUEUE_SIZE` | `-sep2-notify-queue-size` | `100` | Positive integer. Subscription notification queue length. |
 
 ## Admin UI
 
@@ -71,6 +88,11 @@ routes for scripts.
 | `SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK` | `-admin-ui-allow-non-loopback` | `false` | Explicit opt-in to bind the admin UI to a non-loopback host. |
 | `SEP2_ADMIN_UI_ALLOWED_HOSTS` | (none) | (empty) | Comma-separated extra accepted `Host` header values, in addition to the built-in `localhost`, `127.0.0.1`, and `::1`. |
 | `SEP2_ADMIN_UI_SOR_LINK` | `-admin-ui-sor-link` | (empty) | Optional server-of-record dashboard URL, returned read-only from `/api/health`. Not a credential. |
+| `SEP2_ADMIN_UI_READ_HEADER_TIMEOUT` | `-admin-ui-read-header-timeout` | `5s` | A Go duration such as `15s` or `1m`; must be greater than zero. Admin listener: time to read a request's headers. |
+| `SEP2_ADMIN_UI_READ_TIMEOUT` | `-admin-ui-read-timeout` | `10s` | A Go duration such as `15s` or `1m`; must be greater than zero. Admin listener: time to read a whole request. |
+| `SEP2_ADMIN_UI_WRITE_TIMEOUT` | `-admin-ui-write-timeout` | `10s` | A Go duration such as `15s` or `1m`; must be greater than zero. Admin listener: time to write a response. |
+| `SEP2_ADMIN_UI_IDLE_TIMEOUT` | `-admin-ui-idle-timeout` | `60s` | A Go duration such as `15s` or `1m`; must be greater than zero. Admin listener: keep-alive idle time. |
+| `SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT` | `-admin-ui-shutdown-timeout` | `5s` | A Go duration such as `15s` or `1m`; must be greater than zero. Bound on the admin listener's graceful drain at shutdown. |
 
 ## Server admin-plane settings
 
