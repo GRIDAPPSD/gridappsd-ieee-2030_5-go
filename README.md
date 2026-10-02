@@ -17,25 +17,17 @@ available for observing what the bridge is doing.
 ## Requirements
 
 - Go 1.26.3.
-- GitHub access to the `GRIDAPPSD` org, with read access to two
-  Go modules this bridge depends on:
-  `github.com/GRIDAPPSD/gridappsd-go` and
-  `github.com/GRIDAPPSD/ieee-2030_5-core-go`. Set
-  `GOPRIVATE=github.com/GRIDAPPSD/*` before building or running `go
-  mod download`; without it, the module proxy tries, and fails, to
-  fetch these modules publicly.
 
 ## Quickstart
 
 ```bash
 git clone <this repo>
 cd gridappsd-ieee-2030_5-go
-export GOPRIVATE=github.com/GRIDAPPSD/*
 make build
 make test
 ```
 
-`make build` produces `./bridge`, with its version stamped in from
+`make build` compiles every package, with the version stamped in from
 `git describe`. `make test` runs the unit test suite; no broker is
 required for it.
 
