@@ -793,6 +793,12 @@ func loadConfig(args []string) (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("config: %w", err)
 	}
+	// The embed's control path reports 2018 statuses and wires none of the
+	// stores the server reads Edition2023 through, so 2023 would be accepted
+	// and then ignored. Refuse it until the bridge serves it.
+	if adminPlane.Edition == "2023" {
+		return config{}, errors.New("config: SEP2_EDITION=2023 is not supported: the bridge supports only 2018 for now")
+	}
 	cfg.AdminPlane = adminPlane
 
 	if err := cfg.validate(); err != nil {

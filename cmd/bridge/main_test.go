@@ -563,13 +563,13 @@ func TestLogCCMObserverDisabledChoiceSilentWhenDisabled(t *testing.T) {
 }
 
 // A deadline of 90 s parsed once reaches both the protocol router and the
-// admin plane, and the PEN and edition reach the same two places.
-func TestAdminPlaneSettingsReachRouterStoresAndPlane(t *testing.T) {
+// admin plane, and the PEN reaches the router.
+func TestAdminPlaneSettingsReachRouterAndPlane(t *testing.T) {
 	t.Parallel()
 
 	pen := uint32(12345)
 	cfg := config{AdminPlane: sep2adminplane.Settings{
-		Edition:                 "2023",
+		Edition:                 "2018",
 		PEN:                     &pen,
 		FlowReservationDeadline: 90 * time.Second,
 		RetentionGrace:          time.Hour,
@@ -582,9 +582,6 @@ func TestAdminPlaneSettingsReachRouterStoresAndPlane(t *testing.T) {
 	if embedCfg.Router.PEN == nil || *embedCfg.Router.PEN != pen {
 		t.Errorf("router PEN: got %v, want %d", embedCfg.Router.PEN, pen)
 	}
-	if !embedCfg.Edition2023 {
-		t.Error("embed Edition2023: got false, want true for SEP2_EDITION=2023")
-	}
 
 	adminCfg := adminUIConfig(cfg)
 	if adminCfg.Settings != cfg.AdminPlane {
@@ -596,8 +593,8 @@ func TestAdminPlaneSettingsZeroLeavesServerDefaults(t *testing.T) {
 	t.Parallel()
 
 	embedCfg := sep2EmbedConfig(config{}, sep2config.DefaultPolicy(), nil, sep2embed.DeviceCertModeDevMint)
-	if embedCfg.Router.FlowReservationDeadline != 0 || embedCfg.Router.PEN != nil || embedCfg.Edition2023 {
-		t.Errorf("zero config: got deadline %v PEN %v Edition2023 %v, want server defaults",
-			embedCfg.Router.FlowReservationDeadline, embedCfg.Router.PEN, embedCfg.Edition2023)
+	if embedCfg.Router.FlowReservationDeadline != 0 || embedCfg.Router.PEN != nil {
+		t.Errorf("zero config: got deadline %v PEN %v, want server defaults",
+			embedCfg.Router.FlowReservationDeadline, embedCfg.Router.PEN)
 	}
 }

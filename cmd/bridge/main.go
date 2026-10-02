@@ -739,13 +739,10 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 		Observer:                    observer,
 		EnableCCM:                   cfg.SEP2EnableCCM,
 		NotifyAllowLoopback:         cfg.SEP2NotificationAllowLoopback,
-		// The router and the stores take the settings the admin plane also
-		// reads: the plane refuses an edition that disagrees with the stores.
 		Router: assembly.RouterConfig{
 			PEN:                     cfg.AdminPlane.PEN,
 			FlowReservationDeadline: cfg.AdminPlane.FlowReservationDeadline,
 		},
-		Edition2023: cfg.AdminPlane.Edition == "2023",
 	}
 }
 

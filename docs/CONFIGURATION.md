@@ -79,10 +79,10 @@ server default.
 
 | Env var | Default | Notes |
 |---|---|---|
-| `SEP2_EDITION` | `2018` | `2018` or `2023`. `2023` sets the protocol router's stores and the admin plane to the 2023 edition together. |
-| `SEP2_PEN` | (unset) | IANA Private Enterprise Number, placed in the low 32 bits of minted mRIDs. Unset leaves minted mRIDs random. |
-| `SEP2_FLOW_RESERVATION_DEADLINE_SECONDS` | `300` | Whole seconds from 1 to 3600. Used by the protocol router and reported by the admin plane. |
-| `SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS` | `1800` | Whole seconds from 900 to 604800. Only changes what the admin view reports: the bridge runs no retention sweep. |
+| `SEP2_EDITION` | `2018` | Only `2018` (or unset) is supported. `2023` stops the bridge at startup: its control path reports 2018 statuses and does not wire the stores the server needs for 2023. |
+| `SEP2_PEN` | (unset) | IANA Private Enterprise Number, placed in the low 32 bits of the mRIDs the protocol router mints for flow reservation responses. Unset leaves them random. The read-only admin plane does not use it. |
+| `SEP2_FLOW_RESERVATION_DEADLINE_SECONDS` | `300` | Whole seconds from 1 to 3600. Reaches the protocol router. The admin plane validates it but no mounted read-only route reads it. |
+| `SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS` | `1800` | Whole seconds from 900 to 604800. Validated only: it has no effect in the bridge today, which runs no retention sweep and mounts no route that reads it. |
 
 ## Other
 

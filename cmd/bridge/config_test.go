@@ -1574,15 +1574,15 @@ func TestLoadConfigAdminPlaneSettingsOutOfRangeFailsStartup(t *testing.T) {
 }
 
 func TestLoadConfigAdminPlaneSettingsParsed(t *testing.T) {
-	setAdminPlaneEnv(t, "2023", "12345", "90", "3600")
+	setAdminPlaneEnv(t, "2018", "12345", "90", "3600")
 
 	cfg, err := loadConfig(nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
 	s := cfg.AdminPlane
-	if s.Edition != "2023" {
-		t.Errorf("Edition: got %q, want 2023", s.Edition)
+	if s.Edition != "2018" {
+		t.Errorf("Edition: got %q, want 2018", s.Edition)
 	}
 	if s.PEN == nil || *s.PEN != 12345 {
 		t.Errorf("PEN: got %v, want 12345", s.PEN)
@@ -1607,5 +1607,37 @@ func TestLoadConfigAdminPlaneSettingsDefaultsUnset(t *testing.T) {
 	s := cfg.AdminPlane
 	if s.Edition != "" || s.PEN != nil || s.FlowReservationDeadline != 0 || s.RetentionGrace != 0 {
 		t.Errorf("unset settings: got %+v, want the zero Settings", s)
+	}
+}
+
+// The bridge serves only 2018: its control path reports 2018 statuses and
+// the server's edition-aware stores are not wired, so 2023 is refused.
+func TestLoadConfigRefusesEdition2023(t *testing.T) {
+	for _, key := range []string{"", "a-sufficiently-long-admin-key"} {
+		setAdminPlaneEnv(t, "2023", "", "", "")
+		t.Setenv("SEP2_ADMIN_UI_KEY", key)
+
+		_, err := loadConfig(nil)
+		if err == nil {
+			t.Fatalf("key=%q: loadConfig accepted SEP2_EDITION=2023", key)
+		}
+		for _, want := range []string{"SEP2_EDITION", "2018"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("key=%q: error %q does not mention %q", key, err, want)
+			}
+		}
+	}
+}
+
+func TestLoadConfigAcceptsEdition2018AndUnset(t *testing.T) {
+	for _, ed := range []string{"", "2018"} {
+		setAdminPlaneEnv(t, ed, "", "", "")
+		cfg, err := loadConfig(nil)
+		if err != nil {
+			t.Fatalf("SEP2_EDITION=%q: %v", ed, err)
+		}
+		if cfg.AdminPlane.Edition != ed {
+			t.Errorf("SEP2_EDITION=%q: Edition = %q", ed, cfg.AdminPlane.Edition)
+		}
 	}
 }
