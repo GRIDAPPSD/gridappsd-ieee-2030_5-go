@@ -101,6 +101,13 @@ type Config struct {
 
 	// Now is the clock stamped into each message. Nil uses time.Now.
 	Now func() time.Time
+
+	// Observe, when non-nil, receives each built message just before
+	// the bus send. It runs whether or not the send succeeds, so a
+	// consumer that must see what this publisher reports (the admin
+	// graph history) does not depend on the bus being up. It must not
+	// block and must not modify Message.Body.
+	Observe func(Message)
 }
 
 // Publisher reads DERStatus resources from a StatusSource on a timer and
@@ -114,6 +121,7 @@ type Publisher struct {
 	tracker  ChangeTracker
 	interval time.Duration
 	now      func() time.Time
+	observe  func(Message)
 }
 
 // New validates cfg and returns a Publisher. It performs no I/O and
@@ -157,6 +165,7 @@ func New(cfg Config) (*Publisher, error) {
 		tracker:  tracker,
 		interval: interval,
 		now:      now,
+		observe:  cfg.Observe,
 	}, nil
 }
 
@@ -243,6 +252,14 @@ func (p *Publisher) publishOnce(ctx context.Context) error {
 			return nil
 		}
 		return fmt.Errorf("telemetrypub: build message: %w", err)
+	}
+
+	// Before the send: recording only after a successful send would
+	// bring back the bus dependency. A failed send re-selects the batch
+	// and records it again next cycle with a later timestamp, which is
+	// acceptable.
+	if p.observe != nil {
+		p.observe(msg)
 	}
 
 	if err := p.bus.Send(ctx, p.dest, msg.ContentType, msg.Body); err != nil {

@@ -263,9 +263,9 @@ func run(ctx context.Context, cfg config) error {
 	// observation state.
 	var controlHook controlobs.Hook
 
-	// inputHistory retains the input topic's plottable samples. It is
-	// fed only by runControlSubscriber and sized by telemetryhistory's
-	// fixed caps.
+	// inputHistory retains plottable samples: reported state from the
+	// status publisher at publish time, commanded setpoints from
+	// runControlSubscriber. Sized by telemetryhistory's fixed caps.
 	var inputHistory telemetryhistory.Store
 	inputSink := &historySink{
 		store: &inputHistory,
@@ -329,7 +329,7 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.SimulationID == "" {
 		log.Printf("bridge: no SEP2_SIMULATION_ID set; DERStatus telemetry publisher disabled")
 	} else {
-		pub, perr := telemetrypub.New(telemetryPublisherConfig(cfg, embed, bus))
+		pub, perr := telemetrypub.New(withHistory(telemetryPublisherConfig(cfg, embed, bus), inputSink, reg))
 		if perr != nil {
 			return fmt.Errorf("telemetry publisher: %w", perr)
 		}
@@ -1508,9 +1508,9 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // itself is not re-litigated by this comment; only the prefix
 // discipline that currently makes it safe is).
 //
-// history, when non-nil, also receives each delta's plottable samples
-// (see historySink.record) right after the control path handles it; a
-// malformed frame is never fed to it.
+// history, when non-nil, receives each applied control's commanded
+// setpoint (see historySink.recordApplied); a malformed frame is never
+// fed to it, and reported state is not read from this path.
 //
 // Decode and per-delta apply errors are logged and skipped; the loop
 // continues, matching runPump's resilience style (a malformed or
@@ -1539,7 +1539,7 @@ func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *
 		}
 		for _, delta := range envelope.Input.Message.ForwardDifferences {
 			aerr := embed.ApplyControlDelta(ctx, reg, delta)
-			history.record(reg, envelope, delta, aerr == nil)
+			history.recordApplied(reg, envelope, delta, aerr == nil)
 			if aerr != nil {
 				log.Printf("control subscriber: skip delta object=%q attribute=%q: %v",
 					delta.Object, delta.Attribute, aerr)

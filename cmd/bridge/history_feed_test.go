@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,7 +34,9 @@ const (
 
 // historyHarness runs runControlSubscriber against an unstarted embed
 // and an empty registry, so every control delta is skipped and counted
-// by hook.Skipped, which tests use as a "frame processed" signal.
+// by hook.Skipped, which tests use as a "frame processed" signal. It is
+// for control-path behavior only: reported state reaches history
+// through the publisher (sinkHarness, publishToHistory).
 type historyHarness struct {
 	reg     *registry.Registry
 	bus     *fakeControlBus
@@ -134,6 +138,104 @@ func socFrame(t *testing.T, mrid string, hundredths uint16, epoch int64) []byte 
 	return body
 }
 
+// statusFrame builds the body the status publisher sends for one device
+// reporting stateOfChargeStatus hundredths: no control delta.
+func statusFrame(t *testing.T, mrid string, hundredths uint16, epoch int64) []byte {
+	t.Helper()
+	diffs, err := telemetrypub.MapDERStatusToDifferences(mrid, sep2.DERStatus{
+		StateOfChargeStatus: &sep2.StateOfChargeStatusType{Value: hundredths},
+	})
+	if err != nil {
+		t.Fatalf("MapDERStatusToDifferences: %v", err)
+	}
+	return rawFrame(t, epoch, diffs...)
+}
+
+// sinkHarness drives historySink.observe directly, the call the
+// publisher makes before each send, with no bus and no goroutine.
+type sinkHarness struct {
+	reg   *registry.Registry
+	store *telemetryhistory.Store
+	sink  *historySink
+}
+
+func newSinkHarness(t *testing.T, store *telemetryhistory.Store, mrids ...string) *sinkHarness {
+	t.Helper()
+	h := &sinkHarness{
+		reg:   registry.New(),
+		store: store,
+		sink:  &historySink{store: store, logf: newRateLimitedLogf(historyLogInterval, time.Now, log.Printf)},
+	}
+	h.register(t, mrids...)
+	return h
+}
+
+func (h *sinkHarness) register(t *testing.T, mrids ...string) {
+	t.Helper()
+	for _, m := range mrids {
+		if err := h.reg.Add(registry.Entry{MRID: m, LFDI: strings.ToUpper(fmt.Sprintf("%x", sha1.Sum([]byte(m))))}); err != nil {
+			t.Fatalf("registry.Add(%s): %v", m, err)
+		}
+	}
+}
+
+func (h *sinkHarness) observe(body []byte) {
+	h.sink.observe(h.reg, telemetrypub.Message{ContentType: telemetrypub.ContentTypeJSON, Body: body})
+}
+
+// downBus is a bus whose every send fails and that delivers nothing, so
+// a history that fills proves it never needed the echo.
+type downBus struct{ sends atomic.Int64 }
+
+func (b *downBus) Send(context.Context, string, string, []byte) error {
+	b.sends.Add(1)
+	return errors.New("bus down")
+}
+
+type staticStatusSource []sep2embed.DERStatusSnapshot
+
+func (s staticStatusSource) DERStatusSnapshots(context.Context) ([]sep2embed.DERStatusSnapshot, error) {
+	return s, nil
+}
+
+func socSnapshot(mrid string, hundredths uint16) sep2embed.DERStatusSnapshot {
+	return sep2embed.DERStatusSnapshot{
+		MRID:   mrid,
+		EDevID: "edev-" + mrid,
+		DERID:  "der-" + mrid,
+		Status: sep2.DERStatus{StateOfChargeStatus: &sep2.StateOfChargeStatusType{Value: hundredths}},
+	}
+}
+
+// publishToHistory runs the real publisher, wired as the bridge wires
+// it, against a bus that fails every send, until the bus has been tried
+// once. History must hold the status by then.
+func publishToHistory(t *testing.T, sink *historySink, reg *registry.Registry, src staticStatusSource) *downBus {
+	t.Helper()
+	bus := &downBus{}
+	pub, err := telemetrypub.New(withHistory(telemetrypub.Config{
+		Source:      src,
+		Bus:         bus,
+		Destination: "dest",
+		Build:       telemetrypub.DiffMessageBuilder("sim-1"),
+		Interval:    5 * time.Millisecond,
+		Now:         func() time.Time { return time.Unix(frameEpoch, 0) },
+	}, sink, reg))
+	if err != nil {
+		t.Fatalf("telemetrypub.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- pub.Run(ctx) }()
+	waitFor(3*time.Second, func() bool { return bus.sends.Load() >= 1 })
+	cancel()
+	<-done
+	if bus.sends.Load() < 1 {
+		t.Fatal("publisher never tried to send")
+	}
+	return bus
+}
+
 func findSeries(snap []telemetryhistory.SeriesSnapshot, object, attr string) (telemetryhistory.SeriesSnapshot, bool) {
 	for _, s := range snap {
 		if s.Key.Object == object && s.Key.Attribute == attr {
@@ -143,7 +245,38 @@ func findSeries(snap []telemetryhistory.SeriesSnapshot, object, attr string) (te
 	return telemetryhistory.SeriesSnapshot{}, false
 }
 
-func TestInputFrameFeedsHistoryWithScaledStateOfCharge(t *testing.T) {
+func TestPublishedStatusFillsHistoryWithNoBusEcho(t *testing.T) {
+	var store telemetryhistory.Store
+	h := newSinkHarness(t, &store, "bat-1", "bat-2")
+
+	bus := publishToHistory(t, h.sink, h.reg, staticStatusSource{socSnapshot("bat-1", 6500), socSnapshot("bat-2", 3000)})
+
+	if bus.sends.Load() < 1 {
+		t.Fatalf("test premise broken: the bus was never tried")
+	}
+	snap := store.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("history = %+v, want two series", snap)
+	}
+	for mrid, want := range map[string]float64{"bat-1": 65.0, "bat-2": 30.0} {
+		s, ok := findSeries(snap, mrid, socAttr)
+		if !ok || len(s.Samples) == 0 {
+			t.Fatalf("series for %s/%s = %+v (found=%v), want samples", mrid, socAttr, s, ok)
+		}
+		got := s.Samples[0]
+		if got.Value != want {
+			t.Errorf("%s state of charge = %v, want %v", mrid, got.Value, want)
+		}
+		// The envelope's own time, not local receipt time.
+		if got.At != frameEpoch {
+			t.Errorf("%s sample At = %d, want envelope time %d", mrid, got.At, frameEpoch)
+		}
+	}
+}
+
+// An echoed status frame on the control path adds nothing: reported
+// state is recorded at publish time only.
+func TestEchoedStatusFrameAddsNothingToHistory(t *testing.T) {
 	var store telemetryhistory.Store
 	h := startHistoryHarness(t, &store)
 	h.register(t, "M")
@@ -151,38 +284,26 @@ func TestInputFrameFeedsHistoryWithScaledStateOfCharge(t *testing.T) {
 	h.bus.deliver(socFrame(t, "M", 6500, frameEpoch))
 	h.waitFrames(t, 1)
 
-	s, ok := findSeries(store.Snapshot(), "M", socAttr)
-	if !ok || len(s.Samples) != 1 {
-		t.Fatalf("series for M/%s = %+v (found=%v), want one sample", socAttr, s, ok)
-	}
-	got := s.Samples[0]
-	if got.Value != 65.0 {
-		t.Errorf("state of charge = %v, want 65.0", got.Value)
-	}
-	// The envelope's own time, not local receipt time.
-	if got.At != frameEpoch {
-		t.Errorf("sample At = %d, want envelope time %d", got.At, frameEpoch)
+	if snap := store.Snapshot(); len(snap) != 0 {
+		t.Errorf("history after an echoed status frame = %+v, want empty", snap)
 	}
 }
 
 func TestHistoryStaysBoundedUnderLongRun(t *testing.T) {
 	var store telemetryhistory.Store
-	h := startHistoryHarness(t, &store)
+	h := newSinkHarness(t, &store)
 
 	const distinct = telemetryhistory.MaxSeries + 44
-	frames := 0
 	for i := 0; i < distinct; i++ {
-		h.register(t, fmt.Sprintf("dev-%03d", i))
-		h.bus.deliver(socFrame(t, fmt.Sprintf("dev-%03d", i), 5000, frameEpoch+int64(i)))
-		frames++
+		id := fmt.Sprintf("dev-%03d", i)
+		h.register(t, id)
+		h.observe(statusFrame(t, id, 5000, frameEpoch+int64(i)))
 	}
 	const repeats = telemetryhistory.SamplesPerSeries + 60
 	h.register(t, "hot")
 	for i := 0; i < repeats; i++ {
-		h.bus.deliver(socFrame(t, "hot", uint16(i%10000), frameEpoch+int64(i)))
-		frames++
+		h.observe(statusFrame(t, "hot", uint16(i%10000), frameEpoch+int64(i)))
 	}
-	h.waitFrames(t, frames)
 
 	snap := store.Snapshot()
 	if len(snap) > telemetryhistory.MaxSeries {
@@ -234,12 +355,10 @@ func TestMalformedFrameLeavesHistoryAndControlPathUntouched(t *testing.T) {
 	h.bus.deliver(socFrame(t, "M", 4000, frameEpoch))
 	h.waitFrames(t, 1)
 
-	// Only the good frame's state-of-charge series exists: the malformed
-	// body added none, and the refused control delta is not charted.
-	snap := store.Snapshot()
-	soc, ok := findSeries(snap, "M", socAttr)
-	if len(snap) != 1 || !ok || len(soc.Samples) != 1 || soc.Samples[0].Value != 40.0 {
-		t.Errorf("history after malformed+good frame = %+v, want exactly M/%s at 40.0", snap, socAttr)
+	// Neither the malformed body nor the good frame's echoed status adds
+	// a series, and the refused control delta is not charted.
+	if snap := store.Snapshot(); len(snap) != 0 {
+		t.Errorf("history after malformed+good frame = %+v, want empty", snap)
 	}
 	if s := h.hook.Snapshot(); s.Applied != 0 || s.Skipped != skipsPerFrame {
 		t.Errorf("hook Applied/Skipped = %d/%d, want 0/%d", s.Applied, s.Skipped, skipsPerFrame)
@@ -276,17 +395,15 @@ func captureHistoryLog(t *testing.T) *lockedBuf {
 // Not parallel: it swaps the process-wide log writer.
 func TestHistoryKeepsSeriesSortedFiniteAndFreeOfDuplicates(t *testing.T) {
 	var store telemetryhistory.Store
-	h := startHistoryHarness(t, &store)
-	h.register(t, "M")
+	h := newSinkHarness(t, &store, "M")
 
 	// The sequence from review: a normal pair, a zero time, a time far
 	// in the future, then a redelivery of the first time with a new value.
-	h.bus.deliver(socFrame(t, "M", 1000, 1700000000))
-	h.bus.deliver(socFrame(t, "M", 2000, 1700000015))
-	h.bus.deliver(socFrame(t, "M", 3000, 0))
-	h.bus.deliver(socFrame(t, "M", 4000, 4102444800))
-	h.bus.deliver(socFrame(t, "M", 1100, 1700000000))
-	h.waitFrames(t, 5)
+	h.observe(statusFrame(t, "M", 1000, 1700000000))
+	h.observe(statusFrame(t, "M", 2000, 1700000015))
+	h.observe(statusFrame(t, "M", 3000, 0))
+	h.observe(statusFrame(t, "M", 4000, 4102444800))
+	h.observe(statusFrame(t, "M", 1100, 1700000000))
 
 	s, ok := findSeries(store.Snapshot(), "M", socAttr)
 	if !ok {
@@ -306,13 +423,11 @@ func TestHistoryKeepsSeriesSortedFiniteAndFreeOfDuplicates(t *testing.T) {
 // Out-of-order arrival must still leave the series sorted by time.
 func TestHistoryInsertsOutOfOrderSampleInTimeOrder(t *testing.T) {
 	var store telemetryhistory.Store
-	h := startHistoryHarness(t, &store)
-	h.register(t, "M")
+	h := newSinkHarness(t, &store, "M")
 
-	h.bus.deliver(socFrame(t, "M", 1000, 1700000030))
-	h.bus.deliver(socFrame(t, "M", 2000, 1700000000))
-	h.bus.deliver(socFrame(t, "M", 3000, 1700000015))
-	h.waitFrames(t, 3)
+	h.observe(statusFrame(t, "M", 1000, 1700000030))
+	h.observe(statusFrame(t, "M", 2000, 1700000000))
+	h.observe(statusFrame(t, "M", 3000, 1700000015))
 
 	s, _ := findSeries(store.Snapshot(), "M", socAttr)
 	var got []int64
@@ -328,13 +443,11 @@ func TestHistoryInsertsOutOfOrderSampleInTimeOrder(t *testing.T) {
 func TestHistoryRefusesNonFiniteValuesAndLogsThem(t *testing.T) {
 	logs := captureHistoryLog(t)
 	var store telemetryhistory.Store
-	h := startHistoryHarness(t, &store)
-	h.register(t, "M")
+	h := newSinkHarness(t, &store, "M")
 
 	// 1 * 10^400 overflows float64 to +Inf.
-	h.bus.deliver(rawFrame(t, frameEpoch, diff.Difference{Object: "M", Attribute: socAttr,
+	h.observe(rawFrame(t, frameEpoch, diff.Difference{Object: "M", Attribute: socAttr,
 		Value: map[string]any{"multiplier": 400.0, "value": 1.0}}))
-	h.waitDeltas(t, 1)
 
 	snap := store.Snapshot()
 	if len(snap) != 0 {
@@ -352,16 +465,14 @@ func TestHistoryRefusesNonFiniteValuesAndLogsThem(t *testing.T) {
 func TestHistoryLogsWrongShapeRateLimitedAndKeepsRoutineFieldsQuiet(t *testing.T) {
 	logs := captureHistoryLog(t)
 	var store telemetryhistory.Store
-	h := startHistoryHarness(t, &store)
-	h.register(t, "M")
+	h := newSinkHarness(t, &store, "M")
 
 	const n = 20
 	for i := 0; i < n; i++ {
-		h.bus.deliver(rawFrame(t, frameEpoch+int64(i), diff.Difference{Object: "M", Attribute: socAttr, Value: "not-a-number"}))
+		h.observe(rawFrame(t, frameEpoch+int64(i), diff.Difference{Object: "M", Attribute: socAttr, Value: "not-a-number"}))
 	}
 	// A routine, non-plottable field: must add no history log line.
-	h.bus.deliver(rawFrame(t, frameEpoch, diff.Difference{Object: "M", Attribute: "DERStatus.readingTime", Value: 123.0}))
-	h.waitDeltas(t, n+1)
+	h.observe(rawFrame(t, frameEpoch, diff.Difference{Object: "M", Attribute: "DERStatus.readingTime", Value: 123.0}))
 
 	out := logs.String()
 	if c := strings.Count(out, "unrecognized value shape"); c < 1 || c > 2 {
@@ -379,12 +490,10 @@ func TestHistoryLogsWrongShapeRateLimitedAndKeepsRoutineFieldsQuiet(t *testing.T
 
 func TestHistorySkipsUnregisteredObjects(t *testing.T) {
 	var store telemetryhistory.Store
-	h := startHistoryHarness(t, &store)
-	h.register(t, "known")
+	h := newSinkHarness(t, &store, "known")
 
-	h.bus.deliver(socFrame(t, "stranger", 5000, frameEpoch))
-	h.bus.deliver(socFrame(t, "known", 6000, frameEpoch))
-	h.waitFrames(t, 2)
+	h.observe(statusFrame(t, "stranger", 5000, frameEpoch))
+	h.observe(statusFrame(t, "known", 6000, frameEpoch))
 
 	snap := store.Snapshot()
 	if len(snap) != 1 || snap[0].Key.Object != "known" {
@@ -396,15 +505,14 @@ func TestHistorySkipsUnregisteredObjects(t *testing.T) {
 func TestHistoryLogsSeriesEviction(t *testing.T) {
 	logs := captureHistoryLog(t)
 	var store telemetryhistory.Store
-	h := startHistoryHarness(t, &store)
+	h := newSinkHarness(t, &store)
 
 	frames := telemetryhistory.MaxSeries + 1
 	for i := 0; i < frames; i++ {
 		id := fmt.Sprintf("dev-%03d", i)
 		h.register(t, id)
-		h.bus.deliver(socFrame(t, id, 5000, frameEpoch+int64(i)))
+		h.observe(statusFrame(t, id, 5000, frameEpoch+int64(i)))
 	}
-	h.waitFrames(t, frames)
 
 	if len(store.Snapshot()) != telemetryhistory.MaxSeries {
 		t.Fatalf("series = %d, want %d", len(store.Snapshot()), telemetryhistory.MaxSeries)
@@ -431,8 +539,27 @@ func TestHistoryDoesNotChartRefusedControl(t *testing.T) {
 	if _, ok := findSeries(store.Snapshot(), "M", controlAttr); ok {
 		t.Errorf("refused control was charted as %s", controlAttr)
 	}
-	if _, ok := findSeries(store.Snapshot(), "M", socAttr); !ok {
-		t.Errorf("state of charge missing; the refusal must not suppress the reported state")
+}
+
+// An applied control records its commanded setpoint, scaled as before.
+func TestAppliedControlRecordsCommandedSetpoint(t *testing.T) {
+	var store telemetryhistory.Store
+	h := newSinkHarness(t, &store, "M")
+	envelope := diff.Message{}
+	envelope.Input.Message.Timestamp = frameEpoch
+	delta := diff.Difference{Object: "M", Attribute: controlAttr,
+		Value: map[string]any{"multiplier": 1.0, "value": 5.0}}
+
+	h.sink.recordApplied(h.reg, envelope, delta, true)
+
+	s, ok := findSeries(store.Snapshot(), "M", controlAttr)
+	if !ok || len(s.Samples) != 1 || s.Samples[0].Value != 50.0 || s.Samples[0].At != frameEpoch {
+		t.Errorf("commanded series = %+v (found=%v), want one sample of 50 at %d", s, ok, frameEpoch)
+	}
+
+	h.sink.recordApplied(h.reg, envelope, delta, false)
+	if s, _ := findSeries(store.Snapshot(), "M", controlAttr); len(s.Samples) != 1 {
+		t.Errorf("refused control added a sample: %+v", s.Samples)
 	}
 }
 

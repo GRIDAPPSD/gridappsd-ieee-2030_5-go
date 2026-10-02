@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
 
 // historyLogInterval is the minimum gap between two history log lines of
@@ -15,27 +17,60 @@ import (
 // without it one fault would write a line per frame.
 const historyLogInterval = 30 * time.Second
 
-// historySink feeds decoded input-topic samples into a history store. It
-// never blocks and never returns an error, so it cannot change the
-// control path that calls it. A nil sink is a no-op.
+// historySink feeds plottable samples into a history store. It never
+// blocks and never returns an error, so it cannot change the path that
+// calls it. A nil sink is a no-op.
+//
+// Reported state is recorded at publish time (observe), from what the
+// status publisher is about to send, so the graph does not depend on the
+// bus echoing it back. Commanded setpoints are recorded by the control
+// subscriber (recordApplied), only for controls it applied.
 type historySink struct {
 	store *telemetryhistory.Store
 	logf  func(format string, args ...any)
 }
 
-// record charts what delta contributes to history. A reported-state
-// sample is charted as received; a commanded setpoint only when the
-// control path applied it (applied), because a refused control never
-// became a setpoint. Objects absent from reg are skipped: any publisher
-// on the bus could otherwise mint series and evict the real ones.
-func (h *historySink) record(reg *registry.Registry, envelope diff.Message, delta diff.Difference, applied bool) {
+// withHistory returns cfg with Observe set so every status message the
+// publisher builds is charted before it is sent.
+func withHistory(cfg telemetrypub.Config, sink *historySink, reg *registry.Registry) telemetrypub.Config {
+	cfg.Observe = func(m telemetrypub.Message) { sink.observe(reg, m) }
+	return cfg
+}
+
+// observe records the reported-state samples of a status message the
+// publisher is about to send. A body that does not decode is skipped:
+// the publisher built it, so a failure here must not affect the send.
+func (h *historySink) observe(reg *registry.Registry, msg telemetrypub.Message) {
 	if h == nil || h.store == nil {
+		return
+	}
+	var envelope diff.Message
+	if err := json.Unmarshal(msg.Body, &envelope); err != nil {
+		h.logf("history: skip status message that does not decode: %v", err)
+		return
+	}
+	h.append(reg, envelope, telemetryhistory.LaneReportedState)
+}
+
+// recordApplied charts the commanded setpoint of a delta the control
+// path applied. A refused control never became a setpoint, and reported
+// state is not read from this path at all: an echoed status frame adds
+// nothing.
+func (h *historySink) recordApplied(reg *registry.Registry, envelope diff.Message, delta diff.Difference, applied bool) {
+	if h == nil || h.store == nil || !applied {
 		return
 	}
 	one := envelope
 	one.Input.Message.ForwardDifferences = []diff.Difference{delta}
-	for _, d := range telemetryhistory.DecodeMessage(one, h.logf) {
-		if d.Lane == telemetryhistory.LaneCommandedSetpoint && !applied {
+	h.append(reg, one, telemetryhistory.LaneCommandedSetpoint)
+}
+
+// append stores the decoded samples of one lane. Objects absent from reg
+// are skipped: any publisher on the bus could otherwise mint series and
+// evict the real ones.
+func (h *historySink) append(reg *registry.Registry, envelope diff.Message, lane telemetryhistory.Lane) {
+	for _, d := range telemetryhistory.DecodeMessage(envelope, h.logf) {
+		if d.Lane != lane {
 			continue
 		}
 		if _, ok := reg.LFDI(d.Key.Object); !ok {
