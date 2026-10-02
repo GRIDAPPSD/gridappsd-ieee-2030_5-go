@@ -68,7 +68,14 @@ your own.
 Per-device certificates, used when `SEP2_DEVICE_CERT_MODE=preprovisioned`,
 live under `<SEP2_SERVER_CERT_DIR>/devices/`, one raw DER-encoded
 `<name>.x509` file per device, signed by the same CA as the server
-identity above.
+identity above. In `dev-mint` mode each freshly minted device also gets
+a sibling `<name>.pem` private key, on the same base name, for dev
+tooling that dials in as that device; the bridge never reads it back.
+
+A minted server certificate names only `localhost` and `127.0.0.1`. A
+client that connects to any other host name or address fails hostname
+verification against it, so a non-loopback deployment must supply its
+own server certificate (see `preprovisioned` above).
 
 ## What the bridge does at startup
 

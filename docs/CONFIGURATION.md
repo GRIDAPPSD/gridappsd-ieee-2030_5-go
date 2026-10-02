@@ -27,11 +27,11 @@ make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
 | `SEP2_STOMP_USER` | `-stomp-user` | `system` | Broker login. |
 | `SEP2_STOMP_PASSWORD` | `-stomp-password` | `manager` | Broker password. Credential; see the note above. |
 | `SEP2_STOMP_ALLOW_PLAINTEXT` | `-stomp-allow-plaintext` | `false` | Fail-closed: with no override the bridge dials TLS against the system trust store. Set `true` only against a broker known to be plaintext, such as a local dev stack. |
-| `SEP2_SIMULATION_ID` | `-simulation-id` | (empty) | GridAPPS-D `simulation_id` to subscribe to. Controls the simulation-output measurement subscribe, the `simulation_id` field in published status, the liveness-probe topic (the per-simulation log topic when set, `/topic/goss.gridappsd.heartbeat` otherwise), and `-publish-on-start`. Empty disables the measurement subscribe only; status publishing and control subscription do not depend on it. |
+| `SEP2_SIMULATION_ID` | `-simulation-id` | (empty) | GridAPPS-D `simulation_id` to subscribe to. Controls the simulation-output measurement subscribe, the `simulation_id` field in published status, the liveness-probe topic (the per-simulation log topic when set, `/topic/goss.gridappsd.heartbeat` otherwise). `-publish-on-start` is refused at start-up when this is empty. Empty disables the measurement subscribe only; status publishing and control subscription do not depend on it. |
 | `SEP2_APPLICATION_ID` | `-application-id` | `IEEE_2030_5` | GridAPPS-D application id. Device status is published to `/topic/goss.gridappsd.<application id>.output` and controls are read from `/topic/goss.gridappsd.<application id>.input`. Neither topic carries a simulation id, so both work with `SEP2_SIMULATION_ID` unset. The Python service took its application id from `GRIDAPPSD_SERVICE_NAME`; the bridge uses `SEP2_APPLICATION_ID`. Must not be empty. |
 | `SEP2_FEEDER_MRID` | `-feeder-mrid` | `_C1C3E687-6FFD-C753-582B-632A27E28507` | CIM feeder mRID to enumerate DERs from. The default is the IEEE 123-bus feeder shipped with `gridappsd-docker`. |
 | `SEP2_BATTERY_LEG_LIST_FILE` | `-sep2-battery-leg-list-file` | unset | Path to a plain-text file of utility battery leg EnergyConsumer mRIDs, one per line, in the model's form (upper case, no leading underscore); blank lines and `#` comments are ignored. The CIM model carries no marker that tells a battery leg apart from any other load, so these must be named; each is checked at boot against the feeder named by `SEP2_FEEDER_MRID` (must be an EnergyConsumer there, and not also a house load) before it is registered. House loads need no such list: they are found by model structure (a `cim:House` link). Unset means no utility battery legs are registered. |
-| `SEP2_PUBLISH_ON_START` | `-publish-on-start` | `false` | Publishes a smoke-test `DifferenceBuilder` envelope after registry bootstrap. Requires `SEP2_SIMULATION_ID` to be set. |
+| `SEP2_PUBLISH_ON_START` | `-publish-on-start` | `false` | Accepted but does nothing yet: the bridge logs that the `DifferenceBuilder` envelope publish is a follow-up and skips it, and sends nothing. Start-up still refuses it when `SEP2_SIMULATION_ID` is empty. |
 
 ## Embedded IEEE 2030.5 server
 
@@ -45,6 +45,8 @@ make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
 | `SEP2_POLL_RATE` | `-sep2-poll-rate` | unset | Fleet-wide `Registration` poll rate in seconds, advertised to every device. Unset advertises nothing; clients apply the spec default of 900 seconds. |
 | `SEP2_POST_RATE` | `-sep2-post-rate` | unset | Fleet-wide `MirrorUsagePoint` post rate in seconds. Unset advertises nothing and leaves each client's own value untouched. |
 | `SEP2_NOTIFICATION_ALLOW_LOOPBACK` | `-sep2-notification-allow-loopback` | `false` | Fail-closed: with no override a subscription whose `notificationURI` resolves to a loopback address (127.0.0.0/8, `::1`; a hostname such as `localhost` that resolves there counts too) is refused with 400 at creation. Set `true` only for a test harness whose notification receiver listens on loopback. **Do not set this in production**: it admits any loopback destination on any port, reaching every service this bridge's network namespace exposes there, including its own STOMP broker (`SEP2_STOMP_ADDR`), IEEE 2030.5 listener (`SEP2_SERVER_ADDR`) and admin UI (`SEP2_ADMIN_UI_ADDR`) among others; the admin UI's Bearer auth does not narrow this. Logs a warning once at start-up when set. |
+| `SEP2_ENABLE_CCM` | `-sep2-enable-ccm` | `false` | Kept as configuration surface pending removal. Every embedded listener already offers only `TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8`, the suite IEEE 2030.5-2018 section 6.7 makes mandatory, so setting this changes no cipher suite; it only turns the connection observer off. Start-up refuses it unless `SEP2_CCM_ALLOW_NO_OBSERVER` is also set. |
+| `SEP2_CCM_ALLOW_NO_OBSERVER` | `-sep2-ccm-allow-no-observer` | `false` | The explicit second setting `SEP2_ENABLE_CCM` requires. Accepts losing the connection observer: no rejected-device record, and the admin UI's served-status table shows every device as unknown, with empty connected-clients and handshake-attempts tables. Setting it alone has no effect. Both settings are scheduled for removal. |
 
 ## Admin UI
 
@@ -84,6 +86,32 @@ server default.
 | `SEP2_PEN` | (unset) | IANA Private Enterprise Number, placed in the low 32 bits of the mRIDs the protocol router mints for flow reservation responses. Unset leaves them random. The read-only admin plane does not use it. |
 | `SEP2_FLOW_RESERVATION_DEADLINE_SECONDS` | `300` | Whole seconds from 1 to 3600. Reaches the protocol router. The admin plane validates it but no mounted read-only route reads it. |
 | `SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS` | `1800` | Whole seconds from 900 to 604800. Validated only: it has no effect in the bridge today, which runs no retention sweep and mounts no route that reads it. |
+
+## Operator policy
+
+These shape what the embedded server advertises and issues. A file path
+setting is read once at start-up; a malformed or out-of-range value stops
+the bridge before it listens. IEEE 2030.5 range checks happen after
+parsing, so the error is the same whichever source supplied the value.
+Every flag here registers an empty default, so `-h` shows nothing set.
+
+| Env var | Flag | Default | Notes |
+|---|---|---|---|
+| (none) | `-sep2-program-file` | unset | Path to a JSON object overriding the seeded default DERProgram: `{"primacy": 1, "description": "..."}`. Both members are optional, an absent one keeps the compiled-in value, and an unknown member is an error. Rewritten by an admin UI, applied on restart. |
+| (none) | `-sep2-program-primacy` | unset (`1`) | Primacy of the default DERProgram, 0-2 or 65-191, lower is higher priority. Overrides the file. Unset uses `1`, contracted premises service provider, which suits a co-simulation but not a field deployment, where `1` outranks a DSO program in the 65-191 band; set it per the interconnection agreement. |
+| (none) | `-sep2-program-description` | unset (`GridAPPS-D DER program`) | Description of the default DERProgram, at most 32 characters. Overrides the file. |
+| (none) | `-sep2-control-duration` | unset (`1800`) | Interval duration in seconds of every issued DERControl, after which the device falls back to DefaultDERControl. 1800 is twice the default poll rate; set it above the configured poll rate or controls expire between polls. |
+| (none) | `-sep2-control-randomize-duration` | unset (`0`) | `randomizeDuration` in seconds served on every issued DERControl, -3600 to 3600, staggering when devices revert to DefaultDERControl. 0 keeps co-simulation runs reproducible; a field deployment should set a non-zero value. |
+| (none) | `-sep2-default-control-file` | unset | Path to a JSON object overriding the seeded DefaultDERControl: `opModConnect` (boolean), `opModEnergize` (boolean) and `opModMaxLimW` (integer 0 to 10000, hundredths of a percent). Each member is optional and an absent one keeps the compiled-in value; any other member is an error. Unset ships a control that commands nothing, leaving each DER on its own IEEE 1547 autonomous behavior. |
+
+## Telemetry
+
+The DERStatus telemetry publisher runs when `SEP2_SIMULATION_ID` is set.
+
+| Env var | Flag | Default | Notes |
+|---|---|---|---|
+| `SEP2_TELEMETRY_INTERVAL` | `-sep2-telemetry-interval` | `15s` | Publish period as a Go duration such as `15s` or `1m`, not a bare number. Must be greater than zero. |
+| `SEP2_TELEMETRY_PUBLISH_UNCHANGED` | `-sep2-telemetry-publish-unchanged` | `false` | By default only devices whose mapped values moved since their last successful publish are sent. `true` publishes every device with a stored DERStatus every interval (full-snapshot semantics); set it if the subscriber treats each message as a complete snapshot. |
 
 ## Other
 
