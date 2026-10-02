@@ -4,7 +4,9 @@
 // an in-memory mRID-to-LFDI registry, boots an in-process IEEE 2030.5
 // mTLS server (internal/sep2embed) seeded from that registry, and (when
 // a SimulationID is configured) subscribes to the simulation output
-// topic and logs each MeasurementFrame.
+// topic and logs each MeasurementFrame. Device status goes out on the
+// application output topic and controls come in on the application
+// input topic, with or without a SimulationID.
 //
 // The embedded IEEE 2030.5 server speaks real mTLS with real,
 // certificate-derived device identity: the LFDI on every EndDevice is
@@ -272,15 +274,12 @@ func run(ctx context.Context, cfg config) error {
 		logf:  newRateLimitedLogf(historyLogInterval, time.Now, log.Printf),
 	}
 
-	// stompRun adapts the SimulationID branch (idle-wait, or the
-	// measurement pump plus the control-delta subscriber) to
-	// the func(context.Context) error shape runEmbedAndStomp expects
-	// for its second seam.
+	// stompRun adapts the control-delta subscriber, plus the measurement
+	// pump when a SimulationID is set, to the func(context.Context) error
+	// shape runEmbedAndStomp expects for its second seam.
 	stompRun := func(runCtx context.Context) error {
 		if cfg.SimulationID == "" {
-			log.Printf("bridge: no SEP2_SIMULATION_ID set; skipping simulation subscribe; idling until shutdown")
-			<-runCtx.Done()
-			return runCtx.Err()
+			log.Printf("bridge: no SEP2_SIMULATION_ID set; skipping the simulation measurement subscribe")
 		}
 		// runCtx is the pump's (and the control subscriber's) root.
 		//
@@ -296,14 +295,17 @@ func run(ctx context.Context, cfg config) error {
 		// simulation destinations, loudly, instead of leaving the
 		// bridge alive-but-deaf.
 		//
-		// The probe destination is the per-simulation log topic: a
-		// sibling of the output and input topics subscribed below, so
-		// it carries no ACL risk the bridge is not already taking, and
-		// nothing this bridge cares about is lost by churning a
-		// subscription on it. See WithProbeDestination for why a
-		// destination the broker would reject must not be used.
-		subs := gridappsdclient.NewSupervisor(bus,
-			gridappsdclient.WithProbeDestination(sim.LogTopic(cfg.SimulationID)))
+		// The probe destination is the per-simulation log topic when a
+		// simulation id is set: a sibling of the output topic subscribed
+		// below, so it carries no ACL risk the bridge is not already
+		// taking. Without one it is the application input topic, which
+		// the control subscriber already holds. See WithProbeDestination
+		// for why a destination the broker would reject must not be used.
+		probe := sim.ApplicationInputTopic(cfg.ApplicationID, "")
+		if cfg.SimulationID != "" {
+			probe = sim.LogTopic(cfg.SimulationID)
+		}
+		subs := gridappsdclient.NewSupervisor(bus, gridappsdclient.WithProbeDestination(probe))
 
 		return runSimSide(runCtx, subs, embed, reg, cfg.ApplicationID, cfg.SimulationID, &controlHook, inputSink)
 	}
@@ -321,20 +323,13 @@ func run(ctx context.Context, cfg config) error {
 	// point of this layering: a 2030.5 PUT stores and returns, and nothing on
 	// the platform side can make it fail, block, or slow down.
 	//
-	// Gated on SimulationID for the same reason the pump is: with no
-	// simulation id there is no destination to publish to, and inventing
-	// one would put frames on a topic nobody asked for. Nil then, exactly
-	// like a disabled admin UI, so no goroutine is started at all.
-	var telemetryRun func(context.Context) error
-	if cfg.SimulationID == "" {
-		log.Printf("bridge: no SEP2_SIMULATION_ID set; DERStatus telemetry publisher disabled")
-	} else {
-		pub, perr := newStatusPublisher(cfg, embed, bus, inputSink, reg)
-		if perr != nil {
-			return fmt.Errorf("telemetry publisher: %w", perr)
-		}
-		telemetryRun = pub.Run
+	// The destination is the application output topic, so no simulation
+	// id is needed to publish.
+	pub, perr := newStatusPublisher(cfg, embed, bus, inputSink, reg)
+	if perr != nil {
+		return fmt.Errorf("telemetry publisher: %w", perr)
 	}
+	telemetryRun := pub.Run
 
 	var adminUIRun func(context.Context) error
 	adminSrv, err := adminui.New(adminUIConfig(cfg), adminui.Sources{
@@ -437,8 +432,8 @@ func runEmbedAndStomp(ctx context.Context, embedRun, stompRun func(context.Conte
 // shutdown of embedRun/stompRun tears the admin UI down too: all three
 // share one derived context, following the same cancel on any exit,
 // join errors on independent failure pattern as runEmbedAndStomp.
-// telemetryRun is nil when no simulation id is configured, in
-// which case no publisher goroutine is started at all, exactly as a nil
+// telemetryRun may be nil, in which case no publisher goroutine is
+// started at all, exactly as a nil
 // adminUIRun starts no admin goroutine. When supplied it is a peer of
 // the other three: one shared derived context, cancel on any exit, join
 // errors on independent failure.
@@ -782,8 +777,8 @@ func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, polic
 // be asserted by a unit test with no broker and no listener.
 //
 // Destination is the ONLY place this bridge names the telemetry topic.
-// It uses internal/cim/sim.ApplicationOutputTopic, the application
-// output topic, never a goss.gridappsd.process.* destination
+// It uses internal/cim/sim.ApplicationOutputTopic with no simulation id,
+// the topic the Python service published to, never a goss.gridappsd.process.* destination
 // and never the application input topic the control subscriber reads.
 // Changing it is this one line, because nothing inside telemetrypub
 // derives or inspects the destination.
@@ -799,7 +794,7 @@ func telemetryPublisherConfig(cfg config, src telemetrypub.StatusSource, bus tel
 	return telemetrypub.Config{
 		Source:           src,
 		Bus:              bus,
-		Destination:      sim.ApplicationOutputTopic(cfg.ApplicationID, cfg.SimulationID),
+		Destination:      sim.ApplicationOutputTopic(cfg.ApplicationID, ""),
 		Build:            telemetrypub.DiffMessageBuilder(cfg.SimulationID),
 		Interval:         cfg.SEP2TelemetryInterval,
 		PublishUnchanged: cfg.SEP2TelemetryPublishUnchanged,
@@ -1420,9 +1415,9 @@ func runPump(ctx context.Context, subs sim.SubscribeClient, reg *registry.Regist
 	return nil
 }
 
-// runSimSide runs the measurement pump (runPump) and the
-// control-delta subscriber (runControlSubscriber) concurrently under
-// ctx, and returns once BOTH have finished. Splitting the two loops out
+// runSimSide runs the measurement pump (runPump, only when simID is set)
+// and the control-delta subscriber (runControlSubscriber) concurrently
+// under ctx, and returns once BOTH have finished. Splitting the two loops out
 // as a pair (rather than folding control consumption into runPump
 // itself) keeps runPump's existing MeasurementFrame contract untouched;
 // they are independent subscriptions on independent (if, for now,
@@ -1436,19 +1431,28 @@ func runPump(ctx context.Context, subs sim.SubscribeClient, reg *registry.Regist
 // hook is a read-only observation point (see controlHook's
 // doc comment in run): runSimSide records both subscription
 // destinations on it up front, before either loop starts, since both
-// destinations are known unconditionally from simID and recording them
+// destinations are known unconditionally from simID and appID (the output
+// destination is empty when simID is) and recording them
 // does not depend on either loop actually receiving a frame. hook may be
 // nil (tests that do not care about observation can omit it); every
 // call below guards for that.
 func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, appID, simID string, hook *controlobs.Hook, history *historySink) error {
+	outputTopic := ""
+	if simID != "" {
+		outputTopic = sim.OutputTopic(simID)
+	}
 	if hook != nil {
-		hook.SetTopics(sim.OutputTopic(simID), sim.ApplicationInputTopic(appID, simID))
+		hook.SetTopics(outputTopic, sim.ApplicationInputTopic(appID, ""))
 	}
 
 	pumpErr := make(chan error, 1)
-	go func() { pumpErr <- runPump(ctx, subs, reg, simID) }()
+	if simID != "" {
+		go func() { pumpErr <- runPump(ctx, subs, reg, simID) }()
+	} else {
+		pumpErr <- nil
+	}
 
-	ctrlErr := runControlSubscriber(ctx, subs, embed, reg, appID, simID, hook, history)
+	ctrlErr := runControlSubscriber(ctx, subs, embed, reg, appID, hook, history)
 
 	perr := <-pumpErr
 	pGraceful := perr == nil || errors.Is(perr, context.Canceled)
@@ -1469,8 +1473,8 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // runControlSubscriber subscribes to the application input topic
 // (internal/cim/sim.ApplicationInputTopic), decodes each frame as a
 // diff.Message, and applies every forward difference to embed via
-// sep2embed.Embed.ApplyControlDelta. Nothing is read from the
-// simulation input topic.
+// sep2embed.Embed.ApplyControlDelta. The topic carries no simulation id
+// and nothing is read from the simulation input topic.
 //
 // The bridge's own DERStatus reports go to the application output
 // topic (telemetryPublisherConfig), so they never reach this topic.
@@ -1492,8 +1496,8 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // resolves to a delta is not counted at all (there is no delta to
 // report skipping); only a decoded delta that ApplyControlDelta accepts
 // or rejects is counted.
-func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, appID, simID string, hook *controlobs.Hook, history *historySink) error {
-	dest := sim.ApplicationInputTopic(appID, simID)
+func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, appID string, hook *controlobs.Hook, history *historySink) error {
+	dest := sim.ApplicationInputTopic(appID, "")
 	if dest == "" {
 		return errors.New("control subscriber: empty application id")
 	}

@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
+	"log"
 	"testing"
+	"time"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
-// Written out literally so a change to the helper cannot move the test
-// with it. The segment is "application" by operator decision.
-const wantControlTopic = "/topic/goss.gridappsd.application.IEEE_2030_5.sim-1.input"
+// The string gridappsd-python v2026.09.0 topics.py application_input_topic
+// builds with no simulation id, written out literally so a change to the
+// helper cannot move the test with it.
+const wantControlTopic = "/topic/goss.gridappsd.IEEE_2030_5.input"
 
 func TestControlSubscriberListensOnApplicationInputTopic(t *testing.T) {
 	var store telemetryhistory.Store
@@ -60,8 +66,41 @@ func TestApplicationIDSettingChangesControlTopic(t *testing.T) {
 	h.bus.mu.Lock()
 	got := h.bus.dest
 	h.bus.mu.Unlock()
-	const want = "/topic/goss.gridappsd.application.envapp.sim-1.input"
+	const want = "/topic/goss.gridappsd.envapp.input"
 	if got != want {
 		t.Errorf("subscribed to %q, want %q", got, want)
+	}
+}
+
+// With no simulation id the bridge still takes controls from the
+// application input topic, and subscribes to nothing else.
+func TestRunSimSideWithoutSimulationIDSubscribesOnlyToControlTopic(t *testing.T) {
+	var store telemetryhistory.Store
+	h := startHistoryHarness(t, &store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	bus := &fakeControlBus{}
+	var hook controlobs.Hook
+	done := make(chan error, 1)
+	go func() {
+		done <- runSimSide(ctx, gridappsdclient.NewSubscriber(bus), h.embed, h.reg, "IEEE_2030_5", "", &hook, &historySink{store: &store, logf: log.Printf})
+	}()
+	waitFor(2*time.Second, func() bool {
+		bus.mu.Lock()
+		defer bus.mu.Unlock()
+		return bus.handler != nil
+	})
+	bus.mu.Lock()
+	dests := append([]string(nil), bus.dests...)
+	bus.mu.Unlock()
+	cancel()
+	<-done
+
+	if len(dests) != 1 || dests[0] != wantControlTopic {
+		t.Errorf("subscribed to %q, want only %q", dests, wantControlTopic)
+	}
+	snap := hook.Snapshot()
+	if snap.InputTopic != wantControlTopic || snap.OutputTopic != "" {
+		t.Errorf("hook topics = %q, %q; want %q and empty", snap.InputTopic, snap.OutputTopic, wantControlTopic)
 	}
 }

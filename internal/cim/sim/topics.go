@@ -17,7 +17,6 @@ const (
 	baseTopic              = "/topic/goss.gridappsd"
 	baseSimulationTopic    = "/topic/goss.gridappsd.simulation"
 	baseSimulationLogTopic = "/topic/goss.gridappsd.simulation.log"
-	baseApplicationTopic   = "/topic/goss.gridappsd.application"
 )
 
 // OutputTopic returns the per-simulation measurement output topic. The
@@ -40,31 +39,36 @@ func LogTopic(simID string) string {
 }
 
 // ApplicationOutputTopic returns the topic an application publishes its
-// output on: "{base}.{app}.{sim}.output", or "{BASE_TOPIC}.{app}.output"
-// without a simulation id. An empty appID returns "" so a caller that
-// hands the result to a publisher fails closed.
-// The segment is "application" by operator decision; gridappsd-python uses "simulation" there.
+// output on. It follows gridappsd-python v2026.09.0 topics.py
+// application_output_topic: with a simulation id the form is
+// "{BASE_SIMULATION_TOPIC}.{app}.{sim}.output", without one
+// "{BASE_TOPIC}.{app}.output". An empty appID returns "" so a caller
+// that hands the result to a publisher fails closed instead of sending
+// to a malformed destination (the Python helper asserts instead).
 func ApplicationOutputTopic(appID, simID string) string {
 	if appID == "" {
 		return ""
 	}
 	if simID != "" {
-		return baseApplicationTopic + "." + appID + "." + simID + ".output"
+		return baseSimulationTopic + "." + appID + "." + simID + ".output"
 	}
 	return baseTopic + "." + appID + ".output"
 }
 
 // ApplicationInputTopic returns the topic an application receives its
-// input on: "{base}.{app}.{sim}.input", or "{BASE_TOPIC}.{app}.input"
-// without a simulation id. An empty appID returns "" so a caller that
-// hands the result to a subscriber fails closed.
-// The segment is "application" by operator decision; gridappsd-python uses "simulation" there.
+// input on. It follows gridappsd-python v2026.09.0 topics.py
+// application_input_topic: with a simulation id the form is
+// "{BASE_SIMULATION_TOPIC}.{app}.{sim}.input", without one
+// "{BASE_TOPIC}.{app}.input". An empty appID returns "" so a caller
+// that hands the result to a subscriber fails closed instead of
+// listening on a malformed destination (the Python helper asserts
+// instead).
 func ApplicationInputTopic(appID, simID string) string {
 	if appID == "" {
 		return ""
 	}
 	if simID != "" {
-		return baseApplicationTopic + "." + appID + "." + simID + ".input"
+		return baseSimulationTopic + "." + appID + "." + simID + ".input"
 	}
 	return baseTopic + "." + appID + ".input"
 }

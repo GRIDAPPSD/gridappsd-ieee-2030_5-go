@@ -92,15 +92,19 @@ func TestTopicsAreTopicForm(t *testing.T) {
 	}
 }
 
-// The expected strings are literal on purpose: the segment is "application", not
-// the "simulation" gridappsd-python uses.
+// The expected strings are what gridappsd-python v2026.09.0 topics.py
+// application_output_topic builds:
+//
+//	if simulation_id:
+//	    return f"{BASE_SIMULATION_TOPIC}.{application_id}.{simulation_id}.output"
+//	return f"{BASE_TOPIC}.{application_id}.output"
 func TestApplicationOutputTopic(t *testing.T) {
 	cases := []struct {
 		name, appID, simID, want string
 	}{
-		{"default app with sim", "IEEE_2030_5", "X", "/topic/goss.gridappsd.application.IEEE_2030_5.X.output"},
-		{"mrid style sim", "IEEE_2030_5", "_49AD8E07", "/topic/goss.gridappsd.application.IEEE_2030_5._49AD8E07.output"},
-		{"custom app", "my_app", "12345", "/topic/goss.gridappsd.application.my_app.12345.output"},
+		{"default app with sim", "IEEE_2030_5", "X", "/topic/goss.gridappsd.simulation.IEEE_2030_5.X.output"},
+		{"mrid style sim", "IEEE_2030_5", "_49AD8E07", "/topic/goss.gridappsd.simulation.IEEE_2030_5._49AD8E07.output"},
+		{"custom app", "my_app", "12345", "/topic/goss.gridappsd.simulation.my_app.12345.output"},
 		{"no sim id", "IEEE_2030_5", "", "/topic/goss.gridappsd.IEEE_2030_5.output"},
 		{"empty app fails closed", "", "X", ""},
 	}
@@ -113,15 +117,19 @@ func TestApplicationOutputTopic(t *testing.T) {
 	}
 }
 
-// The expected strings are literal on purpose: the segment is "application", not
-// the "simulation" gridappsd-python uses.
+// The expected strings are what gridappsd-python v2026.09.0 topics.py
+// application_input_topic builds:
+//
+//	if simulation_id:
+//	    return f"{BASE_SIMULATION_TOPIC}.{application_id}.{simulation_id}.input"
+//	return f"{BASE_TOPIC}.{application_id}.input"
 func TestApplicationInputTopic(t *testing.T) {
 	cases := []struct {
 		name, appID, simID, want string
 	}{
-		{"default app with sim", "IEEE_2030_5", "X", "/topic/goss.gridappsd.application.IEEE_2030_5.X.input"},
-		{"mrid style sim", "IEEE_2030_5", "_49AD8E07", "/topic/goss.gridappsd.application.IEEE_2030_5._49AD8E07.input"},
-		{"custom app", "my_app", "12345", "/topic/goss.gridappsd.application.my_app.12345.input"},
+		{"default app with sim", "IEEE_2030_5", "X", "/topic/goss.gridappsd.simulation.IEEE_2030_5.X.input"},
+		{"mrid style sim", "IEEE_2030_5", "_49AD8E07", "/topic/goss.gridappsd.simulation.IEEE_2030_5._49AD8E07.input"},
+		{"custom app", "my_app", "12345", "/topic/goss.gridappsd.simulation.my_app.12345.input"},
 		{"no sim id", "IEEE_2030_5", "", "/topic/goss.gridappsd.IEEE_2030_5.input"},
 		{"empty app fails closed", "", "X", ""},
 	}

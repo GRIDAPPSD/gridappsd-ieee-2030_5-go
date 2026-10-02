@@ -35,6 +35,7 @@ type fakeControlBus struct {
 	mu      sync.Mutex
 	handler fieldbus.Handler
 	dest    string
+	dests   []string
 	tok     fieldbus.Token
 }
 
@@ -50,6 +51,7 @@ func (f *fakeControlBus) Subscribe(_ context.Context, dest string, h fieldbus.Ha
 	f.tok++
 	f.handler = h
 	f.dest = dest
+	f.dests = append(f.dests, dest)
 	return f.tok, nil
 }
 
@@ -204,7 +206,7 @@ func TestRunControlSubscriberAppliesDeltaToOwningDevice(t *testing.T) {
 	// health. Supervisor behavior is covered by the Supervisor tests
 	// in internal/gridappsdclient.
 	go func() {
-		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "IEEE_2030_5", "sim-1", &hook, &historySink{store: &history, logf: log.Printf})
+		subErr <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(bus), embed, reg, "IEEE_2030_5", &hook, &historySink{store: &history, logf: log.Printf})
 	}()
 
 	waitFor(2*time.Second, func() bool {

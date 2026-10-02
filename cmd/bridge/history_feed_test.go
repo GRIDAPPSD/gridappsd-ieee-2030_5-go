@@ -70,7 +70,7 @@ func startHistoryHarnessApp(t *testing.T, history *telemetryhistory.Store, appID
 	h := &historyHarness{reg: reg, bus: &fakeControlBus{}, hook: &controlobs.Hook{}, history: history, embed: embed, done: make(chan error, 1)}
 	go func() {
 		sink := &historySink{store: history, logf: newRateLimitedLogf(historyLogInterval, time.Now, log.Printf)}
-		h.done <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(h.bus), embed, reg, appID, "sim-1", h.hook, sink)
+		h.done <- runControlSubscriber(ctx, gridappsdclient.NewSubscriber(h.bus), embed, reg, appID, h.hook, sink)
 	}()
 	waitFor(2*time.Second, func() bool {
 		h.bus.mu.Lock()
@@ -676,7 +676,7 @@ func TestRateLimitedLogfEmitsOncePerIntervalPerFormat(t *testing.T) {
 }
 
 // The destination the bridge's real publisher sends to, read at the bus:
-// the application output topic,
+// the application output topic, quoted from gridappsd-python v2026.09.0,
 // and never the application input topic the control subscriber listens on.
 func TestBridgePublisherSendsToTheApplicationOutputTopic(t *testing.T) {
 	var store telemetryhistory.Store
@@ -701,12 +701,12 @@ func TestBridgePublisherSendsToTheApplicationOutputTopic(t *testing.T) {
 	if len(bus.dests) == 0 {
 		t.Fatal("bus saw no send")
 	}
-	const want = "/topic/goss.gridappsd.application.IEEE_2030_5.X.output"
+	const want = "/topic/goss.gridappsd.IEEE_2030_5.output"
 	for _, d := range bus.dests {
 		if d != want {
 			t.Errorf("destination = %q, want %q", d, want)
 		}
-		if d == sim.ApplicationInputTopic("IEEE_2030_5", "X") {
+		if d == sim.ApplicationInputTopic("IEEE_2030_5", "") {
 			t.Errorf("destination %q is the application input topic the control subscriber reads, so status would echo back", d)
 		}
 	}
