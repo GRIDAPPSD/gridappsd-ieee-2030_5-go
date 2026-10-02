@@ -106,7 +106,7 @@ Every flag here registers an empty default, so `-h` shows nothing set.
 
 ## Telemetry
 
-The DERStatus telemetry publisher runs when `SEP2_SIMULATION_ID` is set.
+The DERStatus telemetry publisher always runs and publishes to the application output topic, so it needs no simulation id. When `SEP2_SIMULATION_ID` is set it is carried as `simulation_id` in each message; when empty the field is omitted.
 
 | Env var | Flag | Default | Notes |
 |---|---|---|---|
