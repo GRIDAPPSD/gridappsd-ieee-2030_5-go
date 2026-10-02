@@ -1,4 +1,4 @@
-.PHONY: help build run test test-shell test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
+.PHONY: help check-go build run test test-shell test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
 
 .DEFAULT_GOAL := help
 
@@ -17,12 +17,18 @@ help:                     ## Show this help
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo.Version=$(VERSION)
 
+# check-go stops a compiling target early when the installed Go is older
+# than the go line of go.mod, which the script reads so the version is
+# written once.
+check-go:
+	@scripts/check-go-version.sh go.mod
+
 # BRIDGE is the binary `build` writes and `run` starts.
 BRIDGE ?= ./bridge
 
 # build first compiles every package (the check this target always did),
 # then writes the bridge binary.
-build:                    ## Build every package and write the bridge binary
+build: check-go                    ## Build every package and write the bridge binary
 	go build -ldflags "$(LDFLAGS)" ./...
 	go build -ldflags "$(LDFLAGS)" -o $(BRIDGE) ./cmd/bridge
 
@@ -56,21 +62,21 @@ run: build                ## Build and start the bridge (needs SEP2_ADMIN_UI_KEY
 	ADMIN_UI_KEY_FILE='$(ADMIN_UI_KEY_FILE)' \
 	scripts/run-bridge.sh
 
-test:                     ## Run all Go tests
+test: check-go                     ## Run all Go tests
 	go test ./...
 
-# test-shell runs the bats suite for `make run`; it needs bats on PATH and
+# test-shell runs the bats suites for `make run` and the Go version check; it needs bats on PATH and
 # is separate from `test` so `test` stays plain `go test ./...`.
-test-shell:               ## Run the bats suite for the run target (needs bats)
-	bats test/run.bats
+test-shell:               ## Run the bats suites (needs bats)
+	bats test/run.bats test/go-version.bats
 
-test-race:            ## Run all Go tests with the race detector
+test-race: check-go            ## Run all Go tests with the race detector
 	go test -race ./...
 
 # test-integration brings up an ActiveMQ classic broker via docker compose,
 # runs the cimstomp.Client integration tests with the `integration` build
 # tag, and tears the broker down. Requires docker compose on PATH.
-test-integration:     ## Run cimstomp integration tests against ActiveMQ (needs docker compose)
+test-integration: check-go     ## Run cimstomp integration tests against ActiveMQ (needs docker compose)
 	docker compose up -d
 	# Give ActiveMQ a moment to bind 61613.
 	sleep 5
@@ -109,7 +115,7 @@ test-integration:     ## Run cimstomp integration tests against ActiveMQ (needs 
 # not bash. `nc` is present on essentially every Linux dev box; if it is
 # missing on yours, install netcat (`apt install netcat-openbsd` or
 # equivalent) before running this target.
-test-gridappsd:       ## Run cimstomp tests against a running GridAPPS-D stack
+test-gridappsd: check-go       ## Run cimstomp tests against a running GridAPPS-D stack
 	@if ! command -v nc >/dev/null 2>&1; then \
 	  echo "test-gridappsd requires nc (netcat) for the port probe."; \
 	  echo "Install with one of:"; \
@@ -164,7 +170,7 @@ SEP2_SIMULATION_ID ?=
 SEP2_FEEDER_MRID ?= _F49D1288-9EC6-47DB-8769-57E2B6EDB124
 SEP2_STOMP_ALLOW_PLAINTEXT ?= true
 
-bridge-e2e:           ## Run the bridge against a running STOMP broker
+bridge-e2e: check-go           ## Run the bridge against a running STOMP broker
 	@set -e; \
 	if ! command -v nc >/dev/null 2>&1; then \
 	  echo "bridge-e2e requires nc (netcat) for the port probe."; \
@@ -190,7 +196,7 @@ bridge-e2e:           ## Run the bridge against a running STOMP broker
 	SEP2_STOMP_ALLOW_PLAINTEXT=$(SEP2_STOMP_ALLOW_PLAINTEXT) \
 	go run ./cmd/bridge
 
-vet:                  ## Run go vet
+vet: check-go                  ## Run go vet
 	go vet ./...
 
 fmt-check:            ## Fail if gofmt would change anything
@@ -201,5 +207,5 @@ fmt-check:            ## Fail if gofmt would change anything
 	    exit 1; \
 	  fi
 
-coverage:             ## Print cimstomp test coverage
+coverage: check-go             ## Print cimstomp test coverage
 	go test -cover ./internal/cimstomp/
