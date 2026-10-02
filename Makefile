@@ -20,7 +20,7 @@ build:                    ## Build every package and write the bridge binary
 
 # run starts the bridge in the foreground against a local dev stack.
 # Override any of these on the make line, e.g.
-#   make run SEP2_SERVER_ADDR=127.0.0.1:9443 ADMIN_UI_KEY_FILE=~/bridge-admin.key
+#   make run SEP2_SERVER_ADDR=127.0.0.1:9443 ADMIN_UI_KEY_FILE=./admin.key
 # FEEDER_MRID and REGISTRATION_PIN default to empty, which leaves the
 # binary's own feeder default and no fleet-wide PIN. STOMP_ALLOW_PLAINTEXT
 # defaults true, like bridge-e2e, because the local dev brokers are plain
