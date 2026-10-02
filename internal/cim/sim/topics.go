@@ -14,6 +14,7 @@ package sim
 // /topic/ form on send and on subscribe.
 
 const (
+	baseTopic              = "/topic/goss.gridappsd"
 	baseSimulationTopic    = "/topic/goss.gridappsd.simulation"
 	baseSimulationLogTopic = "/topic/goss.gridappsd.simulation.log"
 )
@@ -35,4 +36,21 @@ func InputTopic(simID string) string {
 // completion notices) emitted by the platform.
 func LogTopic(simID string) string {
 	return baseSimulationLogTopic + "." + simID
+}
+
+// ApplicationOutputTopic returns the topic an application publishes its
+// output on. It follows gridappsd-python v2026.09.0 topics.py
+// application_output_topic: with a simulation id the form is
+// "{BASE_SIMULATION_TOPIC}.{app}.{sim}.output", without one
+// "{BASE_TOPIC}.{app}.output". An empty appID returns "" so a caller
+// that hands the result to a publisher fails closed instead of sending
+// to a malformed destination (the Python helper asserts instead).
+func ApplicationOutputTopic(appID, simID string) string {
+	if appID == "" {
+		return ""
+	}
+	if simID != "" {
+		return baseSimulationTopic + "." + appID + "." + simID + ".output"
+	}
+	return baseTopic + "." + appID + ".output"
 }

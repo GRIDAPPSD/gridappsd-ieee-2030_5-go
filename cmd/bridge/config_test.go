@@ -25,6 +25,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("SEP2_STOMP_USER", "")
 	t.Setenv("SEP2_STOMP_PASSWORD", "")
 	t.Setenv("SEP2_SIMULATION_ID", "")
+	t.Setenv("SEP2_APPLICATION_ID", "")
 	t.Setenv("SEP2_FEEDER_MRID", "")
 	t.Setenv("SEP2_PUBLISH_ON_START", "")
 	t.Setenv("SEP2_STOMP_ALLOW_PLAINTEXT", "")
@@ -1640,4 +1641,44 @@ func TestLoadConfigAcceptsEdition2018AndUnset(t *testing.T) {
 			t.Errorf("SEP2_EDITION=%q: Edition = %q", ed, cfg.AdminPlane.Edition)
 		}
 	}
+}
+
+func TestLoadConfigApplicationID(t *testing.T) {
+	t.Setenv("SEP2_APPLICATION_ID", "")
+
+	t.Run("default", func(t *testing.T) {
+		cfg, err := loadConfig(nil)
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.ApplicationID != "IEEE_2030_5" {
+			t.Errorf("ApplicationID = %q, want IEEE_2030_5", cfg.ApplicationID)
+		}
+	})
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("SEP2_APPLICATION_ID", "envapp")
+		cfg, err := loadConfig(nil)
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.ApplicationID != "envapp" {
+			t.Errorf("ApplicationID = %q, want envapp", cfg.ApplicationID)
+		}
+	})
+	t.Run("flag shadows env", func(t *testing.T) {
+		t.Setenv("SEP2_APPLICATION_ID", "envapp")
+		cfg, err := loadConfig([]string{"-application-id=flagapp"})
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.ApplicationID != "flagapp" {
+			t.Errorf("ApplicationID = %q, want flagapp", cfg.ApplicationID)
+		}
+	})
+	t.Run("empty flag is refused", func(t *testing.T) {
+		_, err := loadConfig([]string{"-application-id="})
+		if err == nil || !strings.Contains(err.Error(), "SEP2_APPLICATION_ID") {
+			t.Errorf("err = %v, want one naming SEP2_APPLICATION_ID", err)
+		}
+	})
 }

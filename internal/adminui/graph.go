@@ -13,8 +13,10 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
-// panelGraphInput charts the input topic: the DERStatus reports the
-// bridge's own publisher puts on the bus.
+// panelGraphInput charts device status: the DERStatus reports the
+// bridge's own publisher puts on the application output topic, plus
+// commanded setpoints from the control path. The panel id predates the
+// rename and is kept so existing links hold.
 const panelGraphInput = "gridappsd-graph-input"
 
 // socAttribute is the history series attribute that carries battery state

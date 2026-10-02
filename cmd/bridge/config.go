@@ -49,6 +49,12 @@ type config struct {
 	// validates without one.
 	SimulationID string
 
+	// ApplicationID names this bridge on the GridAPPS-D bus. The status
+	// publisher sends to the application output topic built from it and
+	// SimulationID. Defaults to defaultApplicationID, the service name
+	// the Python service used.
+	ApplicationID string
+
 	// FeederMRID identifies the CIM feeder model to query for DERs.
 	// Defaults to the IEEE 123-bus feeder shipped with gridappsd-docker.
 	FeederMRID string
@@ -373,6 +379,7 @@ const (
 	defaultSTOMPUser     = "system"
 	defaultSTOMPPassword = "manager"
 	defaultFeederMRID    = "_C1C3E687-6FFD-C753-582B-632A27E28507"
+	defaultApplicationID = "IEEE_2030_5"
 
 	// defaultSEP2ServerAddr binds the embedded IEEE 2030.5 mTLS listener
 	// to loopback only by default; see config.SEP2ServerAddr's doc
@@ -415,6 +422,7 @@ func loadConfig(args []string) (config, error) {
 	cfg := config{
 		STOMPAddr:               getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
 		SimulationID:            os.Getenv("SEP2_SIMULATION_ID"),
+		ApplicationID:           getenvDefault("SEP2_APPLICATION_ID", defaultApplicationID),
 		FeederMRID:              getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
 		SEP2ServerAddr:          getenvDefault("SEP2_SERVER_ADDR", defaultSEP2ServerAddr),
 		SEP2ServerCertDir:       getenvDefault("SEP2_SERVER_CERT_DIR", defaultSEP2ServerCertDir),
@@ -494,6 +502,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&stompUserFlag, "stomp-user", "", "STOMP login user (env: SEP2_STOMP_USER)")
 	fs.StringVar(&stompPasswordFlag, "stomp-password", "", "STOMP login password (env: SEP2_STOMP_PASSWORD)")
 	fs.StringVar(&cfg.SimulationID, "simulation-id", cfg.SimulationID, "GridAPPS-D simulation_id (empty disables sim subscribe)")
+	fs.StringVar(&cfg.ApplicationID, "application-id", cfg.ApplicationID, "GridAPPS-D application id the status publisher's output topic is built from")
 	fs.StringVar(&cfg.FeederMRID, "feeder-mrid", cfg.FeederMRID, "CIM feeder mRID to enumerate DERs from")
 	fs.BoolVar(&cfg.PublishOnStart, "publish-on-start", cfg.PublishOnStart, "publish a smoke-test DifferenceBuilder envelope after registry bootstrap")
 	fs.BoolVar(&cfg.AllowPlaintext, "stomp-allow-plaintext", cfg.AllowPlaintext, "dial the GridAPPS-D broker over plain TCP instead of TLS (dev-only; default false)")
@@ -1231,6 +1240,9 @@ func (c config) validate() error {
 	}
 	if c.FeederMRID == "" {
 		return errors.New("config: SEP2_FEEDER_MRID / -feeder-mrid is required")
+	}
+	if c.ApplicationID == "" {
+		return errors.New("config: SEP2_APPLICATION_ID / -application-id is required")
 	}
 	if c.PublishOnStart && c.SimulationID == "" {
 		return errors.New("config: -publish-on-start requires SEP2_SIMULATION_ID")

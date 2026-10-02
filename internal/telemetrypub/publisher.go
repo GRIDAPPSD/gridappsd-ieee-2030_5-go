@@ -69,13 +69,10 @@ type Config struct {
 	// Destination is the bus destination every aggregate is published
 	// to. Required.
 	//
-	// THIS IS THE DESTINATION SEAM. The bridge passes the synthetic
-	// simulation-input topic (internal/cim/sim.InputTopic) today, which
-	// is what the removed per-PUT relay published to. The agreed
-	// eventual target is an application output topic, deferred pending
-	// confirmation of who subscribes. Nothing in this package derives or
-	// inspects the destination, so retargeting is a one-line change at
-	// the call site in cmd/bridge.
+	// THIS IS THE DESTINATION SEAM. The bridge passes the application
+	// output topic (internal/cim/sim.ApplicationOutputTopic). Nothing in
+	// this package derives or inspects the destination, so retargeting
+	// is a one-line change at the call site in cmd/bridge.
 	Destination string
 
 	// Build renders one interval's devices into the aggregate message.

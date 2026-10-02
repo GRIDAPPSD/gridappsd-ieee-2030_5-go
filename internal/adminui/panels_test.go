@@ -157,7 +157,7 @@ func TestUIListsTheSevenGridappsdTabs(t *testing.T) {
 		{"gridappsd-served", "Served resources"},
 		{"gridappsd-clients", "Connected clients"},
 		{"gridappsd-controlflow", "Control flow"},
-		{"gridappsd-graph-input", "Graph: input topic"},
+		{"gridappsd-graph-input", "Graph: device status"},
 	}
 	if len(manifest) != len(want) {
 		t.Fatalf("manifest = %+v, want %d panels", manifest, len(want))

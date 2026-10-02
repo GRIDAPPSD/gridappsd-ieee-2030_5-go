@@ -18,6 +18,7 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -189,9 +190,15 @@ type switchBus struct {
 	down     atomic.Bool
 	tried    atomic.Int64
 	accepted atomic.Int64
+
+	destMu sync.Mutex
+	dests  []string
 }
 
-func (b *switchBus) Send(context.Context, string, string, []byte) error {
+func (b *switchBus) Send(_ context.Context, dest, _ string, _ []byte) error {
+	b.destMu.Lock()
+	b.dests = append(b.dests, dest)
+	b.destMu.Unlock()
 	b.tried.Add(1)
 	if b.down.Load() {
 		return errors.New("bus down")
@@ -275,7 +282,7 @@ func TestBridgePublisherChartsStatusOnlyAfterTheBusAccepts(t *testing.T) {
 	src.set(socSnapshot("bat-1", 6500), socSnapshot("bat-2", 3000))
 	bus := &switchBus{}
 	bus.down.Store(true)
-	pub, err := newStatusPublisher(config{SimulationID: "sim-1", SEP2TelemetryInterval: 5 * time.Millisecond},
+	pub, err := newStatusPublisher(config{SimulationID: "sim-1", ApplicationID: defaultApplicationID, SEP2TelemetryInterval: 5 * time.Millisecond},
 		src, bus, h.sink, h.reg)
 	if err != nil {
 		t.Fatalf("newStatusPublisher: %v", err)
@@ -658,5 +665,42 @@ func TestRateLimitedLogfEmitsOncePerIntervalPerFormat(t *testing.T) {
 	want := []string{"fault A 1", "fault B 3", "fault A 5 (2 similar suppressed)"}
 	if fmt.Sprint(lines) != fmt.Sprint(want) {
 		t.Errorf("lines = %q, want %q", lines, want)
+	}
+}
+
+// The destination the bridge's real publisher sends to, read at the bus:
+// the application output topic, quoted from gridappsd-python v2026.09.0,
+// and never the simulation input topic the control subscriber listens on.
+func TestBridgePublisherSendsToTheApplicationOutputTopic(t *testing.T) {
+	var store telemetryhistory.Store
+	h := newSinkHarness(t, &store, "bat-1")
+	src := &mutableStatusSource{}
+	src.set(socSnapshot("bat-1", 6500))
+	bus := &switchBus{}
+	pub, err := newStatusPublisher(config{SimulationID: "X", ApplicationID: "IEEE_2030_5", SEP2TelemetryInterval: 5 * time.Millisecond},
+		src, bus, h.sink, h.reg)
+	if err != nil {
+		t.Fatalf("newStatusPublisher: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- pub.Run(ctx) }()
+	waitFor(3*time.Second, func() bool { return bus.accepted.Load() >= 1 })
+	cancel()
+	<-done
+
+	bus.destMu.Lock()
+	defer bus.destMu.Unlock()
+	if len(bus.dests) == 0 {
+		t.Fatal("bus saw no send")
+	}
+	const want = "/topic/goss.gridappsd.simulation.IEEE_2030_5.X.output"
+	for _, d := range bus.dests {
+		if d != want {
+			t.Errorf("destination = %q, want %q", d, want)
+		}
+		if d == sim.InputTopic("X") {
+			t.Errorf("destination %q is the simulation input topic the control subscriber reads, so status would echo back", d)
+		}
 	}
 }
