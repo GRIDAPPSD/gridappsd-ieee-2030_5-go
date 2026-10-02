@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
+
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
@@ -118,5 +120,43 @@ func TestNotifySizing(t *testing.T) {
 		if w != tc.wantWorkers || q != tc.wantLen {
 			t.Errorf("%s: notifySizing = (%d, %d), want (%d, %d)", tc.name, w, q, tc.wantWorkers, tc.wantLen)
 		}
+	}
+}
+
+// These two tests swap package seams, so they are not parallel.
+func TestConfiguredSweepIntervalReachesTheTicker(t *testing.T) {
+	var got time.Duration
+	orig := newSweepTicker
+	newSweepTicker = func(d time.Duration) *time.Ticker { got = d; return time.NewTicker(time.Hour) }
+	t.Cleanup(func() { newSweepTicker = orig })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	(&Embed{sweepInterval: 7 * time.Second}).runControlSweep(ctx)
+	if got != 7*time.Second {
+		t.Errorf("ticker period = %s, want 7s", got)
+	}
+	(&Embed{}).runControlSweep(ctx)
+	if got != 10*time.Second {
+		t.Errorf("default ticker period = %s, want 10s", got)
+	}
+}
+
+func TestConfiguredNotifySizingReachesTheNotifier(t *testing.T) {
+	var gotWorkers, gotQueue int
+	orig := newNotifier
+	newNotifier = func(subs coresub.SubscriptionLister, workers, queueSize int, allowLoopback bool) *coresub.Manager {
+		gotWorkers, gotQueue = workers, queueSize
+		return orig(subs, workers, queueSize, allowLoopback)
+	}
+	t.Cleanup(func() { newNotifier = orig })
+
+	newTuningEmbed(t, Config{EnableCCM: true, NotifyWorkers: 9, NotifyQueueSize: 250})
+	if gotWorkers != 9 || gotQueue != 250 {
+		t.Errorf("notifier built with workers=%d queue=%d, want 9 and 250", gotWorkers, gotQueue)
+	}
+	newTuningEmbed(t, Config{EnableCCM: true})
+	if gotWorkers != 4 || gotQueue != 100 {
+		t.Errorf("default notifier built with workers=%d queue=%d, want 4 and 100", gotWorkers, gotQueue)
 	}
 }

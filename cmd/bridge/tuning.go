@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
@@ -91,45 +92,54 @@ type tuningKnob struct {
 	flag, env, help string
 	dur             *time.Duration
 	count           *int
+	minDur, maxDur  time.Duration
+	minCount        int
+	maxCount        int
 	raw             string
 }
 
 func (k *tuningKnob) name() string { return "-" + k.flag + " / " + k.env }
 
 func tuningKnobs(t *tuning) []*tuningKnob {
-	d := func(flag, env, help string, p *time.Duration) *tuningKnob {
-		return &tuningKnob{flag: flag, env: env, help: help, dur: p}
+	d := func(flag, env, help string, p *time.Duration, lo, hi time.Duration) *tuningKnob {
+		return &tuningKnob{flag: flag, env: env, help: help, dur: p, minDur: lo, maxDur: hi}
 	}
-	n := func(flag, env, help string, p *int) *tuningKnob {
-		return &tuningKnob{flag: flag, env: env, help: help, count: p}
+	n := func(flag, env, help string, p *int, lo, hi int) *tuningKnob {
+		return &tuningKnob{flag: flag, env: env, help: help, count: p, minCount: lo, maxCount: hi}
 	}
+	const (
+		ms = time.Millisecond
+		s  = time.Second
+		m  = time.Minute
+		h  = time.Hour
+	)
 	return []*tuningKnob{
-		d("stomp-probe-interval", "SEP2_STOMP_PROBE_INTERVAL", "gap between broker liveness probes as a Go duration (default 5s)", &t.ProbeInterval),
-		d("stomp-probe-timeout", "SEP2_STOMP_PROBE_TIMEOUT", "time one liveness probe may take before the bus is declared dead (default 10s)", &t.ProbeTimeout),
-		d("stomp-reconnect-backoff-base", "SEP2_STOMP_RECONNECT_BACKOFF_BASE", "first delay between broker reconnect attempts, doubling up to the max (default 500ms)", &t.ReconnectBackoffBase),
-		d("stomp-reconnect-backoff-max", "SEP2_STOMP_RECONNECT_BACKOFF_MAX", "longest delay between broker reconnect attempts (default 10s)", &t.ReconnectBackoffMax),
-		d("stomp-unsubscribe-timeout", "SEP2_STOMP_UNSUBSCRIBE_TIMEOUT", "time to wait for the broker to acknowledge an unsubscribe at shutdown (default 5s)", &t.UnsubscribeTimeout),
-		d("stomp-heartbeat", "SEP2_STOMP_HEARTBEAT", "STOMP heartbeat interval offered to the broker (default 10s)", &t.Heartbeat),
-		d("stomp-connect-timeout", "SEP2_STOMP_CONNECT_TIMEOUT", "time allowed for the broker dial and token bootstrap (default 15s)", &t.ConnectTimeout),
-		d("cim-query-timeout", "SEP2_CIM_QUERY_TIMEOUT", "time allowed for the start-up CIM feeder queries (default 30s)", &t.CIMQueryTimeout),
-		d("history-log-interval", "SEP2_HISTORY_LOG_INTERVAL", "minimum gap between two history log lines of the same kind (default 30s)", &t.HistoryLogInterval),
+		d("stomp-probe-interval", "SEP2_STOMP_PROBE_INTERVAL", "gap between broker liveness probes as a Go duration (default 5s)", &t.ProbeInterval, s, h),
+		d("stomp-probe-timeout", "SEP2_STOMP_PROBE_TIMEOUT", "time one liveness probe may take before the bus is declared dead (default 10s)", &t.ProbeTimeout, s, 5*m),
+		d("stomp-reconnect-backoff-base", "SEP2_STOMP_RECONNECT_BACKOFF_BASE", "first delay between broker reconnect attempts, doubling up to the max (default 500ms)", &t.ReconnectBackoffBase, 100*ms, m),
+		d("stomp-reconnect-backoff-max", "SEP2_STOMP_RECONNECT_BACKOFF_MAX", "longest delay between broker reconnect attempts (default 10s)", &t.ReconnectBackoffMax, s, 10*m),
+		d("stomp-unsubscribe-timeout", "SEP2_STOMP_UNSUBSCRIBE_TIMEOUT", "time to wait for the broker to acknowledge an unsubscribe at shutdown (default 5s)", &t.UnsubscribeTimeout, s, 5*m),
+		d("stomp-heartbeat", "SEP2_STOMP_HEARTBEAT", "STOMP heartbeat interval offered to the broker (default 10s)", &t.Heartbeat, s, 5*m),
+		d("stomp-connect-timeout", "SEP2_STOMP_CONNECT_TIMEOUT", "time allowed for the broker dial and token bootstrap (default 15s)", &t.ConnectTimeout, s, 5*m),
+		d("cim-query-timeout", "SEP2_CIM_QUERY_TIMEOUT", "time allowed for the start-up CIM feeder queries (default 30s)", &t.CIMQueryTimeout, s, 10*m),
+		d("history-log-interval", "SEP2_HISTORY_LOG_INTERVAL", "minimum gap between two history log lines of the same kind (default 30s)", &t.HistoryLogInterval, s, h),
 
-		d("sep2-server-read-header-timeout", "SEP2_SERVER_READ_HEADER_TIMEOUT", "protocol listener request header read timeout (default 10s)", &t.ServerReadHeaderTimeout),
-		d("sep2-server-read-timeout", "SEP2_SERVER_READ_TIMEOUT", "protocol listener full request read timeout (default 30s)", &t.ServerReadTimeout),
-		d("sep2-server-write-timeout", "SEP2_SERVER_WRITE_TIMEOUT", "protocol listener response write timeout (default 30s)", &t.ServerWriteTimeout),
-		d("sep2-server-idle-timeout", "SEP2_SERVER_IDLE_TIMEOUT", "protocol listener keep-alive idle timeout (default 2m)", &t.ServerIdleTimeout),
-		d("sep2-server-shutdown-timeout", "SEP2_SERVER_SHUTDOWN_TIMEOUT", "protocol listener graceful drain bound at shutdown (default 5s)", &t.ServerShutdownTimeout),
+		d("sep2-server-read-header-timeout", "SEP2_SERVER_READ_HEADER_TIMEOUT", "protocol listener request header read timeout (default 10s)", &t.ServerReadHeaderTimeout, s, h),
+		d("sep2-server-read-timeout", "SEP2_SERVER_READ_TIMEOUT", "protocol listener full request read timeout (default 30s)", &t.ServerReadTimeout, s, h),
+		d("sep2-server-write-timeout", "SEP2_SERVER_WRITE_TIMEOUT", "protocol listener response write timeout (default 30s)", &t.ServerWriteTimeout, s, h),
+		d("sep2-server-idle-timeout", "SEP2_SERVER_IDLE_TIMEOUT", "protocol listener keep-alive idle timeout (default 2m)", &t.ServerIdleTimeout, s, h),
+		d("sep2-server-shutdown-timeout", "SEP2_SERVER_SHUTDOWN_TIMEOUT", "protocol listener graceful drain bound at shutdown (default 5s)", &t.ServerShutdownTimeout, s, 5*m),
 
-		d("admin-ui-read-header-timeout", "SEP2_ADMIN_UI_READ_HEADER_TIMEOUT", "admin UI request header read timeout (default 5s)", &t.AdminReadHeaderTimeout),
-		d("admin-ui-read-timeout", "SEP2_ADMIN_UI_READ_TIMEOUT", "admin UI full request read timeout (default 10s)", &t.AdminReadTimeout),
-		d("admin-ui-write-timeout", "SEP2_ADMIN_UI_WRITE_TIMEOUT", "admin UI response write timeout (default 10s)", &t.AdminWriteTimeout),
-		d("admin-ui-idle-timeout", "SEP2_ADMIN_UI_IDLE_TIMEOUT", "admin UI keep-alive idle timeout (default 1m)", &t.AdminIdleTimeout),
-		d("admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", "admin UI graceful drain bound at shutdown (default 5s)", &t.AdminShutdownTimeout),
+		d("admin-ui-read-header-timeout", "SEP2_ADMIN_UI_READ_HEADER_TIMEOUT", "admin UI request header read timeout (default 5s)", &t.AdminReadHeaderTimeout, s, h),
+		d("admin-ui-read-timeout", "SEP2_ADMIN_UI_READ_TIMEOUT", "admin UI full request read timeout (default 10s)", &t.AdminReadTimeout, s, h),
+		d("admin-ui-write-timeout", "SEP2_ADMIN_UI_WRITE_TIMEOUT", "admin UI response write timeout (default 10s)", &t.AdminWriteTimeout, s, h),
+		d("admin-ui-idle-timeout", "SEP2_ADMIN_UI_IDLE_TIMEOUT", "admin UI keep-alive idle timeout (default 1m)", &t.AdminIdleTimeout, s, h),
+		d("admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", "admin UI graceful drain bound at shutdown (default 5s)", &t.AdminShutdownTimeout, s, 5*m),
 
-		d("sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", "how often ended DERControls are expired fleet-wide (default 10s)", &t.ControlSweepInterval),
+		d("sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", "how often ended DERControls are expired fleet-wide (default 10s)", &t.ControlSweepInterval, s, h),
 
-		n("sep2-notify-workers", "SEP2_NOTIFY_WORKERS", "subscription notification worker count (default 4)", &t.NotifyWorkers),
-		n("sep2-notify-queue-size", "SEP2_NOTIFY_QUEUE_SIZE", "subscription notification queue length (default 100)", &t.NotifyQueueSize),
+		n("sep2-notify-workers", "SEP2_NOTIFY_WORKERS", "subscription notification worker count (default 4)", &t.NotifyWorkers, 1, 1024),
+		n("sep2-notify-queue-size", "SEP2_NOTIFY_QUEUE_SIZE", "subscription notification queue length (default 100)", &t.NotifyQueueSize, 1, 100000),
 	}
 }
 
@@ -159,22 +169,34 @@ func resolveTuning(knobs []*tuningKnob) error {
 			if err != nil {
 				return fmt.Errorf("config: %s value %q must be a Go duration such as \"15s\" or \"1m\"", k.name(), raw)
 			}
-			if v <= 0 {
-				return fmt.Errorf("config: %s value %q must be greater than zero", k.name(), raw)
+			if v < k.minDur || v > k.maxDur {
+				return fmt.Errorf("config: %s value %q must be between %s and %s", k.name(), raw, fmtDuration(k.minDur), fmtDuration(k.maxDur))
 			}
 			*k.dur = v
 			continue
 		}
 		v, err := strconv.Atoi(raw)
 		if err != nil {
-			return fmt.Errorf("config: %s value %q must be a positive integer", k.name(), raw)
+			return fmt.Errorf("config: %s value %q must be an integer", k.name(), raw)
 		}
-		if v <= 0 {
-			return fmt.Errorf("config: %s value %q must be greater than zero", k.name(), raw)
+		if v < k.minCount || v > k.maxCount {
+			return fmt.Errorf("config: %s value %q must be between %d and %d", k.name(), raw, k.minCount, k.maxCount)
 		}
 		*k.count = v
 	}
 	return nil
+}
+
+// fmtDuration prints d the way an operator writes it: 1h, not 1h0m0s.
+func fmtDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = s[:len(s)-2]
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = s[:len(s)-2]
+	}
+	return s
 }
 
 // validate refuses a combination no single knob rules out.

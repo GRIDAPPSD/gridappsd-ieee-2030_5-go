@@ -274,3 +274,105 @@ func TestTuningReachesEmbedAndAdminConfig(t *testing.T) {
 		t.Errorf("admin timeouts = %v/%v/%v/%v/%v, want 41s..45s", ac.ReadHeaderTimeout, ac.ReadTimeout, ac.WriteTimeout, ac.IdleTimeout, ac.ShutdownTimeout)
 	}
 }
+
+// tuningRanges is the allowed range of each knob, as the operator would
+// write it. A value at either end is accepted; one step outside is refused.
+var tuningRanges = []struct {
+	flag, env, lo, hi, belowLo, aboveHi string
+}{
+	{"stomp-probe-interval", "SEP2_STOMP_PROBE_INTERVAL", "1s", "1h", "999ms", "3601s"},
+	{"stomp-probe-timeout", "SEP2_STOMP_PROBE_TIMEOUT", "1s", "5m", "1ms", "301s"},
+	{"stomp-reconnect-backoff-base", "SEP2_STOMP_RECONNECT_BACKOFF_BASE", "100ms", "1m", "99ms", "61s"},
+	{"stomp-reconnect-backoff-max", "SEP2_STOMP_RECONNECT_BACKOFF_MAX", "1s", "10m", "999ms", "601s"},
+	{"stomp-unsubscribe-timeout", "SEP2_STOMP_UNSUBSCRIBE_TIMEOUT", "1s", "5m", "999ms", "301s"},
+	{"stomp-heartbeat", "SEP2_STOMP_HEARTBEAT", "1s", "5m", "999us", "1h"},
+	{"stomp-connect-timeout", "SEP2_STOMP_CONNECT_TIMEOUT", "1s", "5m", "999ms", "301s"},
+	{"cim-query-timeout", "SEP2_CIM_QUERY_TIMEOUT", "1s", "10m", "999ms", "601s"},
+	{"history-log-interval", "SEP2_HISTORY_LOG_INTERVAL", "1s", "1h", "999ms", "3601s"},
+	{"sep2-server-read-header-timeout", "SEP2_SERVER_READ_HEADER_TIMEOUT", "1s", "1h", "999ms", "3601s"},
+	{"sep2-server-read-timeout", "SEP2_SERVER_READ_TIMEOUT", "1s", "1h", "999ms", "3601s"},
+	{"sep2-server-write-timeout", "SEP2_SERVER_WRITE_TIMEOUT", "1s", "1h", "999ms", "3601s"},
+	{"sep2-server-idle-timeout", "SEP2_SERVER_IDLE_TIMEOUT", "1s", "1h", "999ms", "3601s"},
+	{"sep2-server-shutdown-timeout", "SEP2_SERVER_SHUTDOWN_TIMEOUT", "1s", "5m", "999ms", "301s"},
+	{"admin-ui-read-header-timeout", "SEP2_ADMIN_UI_READ_HEADER_TIMEOUT", "1s", "1h", "999ms", "3601s"},
+	{"admin-ui-read-timeout", "SEP2_ADMIN_UI_READ_TIMEOUT", "1s", "1h", "999ms", "3601s"},
+	{"admin-ui-write-timeout", "SEP2_ADMIN_UI_WRITE_TIMEOUT", "1s", "1h", "999ms", "3601s"},
+	{"admin-ui-idle-timeout", "SEP2_ADMIN_UI_IDLE_TIMEOUT", "1s", "1h", "999ms", "3601s"},
+	{"admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", "1s", "5m", "999ms", "301s"},
+	{"sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", "1s", "1h", "999ms", "3601s"},
+	{"sep2-notify-workers", "SEP2_NOTIFY_WORKERS", "1", "1024", "0", "1025"},
+	{"sep2-notify-queue-size", "SEP2_NOTIFY_QUEUE_SIZE", "1", "100000", "0", "100001"},
+}
+
+func TestTuningRangesAreEnforcedAtBothEnds(t *testing.T) {
+	cases := map[string]tuningCase{}
+	for _, tc := range tuningCases() {
+		cases[tc.flag] = tc
+	}
+	if len(tuningRanges) != len(cases) {
+		t.Fatalf("range table has %d knobs, tuning table has %d", len(tuningRanges), len(cases))
+	}
+	for _, r := range tuningRanges {
+		t.Run(r.flag, func(t *testing.T) {
+			// Pair a backoff knob with a partner that keeps base <= max.
+			extra := []string{}
+			if r.flag == "stomp-reconnect-backoff-max" {
+				extra = []string{"-stomp-reconnect-backoff-base=100ms"}
+			}
+			if r.flag == "stomp-reconnect-backoff-base" {
+				extra = []string{"-stomp-reconnect-backoff-max=10m"}
+			}
+			for _, ok := range []string{r.lo, r.hi} {
+				clearTuningEnv(t)
+				if _, err := loadConfig(append([]string{"-" + r.flag + "=" + ok}, extra...)); err != nil {
+					t.Errorf("%s=%s refused: %v", r.flag, ok, err)
+				}
+			}
+			for _, bad := range []string{r.belowLo, r.aboveHi} {
+				clearTuningEnv(t)
+				_, err := loadConfig(append([]string{"-" + r.flag + "=" + bad}, extra...))
+				if err == nil {
+					t.Errorf("%s=%s accepted, want a range refusal", r.flag, bad)
+					continue
+				}
+				for _, want := range []string{"-" + r.flag, r.env, "between " + r.lo + " and " + r.hi} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("%s=%s: error %q does not contain %q", r.flag, bad, err, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTuningDefaultsLieInsideTheirRanges(t *testing.T) {
+	clearTuningEnv(t)
+	if _, err := loadConfig(nil); err != nil {
+		t.Fatalf("defaults refused: %v", err)
+	}
+	for _, k := range tuningKnobs(&tuning{}) {
+		if k.dur != nil && (k.minDur <= 0 || k.maxDur < k.minDur) {
+			t.Errorf("%s has no usable duration range", k.flag)
+		}
+		if k.count != nil && (k.minCount <= 0 || k.maxCount < k.minCount) {
+			t.Errorf("%s has no usable count range", k.flag)
+		}
+	}
+}
+
+func TestTuningHeartbeatEndsAreEnforced(t *testing.T) {
+	clearTuningEnv(t)
+	for _, v := range []string{"500us", "1h"} {
+		if _, err := loadConfig([]string{"-stomp-heartbeat=" + v}); err == nil {
+			t.Errorf("-stomp-heartbeat=%s accepted", v)
+		}
+	}
+}
+
+func TestTuningNotifyQueueCeilingStopsAMakechanPanic(t *testing.T) {
+	clearTuningEnv(t)
+	_, err := loadConfig([]string{"-sep2-notify-queue-size=9223372036854775807"})
+	if err == nil || !strings.Contains(err.Error(), "SEP2_NOTIFY_QUEUE_SIZE") {
+		t.Fatalf("max-int queue size: err = %v, want a refusal naming SEP2_NOTIFY_QUEUE_SIZE", err)
+	}
+}

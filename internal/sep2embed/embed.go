@@ -389,7 +389,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	workers, queueSize := notifySizing(cfg)
-	notifier := buildNotifier(stores.Subscriptions, workers, queueSize, cfg.NotifyAllowLoopback)
+	notifier := newNotifier(stores.Subscriptions, workers, queueSize, cfg.NotifyAllowLoopback)
 
 	// postRate reaches the wire through server-go's POST /mup handler, not
 	// through seeding: this bridge creates no MirrorUsagePoints, so
@@ -691,6 +691,13 @@ func (e *Embed) Run(ctx context.Context) error {
 // proportion, so the default stays at ten seconds.
 const DefaultControlSweepInterval = 10 * time.Second
 
+// Seams for tests that assert the configured values reach the ticker and
+// the notifier, which expose neither.
+var (
+	newSweepTicker = time.NewTicker
+	newNotifier    = buildNotifier
+)
+
 func (e *Embed) controlSweepInterval() time.Duration {
 	return durationOrDefault(e.sweepInterval, DefaultControlSweepInterval)
 }
@@ -710,7 +717,7 @@ func (e *Embed) controlSweepInterval() time.Duration {
 // subsequent event in service forever on the strength of one bad record, and
 // the error is surfaced rather than swallowed so an operator sees it.
 func (e *Embed) runControlSweep(ctx context.Context) {
-	ticker := time.NewTicker(e.controlSweepInterval())
+	ticker := newSweepTicker(e.controlSweepInterval())
 	defer ticker.Stop()
 
 	for {
