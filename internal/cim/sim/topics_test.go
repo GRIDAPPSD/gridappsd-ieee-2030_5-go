@@ -91,3 +91,28 @@ func TestTopicsAreTopicForm(t *testing.T) {
 		})
 	}
 }
+
+// The expected strings are what gridappsd-python v2026.09.0 topics.py
+// application_output_topic builds:
+//
+//	if simulation_id:
+//	    return f"{BASE_SIMULATION_TOPIC}.{application_id}.{simulation_id}.output"
+//	return f"{BASE_TOPIC}.{application_id}.output"
+func TestApplicationOutputTopic(t *testing.T) {
+	cases := []struct {
+		name, appID, simID, want string
+	}{
+		{"default app with sim", "IEEE_2030_5", "X", "/topic/goss.gridappsd.simulation.IEEE_2030_5.X.output"},
+		{"mrid style sim", "IEEE_2030_5", "_49AD8E07", "/topic/goss.gridappsd.simulation.IEEE_2030_5._49AD8E07.output"},
+		{"custom app", "my_app", "12345", "/topic/goss.gridappsd.simulation.my_app.12345.output"},
+		{"no sim id", "IEEE_2030_5", "", "/topic/goss.gridappsd.IEEE_2030_5.output"},
+		{"empty app fails closed", "", "X", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ApplicationOutputTopic(tc.appID, tc.simID); got != tc.want {
+				t.Errorf("ApplicationOutputTopic(%q, %q) = %q, want %q", tc.appID, tc.simID, got, tc.want)
+			}
+		})
+	}
+}

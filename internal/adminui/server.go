@@ -165,7 +165,7 @@ type Sources struct {
 	Stomp    StompSource
 	Clients  ClientObserverSource
 	Protocol ProtocolSource
-	// History holds the input topic's samples, read by the graph panel.
+	// History holds the device status samples, read by the graph panel.
 	History HistorySource
 }
 

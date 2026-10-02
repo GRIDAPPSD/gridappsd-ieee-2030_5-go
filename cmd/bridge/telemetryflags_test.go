@@ -108,7 +108,7 @@ func TestTelemetryIntervalRejectsUnusableValues(t *testing.T) {
 
 // TestTelemetryPublisherConfigMapping asserts the projection onto
 // telemetrypub.Config, including the two deferred seams: the
-// destination is the synthetic simulation-input topic and nothing else,
+// destination is the application output topic and nothing else,
 // and the builder is supplied by this layer rather than assumed inside
 // the publisher.
 func TestTelemetryPublisherConfigMapping(t *testing.T) {
@@ -116,6 +116,7 @@ func TestTelemetryPublisherConfigMapping(t *testing.T) {
 
 	cfg := config{
 		SimulationID:                  "sim-123",
+		ApplicationID:                 "IEEE_2030_5",
 		SEP2TelemetryInterval:         30 * time.Second,
 		SEP2TelemetryPublishUnchanged: true,
 	}
@@ -124,9 +125,13 @@ func TestTelemetryPublisherConfigMapping(t *testing.T) {
 
 	got := telemetryPublisherConfig(cfg, src, bus)
 
-	wantDest := sim.InputTopic("sim-123")
+	// Quoted from gridappsd-python v2026.09.0 application_output_topic.
+	const wantDest = "/topic/goss.gridappsd.simulation.IEEE_2030_5.sim-123.output"
 	if got.Destination != wantDest {
 		t.Errorf("Destination = %q, want %q", got.Destination, wantDest)
+	}
+	if got.Destination == sim.InputTopic("sim-123") {
+		t.Errorf("Destination = %q must not be the simulation input topic", got.Destination)
 	}
 	if strings.Contains(got.Destination, "goss.gridappsd.process") {
 		t.Errorf("Destination = %q must never be a platform process queue", got.Destination)

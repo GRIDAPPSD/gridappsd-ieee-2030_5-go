@@ -782,12 +782,11 @@ func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, polic
 // be asserted by a unit test with no broker and no listener.
 //
 // Destination is the ONLY place this bridge names the telemetry topic.
-// It reuses internal/cim/sim.InputTopic, exactly as the removed per-PUT
-// relay did, which is a synthetic simulation id supplied by the
-// operator, never a real platform simulation and never a
-// goss.gridappsd.process.* destination. The agreed eventual target is an
-// application output topic; changing it is this one line, because
-// nothing inside telemetrypub derives or inspects the destination.
+// It uses internal/cim/sim.ApplicationOutputTopic, the topic the Python
+// service published to, never a goss.gridappsd.process.* destination
+// and never the simulation input topic the control subscriber reads.
+// Changing it is this one line, because nothing inside telemetrypub
+// derives or inspects the destination.
 //
 // Build likewise names the wire shape in exactly one place. It is the
 // diff envelope today (identical per device to what the per-PUT relay
@@ -800,7 +799,7 @@ func telemetryPublisherConfig(cfg config, src telemetrypub.StatusSource, bus tel
 	return telemetrypub.Config{
 		Source:           src,
 		Bus:              bus,
-		Destination:      sim.InputTopic(cfg.SimulationID),
+		Destination:      sim.ApplicationOutputTopic(cfg.ApplicationID, cfg.SimulationID),
 		Build:            telemetrypub.DiffMessageBuilder(cfg.SimulationID),
 		Interval:         cfg.SEP2TelemetryInterval,
 		PublishUnchanged: cfg.SEP2TelemetryPublishUnchanged,
@@ -1467,46 +1466,23 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 	}
 }
 
-// runControlSubscriber subscribes to the same differences destination
-// this bridge's own -publish-on-start smoke test and the UP-path
-// telemetry publisher (telemetryPublisherConfig's Destination)
-// already publish to (internal/cim/sim.InputTopic), decodes each frame
-// as a diff.Message, and applies every forward difference to embed via
+// runControlSubscriber subscribes to the simulation input topic
+// (internal/cim/sim.InputTopic), decodes each frame as a diff.Message,
+// and applies every forward difference to embed via
 // sep2embed.Embed.ApplyControlDelta.
 //
-// Topic-convention caveat: the Python upstream
-// reference this bridge reproduces
-// (ieee_2030_5/adapters/gridappsd_adapter.py:_input_detected, in the
-// gridappsd-2030_5 project) subscribes to a dedicated
+// Topic-convention caveat: the Python upstream reference this bridge
+// reproduces (ieee_2030_5/adapters/gridappsd_adapter.py:_input_detected,
+// in the gridappsd-2030_5 project) subscribes to a dedicated
 // application-input topic (topics.application_input_topic), not the
-// shared simulation-input topic used here. This bridge has no Go
-// equivalent of that helper yet, and reusing sim.InputTopic is a
-// deliberate, documented interim choice rather than an invented
-// convention: it is the only "differences" destination this codebase
-// already has. Confirming the production topic convention (shared
-// sim-input vs. a dedicated per-app input queue) is left to a follow-up
-// card; this loop is written so only the destination string need change
-// once that is settled.
+// shared simulation-input topic used here. Moving controls there is a
+// separate change; only the destination string needs to change.
 //
-// LOAD-BEARING INVARIANT (Leon INFO / Pike LOW, PR #9 review):
-// this DOWN-path subscriber and the UP-path telemetry publisher
-// (internal/telemetrypub, which publishes its aggregates to this same
-// destination) are safe to share sim.InputTopic ONLY because
-// their attribute namespaces never overlap: ApplyControlDelta acts
-// exclusively on "DERControl.DERControlBase."-prefixed attributes
-// (derControlAttributePrefix), and the telemetry publisher emits
-// exclusively "DERStatus."-prefixed attributes
-// (telemetrypub's derStatusAttributePrefix). This bridge's own DERStatus echoes are
-// therefore ignored here, not misapplied as controls, purely because
-// the two prefixes never collide. THIS IS A GUARD, NOT A DESIGN: any
-// future field added under a THIRD shared prefix (or, worse, under
-// "DERControl." without the DERControlBase suffix, or under
-// "DERStatus." on the DOWN side) silently regresses this invariant and
-// reopens a self-echo/misapply bug. Give any new UP- or DOWN-path
-// attribute family its own distinct, non-overlapping prefix, or split
-// the two directions onto separate topics (the shared-topic choice
-// itself is not re-litigated by this comment; only the prefix
-// discipline that currently makes it safe is).
+// The bridge's own DERStatus reports no longer reach this topic: the
+// status publisher sends to the application output topic
+// (telemetryPublisherConfig). Any other publisher's frames here are
+// still handled by the skip path below, since ApplyControlDelta acts
+// only on "DERControl.DERControlBase."-prefixed attributes.
 //
 // history, when non-nil, receives each applied control's commanded
 // setpoint (see historySink.recordApplied); a malformed frame is never
