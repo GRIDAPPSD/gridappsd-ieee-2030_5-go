@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2adminplane"
 )
@@ -205,4 +206,34 @@ func TestRequireGETRejectsNonGETMethods(t *testing.T) {
 			t.Errorf("%s /api/health status = %d, want 405", method, rec.Code)
 		}
 	}
+}
+
+// Config.Settings reaches the plane: each value the plane validates makes
+// New fail when it is out of range, so a New that dropped Settings would
+// start instead.
+func TestNewPassesSettingsToThePlane(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		settings sep2adminplane.Settings
+	}{
+		{"deadline over an hour", sep2adminplane.Settings{FlowReservationDeadline: 2 * time.Hour}},
+		{"grace under 15 minutes", sep2adminplane.Settings{RetentionGrace: time.Minute}},
+	} {
+		_, err := New(Config{Addr: "127.0.0.1:0", Key: testKey, Settings: tc.settings}, testSources())
+		if err == nil {
+			t.Errorf("%s: New started, want a refusal", tc.name)
+		}
+	}
+}
+
+func TestNewStartsWithInRangeSettings(t *testing.T) {
+	t.Parallel()
+
+	s := newServer(t, Config{Key: testKey, Settings: sep2adminplane.Settings{
+		FlowReservationDeadline: 90 * time.Second,
+		RetentionGrace:          time.Hour,
+	}}, testSources())
+	assertGET(t, s.Handler(), "/api/health", "Bearer "+testKey, "localhost", http.StatusOK)
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -1540,5 +1541,103 @@ func TestLoadConfigDERProgramFileMissingIsAnError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not exist") {
 		t.Errorf("error %q does not say the file is missing", err)
+	}
+}
+
+// setAdminPlaneEnv sets the four server admin-plane variables, so a test
+// names every one and none leaks in from the host environment.
+func setAdminPlaneEnv(t *testing.T, edition, pen, deadline, grace string) {
+	t.Helper()
+	t.Setenv("SEP2_EDITION", edition)
+	t.Setenv("SEP2_PEN", pen)
+	t.Setenv("SEP2_FLOW_RESERVATION_DEADLINE_SECONDS", deadline)
+	t.Setenv("SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS", grace)
+}
+
+// An out-of-range deadline stops loadConfig, which runs before any
+// listener opens, whether or not the admin UI has a key.
+func TestLoadConfigAdminPlaneSettingsOutOfRangeFailsStartup(t *testing.T) {
+	for _, key := range []string{"", "a-sufficiently-long-admin-key"} {
+		t.Run("key="+key, func(t *testing.T) {
+			setAdminPlaneEnv(t, "", "", "4000", "")
+			t.Setenv("SEP2_ADMIN_UI_KEY", key)
+
+			_, err := loadConfig(nil)
+			if err == nil {
+				t.Fatal("loadConfig: want an error for a deadline of 4000, got nil")
+			}
+			if !strings.Contains(err.Error(), "SEP2_FLOW_RESERVATION_DEADLINE_SECONDS") {
+				t.Errorf("error %q does not name SEP2_FLOW_RESERVATION_DEADLINE_SECONDS", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAdminPlaneSettingsParsed(t *testing.T) {
+	setAdminPlaneEnv(t, "2018", "12345", "90", "3600")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	s := cfg.AdminPlane
+	if s.Edition != "2018" {
+		t.Errorf("Edition: got %q, want 2018", s.Edition)
+	}
+	if s.PEN == nil || *s.PEN != 12345 {
+		t.Errorf("PEN: got %v, want 12345", s.PEN)
+	}
+	if s.FlowReservationDeadline != 90*time.Second {
+		t.Errorf("FlowReservationDeadline: got %v, want 90s", s.FlowReservationDeadline)
+	}
+	if s.RetentionGrace != time.Hour {
+		t.Errorf("RetentionGrace: got %v, want 1h", s.RetentionGrace)
+	}
+}
+
+// Nothing set leaves every field zero, which the server resolves to its
+// defaults (2018, 300 s, 1800 s).
+func TestLoadConfigAdminPlaneSettingsDefaultsUnset(t *testing.T) {
+	setAdminPlaneEnv(t, "", "", "", "")
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	s := cfg.AdminPlane
+	if s.Edition != "" || s.PEN != nil || s.FlowReservationDeadline != 0 || s.RetentionGrace != 0 {
+		t.Errorf("unset settings: got %+v, want the zero Settings", s)
+	}
+}
+
+// The bridge serves only 2018: its control path reports 2018 statuses and
+// the server's edition-aware stores are not wired, so 2023 is refused.
+func TestLoadConfigRefusesEdition2023(t *testing.T) {
+	for _, key := range []string{"", "a-sufficiently-long-admin-key"} {
+		setAdminPlaneEnv(t, "2023", "", "", "")
+		t.Setenv("SEP2_ADMIN_UI_KEY", key)
+
+		_, err := loadConfig(nil)
+		if err == nil {
+			t.Fatalf("key=%q: loadConfig accepted SEP2_EDITION=2023", key)
+		}
+		for _, want := range []string{"SEP2_EDITION", "2018"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("key=%q: error %q does not mention %q", key, err, want)
+			}
+		}
+	}
+}
+
+func TestLoadConfigAcceptsEdition2018AndUnset(t *testing.T) {
+	for _, ed := range []string{"", "2018"} {
+		setAdminPlaneEnv(t, ed, "", "", "")
+		cfg, err := loadConfig(nil)
+		if err != nil {
+			t.Fatalf("SEP2_EDITION=%q: %v", ed, err)
+		}
+		if cfg.AdminPlane.Edition != ed {
+			t.Errorf("SEP2_EDITION=%q: Edition = %q", ed, cfg.AdminPlane.Edition)
+		}
 	}
 }

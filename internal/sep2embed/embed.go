@@ -107,7 +107,8 @@ type Config struct {
 	ShutdownTimeout time.Duration
 
 	// Router carries the scalar time-zone/DST configuration for the /tm
-	// resource. The zero value (UTC, no DST) is a valid configuration.
+	// resource, the PEN and the flow reservation deadline. The zero value
+	// (UTC, no DST, server defaults) is a valid configuration.
 	Router assembly.RouterConfig
 
 	// NotifyWorkers and NotifyQueueSize size the subscription fan-out

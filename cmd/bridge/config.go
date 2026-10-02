@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2adminplane"
+
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
@@ -188,6 +190,13 @@ type config struct {
 	// Empty means unset: no link, no error, no admin UI behavior
 	// change.
 	SEP2AdminUISORLink string
+
+	// AdminPlane holds the server's SEP2_EDITION, SEP2_PEN,
+	// SEP2_FLOW_RESERVATION_DEADLINE_SECONDS and
+	// SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS, parsed at startup
+	// whether or not the admin UI is enabled. A zero field means the server
+	// default. They are env only: the server defines no flags for them.
+	AdminPlane sep2adminplane.Settings
 
 	// SEP2RegistrationPIN is the optional fleet-wide fallback IEEE
 	// 2030.5 registration PIN (see sep2config.SEP2Policy's
@@ -777,6 +786,20 @@ func loadConfig(args []string) (config, error) {
 		}
 		cfg.SEP2TelemetryInterval = interval
 	}
+
+	// Parsed here, not in internal/adminui, so a bridge with the UI off still
+	// refuses an out-of-range value. The error names its variable.
+	adminPlane, err := sep2adminplane.SettingsFromEnv(os.Getenv)
+	if err != nil {
+		return config{}, fmt.Errorf("config: %w", err)
+	}
+	// The embed's control path reports 2018 statuses and wires none of the
+	// stores the server reads Edition2023 through, so 2023 would be accepted
+	// and then ignored. Refuse it until the bridge serves it.
+	if adminPlane.Edition == "2023" {
+		return config{}, errors.New("config: SEP2_EDITION=2023 is not supported: the bridge supports only 2018 for now")
+	}
+	cfg.AdminPlane = adminPlane
 
 	if err := cfg.validate(); err != nil {
 		return config{}, err
