@@ -205,7 +205,7 @@ run_script() {
   f="$repo/docker-compose.bridge.yml"
   [ "$(/usr/bin/grep -c '0\.0\.0\.0:18444' "$f")" -eq 0 ]
   # shellcheck disable=SC2016 # literal compose syntax
-  /usr/bin/grep -qF 'SEP2_ADMIN_UI_ADDR: ${SEP2_ADMIN_UI_ADDR:-${BRIDGE_ADMIN_IP:?use make docker-up}:18444}' "$f"
+  /usr/bin/grep -qF 'SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444' "$f"
   # shellcheck disable=SC2016 # literal compose syntax
   /usr/bin/grep -qF 'ipv4_address: ${BRIDGE_ADMIN_IP:?use make docker-up}' "$f"
   # shellcheck disable=SC2016 # literal compose syntax
@@ -329,5 +329,24 @@ default_env_run() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"$work/r/.env"* ]]
   [[ "$output" == *".env.example"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+}
+
+@test "env file: a missing .env names the old .env.bridge as a rename when it exists, for up, down and logs" {
+  mkdir -p "$work/r/scripts"
+  cp "$repo/scripts/docker-bridge.sh" "$work/r/scripts/"
+  unset BRIDGE_ENV_FILE
+  for a in up down logs; do
+    run "$work/r/scripts/docker-bridge.sh" "$a"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"rename"* ]]
+  done
+  printf 'SEP2_ADMIN_UI_KEY=oldkeyoldkeyoldkey\n' >"$work/r/.env.bridge"
+  for a in up down logs; do
+    run "$work/r/scripts/docker-bridge.sh" "$a"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"rename $work/r/.env.bridge to $work/r/.env"* ]]
+    [[ "$output" != *oldkeyoldkeyoldkey* ]]
+  done
   [ ! -e "$DOCKER_LOG" ]
 }

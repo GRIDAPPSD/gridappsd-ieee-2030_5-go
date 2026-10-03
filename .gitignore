@@ -19,8 +19,11 @@ CLAUDE.md
 .claude/
 *.claude
 
-# Local environment (the committed .env.example holds names and defaults only)
+# Local environment: .env, the old .env.bridge and any .env.* variant hold secrets;
+# the committed .env.example holds names and defaults only.
 .env
+.env.*
+!.env.example
 
 # Certificate and key material: never committed. The embedded IEEE
 # 2030.5 server's default cert directory (config.defaultSEP2ServerCertDir,

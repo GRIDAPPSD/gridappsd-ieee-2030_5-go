@@ -41,10 +41,16 @@ What it does:
   and `.env` is where you change them; [CONFIGURATION.md](CONFIGURATION.md)
   describes each. The admin key `SEP2_ADMIN_UI_KEY` and the broker password
   `SEP2_STOMP_PASSWORD` have no default and are required. Put comments on
-  their own lines: a value followed by `# comment` is refused. The
+  their own lines: the script refuses a value followed by `# comment` for the
+  names it reads itself (`SEP2_ADMIN_UI_KEY`, `SEP2_STOMP_PASSWORD` and the
+  `BRIDGE_*` launcher settings); compose strips an inline comment from any
+  other value, so it is dropped silently there. The
   registration PIN has no environment variable, so it is not passed. `.env`
   is also read by the dev broker's `docker-compose.yml`, which uses different
-  variable names. `BRIDGE_ENV_FILE` points the script at another file.
+  variable names. `BRIDGE_ENV_FILE` points the script at another file. Upgrading: the file was
+  `.env.bridge`; rename it to `.env`. Four settings are pinned in the compose
+  file and cannot be overridden: `SEP2_SERVER_ADDR`, `SEP2_SERVER_CERT_DIR`,
+  `SEP2_ADMIN_UI_ADDR` and `SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK`.
 - **Docker Engine.** Docker Engine 28 or newer is required: the admin network
   uses `gw_priority`, which older engines do not support.
 - **Certs.** The cert directory is bind-mounted at `/etc/sep2/certs` from

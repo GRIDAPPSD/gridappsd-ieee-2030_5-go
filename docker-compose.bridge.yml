@@ -19,7 +19,7 @@ services:
       # Every setting cmd/bridge reads is listed here, so this file is the one
       # place to see or change configuration. Each is NAME: ${NAME:-default},
       # the bridge's own default unless a comment says why the container
-      # differs. Values come from .env (see .env.example); docs/CONFIGURATION.md
+      # differs; four are pinned to literals for the container. Values come from .env (see .env.example); docs/CONFIGURATION.md
       # describes each. Secrets have no default: compose refuses to start
       # without them.
 
@@ -46,12 +46,12 @@ services:
       SEP2_HISTORY_LOG_INTERVAL: ${SEP2_HISTORY_LOG_INTERVAL:-30s}
 
       # Embedded IEEE 2030.5 server
-      # A published port reaches the container's address, not its loopback, so
-      # the listener binds all addresses; the host side is 127.0.0.1. The port
-      # must match the ports: mapping below.
-      SEP2_SERVER_ADDR: ${SEP2_SERVER_ADDR:-0.0.0.0:18443}
-      # Must match the volumes: mount target below.
-      SEP2_SERVER_CERT_DIR: ${SEP2_SERVER_CERT_DIR:-/etc/sep2/certs}
+      # Pinned for the container, not overridable from .env or the shell: a
+      # published port reaches the container's address, not its loopback, so the
+      # listener binds all addresses (the host side is 127.0.0.1), and the cert
+      # dir is the volumes: mount target below. Each has one correct value here.
+      SEP2_SERVER_ADDR: 0.0.0.0:18443
+      SEP2_SERVER_CERT_DIR: /etc/sep2/certs
       SEP2_DEVICE_CERT_MODE: ${SEP2_DEVICE_CERT_MODE:-dev-mint}
       SEP2_POLL_RATE: ${SEP2_POLL_RATE:-}
       SEP2_POST_RATE: ${SEP2_POST_RATE:-}
@@ -72,12 +72,12 @@ services:
       SEP2_NOTIFY_QUEUE_SIZE: ${SEP2_NOTIFY_QUEUE_SIZE:-100}
 
       # Admin UI
-      # The admin UI binds its own network's address: platform containers are
-      # not on that network and cannot reach it. The port must match the
-      # ports: mapping below.
-      SEP2_ADMIN_UI_ADDR: ${SEP2_ADMIN_UI_ADDR:-${BRIDGE_ADMIN_IP:?use make docker-up}:18444}
-      # Needed because that address is not loopback.
-      SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: ${SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK:-true}
+      # Pinned for the container, not overridable from .env or the shell: the
+      # admin UI binds only its own network's address, which platform
+      # containers cannot reach, so an override such as 0.0.0.0 would expose it
+      # to them. Non-loopback is allowed because that address is not loopback.
+      SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444
+      SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: "true"
       SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:?set it in .env}
       SEP2_ADMIN_UI_ALLOWED_HOSTS: ${SEP2_ADMIN_UI_ALLOWED_HOSTS:-}
       SEP2_ADMIN_UI_SOR_LINK: ${SEP2_ADMIN_UI_SOR_LINK:-}

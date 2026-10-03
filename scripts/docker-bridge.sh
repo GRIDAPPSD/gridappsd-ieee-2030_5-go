@@ -38,6 +38,16 @@ setting() {
   printf '%s' "${value:-$default}"
 }
 
+# env_missing says why the env file is unusable, and when the old name is still
+# there, that it only needs renaming.
+env_missing() {
+  local hint="${1:-}"
+  if [ "${env_file##*/}" = ".env" ] && [ -e "$env_file.bridge" ]; then
+    hint="rename $env_file.bridge to $env_file"
+  fi
+  die "env file not found or unreadable: $env_file${hint:+ ($hint)}"
+}
+
 check_port() {
   local label="$1" port="$2"
   [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] ||
@@ -75,7 +85,7 @@ port_in_use() {
 preflight() {
   command -v docker >/dev/null 2>&1 || die "docker is not on PATH"
   command -v ss >/dev/null 2>&1 || die "ss is required for the port check and is not on PATH"
-  [ -r "$env_file" ] || die "env file not found or unreadable: $env_file (copy .env.example to .env and fill it in)"
+  [ -r "$env_file" ] || env_missing "copy .env.example to .env and fill it in"
   local key
   key=$(setting SEP2_ADMIN_UI_KEY "")
   [ "${#key}" -ge 16 ] || die "SEP2_ADMIN_UI_KEY in $env_file is missing or shorter than 16 characters"
@@ -105,7 +115,7 @@ main() {
     *) die "unknown action: $action (use build, up, down or logs)" ;;
   esac
   case "$action" in
-    down | logs) [ -r "$env_file" ] || die "env file not found or unreadable: $env_file" ;;
+    down | logs) [ -r "$env_file" ] || env_missing ;;
   esac
   resolve
   case "$action" in

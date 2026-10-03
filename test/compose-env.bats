@@ -11,6 +11,16 @@ setup() {
   example="${ENV_EXAMPLE_UNDER_TEST:-$repo/.env.example}"
 }
 
+# Names the compose file pins to a literal: not user settings, so .env.example
+# carries them only as commented lines saying so.
+PINNED="SEP2_ADMIN_UI_ADDR SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK SEP2_SERVER_ADDR SEP2_SERVER_CERT_DIR"
+SECRETS="SEP2_ADMIN_UI_KEY SEP2_STOMP_PASSWORD"
+
+# in_list NAME LIST: true when NAME is one of the words in LIST.
+in_list() {
+  case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
 # bridge_env_names prints every SEP2_ variable the bridge reads, one per line:
 # the getenv-style calls in config.go (the name is the first string literal in
 # the call, so resolveCred's flag argument before it is skipped), the knob
@@ -45,8 +55,13 @@ compose_names() {
   /usr/bin/grep -oE '^      SEP2_[A-Z0-9_]+:' "$compose" | tr -d ' :' | sort -u
 }
 
+# example_names: the active settings, plus the pinned names that appear as a
+# commented "is fixed in docker-compose.bridge.yml" line.
 example_names() {
-  /usr/bin/grep -oE '^SEP2_[A-Z0-9_]+=' "$example" | tr -d '=' | sort -u
+  {
+    /usr/bin/grep -oE '^SEP2_[A-Z0-9_]+=' "$example" | tr -d '='
+    /usr/bin/grep -oE '^# SEP2_[A-Z0-9_]+ is fixed in docker-compose.bridge.yml' "$example" | /usr/bin/grep -oE 'SEP2_[A-Z0-9_]+'
+  } | sort -u
 }
 
 @test "derived set: pattern fires on known names and finds the whole table" {
@@ -77,7 +92,7 @@ example_names() {
 
 @test "compose: every non-secret setting is NAME: \${NAME:-default}" {
   for n in $(compose_names); do
-    case "$n" in SEP2_ADMIN_UI_KEY | SEP2_STOMP_PASSWORD) continue ;; esac
+    if in_list "$n" "$SECRETS $PINNED"; then continue; fi
     # shellcheck disable=SC2016 # literal compose syntax
     /usr/bin/grep -qE "^      $n: \\\$\\{$n:-.*\\}\$" "$compose" || { echo "no default form: $n" >&2; false; }
   done
@@ -95,20 +110,45 @@ example_names() {
 }
 
 @test ".env.example default equals the compose default for every non-secret setting" {
+  compared=0
   for n in $(compose_names); do
-    case "$n" in SEP2_ADMIN_UI_KEY | SEP2_STOMP_PASSWORD | SEP2_ADMIN_UI_ADDR) continue ;; esac
+    if in_list "$n" "$SECRETS $PINNED"; then continue; fi
+    compared=$((compared + 1))
     cdef=$(/usr/bin/grep -E "^      $n: " "$compose" | sed -E "s/^      $n: \\\$\\{$n:-(.*)\\}\$/\\1/")
     edef=$(/usr/bin/grep -E "^$n=" "$example" | sed -E "s/^$n=//")
     [ "$cdef" = "$edef" ] || { echo "$n: compose '$cdef' example '$edef'" >&2; false; }
   done
+  # Every name except the two secrets and the four pinned ones was compared.
+  [ "$compared" -eq $(($(bridge_env_names | wc -l) - 6)) ]
 }
 
-@test ".env is ignored and .env.example is not; the old bridge names are gone" {
+@test "pinned: four names are literals in compose, never overridable, and not settings in .env.example" {
+  # The names that are not the NAME: ${NAME:-...} or :? form are exactly PINNED.
+  unwrapped=$(for n in $(compose_names); do
+    # shellcheck disable=SC2016 # literal compose syntax
+    /usr/bin/grep -qE "^      $n: \\\$\\{$n:[-?]" "$compose" || echo "$n"
+  done | sort | tr '\n' ' ')
+  want=$(tr ' ' '\n' <<<"$PINNED" | sort | tr '\n' ' ')
+  [ "$unwrapped" = "$want" ]
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qxF '      SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444' "$compose"
+  /usr/bin/grep -qxF '      SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: "true"' "$compose"
+  /usr/bin/grep -qxF '      SEP2_SERVER_ADDR: 0.0.0.0:18443' "$compose"
+  /usr/bin/grep -qxF '      SEP2_SERVER_CERT_DIR: /etc/sep2/certs' "$compose"
+  for n in $PINNED; do
+    [ "$(/usr/bin/grep -cE "^$n=" "$example")" -eq 0 ]
+    /usr/bin/grep -qE "^# $n is fixed in docker-compose.bridge.yml" "$example"
+  done
+}
+
+@test ".env, the old .env.bridge and .env.local are ignored; .env.example is not" {
   cd "$repo"
-  git check-ignore -q .env
-  if git check-ignore -q .env.example; then false; fi
+  for f in .env .env.bridge .env.local; do
+    git check-ignore --no-index -q "$f" || { echo "not ignored: $f" >&2; false; }
+  done
+  if git check-ignore --no-index -q .env.example; then false; fi
   [ ! -e "$repo/.env.bridge.example" ]
-  [ "$(/usr/bin/grep -c 'env\.bridge' "$repo/.gitignore" "$repo/Makefile" "$repo/docs/DOCKER.md" "$repo/scripts/docker-bridge.sh" | /usr/bin/grep -vc ':0$')" -eq 0 ]
+  [ "$(/usr/bin/grep -c 'env\.bridge' "$repo/Makefile")" -eq 0 ]
 }
 
 @test "DOCKER.md says Docker Engine 28 or newer is required, because of gw_priority" {
