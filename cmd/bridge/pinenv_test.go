@@ -152,3 +152,19 @@ func TestRegistrationPINEnvScrubbed(t *testing.T) {
 		t.Errorf("SEP2_REGISTRATION_PIN still in the environment after load (len %d)", len(v))
 	}
 }
+
+// TestRegistrationPINEnvScrubbedWhenFlagWins checks the leftover env
+// variable is removed from the process environment even when the flag
+// supplies the PIN.
+func TestRegistrationPINEnvScrubbedWhenFlagWins(t *testing.T) {
+	clearPINEnv(t)
+	t.Setenv("SEP2_REGISTRATION_PIN", "234560")
+
+	cfg := mustLoadConfig(t, []string{"-sep2-registration-pin=123455"})
+	if cfg.SEP2RegistrationPIN == nil || *cfg.SEP2RegistrationPIN != 123455 {
+		t.Errorf("SEP2RegistrationPIN: got %v, want the flag's 123455", cfg.SEP2RegistrationPIN)
+	}
+	if v, ok := os.LookupEnv("SEP2_REGISTRATION_PIN"); ok {
+		t.Errorf("SEP2_REGISTRATION_PIN still set after load (len %d), want removed", len(v))
+	}
+}

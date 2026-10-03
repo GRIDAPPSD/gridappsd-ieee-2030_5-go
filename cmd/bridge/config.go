@@ -1233,15 +1233,15 @@ func loadBatteryLegListFile(path string) ([]string, error) {
 // fields whose flag defaults are intentionally registered as empty so
 // flag.PrintDefaults never echoes a real value.
 //
-// As a side effect, the env var is unset after the read so it does not
-// remain visible via /proc/<pid>/environ for the rest of process
-// lifetime. The resolved value still lives on the config struct (and
-// thus in heap memory) but is no longer reachable to anything that
-// only reads the process environment.
+// As a side effect, the env var is removed from the Go process
+// environment after the read, so child processes and later os.Getenv
+// calls do not see it. The kernel's copy of the initial environment is
+// not changed: the value stays in /proc/<pid>/environ for the life of
+// the process. The resolved value also lives on the config struct.
 func resolveCred(flagVal, envKey, fallback string) string {
 	if flagVal != "" {
-		// Even when the flag wins, scrub the env var so a leftover
-		// export does not surface to /proc/<pid>/environ.
+		// Even when the flag wins, remove the env var so a leftover
+		// export does not reach child processes.
 		os.Unsetenv(envKey)
 		return flagVal
 	}
