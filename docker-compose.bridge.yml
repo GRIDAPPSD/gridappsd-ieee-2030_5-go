@@ -7,7 +7,13 @@ name: ieee-2030_5-bridge
 
 services:
   bridge:
-    image: ${BRIDGE_IMAGE:?use make docker-up}
+    # make docker-up sets BRIDGE_IMAGE to the locally built tag, so it never
+    # pulls. Without it (compose run by hand) the published image is used:
+    # BRIDGE_IMAGE_TAG picks the version, latest by default.
+    image: ${BRIDGE_IMAGE:-gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}}
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
     user: ${BRIDGE_USER:?use make docker-up}
     restart: unless-stopped
     # Writes go only to the mounted cert dir (and /tmp, as a precaution).

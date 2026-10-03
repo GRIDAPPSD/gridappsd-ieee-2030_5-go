@@ -80,10 +80,10 @@ docker-logs:              ## Follow the bridge container log
 test: check-go                     ## Run all Go tests
 	go test ./...
 
-# test-shell runs the bats suites for `make run`, the docker targets and the Go version check; it needs bats on PATH and
+# test-shell runs the bats suites for `make run`, the docker targets, the image publish path and the Go version check; it needs bats on PATH and
 # is separate from `test` so `test` stays plain `go test ./...`.
 test-shell:               ## Run the bats suites (needs bats)
-	bats test/run.bats test/go-version.bats test/docker-bridge.bats test/compose-env.bats
+	bats test/run.bats test/go-version.bats test/docker-bridge.bats test/compose-env.bats test/docker-publish.bats
 
 test-race: check-go            ## Run all Go tests with the race detector
 	go test -race ./...

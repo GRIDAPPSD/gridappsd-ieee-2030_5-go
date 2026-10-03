@@ -3,8 +3,9 @@ name: Release
 # Tag-driven release for cmd/bridge. GitHub-hosted runners are
 # acceptable here: this job never SSHes to a deployment
 # target, never runs docker compose against a running environment, and
-# never pushes to a container registry. It only builds a Go binary and
-# publishes it as a GitHub release artifact.
+# never pushes to a container registry (docker-publish.yml does that on
+# the same tag). It only builds a Go binary and publishes it as a GitHub
+# release artifact.
 #
 # The publish path authenticates solely with the ephemeral GITHUB_TOKEN.
 # The build job additionally reads one secret pair (the CI GitHub App

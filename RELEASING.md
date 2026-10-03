@@ -558,6 +558,14 @@ Consequences for the manual sequence in section 11:
   notes nobody has read. Here the tag and the publication are one event, so a
   contradiction found after the push costs a version number instead. Section
   17.6 states the consequence in full.
+- **The tag push also publishes the bridge image.**
+  `.github/workflows/docker-publish.yml` builds `Dockerfile.bridge` and pushes
+  `gridappsd/gridappsd-ieee-2030_5-go:<tag>` to Docker Hub, plus `:latest` for a
+  tag with no suffix. It has no manual trigger. Verify after the run:
+  `docker buildx imagetools inspect gridappsd/gridappsd-ieee-2030_5-go:<tag>`
+  resolves, and the image's `org.opencontainers.image.revision` label equals the
+  tagged commit (or check the repository's Hub page for the tag). A pushed image
+  tag is as immutable in practice as the git tag (section 13).
 - **Automation does not perform section 12.** A successful workflow run means
   the binary built and smoke-tested, nothing more. After the run completes,
   still verify by hand: the tag dereferences with `^{commit}` to the commit

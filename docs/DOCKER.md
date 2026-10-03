@@ -82,8 +82,25 @@ The minted server certificate names only `localhost` and `127.0.0.1`
 published loopback port; a client using the host's LAN name or another
 container's DNS name fails certificate verification.
 
-There is no published image and no `latest` tag; the image is built locally
-as `gridappsd-ieee-2030_5-go:dev` (override with `BRIDGE_IMAGE`).
+## The published image
+
+Pushing a release tag `v*` publishes `gridappsd/gridappsd-ieee-2030_5-go:<tag>`
+to Docker Hub, and `:latest` as well for a tag with no suffix (a pre-release
+such as `v0.3.0-rc1` does not move `latest`). The image is linux/amd64 and
+carries the `org.opencontainers.image.version`, `.revision` and `.source` labels.
+
+`make docker-up` and `make docker-build` never pull: they build locally and tag
+the image `gridappsd-ieee-2030_5-go:dev` (override with `BRIDGE_IMAGE`), and
+`docker-up` runs that build. To run the published image, call compose directly
+with the launcher's exports in place and `BRIDGE_IMAGE` unset: compose then uses
+`gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}`. Pin a version
+with `BRIDGE_IMAGE_TAG=v0.3.0`, in the shell or in `.env`:
+
+```
+docker pull gridappsd/gridappsd-ieee-2030_5-go:v0.3.0
+docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+  gridappsd/gridappsd-ieee-2030_5-go:v0.3.0
+```
 
 ## A dev broker for tests
 

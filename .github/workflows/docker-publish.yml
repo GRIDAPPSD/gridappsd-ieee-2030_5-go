@@ -1,0 +1,82 @@
+name: Docker publish
+
+# Publishes the bridge image to Docker Hub when a release tag `v*` is pushed.
+# Follows the GRIDAPPSD pattern in gridappsd-python's release.yml (buildx,
+# docker/login-action with the organisation's DOCKER_USERNAME and DOCKER_TOKEN
+# secrets, docker/build-push-action), with two changes: actions are pinned by
+# commit SHA, and the job gets contents: read only (the pattern's
+# packages: write is for GitHub Packages, which this workflow does not use).
+#
+# There is deliberately no workflow_dispatch trigger: a manual run from a
+# branch could otherwise push `latest` from a non-release ref.
+#
+# linux/amd64 only. The build stage uses the builder's own GOARCH, so an arm64
+# image would be built under emulation; add it when it is needed.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: gridappsd/gridappsd-ieee-2030_5-go
+
+jobs:
+  publish:
+    name: Build and push the bridge image
+    runs-on: ubuntu-latest
+    # A fork has no access to the organisation secrets, and a branch ref must
+    # never reach the push step.
+    if: github.repository_owner == 'GRIDAPPSD' && github.ref_type == 'tag'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve tags
+        id: tags
+        env:
+          # A tag name may hold shell metacharacters, so it reaches the script
+          # through env: and is checked against a strict pattern.
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if ! [[ "${REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "tag ${REF_NAME} is not vMAJOR.MINOR.PATCH[-suffix]; refusing to publish" >&2
+            exit 1
+          fi
+          {
+            echo "version=${REF_NAME}"
+            echo "tags<<EOT"
+            echo "${IMAGE}:${REF_NAME}"
+            # A pre-release tag (a suffix after the patch number) must not move latest.
+            if [[ "${REF_NAME}" != *-* ]]; then
+              echo "${IMAGE}:latest"
+            fi
+            echo "EOT"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.bridge
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ steps.tags.outputs.version }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=gridappsd-ieee-2030_5-go
+            org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
