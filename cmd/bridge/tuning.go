@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	sepTLS "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
@@ -48,6 +49,11 @@ type tuning struct {
 
 	ControlSweepInterval time.Duration
 
+	NotifyPostTimeout    time.Duration
+	NotifyDialTimeout    time.Duration
+	NotifyResolveTimeout time.Duration
+	CCMHandshakeTimeout  time.Duration
+
 	// NotifyWorkers and NotifyQueueSize are counts, not durations.
 	NotifyWorkers   int
 	NotifyQueueSize int
@@ -79,6 +85,11 @@ func defaultTuning() tuning {
 		AdminShutdownTimeout:   adminShutdown,
 
 		ControlSweepInterval: sep2embed.DefaultControlSweepInterval,
+
+		NotifyPostTimeout:    sep2embed.DefaultNotifyPostTimeout,
+		NotifyDialTimeout:    sep2embed.DefaultNotifyDialTimeout,
+		NotifyResolveTimeout: sep2embed.DefaultNotifyResolveTimeout,
+		CCMHandshakeTimeout:  sepTLS.DefaultCCMHandshakeTimeout,
 
 		NotifyWorkers:   sep2embed.DefaultNotifyWorkers,
 		NotifyQueueSize: sep2embed.DefaultNotifyQueueSize,
@@ -137,6 +148,11 @@ func tuningKnobs(t *tuning) []*tuningKnob {
 		d("admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", "admin UI graceful drain bound at shutdown (default 5s)", &t.AdminShutdownTimeout, s, 5*m),
 
 		d("sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", "how often ended DERControls are expired fleet-wide (default 10s)", &t.ControlSweepInterval, s, h),
+
+		d("sep2-notify-post-timeout", "SEP2_NOTIFY_POST_TIMEOUT", "time one subscription notification POST may take (default 30s)", &t.NotifyPostTimeout, s, 5*m),
+		d("sep2-notify-dial-timeout", "SEP2_NOTIFY_DIAL_TIMEOUT", "connect budget for one notification POST, capped at the POST timeout (default 30s)", &t.NotifyDialTimeout, s, 5*m),
+		d("sep2-notify-resolve-timeout", "SEP2_NOTIFY_RESOLVE_TIMEOUT", "time allowed for the DNS check on a subscription's notificationURI at creation (default 5s)", &t.NotifyResolveTimeout, s, 5*m),
+		d("sep2-ccm-handshake-timeout", "SEP2_CCM_HANDSHAKE_TIMEOUT", "time one inbound TLS handshake may take on the protocol listener (default 10s)", &t.CCMHandshakeTimeout, s, 5*m),
 
 		n("sep2-notify-workers", "SEP2_NOTIFY_WORKERS", "subscription notification worker count (default 4)", &t.NotifyWorkers, 1, 1024),
 		n("sep2-notify-queue-size", "SEP2_NOTIFY_QUEUE_SIZE", "subscription notification queue length (default 100)", &t.NotifyQueueSize, 1, 100000),

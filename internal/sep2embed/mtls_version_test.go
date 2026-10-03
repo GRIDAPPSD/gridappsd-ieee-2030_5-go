@@ -63,7 +63,7 @@ func TestNewObservedMTLSListenerCapsAtTLS12(t *testing.T) {
 
 	reg := registry.New()
 	var hook connobs.Hook
-	listener, _, err := newObservedMTLSListener("127.0.0.1:0", certFile, keyFile, caFile, nil, &hook, reg)
+	listener, _, err := newObservedMTLSListener("127.0.0.1:0", certFile, keyFile, caFile, nil, &hook, reg, 0)
 	if err != nil {
 		t.Fatalf("newObservedMTLSListener: %v", err)
 	}

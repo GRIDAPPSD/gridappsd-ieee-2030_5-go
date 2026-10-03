@@ -35,6 +35,14 @@ const (
 	DefaultNotifyQueueSize = 100
 )
 
+// Defaults for the notification timeouts, which server-go keeps
+// unexported; restated so the bridge's config and docs show them.
+const (
+	DefaultNotifyPostTimeout    = 30 * time.Second
+	DefaultNotifyDialTimeout    = 30 * time.Second
+	DefaultNotifyResolveTimeout = 5 * time.Second
+)
+
 // Config configures an Embed.
 type Config struct {
 	// Addr is the "host:port" the protocol listener binds. Required.
@@ -130,6 +138,18 @@ type Config struct {
 	// DefaultNotifyWorkers / DefaultNotifyQueueSize.
 	NotifyWorkers   int
 	NotifyQueueSize int
+
+	// NotifyPostTimeout, NotifyDialTimeout and NotifyResolveTimeout bound
+	// one notification POST, its dial, and the creation-time DNS check.
+	// Zero keeps server-go's built-in value; server-go caps the dial at
+	// the POST timeout.
+	NotifyPostTimeout    time.Duration
+	NotifyDialTimeout    time.Duration
+	NotifyResolveTimeout time.Duration
+
+	// CCMHandshakeTimeout bounds one inbound TLS handshake on the
+	// Observer and EnableCCM listeners. Zero keeps core's default.
+	CCMHandshakeTimeout time.Duration
 
 	// NotifyAllowLoopback permits a subscription's notificationURI to
 	// target loopback addresses (127.0.0.0/8, ::1), refused by default
@@ -389,7 +409,15 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	workers, queueSize := notifySizing(cfg)
-	notifier := newNotifier(stores.Subscriptions, workers, queueSize, cfg.NotifyAllowLoopback)
+	notifyTimeouts := coresub.NotificationTimeouts{
+		Post:            cfg.NotifyPostTimeout,
+		Dial:            cfg.NotifyDialTimeout,
+		CreationResolve: cfg.NotifyResolveTimeout,
+	}
+	if err := notifyTimeouts.Validate(); err != nil {
+		return nil, fmt.Errorf("sep2embed: %w", err)
+	}
+	notifier := newNotifier(stores.Subscriptions, workers, queueSize, cfg.NotifyAllowLoopback, notifyTimeouts)
 
 	// postRate reaches the wire through server-go's POST /mup handler, not
 	// through seeding: this bridge creates no MirrorUsagePoints, so
@@ -422,9 +450,9 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			err      error
 		)
 		if cfg.Observer != nil {
-			listener, identity, err = newObservedMTLSListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, cfg.Observer, reg)
+			listener, identity, err = newObservedMTLSListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, cfg.Observer, reg, cfg.CCMHandshakeTimeout)
 		} else {
-			listener, identity, err = newCCMOnlyListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs)
+			listener, identity, err = newCCMOnlyListener(cfg.Addr, certFile, keyFile, caFile, cfg.ExtraClientCAs, cfg.CCMHandshakeTimeout)
 		}
 		if err != nil {
 			return nil, err
@@ -502,6 +530,7 @@ func customListenerTimeouts(cfg Config) bool {
 		{cfg.ReadTimeout, sep2srv.DefaultReadTimeout},
 		{cfg.WriteTimeout, sep2srv.DefaultWriteTimeout},
 		{cfg.IdleTimeout, sep2srv.DefaultIdleTimeout},
+		{cfg.CCMHandshakeTimeout, sepTLS.DefaultCCMHandshakeTimeout},
 	} {
 		if c.got != 0 && c.got != c.def {
 			return true

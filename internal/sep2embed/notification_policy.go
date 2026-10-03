@@ -12,7 +12,7 @@ import (
 // delivery (assembly.ResourceNotifier), so this is the ONLY place the
 // policy is built: creation and delivery can never diverge. Mirrors
 // server-go's internal/server.newSubscriptionNotifier.
-func buildNotifier(subs coresub.SubscriptionLister, workers, queueSize int, allowLoopback bool) *coresub.Manager {
+func buildNotifier(subs coresub.SubscriptionLister, workers, queueSize int, allowLoopback bool, timeouts coresub.NotificationTimeouts) *coresub.Manager {
 	policy := coresub.DestinationPolicy{AllowLoopback: allowLoopback}
 	if policy.AllowLoopback {
 		log.Print("WARNING: SEP2_NOTIFICATION_ALLOW_LOOPBACK / -sep2-notification-allow-loopback is set: " +
@@ -21,5 +21,5 @@ func buildNotifier(subs coresub.SubscriptionLister, workers, queueSize int, allo
 			"namespace exposes there, including its own STOMP broker, IEEE 2030.5 listener and admin UI " +
 			"among others; the admin UI's Bearer auth does not narrow this; intended for test harnesses only")
 	}
-	return coresub.NewManager(subs, workers, queueSize, coresub.WithDestinationPolicy(policy))
+	return coresub.NewManager(subs, workers, queueSize, coresub.WithDestinationPolicy(policy), coresub.WithNotificationTimeouts(timeouts))
 }

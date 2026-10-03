@@ -772,6 +772,10 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 		WriteTimeout:                cfg.Tuning.ServerWriteTimeout,
 		IdleTimeout:                 cfg.Tuning.ServerIdleTimeout,
 		ControlSweepInterval:        cfg.Tuning.ControlSweepInterval,
+		NotifyPostTimeout:           cfg.Tuning.NotifyPostTimeout,
+		NotifyDialTimeout:           cfg.Tuning.NotifyDialTimeout,
+		NotifyResolveTimeout:        cfg.Tuning.NotifyResolveTimeout,
+		CCMHandshakeTimeout:         cfg.Tuning.CCMHandshakeTimeout,
 		NotifyWorkers:               cfg.Tuning.NotifyWorkers,
 		NotifyQueueSize:             cfg.Tuning.NotifyQueueSize,
 		Router: assembly.RouterConfig{
