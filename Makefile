@@ -64,7 +64,7 @@ run: build                ## Build and start the bridge (needs SEP2_ADMIN_UI_KEY
 
 # The docker-* targets drive docker-compose.bridge.yml through
 # scripts/docker-bridge.sh, which refuses a start whose env file, cert dir,
-# platform network or host ports are not ready. Settings: .env.bridge.
+# platform network or host ports are not ready. Settings: .env.
 docker-build:             ## Build the bridge image
 	@VERSION='$(VERSION)' scripts/docker-bridge.sh build
 
@@ -83,7 +83,7 @@ test: check-go                     ## Run all Go tests
 # test-shell runs the bats suites for `make run`, the docker targets and the Go version check; it needs bats on PATH and
 # is separate from `test` so `test` stays plain `go test ./...`.
 test-shell:               ## Run the bats suites (needs bats)
-	bats test/run.bats test/go-version.bats test/docker-bridge.bats
+	bats test/run.bats test/go-version.bats test/docker-bridge.bats test/compose-env.bats
 
 test-race: check-go            ## Run all Go tests with the race detector
 	go test -race ./...

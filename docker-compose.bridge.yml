@@ -1,7 +1,8 @@
 # The bridge next to a running GridAPPS-D platform. Start it with
 # `make docker-up`, which checks the preconditions and exports every
 # BRIDGE_* variable below; running compose by hand fails on the first
-# missing one. Settings come from .env.bridge (see .env.bridge.example).
+# missing one. Settings come from .env (see .env.example). Needs Docker
+# Engine 28 or newer: the admin network uses gw_priority.
 name: ieee-2030_5-bridge
 
 services:
@@ -15,20 +16,86 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     environment:
-      SEP2_STOMP_ADDR: gridappsd:61613
+      # Every setting cmd/bridge reads is listed here, so this file is the one
+      # place to see or change configuration. Each is NAME: ${NAME:-default},
+      # the bridge's own default unless a comment says why the container
+      # differs; four are pinned to literals for the container. Values come from .env (see .env.example); docs/CONFIGURATION.md
+      # describes each. Secrets have no default: compose refuses to start
+      # without them.
+
+      # GridAPPS-D connection
+      # The platform's broker is reached by its container name on the platform network.
+      SEP2_STOMP_ADDR: ${SEP2_STOMP_ADDR:-gridappsd:61613}
       SEP2_STOMP_USER: ${SEP2_STOMP_USER:-system}
-      SEP2_STOMP_PASSWORD: ${SEP2_STOMP_PASSWORD:-manager}
+      SEP2_STOMP_PASSWORD: ${SEP2_STOMP_PASSWORD:?set it in .env}
+      # The platform broker speaks plaintext STOMP, so the container opts in.
       SEP2_STOMP_ALLOW_PLAINTEXT: ${SEP2_STOMP_ALLOW_PLAINTEXT:-true}
-      SEP2_FEEDER_MRID: ${SEP2_FEEDER_MRID:-}
       SEP2_SIMULATION_ID: ${SEP2_SIMULATION_ID:-}
+      SEP2_APPLICATION_ID: ${SEP2_APPLICATION_ID:-IEEE_2030_5}
+      SEP2_FEEDER_MRID: ${SEP2_FEEDER_MRID:-_C1C3E687-6FFD-C753-582B-632A27E28507}
+      SEP2_BATTERY_LEG_LIST_FILE: ${SEP2_BATTERY_LEG_LIST_FILE:-}
+      SEP2_PUBLISH_ON_START: ${SEP2_PUBLISH_ON_START:-false}
+      SEP2_STOMP_CONNECT_TIMEOUT: ${SEP2_STOMP_CONNECT_TIMEOUT:-15s}
+      SEP2_STOMP_HEARTBEAT: ${SEP2_STOMP_HEARTBEAT:-10s}
+      SEP2_STOMP_PROBE_INTERVAL: ${SEP2_STOMP_PROBE_INTERVAL:-5s}
+      SEP2_STOMP_PROBE_TIMEOUT: ${SEP2_STOMP_PROBE_TIMEOUT:-10s}
+      SEP2_STOMP_RECONNECT_BACKOFF_BASE: ${SEP2_STOMP_RECONNECT_BACKOFF_BASE:-500ms}
+      SEP2_STOMP_RECONNECT_BACKOFF_MAX: ${SEP2_STOMP_RECONNECT_BACKOFF_MAX:-10s}
+      SEP2_STOMP_UNSUBSCRIBE_TIMEOUT: ${SEP2_STOMP_UNSUBSCRIBE_TIMEOUT:-5s}
+      SEP2_CIM_QUERY_TIMEOUT: ${SEP2_CIM_QUERY_TIMEOUT:-30s}
+      SEP2_HISTORY_LOG_INTERVAL: ${SEP2_HISTORY_LOG_INTERVAL:-30s}
+
+      # Embedded IEEE 2030.5 server
+      # Pinned for the container, not overridable from .env or the shell: a
+      # published port reaches the container's address, not its loopback, so the
+      # listener binds all addresses (the host side is 127.0.0.1), and the cert
+      # dir is the volumes: mount target below. Each has one correct value here.
       SEP2_SERVER_ADDR: 0.0.0.0:18443
       SEP2_SERVER_CERT_DIR: /etc/sep2/certs
-      # A published port reaches the container's address, not its loopback, so
-      # the admin UI binds its own network's address: platform containers are
-      # not on that network and cannot reach it. The host side is 127.0.0.1.
+      SEP2_DEVICE_CERT_MODE: ${SEP2_DEVICE_CERT_MODE:-dev-mint}
+      SEP2_POLL_RATE: ${SEP2_POLL_RATE:-}
+      SEP2_POST_RATE: ${SEP2_POST_RATE:-}
+      SEP2_NOTIFICATION_ALLOW_LOOPBACK: ${SEP2_NOTIFICATION_ALLOW_LOOPBACK:-false}
+      SEP2_ENABLE_CCM: ${SEP2_ENABLE_CCM:-false}
+      SEP2_CCM_ALLOW_NO_OBSERVER: ${SEP2_CCM_ALLOW_NO_OBSERVER:-false}
+      SEP2_SERVER_READ_HEADER_TIMEOUT: ${SEP2_SERVER_READ_HEADER_TIMEOUT:-10s}
+      SEP2_SERVER_READ_TIMEOUT: ${SEP2_SERVER_READ_TIMEOUT:-30s}
+      SEP2_SERVER_WRITE_TIMEOUT: ${SEP2_SERVER_WRITE_TIMEOUT:-30s}
+      SEP2_SERVER_IDLE_TIMEOUT: ${SEP2_SERVER_IDLE_TIMEOUT:-120s}
+      SEP2_SERVER_SHUTDOWN_TIMEOUT: ${SEP2_SERVER_SHUTDOWN_TIMEOUT:-5s}
+      SEP2_CONTROL_SWEEP_INTERVAL: ${SEP2_CONTROL_SWEEP_INTERVAL:-10s}
+      SEP2_NOTIFY_POST_TIMEOUT: ${SEP2_NOTIFY_POST_TIMEOUT:-30s}
+      SEP2_NOTIFY_DIAL_TIMEOUT: ${SEP2_NOTIFY_DIAL_TIMEOUT:-30s}
+      SEP2_NOTIFY_RESOLVE_TIMEOUT: ${SEP2_NOTIFY_RESOLVE_TIMEOUT:-5s}
+      SEP2_CCM_HANDSHAKE_TIMEOUT: ${SEP2_CCM_HANDSHAKE_TIMEOUT:-10s}
+      SEP2_NOTIFY_WORKERS: ${SEP2_NOTIFY_WORKERS:-4}
+      SEP2_NOTIFY_QUEUE_SIZE: ${SEP2_NOTIFY_QUEUE_SIZE:-100}
+
+      # Admin UI
+      # Pinned for the container, not overridable from .env or the shell: the
+      # admin UI binds only its own network's address, which platform
+      # containers cannot reach, so an override such as 0.0.0.0 would expose it
+      # to them. Non-loopback is allowed because that address is not loopback.
       SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444
       SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: "true"
-      SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:?set it in .env.bridge}
+      SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:?set it in .env}
+      SEP2_ADMIN_UI_ALLOWED_HOSTS: ${SEP2_ADMIN_UI_ALLOWED_HOSTS:-}
+      SEP2_ADMIN_UI_SOR_LINK: ${SEP2_ADMIN_UI_SOR_LINK:-}
+      SEP2_ADMIN_UI_READ_HEADER_TIMEOUT: ${SEP2_ADMIN_UI_READ_HEADER_TIMEOUT:-5s}
+      SEP2_ADMIN_UI_READ_TIMEOUT: ${SEP2_ADMIN_UI_READ_TIMEOUT:-10s}
+      SEP2_ADMIN_UI_WRITE_TIMEOUT: ${SEP2_ADMIN_UI_WRITE_TIMEOUT:-10s}
+      SEP2_ADMIN_UI_IDLE_TIMEOUT: ${SEP2_ADMIN_UI_IDLE_TIMEOUT:-60s}
+      SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT: ${SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT:-5s}
+
+      # Server admin-plane settings (read through the server's own parsers)
+      SEP2_EDITION: ${SEP2_EDITION:-2018}
+      SEP2_PEN: ${SEP2_PEN:-}
+      SEP2_FLOW_RESERVATION_DEADLINE_SECONDS: ${SEP2_FLOW_RESERVATION_DEADLINE_SECONDS:-300}
+      SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS: ${SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS:-1800}
+
+      # Telemetry
+      SEP2_TELEMETRY_INTERVAL: ${SEP2_TELEMETRY_INTERVAL:-15s}
+      SEP2_TELEMETRY_PUBLISH_UNCHANGED: ${SEP2_TELEMETRY_PUBLISH_UNCHANGED:-false}
     networks:
       default: {}
       admin:
