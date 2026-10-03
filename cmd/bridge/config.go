@@ -536,9 +536,9 @@ func loadConfig(args []string) (config, error) {
 	// credential flags above resolve theirs.
 	var registrationPINFlag, registrationPINFileFlag string
 	fs.StringVar(&registrationPINFlag, "sep2-registration-pin", "",
-		"fleet-wide fallback IEEE 2030.5 registration PIN, 0-999999 with a valid section 6.3.5 check digit; unset means no fleet-wide fallback")
+		"fleet-wide fallback IEEE 2030.5 registration PIN, 0-999999 with a valid section 6.3.5 check digit; unset means no fleet-wide fallback (env: SEP2_REGISTRATION_PIN)")
 	fs.StringVar(&registrationPINFileFlag, "sep2-registration-pin-file", "",
-		"path to a JSON object mapping device LFDI to that device's IEEE 2030.5 registration PIN; unset means no per-device PINs are configured")
+		"path to a JSON object mapping device LFDI to that device's IEEE 2030.5 registration PIN; unset means no per-device PINs are configured (env: SEP2_REGISTRATION_PIN_FILE)")
 
 	// sep2-battery-leg-list-file registers with an empty string default
 	// and is resolved (flag, then env) after Parse below, matching the
@@ -657,15 +657,30 @@ func loadConfig(args []string) (config, error) {
 	// in sep2config.SEP2Policy.ValidateRegistrationPIN, the single place
 	// that logic already lives, and buildSEP2Policy in main.go calls it
 	// on both of these fields before the bridge serves anything.
-	if registrationPINFlag != "" {
-		pin, err := parseRegistrationPINFlag(registrationPINFlag)
+	//
+	// SEP2_REGISTRATION_PIN and SEP2_REGISTRATION_PIN_FILE are the env
+	// forms for a containerised bridge with no command line. The flag
+	// wins when both are set. The PIN is a secret, so it goes through
+	// resolveCred, which also scrubs the variable from the process
+	// environment; the file path is not secret and is read directly.
+	pinLabel := "-sep2-registration-pin"
+	if registrationPINFlag == "" {
+		pinLabel = "SEP2_REGISTRATION_PIN"
+	}
+	if raw := resolveCred(registrationPINFlag, "SEP2_REGISTRATION_PIN", ""); raw != "" {
+		pin, err := parseRegistrationPINFlag(raw, pinLabel)
 		if err != nil {
 			return config{}, err
 		}
 		cfg.SEP2RegistrationPIN = &pin
 	}
+	pinFileLabel := "-sep2-registration-pin-file"
+	if registrationPINFileFlag == "" {
+		registrationPINFileFlag = os.Getenv("SEP2_REGISTRATION_PIN_FILE")
+		pinFileLabel = "SEP2_REGISTRATION_PIN_FILE"
+	}
 	if registrationPINFileFlag != "" {
-		pins, err := loadRegistrationPINFile(registrationPINFileFlag)
+		pins, err := loadRegistrationPINFile(registrationPINFileFlag, pinFileLabel)
 		if err != nil {
 			return config{}, err
 		}
@@ -1068,10 +1083,10 @@ func parseRateFlag(raw, flagName string) (uint32, error) {
 // shared secret in the registration flow that must never appear in a
 // log or error message (see SEP2Policy.RegistrationPINs's doc comment
 // in internal/sep2config/policy.go).
-func parseRegistrationPINFlag(raw string) (uint32, error) {
+func parseRegistrationPINFlag(raw, label string) (uint32, error) {
 	v, err := strconv.ParseUint(raw, 10, 32)
 	if err != nil {
-		return 0, errors.New("config: -sep2-registration-pin must be a base-10, non-negative integer that fits in 32 bits")
+		return 0, fmt.Errorf("config: %s must be a base-10, non-negative integer that fits in 32 bits", label)
 	}
 	return uint32(v), nil
 }
@@ -1098,13 +1113,13 @@ func parseRegistrationPINFlag(raw string) (uint32, error) {
 // No parsed PIN value is ever included in a returned error: only the
 // path and, for a per-entry problem, the LFDI (which is not secret, see
 // SEP2Policy.RegistrationPINs's doc comment) are named.
-func loadRegistrationPINFile(path string) (map[string]uint32, error) {
+func loadRegistrationPINFile(path, label string) (map[string]uint32, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("config: -sep2-registration-pin-file %q does not exist", path)
+			return nil, fmt.Errorf("config: %s %q does not exist", label, path)
 		}
-		return nil, fmt.Errorf("config: -sep2-registration-pin-file %q is not readable: %w", path, err)
+		return nil, fmt.Errorf("config: %s %q is not readable: %w", label, path, err)
 	}
 
 	// Decode into map[string]interface{} with UseNumber, then type-check
@@ -1123,12 +1138,12 @@ func loadRegistrationPINFile(path string) (map[string]uint32, error) {
 			// an object (e.g. an array, a bare number, or a string):
 			// a distinct case from a syntax error, so it gets its own
 			// message.
-			return nil, fmt.Errorf("config: -sep2-registration-pin-file %q is not a flat JSON object of LFDI to PIN", path)
+			return nil, fmt.Errorf("config: %s %q is not a flat JSON object of LFDI to PIN", label, path)
 		}
-		return nil, fmt.Errorf("config: -sep2-registration-pin-file %q is not valid JSON: %w", path, err)
+		return nil, fmt.Errorf("config: %s %q is not valid JSON: %w", label, path, err)
 	}
 	if len(entries) == 0 {
-		return nil, fmt.Errorf("config: -sep2-registration-pin-file %q contains no entries", path)
+		return nil, fmt.Errorf("config: %s %q contains no entries", label, path)
 	}
 
 	pins := make(map[string]uint32, len(entries))
@@ -1136,17 +1151,17 @@ func loadRegistrationPINFile(path string) (map[string]uint32, error) {
 		num, ok := val.(json.Number)
 		if !ok {
 			return nil, fmt.Errorf(
-				"config: -sep2-registration-pin-file %q: entry %q is not a JSON number",
-				path, lfdi)
+				"config: %s %q: entry %q is not a JSON number",
+				label, path, lfdi)
 		}
 		i, err := num.Int64()
 		if err != nil {
-			return nil, fmt.Errorf("config: -sep2-registration-pin-file %q: entry %q is not an integer", path, lfdi)
+			return nil, fmt.Errorf("config: %s %q: entry %q is not an integer", label, path, lfdi)
 		}
 		if i < 0 || i > int64(sep2config.MaxRegistrationPIN) {
 			return nil, fmt.Errorf(
-				"config: -sep2-registration-pin-file %q: entry %q is out of the IEEE 2030.5 PIN range [0, %d]",
-				path, lfdi, sep2config.MaxRegistrationPIN)
+				"config: %s %q: entry %q is out of the IEEE 2030.5 PIN range [0, %d]",
+				label, path, lfdi, sep2config.MaxRegistrationPIN)
 		}
 		pins[lfdi] = uint32(i)
 	}
@@ -1218,15 +1233,15 @@ func loadBatteryLegListFile(path string) ([]string, error) {
 // fields whose flag defaults are intentionally registered as empty so
 // flag.PrintDefaults never echoes a real value.
 //
-// As a side effect, the env var is unset after the read so it does not
-// remain visible via /proc/<pid>/environ for the rest of process
-// lifetime. The resolved value still lives on the config struct (and
-// thus in heap memory) but is no longer reachable to anything that
-// only reads the process environment.
+// As a side effect, the env var is removed from the Go process
+// environment after the read, so child processes and later os.Getenv
+// calls do not see it. The kernel's copy of the initial environment is
+// not changed: the value stays in /proc/<pid>/environ for the life of
+// the process. The resolved value also lives on the config struct.
 func resolveCred(flagVal, envKey, fallback string) string {
 	if flagVal != "" {
-		// Even when the flag wins, scrub the env var so a leftover
-		// export does not surface to /proc/<pid>/environ.
+		// Even when the flag wins, remove the env var so a leftover
+		// export does not reach child processes.
 		os.Unsetenv(envKey)
 		return flagVal
 	}
