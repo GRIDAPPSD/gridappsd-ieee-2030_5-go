@@ -49,6 +49,10 @@ func tuningCases() []tuningCase {
 		{"admin-ui-idle-timeout", "SEP2_ADMIN_UI_IDLE_TIMEOUT", time.Minute, "90s", 90 * s, dur(func(t tuning) time.Duration { return t.AdminIdleTimeout }), false},
 		{"admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", 5 * s, "15s", 15 * s, dur(func(t tuning) time.Duration { return t.AdminShutdownTimeout }), false},
 		{"sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", 10 * s, "2s", 2 * s, dur(func(t tuning) time.Duration { return t.ControlSweepInterval }), false},
+		{"sep2-notify-post-timeout", "SEP2_NOTIFY_POST_TIMEOUT", 30 * s, "31s", 31 * s, dur(func(t tuning) time.Duration { return t.NotifyPostTimeout }), false},
+		{"sep2-notify-dial-timeout", "SEP2_NOTIFY_DIAL_TIMEOUT", 30 * s, "32s", 32 * s, dur(func(t tuning) time.Duration { return t.NotifyDialTimeout }), false},
+		{"sep2-notify-resolve-timeout", "SEP2_NOTIFY_RESOLVE_TIMEOUT", 5 * s, "6s", 6 * s, dur(func(t tuning) time.Duration { return t.NotifyResolveTimeout }), false},
+		{"sep2-ccm-handshake-timeout", "SEP2_CCM_HANDSHAKE_TIMEOUT", 10 * s, "11s", 11 * s, dur(func(t tuning) time.Duration { return t.CCMHandshakeTimeout }), false},
 		{"sep2-notify-workers", "SEP2_NOTIFY_WORKERS", 4, "16", 16, func(c config) any { return c.Tuning.NotifyWorkers }, true},
 		{"sep2-notify-queue-size", "SEP2_NOTIFY_QUEUE_SIZE", 100, "500", 500, func(c config) any { return c.Tuning.NotifyQueueSize }, true},
 	}
@@ -179,8 +183,14 @@ func testTuningConfig() config {
 		AdminShutdownTimeout:   45 * time.Second,
 
 		ControlSweepInterval: 51 * time.Second,
-		NotifyWorkers:        52,
-		NotifyQueueSize:      53,
+
+		NotifyPostTimeout:    61 * time.Second,
+		NotifyDialTimeout:    62 * time.Second,
+		NotifyResolveTimeout: 63 * time.Second,
+		CCMHandshakeTimeout:  64 * time.Second,
+
+		NotifyWorkers:   52,
+		NotifyQueueSize: 53,
 	}}
 }
 
@@ -268,6 +278,12 @@ func TestTuningReachesEmbedAndAdminConfig(t *testing.T) {
 		t.Errorf("embed notify sizing = %d/%d, want 52/53", ec.NotifyWorkers, ec.NotifyQueueSize)
 	}
 
+	if ec.NotifyPostTimeout != 61*time.Second || ec.NotifyDialTimeout != 62*time.Second ||
+		ec.NotifyResolveTimeout != 63*time.Second || ec.CCMHandshakeTimeout != 64*time.Second {
+		t.Errorf("embed notify post/dial/resolve and CCM handshake = %v/%v/%v/%v, want 61s..64s",
+			ec.NotifyPostTimeout, ec.NotifyDialTimeout, ec.NotifyResolveTimeout, ec.CCMHandshakeTimeout)
+	}
+
 	ac := adminUIConfig(cfg)
 	if ac.ReadHeaderTimeout != 41*time.Second || ac.ReadTimeout != 42*time.Second || ac.WriteTimeout != 43*time.Second ||
 		ac.IdleTimeout != 44*time.Second || ac.ShutdownTimeout != 45*time.Second {
@@ -300,6 +316,10 @@ var tuningRanges = []struct {
 	{"admin-ui-idle-timeout", "SEP2_ADMIN_UI_IDLE_TIMEOUT", "1s", "1h", "999ms", "3601s"},
 	{"admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", "1s", "5m", "999ms", "301s"},
 	{"sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", "1s", "1h", "999ms", "3601s"},
+	{"sep2-notify-post-timeout", "SEP2_NOTIFY_POST_TIMEOUT", "1s", "5m", "999ms", "301s"},
+	{"sep2-notify-dial-timeout", "SEP2_NOTIFY_DIAL_TIMEOUT", "1s", "5m", "999ms", "301s"},
+	{"sep2-notify-resolve-timeout", "SEP2_NOTIFY_RESOLVE_TIMEOUT", "1s", "5m", "999ms", "301s"},
+	{"sep2-ccm-handshake-timeout", "SEP2_CCM_HANDSHAKE_TIMEOUT", "1s", "5m", "999ms", "301s"},
 	{"sep2-notify-workers", "SEP2_NOTIFY_WORKERS", "1", "1024", "0", "1025"},
 	{"sep2-notify-queue-size", "SEP2_NOTIFY_QUEUE_SIZE", "1", "100000", "0", "100001"},
 }

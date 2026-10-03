@@ -62,6 +62,10 @@ make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
 | `SEP2_SERVER_IDLE_TIMEOUT` | `-sep2-server-idle-timeout` | `120s` | A Go duration such as `15s` or `1m`. Protocol listener: keep-alive idle time. Allowed range: 1s-1h. |
 | `SEP2_SERVER_SHUTDOWN_TIMEOUT` | `-sep2-server-shutdown-timeout` | `5s` | A Go duration such as `15s` or `1m`. Bound on the protocol listener's graceful drain at shutdown. Allowed range: 1s-5m. |
 | `SEP2_CONTROL_SWEEP_INTERVAL` | `-sep2-control-sweep-interval` | `10s` | A Go duration such as `15s` or `1m`. How often ended DERControls are expired fleet-wide. A longer value lets a client that connects late be served an ended event for longer; it stays a sampling rate, not an event length. Allowed range: 1s-1h. |
+| `SEP2_NOTIFY_POST_TIMEOUT` | `-sep2-notify-post-timeout` | `30s` | A Go duration such as `15s` or `1m`. Time one subscription notification POST may take. Allowed range: 1s-5m. |
+| `SEP2_NOTIFY_DIAL_TIMEOUT` | `-sep2-notify-dial-timeout` | `30s` | A Go duration such as `15s` or `1m`. Connect budget for one notification POST. The server caps it at `SEP2_NOTIFY_POST_TIMEOUT`, so a value above that has no effect. Allowed range: 1s-5m. |
+| `SEP2_NOTIFY_RESOLVE_TIMEOUT` | `-sep2-notify-resolve-timeout` | `5s` | A Go duration such as `15s` or `1m`. Time allowed for the DNS check on a subscription's `notificationURI` when it is created. Allowed range: 1s-5m. |
+| `SEP2_CCM_HANDSHAKE_TIMEOUT` | `-sep2-ccm-handshake-timeout` | `10s` | A Go duration such as `15s` or `1m`. Time one inbound TLS handshake may take on the protocol listener before the connection is dropped. Allowed range: 1s-5m. |
 | `SEP2_NOTIFY_WORKERS` | `-sep2-notify-workers` | `4` | An integer. Subscription notification worker count. Allowed range: 1-1024. |
 | `SEP2_NOTIFY_QUEUE_SIZE` | `-sep2-notify-queue-size` | `100` | An integer. Subscription notification queue length. Allowed range: 1-100000. |
 

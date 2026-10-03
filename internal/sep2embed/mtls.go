@@ -95,7 +95,7 @@ func buildCCMServerConfig(certFile, keyFile, caFile string, extraClientCAs []str
 // attempt's Known field: whether the presented certificate's LFDI
 // matches an entry already in the bridge's mRID-to-LFDI registry. reg
 // may be nil, in which case Known is always false.
-func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClientCAs []string, hook *connobs.Hook, reg *registry.Registry) (net.Listener, sep2srv.Identity, error) {
+func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClientCAs []string, hook *connobs.Hook, reg *registry.Registry, handshakeTimeout time.Duration) (net.Listener, sep2srv.Identity, error) {
 	cfg, err := buildCCMServerConfig(certFile, keyFile, caFile, extraClientCAs)
 	if err != nil {
 		return nil, sep2srv.Identity{}, err
@@ -142,7 +142,7 @@ func newObservedMTLSListener(addr, certFile, keyFile, caFile string, extraClient
 	// forked *gotls.Conn type net.Listen/gotls.NewListener returns on
 	// their own. A nil errorLog logs through the standard logger,
 	// matching this package's unset http.Server.ErrorLog on this path.
-	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), nil), identity, nil
+	return wrapCCM(listener, cfg, handshakeTimeout, identity)
 }
 
 // newPerConnectionConfig builds the *gotls.Config newObservedMTLSListener's
@@ -175,7 +175,7 @@ func newPerConnectionConfig(base *gotls.Config, innerVerify func([][]byte, [][]*
 // (outermost), matching sep2srv.New's own CCM wiring in server.go, since
 // the standard identity middleware reads r.TLS, which crypto/tls
 // populates automatically but the gotls fork does not.
-func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs []string) (net.Listener, sep2srv.Identity, error) {
+func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs []string, handshakeTimeout time.Duration) (net.Listener, sep2srv.Identity, error) {
 	cfg, err := buildCCMServerConfig(certFile, keyFile, caFile, extraClientCAs)
 	if err != nil {
 		return nil, sep2srv.Identity{}, err
@@ -197,7 +197,7 @@ func newCCMOnlyListener(addr, certFile, keyFile, caFile string, extraClientCAs [
 	// nil errorLog here must stay in sync with newObservedMTLSListener's
 	// identical nil above: both log through the standard logger, matching
 	// this package's unset http.Server.ErrorLog on both paths.
-	return sepTLS.WrapCCMListener(gotls.NewListener(listener, cfg), nil), identity, nil
+	return wrapCCM(listener, cfg, handshakeTimeout, identity)
 }
 
 // requireCCMVerification refuses a CCM config that no longer enforces
@@ -342,4 +342,20 @@ func (s *observedMTLSServer) Run(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+// wrapCCMListener is a seam: the core listener records its handshake
+// bound in a field only core's own tests can read.
+var wrapCCMListener = sepTLS.WrapCCMListenerWithTimeout
+
+// wrapCCM puts the eager-handshake wrapper on a TLS listener. Zero
+// handshakeTimeout keeps core's default; a negative one is refused and the
+// listener closed.
+func wrapCCM(listener net.Listener, cfg *gotls.Config, handshakeTimeout time.Duration, identity sep2srv.Identity) (net.Listener, sep2srv.Identity, error) {
+	l, err := wrapCCMListener(gotls.NewListener(listener, cfg), nil, handshakeTimeout)
+	if err != nil {
+		_ = listener.Close()
+		return nil, sep2srv.Identity{}, fmt.Errorf("sep2embed: %w", err)
+	}
+	return l, identity, nil
 }

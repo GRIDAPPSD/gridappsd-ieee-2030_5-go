@@ -2,12 +2,21 @@ package sep2embed
 
 import (
 	"context"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	gotls "github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2tls/gotls"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
 	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
@@ -145,9 +154,9 @@ func TestConfiguredSweepIntervalReachesTheTicker(t *testing.T) {
 func TestConfiguredNotifySizingReachesTheNotifier(t *testing.T) {
 	var gotWorkers, gotQueue int
 	orig := newNotifier
-	newNotifier = func(subs coresub.SubscriptionLister, workers, queueSize int, allowLoopback bool) *coresub.Manager {
+	newNotifier = func(subs coresub.SubscriptionLister, workers, queueSize int, allowLoopback bool, timeouts coresub.NotificationTimeouts) *coresub.Manager {
 		gotWorkers, gotQueue = workers, queueSize
-		return orig(subs, workers, queueSize, allowLoopback)
+		return orig(subs, workers, queueSize, allowLoopback, timeouts)
 	}
 	t.Cleanup(func() { newNotifier = orig })
 
@@ -158,5 +167,147 @@ func TestConfiguredNotifySizingReachesTheNotifier(t *testing.T) {
 	newTuningEmbed(t, Config{EnableCCM: true})
 	if gotWorkers != 4 || gotQueue != 100 {
 		t.Errorf("default notifier built with workers=%d queue=%d, want 4 and 100", gotWorkers, gotQueue)
+	}
+}
+
+func TestConfiguredNotifyTimeoutsReachTheNotifier(t *testing.T) {
+	var got coresub.NotificationTimeouts
+	orig := newNotifier
+	newNotifier = func(subs coresub.SubscriptionLister, workers, queueSize int, allowLoopback bool, timeouts coresub.NotificationTimeouts) *coresub.Manager {
+		got = timeouts
+		return orig(subs, workers, queueSize, allowLoopback, timeouts)
+	}
+	t.Cleanup(func() { newNotifier = orig })
+
+	newTuningEmbed(t, Config{EnableCCM: true,
+		NotifyPostTimeout: 41 * time.Second, NotifyDialTimeout: 42 * time.Second, NotifyResolveTimeout: 43 * time.Second})
+	want := coresub.NotificationTimeouts{Post: 41 * time.Second, Dial: 42 * time.Second, CreationResolve: 43 * time.Second}
+	if got != want {
+		t.Errorf("notifier built with %+v, want %+v", got, want)
+	}
+	newTuningEmbed(t, Config{EnableCCM: true})
+	if got != (coresub.NotificationTimeouts{}) {
+		t.Errorf("unset config built the notifier with %+v, want zero (server defaults)", got)
+	}
+}
+
+func TestNegativeNotifyTimeoutRefused(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.New()
+	if err := reg.AddBatch(fixtureEntries()); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+	_, err := New(context.Background(), Config{
+		Addr: "127.0.0.1:0", CertDir: t.TempDir(), ResolveRegistrationPIN: testResolvePIN, EnableCCM: true,
+		NotifyDialTimeout: -time.Second,
+	}, reg)
+	if err == nil || !strings.Contains(err.Error(), "Dial") {
+		t.Fatalf("New with a negative dial timeout: err = %v, want a refusal naming Dial", err)
+	}
+}
+
+// The POST timeout must reach the Manager buildNotifier returns: a receiver
+// that never answers sees its connection dropped after the configured
+// bound, not the 30s default.
+func TestBuildNotifierAppliesPostTimeout(t *testing.T) {
+	t.Parallel()
+
+	abandoned, stop := make(chan struct{}), make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		// net/http watches for a dropped connection only once the body is read.
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+			close(abandoned)
+		case <-stop:
+		}
+	}))
+	t.Cleanup(func() { close(stop); srv.Close() })
+
+	st := newStores()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := st.Subscriptions.Create(ctx, "sub-slow", sep2.Subscription{
+		SubscribableResource: sep2.SubscribableResource{Resource: sep2.Resource{Href: "/sub/slow"}},
+		SubscribedResource:   "/dcap",
+		NotificationURI:      srv.URL + "/notify",
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	m := buildNotifier(st.Subscriptions, 1, 1, true, coresub.NotificationTimeouts{Post: 300 * time.Millisecond})
+	go m.Start(ctx)
+
+	m.Notify(ctx, "/dcap", 0)
+	select {
+	case <-abandoned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("receiver connection still open 5s after a 300ms POST timeout")
+	}
+}
+
+func TestConfiguredCCMHandshakeTimeoutReachesTheListener(t *testing.T) {
+	var got time.Duration
+	orig := wrapCCMListener
+	wrapCCMListener = func(inner net.Listener, l *log.Logger, d time.Duration) (net.Listener, error) {
+		got = d
+		return orig(inner, l, d)
+	}
+	t.Cleanup(func() { wrapCCMListener = orig })
+
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"ccm only", Config{EnableCCM: true}},
+		{"observed", Config{Observer: &connobs.Hook{}}},
+	} {
+		got = -1
+		tc.cfg.CCMHandshakeTimeout = 7 * time.Second
+		newTuningEmbed(t, tc.cfg)
+		if got != 7*time.Second {
+			t.Errorf("%s: handshake timeout wrapped = %s, want 7s", tc.name, got)
+		}
+		got = -1
+		tc.cfg.CCMHandshakeTimeout = 0
+		newTuningEmbed(t, tc.cfg)
+		if got != 0 {
+			t.Errorf("%s: unset handshake timeout wrapped = %s, want 0 (core default)", tc.name, got)
+		}
+	}
+}
+
+func TestCCMHandshakeTimeoutRefusedOnDefaultListener(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.New()
+	if err := reg.AddBatch(fixtureEntries()); err != nil {
+		t.Fatalf("AddBatch: %v", err)
+	}
+	_, err := New(context.Background(), Config{
+		Addr: "127.0.0.1:0", CertDir: t.TempDir(), ResolveRegistrationPIN: testResolvePIN,
+		CCMHandshakeTimeout: time.Second,
+	}, reg)
+	if err == nil || !strings.Contains(err.Error(), "listener timeouts need Observer or EnableCCM") {
+		t.Fatalf("New with a handshake timeout and no Observer or EnableCCM: err = %v, want the refusal", err)
+	}
+}
+
+func TestNegativeCCMHandshakeTimeoutRefusedAndListenerClosed(t *testing.T) {
+	t.Parallel()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_, _, err = wrapCCM(l, &gotls.Config{}, -time.Second, sep2srv.Identity{})
+	if err == nil || !strings.Contains(err.Error(), "negative CCM handshake timeout") {
+		t.Fatalf("wrapCCM with a negative timeout: err = %v, want a refusal", err)
+	}
+	if c, derr := net.DialTimeout("tcp", addr, time.Second); derr == nil {
+		_ = c.Close()
+		t.Error("listener still accepting after the refusal")
 	}
 }

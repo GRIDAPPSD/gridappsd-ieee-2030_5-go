@@ -6,6 +6,8 @@ import (
 	"log"
 	"strings"
 	"testing"
+
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
 )
 
 // TestBuildNotifierLogsWarningExactlyOnceWhenLoopbackAllowed proves the
@@ -24,7 +26,7 @@ func TestBuildNotifierLogsWarningExactlyOnceWhenLoopbackAllowed(t *testing.T) {
 		log.SetFlags(origFlags)
 	}()
 
-	buildNotifier(newStores().Subscriptions, 1, 1, true)
+	buildNotifier(newStores().Subscriptions, 1, 1, true, coresub.NotificationTimeouts{})
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	if len(lines) != 1 || lines[0] == "" {
@@ -66,7 +68,7 @@ func TestBuildNotifierNoWarningWhenLoopbackDisallowed(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(origOutput)
 
-	buildNotifier(newStores().Subscriptions, 1, 1, false)
+	buildNotifier(newStores().Subscriptions, 1, 1, false, coresub.NotificationTimeouts{})
 
 	if buf.Len() != 0 {
 		t.Errorf("log output = %q, want none (switch is off)", buf.String())
@@ -93,7 +95,7 @@ func TestBuildNotifierValidatesNotificationURIPerPolicy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := buildNotifier(newStores().Subscriptions, 1, 1, tt.allowLoopback)
+			m := buildNotifier(newStores().Subscriptions, 1, 1, tt.allowLoopback, coresub.NotificationTimeouts{})
 			err := m.ValidateNotificationURI(context.Background(), tt.uri)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateNotificationURI(%q) with allowLoopback=%v: err = %v, wantErr %v",
