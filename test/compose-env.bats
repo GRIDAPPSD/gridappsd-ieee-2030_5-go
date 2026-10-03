@@ -105,14 +105,13 @@ example_names() {
 }
 
 @test "secrets: the admin key has no default and is required" {
-  for n in SEP2_ADMIN_UI_KEY; do
-    # shellcheck disable=SC2016 # literal compose syntax
-    /usr/bin/grep -qE "^      $n: \\\$\\{$n:\\?" "$compose"
-    [ "$(/usr/bin/grep -cE "$n:-" "$compose")" -eq 0 ]
-    # The example carries the name with an empty value: a placeholder that
-    # fails the 16 character check and the required check.
-    /usr/bin/grep -qx "$n=" "$example"
-  done
+  n=SEP2_ADMIN_UI_KEY
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qE "^      $n: \\\$\\{$n:\\?" "$compose"
+  [ "$(/usr/bin/grep -cE "$n:-" "$compose")" -eq 0 ]
+  # The example carries the name with an empty value: a placeholder that
+  # fails the 16 character check and the required check.
+  /usr/bin/grep -qx "$n=" "$example"
 }
 
 @test "secrets: the registration PIN and its file are optional, empty by default, and set no value in the example" {
