@@ -35,6 +35,7 @@ STUB
   goodkey="0123456789abcdef-key"
   printf 'SEP2_ADMIN_UI_KEY=%s\n' "$goodkey" >"$work/env"
   export BRIDGE_ENV_FILE="$work/env"
+  export SEP2_STOMP_PASSWORD="broker-pass"
   export BRIDGE_CERT_DIR="$work/certs"
   unset SEP2_ADMIN_UI_KEY BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE SS_LISTEN NO_NETWORK
 }
@@ -184,7 +185,8 @@ run_script() {
   /usr/bin/grep -qF '"127.0.0.1:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"' "$f"
   [ "$(/usr/bin/grep -cE '^\s+- "?(0\.0\.0\.0:)?[0-9]+:' "$f")" -eq 0 ]
   /usr/bin/grep -qF 'name: gridappsd-docker_default' "$f"
-  /usr/bin/grep -qF 'SEP2_STOMP_ADDR: gridappsd:61613' "$f"
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qF 'SEP2_STOMP_ADDR: ${SEP2_STOMP_ADDR:-gridappsd:61613}' "$f"
   # shellcheck disable=SC2016 # literal compose syntax
   /usr/bin/grep -qF 'SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:?' "$f"
 }
@@ -203,7 +205,7 @@ run_script() {
   f="$repo/docker-compose.bridge.yml"
   [ "$(/usr/bin/grep -c '0\.0\.0\.0:18444' "$f")" -eq 0 ]
   # shellcheck disable=SC2016 # literal compose syntax
-  /usr/bin/grep -qF 'SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444' "$f"
+  /usr/bin/grep -qF 'SEP2_ADMIN_UI_ADDR: ${SEP2_ADMIN_UI_ADDR:-${BRIDGE_ADMIN_IP:?use make docker-up}:18444}' "$f"
   # shellcheck disable=SC2016 # literal compose syntax
   /usr/bin/grep -qF 'ipv4_address: ${BRIDGE_ADMIN_IP:?use make docker-up}' "$f"
   # shellcheck disable=SC2016 # literal compose syntax
@@ -284,4 +286,48 @@ run_script() {
   printf 'SEP2_ADMIN_UI_KEY=%s\n' 0123456789012345 >"$work/env"
   run_script up
   [ "$status" -eq 0 ]
+}
+
+@test "up: a missing broker password is refused before docker is called; the env file can supply it" {
+  unset SEP2_STOMP_PASSWORD
+  run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SEP2_STOMP_PASSWORD"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+  printf 'SEP2_STOMP_PASSWORD=from-the-file\n' >>"$work/env"
+  run_script up
+  [ "$status" -eq 0 ]
+}
+
+# default_env_run copies the script and compose file to a scratch tree whose
+# .env sits where the script looks when BRIDGE_ENV_FILE is unset.
+default_env_run() {
+  mkdir -p "$work/r/scripts"
+  cp "$repo/scripts/docker-bridge.sh" "$work/r/scripts/"
+  cp "$repo/docker-compose.bridge.yml" "$work/r/"
+  printf 'SEP2_ADMIN_UI_KEY=%s\nSEP2_STOMP_PASSWORD=pw\n' "$goodkey" >"$work/r/.env"
+  printf 'SEP2_ADMIN_UI_KEY=stale\n' >"$work/r/.env.bridge"
+  unset BRIDGE_ENV_FILE
+  run "$work/r/scripts/docker-bridge.sh" "$1"
+}
+
+@test "env file: up, down and logs default to .env beside the script and never read .env.bridge" {
+  for a in up down logs; do
+    rm -f "$DOCKER_LOG"
+    default_env_run "$a"
+    [ "$status" -eq 0 ]
+    /usr/bin/grep -qF "ARGS: [compose] [--env-file] [$work/r/.env] [-f] [$work/r/docker-compose.bridge.yml] [$a]" "$DOCKER_LOG"
+    [ "$(/usr/bin/grep -c 'env.bridge' "$DOCKER_LOG")" -eq 0 ]
+  done
+}
+
+@test "env file: a missing .env is named in the error and points at .env.example" {
+  mkdir -p "$work/r/scripts"
+  cp "$repo/scripts/docker-bridge.sh" "$work/r/scripts/"
+  unset BRIDGE_ENV_FILE
+  run "$work/r/scripts/docker-bridge.sh" up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"$work/r/.env"* ]]
+  [[ "$output" == *".env.example"* ]]
+  [ ! -e "$DOCKER_LOG" ]
 }

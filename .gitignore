@@ -19,7 +19,7 @@ CLAUDE.md
 .claude/
 *.claude
 
-# Local environment
+# Local environment (the committed .env.example holds names and defaults only)
 .env
 
 # Certificate and key material: never committed. The embedded IEEE
@@ -39,6 +39,3 @@ CLAUDE.md
 
 # Log files
 *.log
-
-# Bridge compose settings (the committed .env.bridge.example holds names only)
-.env.bridge

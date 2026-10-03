@@ -12,7 +12,7 @@ die() {
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # BRIDGE_-prefixed so a COMPOSE_FILE set for another stack cannot redirect this script.
-env_file="${BRIDGE_ENV_FILE:-$repo/.env.bridge}"
+env_file="${BRIDGE_ENV_FILE:-$repo/.env}"
 compose_file="${BRIDGE_COMPOSE_FILE:-$repo/docker-compose.bridge.yml}"
 platform_network="gridappsd-docker_default"
 
@@ -75,10 +75,12 @@ port_in_use() {
 preflight() {
   command -v docker >/dev/null 2>&1 || die "docker is not on PATH"
   command -v ss >/dev/null 2>&1 || die "ss is required for the port check and is not on PATH"
-  [ -r "$env_file" ] || die "env file not found or unreadable: $env_file (copy .env.bridge.example and fill it in)"
+  [ -r "$env_file" ] || die "env file not found or unreadable: $env_file (copy .env.example to .env and fill it in)"
   local key
   key=$(setting SEP2_ADMIN_UI_KEY "")
   [ "${#key}" -ge 16 ] || die "SEP2_ADMIN_UI_KEY in $env_file is missing or shorter than 16 characters"
+  # The compose file refuses an empty one too; checking here stops it before the image is built.
+  [ -n "$(setting SEP2_STOMP_PASSWORD "")" ] || die "SEP2_STOMP_PASSWORD in $env_file is missing"
   [ -d "$BRIDGE_CERT_DIR" ] || die "cert dir not found: $BRIDGE_CERT_DIR (set BRIDGE_CERT_DIR)"
   # inspect failing means the network is absent or the docker daemon is down; both stop the start.
   docker network inspect "$platform_network" >/dev/null 2>&1 ||

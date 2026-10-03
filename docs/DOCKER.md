@@ -9,8 +9,9 @@ follows its log, and `make docker-build` builds the image alone.
 One-time setup:
 
 ```bash
-cp .env.bridge.example .env.bridge && chmod 600 .env.bridge
+cp .env.example .env && chmod 600 .env
 # set SEP2_ADMIN_UI_KEY (16+ characters, e.g. `openssl rand -hex 24`)
+# and SEP2_STOMP_PASSWORD (the platform broker password)
 make docker-up
 ```
 
@@ -34,11 +35,18 @@ What it does:
   `BRIDGE_ADMIN_IP`, default `10.213.168.2`) and the admin UI binds only
   that address; other platform containers cannot reach it. Change both if
   the subnet collides with a route on your host.
-- **Config.** Settings come from `.env.bridge`, never from the image. The
-  admin key is `SEP2_ADMIN_UI_KEY` there; `SEP2_FEEDER_MRID`,
-  `SEP2_SIMULATION_ID` and the STOMP settings are optional. Put comments on
+- **Config.** Settings come from `.env` (copy `.env.example`), never from the
+  image. `docker-compose.bridge.yml` lists every setting the bridge reads,
+  each as `NAME: ${NAME:-default}`, so that file is the one place to see them
+  and `.env` is where you change them; [CONFIGURATION.md](CONFIGURATION.md)
+  describes each. The admin key `SEP2_ADMIN_UI_KEY` and the broker password
+  `SEP2_STOMP_PASSWORD` have no default and are required. Put comments on
   their own lines: a value followed by `# comment` is refused. The
-  registration PIN has no environment variable, so it is not passed.
+  registration PIN has no environment variable, so it is not passed. `.env`
+  is also read by the dev broker's `docker-compose.yml`, which uses different
+  variable names. `BRIDGE_ENV_FILE` points the script at another file.
+- **Docker Engine.** Docker Engine 28 or newer is required: the admin network
+  uses `gw_priority`, which older engines do not support.
 - **Certs.** The cert directory is bind-mounted at `/etc/sep2/certs` from
   `BRIDGE_CERT_DIR` (default
   `~/.config/gridappsd/2030.5server/sep2-certs`). The container always runs
