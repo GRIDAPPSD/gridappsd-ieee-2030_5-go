@@ -1,20 +1,20 @@
-# Keep credentials and local state out of the build context.
-.git
-.github
-.env
-.env.*
-!.env.bridge.example
-*.pem
-*.key
-*.crt
-*.cer
-*.csr
-*.p12
-*.pfx
-*.x509
-sep2-certs
-config
-.config
-/bridge
-bin
-*.log
+# Allowlist: ignore everything, then re-include only what the build reads.
+# The deny patterns after it use **/ so a secret-shaped file nested inside an
+# allowed directory is dropped too.
+*
+!go.mod
+!go.sum
+!cmd
+!internal
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.crt
+**/*.cer
+**/*.csr
+**/*.p12
+**/*.pfx
+**/*.x509
+**/sep2-certs
+**/*.log

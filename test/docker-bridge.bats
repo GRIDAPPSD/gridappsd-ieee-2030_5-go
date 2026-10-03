@@ -14,8 +14,8 @@ setup() {
   printf 'ARGS:'
   for a in "$@"; do printf ' [%s]' "$a"; done
   printf '\n'
-  printf 'ENV: sep2=%s admin=%s user=%s certs=%s mode=%s image=%s\n' "${BRIDGE_SEP2_PORT-}" \
-    "${BRIDGE_ADMIN_PORT-}" "${BRIDGE_USER-}" "${BRIDGE_CERT_DIR-}" "${BRIDGE_CERT_MODE-}" "${BRIDGE_IMAGE-}"
+  printf 'ENV: sep2=%s admin=%s user=%s certs=%s mode=%s image=%s ip=%s subnet=%s\n' "${BRIDGE_SEP2_PORT-}" \
+    "${BRIDGE_ADMIN_PORT-}" "${BRIDGE_USER-}" "${BRIDGE_CERT_DIR-}" "${BRIDGE_CERT_MODE-}" "${BRIDGE_IMAGE-}" "${BRIDGE_ADMIN_IP-}" "${BRIDGE_ADMIN_SUBNET-}"
 } >>"$DOCKER_LOG"
 if [ "${1-}" = network ] && [ "${NO_NETWORK:-}" = 1 ]; then exit 1; fi
 exit 0
@@ -34,9 +34,9 @@ STUB
   export PATH="$work/bin:$PATH"
   goodkey="0123456789abcdef-key"
   printf 'SEP2_ADMIN_UI_KEY=%s\n' "$goodkey" >"$work/env"
-  export ENV_FILE="$work/env"
+  export BRIDGE_ENV_FILE="$work/env"
   export BRIDGE_CERT_DIR="$work/certs"
-  unset SEP2_ADMIN_UI_KEY BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE SS_LISTEN NO_NETWORK
+  unset SEP2_ADMIN_UI_KEY BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE SS_LISTEN NO_NETWORK
 }
 
 run_script() {
@@ -48,7 +48,7 @@ run_script() {
   [ "$status" -eq 0 ]
   /usr/bin/grep -qxF "ARGS: [build] [-f] [$repo/Dockerfile.bridge] [--build-arg] [VERSION=dev] [-t] [gridappsd-ieee-2030_5-go:dev] [$repo]" "$DOCKER_LOG"
   /usr/bin/grep -qxF "ARGS: [compose] [--env-file] [$work/env] [-f] [$repo/docker-compose.bridge.yml] [up] [-d] [--no-build]" "$DOCKER_LOG"
-  /usr/bin/grep -qF "ENV: sep2=18443 admin=18444 user=1000:1000 certs=$work/certs mode=rw image=gridappsd-ieee-2030_5-go:dev" "$DOCKER_LOG"
+  /usr/bin/grep -qF "ENV: sep2=18443 admin=18444 user=1000:1000 certs=$work/certs mode=rw image=gridappsd-ieee-2030_5-go:dev ip=10.213.168.2 subnet=10.213.168.0/24" "$DOCKER_LOG"
 }
 
 @test "up: env file values override the defaults, shell values override the file" {
@@ -59,7 +59,7 @@ run_script() {
 }
 
 @test "up: missing env file is refused before docker is called" {
-  ENV_FILE="$work/absent" run_script up
+  BRIDGE_ENV_FILE="$work/absent" run_script up
   [ "$status" -ne 0 ]
   [[ "$output" == *"env file not found"* ]]
   [ ! -e "$DOCKER_LOG" ]
@@ -187,4 +187,101 @@ run_script() {
   /usr/bin/grep -qF 'SEP2_STOMP_ADDR: gridappsd:61613' "$f"
   # shellcheck disable=SC2016 # literal compose syntax
   /usr/bin/grep -qF 'SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:?' "$f"
+}
+
+@test "dockerignore: allowlist, and every deny pattern matches at any depth" {
+  f="$repo/.dockerignore"
+  first=$(/usr/bin/grep -vE '^(#|$)' "$f" | head -n 1)
+  [ "$first" = "*" ]
+  [ "$(/usr/bin/grep -vE '^(#|$|\*$|!)' "$f" | /usr/bin/grep -vc '^\*\*/')" -eq 0 ]
+  /usr/bin/grep -qxF '**/*.pem' "$f"
+  /usr/bin/grep -qxF '**/.env.*' "$f"
+  [ "$(/usr/bin/grep -c '^COPY \. ' "$repo/Dockerfile.bridge")" -eq 0 ]
+}
+
+@test "compose: admin UI binds its own network's address, never 0.0.0.0, and stays off the platform network" {
+  f="$repo/docker-compose.bridge.yml"
+  [ "$(/usr/bin/grep -c '0\.0\.0\.0:18444' "$f")" -eq 0 ]
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qF 'SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444' "$f"
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qF 'ipv4_address: ${BRIDGE_ADMIN_IP:?use make docker-up}' "$f"
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qF 'subnet: ${BRIDGE_ADMIN_SUBNET:?use make docker-up}' "$f"
+  /usr/bin/grep -qE '^\s+gw_priority: [1-9]' "$f"
+  [ "$(/usr/bin/grep -c 'name: gridappsd-docker_default' "$f")" -eq 1 ]
+}
+
+@test "compose: read-only root, tmpfs /tmp, no capabilities, no-new-privileges, cert mount stays writable by variable" {
+  f="$repo/docker-compose.bridge.yml"
+  /usr/bin/grep -qx '    read_only: true' "$f"
+  /usr/bin/grep -qF 'tmpfs: ["/tmp:mode=1777,size=16m"]' "$f"
+  /usr/bin/grep -qx '    cap_drop: \[ALL\]' "$f"
+  /usr/bin/grep -qF 'no-new-privileges:true' "$f"
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qF ':/etc/sep2/certs:${BRIDGE_CERT_MODE:?' "$f"
+}
+
+@test "admin ip and subnet: bad values are refused, overrides reach compose" {
+  BRIDGE_ADMIN_IP=nope run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BRIDGE_ADMIN_IP must be an IPv4 address"* ]]
+  BRIDGE_ADMIN_SUBNET=10.1.1.0 run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BRIDGE_ADMIN_SUBNET must be an IPv4 CIDR"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+  BRIDGE_ADMIN_IP=10.9.9.2 BRIDGE_ADMIN_SUBNET=10.9.9.0/24 run_script up
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qF 'ip=10.9.9.2 subnet=10.9.9.0/24' "$DOCKER_LOG"
+}
+
+@test "a caller's COMPOSE_FILE does not redirect the script" {
+  COMPOSE_FILE=/some/other/stack.yml run_script down
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qxF "ARGS: [compose] [--env-file] [$work/env] [-f] [$repo/docker-compose.bridge.yml] [down]" "$DOCKER_LOG"
+  BRIDGE_COMPOSE_FILE=/mine.yml run_script down
+  /usr/bin/grep -qF "[-f] [/mine.yml] [down]" "$DOCKER_LOG"
+}
+
+@test "env file: an inline comment after a value is refused, naming the variable, not echoing the value" {
+  printf 'SEP2_ADMIN_UI_KEY=abcd # 0123456789abcdef\n' >"$work/env"
+  run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SEP2_ADMIN_UI_KEY"* ]]
+  [[ "$output" == *"inline comment"* ]]
+  [[ "$output" != *abcd* ]]
+  [ ! -e "$DOCKER_LOG" ]
+  printf 'SEP2_ADMIN_UI_KEY="0123456789abcdef-key" # note\n' >"$work/env"
+  run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"inline comment"* ]]
+  printf 'SEP2_ADMIN_UI_KEY=0123456789abcdef-key\nBRIDGE_USER=2000:2000 # mine\n' >"$work/env"
+  run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BRIDGE_USER"* ]]
+}
+
+@test "env file: a # inside a value without a preceding space is kept, and a full-line comment is ignored" {
+  printf '# a comment SEP2_ADMIN_UI_KEY=zzz\nSEP2_ADMIN_UI_KEY=0123456789abc#ef-key\n' >"$work/env"
+  run_script up
+  [ "$status" -eq 0 ]
+}
+
+@test "down and logs: a missing env file is a named error, docker not called" {
+  for a in down logs; do
+    BRIDGE_ENV_FILE="$work/absent" run_script "$a"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"env file not found"* ]]
+    [ ! -e "$DOCKER_LOG" ]
+  done
+}
+
+@test "up: the admin key length boundary is 16 characters" {
+  printf 'SEP2_ADMIN_UI_KEY=%s\n' 012345678901234 >"$work/env"
+  run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"shorter than 16"* ]]
+  printf 'SEP2_ADMIN_UI_KEY=%s\n' 0123456789012345 >"$work/env"
+  run_script up
+  [ "$status" -eq 0 ]
 }
