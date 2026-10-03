@@ -25,8 +25,8 @@ require (
 )
 
 require (
-	github.com/GRIDAPPSD/ieee-2030_5-core-go v0.21.0
-	github.com/GRIDAPPSD/ieee-2030_5-server-go v0.9.0
+	github.com/GRIDAPPSD/ieee-2030_5-core-go v0.22.0
+	github.com/GRIDAPPSD/ieee-2030_5-server-go v0.10.0
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 )
