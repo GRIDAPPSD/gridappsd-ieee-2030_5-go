@@ -1,0 +1,23 @@
+# Bridge image. Build with `make docker-build`; run with `make docker-up`.
+# The build stage reaches the public GRIDAPPSD modules through the default
+# Go proxy, so no credential enters a layer. Only the binary reaches the
+# runtime stage, which has no shell and runs as a non-root user.
+FROM golang:1.26.3 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+ARG VERSION=dev
+# CGO_ENABLED=0: the bridge and its tests build and pass without cgo, so the
+# runtime can be a static distroless image instead of a glibc one.
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags "-X github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo.Version=${VERSION}" \
+    -o /out/bridge ./cmd/bridge
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/bridge /bridge
+# Compose overrides the user so the bridge can read host-owned cert files.
+USER 65532:65532
+EXPOSE 18443 18444
+ENTRYPOINT ["/bridge"]

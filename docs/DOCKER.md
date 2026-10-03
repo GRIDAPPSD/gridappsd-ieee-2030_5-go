@@ -1,11 +1,75 @@
 # Docker
 
-## Today: a dev broker, not a bridge image
+## The bridge in a container
 
-There is no Dockerfile for the bridge in this repository yet, and no
-published image. What exists today is `docker-compose.yml` at the
-repo root, which brings up a bare ActiveMQ Classic broker for local
-testing, nothing more:
+`make docker-up` builds the image and starts the bridge next to a running
+GridAPPS-D platform; `make docker-down` stops it, `make docker-logs`
+follows its log, and `make docker-build` builds the image alone.
+
+One-time setup:
+
+```bash
+cp .env.bridge.example .env.bridge && chmod 600 .env.bridge
+# set SEP2_ADMIN_UI_KEY (16+ characters, e.g. `openssl rand -hex 24`)
+make docker-up
+```
+
+What it does:
+
+- **Image.** `Dockerfile.bridge` builds the binary with `CGO_ENABLED=0` in a
+  `golang` stage (the bridge and its tests pass without cgo) and copies only
+  the binary into a static distroless image that runs as a non-root user. The
+  modules are public and fetched through the Go proxy, so no credential
+  enters a layer. `.dockerignore` is an allowlist (only `go.mod`, `go.sum`, `cmd` and
+  `internal` enter the context) and drops key, cert and env files at any depth.
+- **Network.** The container joins the external network
+  `gridappsd-docker_default` and reaches the broker at `gridappsd:61613`, so
+  the platform must be up first.
+- **Ports.** The 2030.5 listener (18443) and the admin UI (18444) are
+  published on `127.0.0.1` only. Change the host side with
+  `BRIDGE_SEP2_PORT` and `BRIDGE_ADMIN_PORT`.
+- **Admin UI isolation.** The admin UI is plain HTTP behind one key, so it
+  is not put on the platform network. The bridge joins a second network of
+  its own (`BRIDGE_ADMIN_SUBNET`, default `10.213.168.0/24`, address
+  `BRIDGE_ADMIN_IP`, default `10.213.168.2`) and the admin UI binds only
+  that address; other platform containers cannot reach it. Change both if
+  the subnet collides with a route on your host.
+- **Config.** Settings come from `.env.bridge`, never from the image. The
+  admin key is `SEP2_ADMIN_UI_KEY` there; `SEP2_FEEDER_MRID`,
+  `SEP2_SIMULATION_ID` and the STOMP settings are optional. Put comments on
+  their own lines: a value followed by `# comment` is refused. The
+  registration PIN has no environment variable, so it is not passed.
+- **Certs.** The cert directory is bind-mounted at `/etc/sep2/certs` from
+  `BRIDGE_CERT_DIR` (default
+  `~/.config/gridappsd/2030.5server/sep2-certs`). The container always runs
+  the default `dev-mint` mode, which may write new device certs, so the mount
+  is `rw` (`BRIDGE_CERT_MODE`, default `rw`) and a compromised bridge could
+  write that directory. The files are mode 0600 and owned by the host user,
+  so the container runs as `BRIDGE_USER` (default `1000:1000`); set it to
+  your uid and gid if they differ.
+- **Hardening.** The root filesystem is read-only with a small `/tmp`
+  tmpfs, all capabilities are dropped, and `no-new-privileges` is set. The
+  bridge writes only to the cert directory.
+
+`make docker-up` refuses to start, with a message naming the cause, when the
+env file, the admin key, the cert directory or the platform network is
+missing, or when a host port is already listening. The binary bridge started
+by a local `start.sh` holds the same ports: stop it first. Only one bridge
+may run against a broker at a time, because two would register on the same
+feeder.
+
+The minted server certificate names only `localhost` and `127.0.0.1`
+([CERTIFICATES.md](CERTIFICATES.md)). Clients must connect through the
+published loopback port; a client using the host's LAN name or another
+container's DNS name fails certificate verification.
+
+There is no published image and no `latest` tag; the image is built locally
+as `gridappsd-ieee-2030_5-go:dev` (override with `BRIDGE_IMAGE`).
+
+## A dev broker for tests
+
+`docker-compose.yml` at the repo root brings up a bare ActiveMQ Classic
+broker for local testing, nothing more:
 
 ```bash
 docker compose up -d
@@ -17,61 +81,3 @@ credentials. It is what `make test-integration` and `make bridge-e2e`
 run against; see the root README's Testing section and
 [cmd/bridge/README.md](../cmd/bridge/README.md). Do not expose this
 broker beyond loopback: the credentials are dev-only and public.
-
-## Planned: a bridge image
-
-A container image for the bridge is planned but not yet built. This
-section describes the intended design, so anything below is a target,
-not something you can `docker pull` today.
-
-The intended shape:
-
-- **Single-stage, distroless, non-root.** The Go binary is compiled
-  outside the image build (in CI, where the module-access
-  credentials already live) and `COPY`'d in. The image build itself
-  never receives a credential, and no GRIDAPPSD module source ever
-  enters a layer.
-- **No `latest` tag**, and no branch or `main` tags. Only release-tag
-  images are pushed, so a compose stack never changes under an
-  operator without a deliberate version bump.
-- **Certificate material is always a runtime mount, never baked in.**
-  Mount `SEP2_SERVER_CERT_DIR` read-only from an operator-supplied
-  path outside any repository or workspace, matching
-  [CERTIFICATES.md](CERTIFICATES.md). `preprovisioned` mode never
-  writes to that directory, so `:ro` is the supported shape rather
-  than a workaround, and an incomplete directory fails loudly at
-  startup whether or not the mount is read-only.
-- **The 2030.5 listener is meant to be exposed**; it is mTLS with a
-  per-device access check, so publishing it on the compose network is
-  the intended use. **The admin UI is not.** It defaults to loopback
-  and disabled, and that default should not be widened casually
-  inside a container: see [CONFIGURATION.md](CONFIGURATION.md) before
-  changing it.
-
-An illustrative compose fragment, once an image exists:
-
-```yaml
-services:
-  ieee-2030_5-bridge:
-    image: gridappsd/ieee-2030_5-bridge:vX.Y.Z   # not yet published
-    restart: unless-stopped
-    ports:
-      - "8443:8443"   # 2030.5 mTLS listener, authenticated, safe to expose
-    environment:
-      SEP2_STOMP_ADDR: gridappsd:61613
-      SEP2_SERVER_ADDR: "0.0.0.0:8443"
-      SEP2_SERVER_CERT_DIR: /etc/sep2/certs
-      SEP2_DEVICE_CERT_MODE: preprovisioned
-      # Admin UI stays off by default. Read CONFIGURATION.md before enabling it.
-    volumes:
-      - "${SEP2_CERT_DIR:?SEP2_CERT_DIR must be set}:/etc/sep2/certs:ro"
-```
-
-`SEP2_CERT_DIR` above is a host path the operator sets, outside any
-repository or workspace checkout; the compose file intentionally has
-no default for it, so a missing value fails the `docker compose`
-invocation rather than silently creating a directory somewhere
-convenient and wrong.
-
-Do not treat any tag, image name, or example above as available until
-a release announcement says otherwise.

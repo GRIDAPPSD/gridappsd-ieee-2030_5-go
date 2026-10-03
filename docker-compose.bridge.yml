@@ -1,0 +1,53 @@
+# The bridge next to a running GridAPPS-D platform. Start it with
+# `make docker-up`, which checks the preconditions and exports every
+# BRIDGE_* variable below; running compose by hand fails on the first
+# missing one. Settings come from .env.bridge (see .env.bridge.example).
+name: ieee-2030_5-bridge
+
+services:
+  bridge:
+    image: ${BRIDGE_IMAGE:?use make docker-up}
+    user: ${BRIDGE_USER:?use make docker-up}
+    restart: unless-stopped
+    # Writes go only to the mounted cert dir (and /tmp, as a precaution).
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      SEP2_STOMP_ADDR: gridappsd:61613
+      SEP2_STOMP_USER: ${SEP2_STOMP_USER:-system}
+      SEP2_STOMP_PASSWORD: ${SEP2_STOMP_PASSWORD:-manager}
+      SEP2_STOMP_ALLOW_PLAINTEXT: ${SEP2_STOMP_ALLOW_PLAINTEXT:-true}
+      SEP2_FEEDER_MRID: ${SEP2_FEEDER_MRID:-}
+      SEP2_SIMULATION_ID: ${SEP2_SIMULATION_ID:-}
+      SEP2_SERVER_ADDR: 0.0.0.0:18443
+      SEP2_SERVER_CERT_DIR: /etc/sep2/certs
+      # A published port reaches the container's address, not its loopback, so
+      # the admin UI binds its own network's address: platform containers are
+      # not on that network and cannot reach it. The host side is 127.0.0.1.
+      SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444
+      SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: "true"
+      SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:?set it in .env.bridge}
+    networks:
+      default: {}
+      admin:
+        ipv4_address: ${BRIDGE_ADMIN_IP:?use make docker-up}
+        # Published ports are forwarded through the highest-priority network,
+        # so this one must outrank the platform network.
+        gw_priority: 100
+    ports:
+      - "127.0.0.1:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"
+      - "127.0.0.1:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"
+    volumes:
+      - "${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:${BRIDGE_CERT_MODE:?use make docker-up}"
+
+networks:
+  # The platform network carries only the broker link and the 2030.5 listener.
+  default:
+    external: true
+    name: gridappsd-docker_default
+  admin:
+    ipam:
+      config:
+        - subnet: ${BRIDGE_ADMIN_SUBNET:?use make docker-up}
