@@ -11,7 +11,7 @@ One-time setup:
 ```bash
 cp .env.example .env && chmod 600 .env
 # set SEP2_ADMIN_UI_KEY (16+ characters, e.g. `openssl rand -hex 24`)
-# and SEP2_STOMP_PASSWORD (the platform broker password)
+# and GRIDAPPSD_PASSWORD (the platform broker password; SEP2_STOMP_PASSWORD also works)
 make docker-up
 ```
 
@@ -39,10 +39,13 @@ What it does:
   image. `docker-compose.bridge.yml` lists every setting the bridge reads,
   each as `NAME: ${NAME:-default}`, so that file is the one place to see them
   and `.env` is where you change them; [CONFIGURATION.md](CONFIGURATION.md)
-  describes each. The admin key `SEP2_ADMIN_UI_KEY` and the broker password
-  `SEP2_STOMP_PASSWORD` have no default and are required. Put comments on
+  describes each. The admin key `SEP2_ADMIN_UI_KEY` has no default and is required. The broker
+  login is read as `GRIDAPPSD_USER` and `GRIDAPPSD_PASSWORD`, the names other
+  GridAPPS-D apps use; `SEP2_STOMP_USER` and `SEP2_STOMP_PASSWORD` override
+  them. The password is required under one of the two names, and `make
+  docker-up` refuses to start without it. Put comments on
   their own lines: the script refuses a value followed by `# comment` for the
-  names it reads itself (`SEP2_ADMIN_UI_KEY`, `SEP2_STOMP_PASSWORD` and the
+  names it reads itself (`SEP2_ADMIN_UI_KEY`, the two password names and the
   `BRIDGE_*` launcher settings); compose strips an inline comment from any
   other value, so it is dropped silently there. The
   registration PIN is optional: `SEP2_REGISTRATION_PIN` is a secret with no

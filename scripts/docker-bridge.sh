@@ -89,8 +89,10 @@ preflight() {
   local key
   key=$(setting SEP2_ADMIN_UI_KEY "")
   [ "${#key}" -ge 16 ] || die "SEP2_ADMIN_UI_KEY in $env_file is missing or shorter than 16 characters"
-  # The compose file refuses an empty one too; checking here stops it before the image is built.
-  [ -n "$(setting SEP2_STOMP_PASSWORD "")" ] || die "SEP2_STOMP_PASSWORD in $env_file is missing"
+  # Compose passes an empty password through and the bridge would then fall back
+  # to its built-in default, so refuse here, before the image is built.
+  [ -n "$(setting SEP2_STOMP_PASSWORD "")" ] || [ -n "$(setting GRIDAPPSD_PASSWORD "")" ] ||
+    die "broker password missing: set GRIDAPPSD_PASSWORD (or SEP2_STOMP_PASSWORD) in $env_file"
   [ -d "$BRIDGE_CERT_DIR" ] || die "cert dir not found: $BRIDGE_CERT_DIR (set BRIDGE_CERT_DIR)"
   # inspect failing means the network is absent or the docker daemon is down; both stop the start.
   docker network inspect "$platform_network" >/dev/null 2>&1 ||

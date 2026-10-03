@@ -16,20 +16,30 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     environment:
-      # Every setting cmd/bridge reads is listed here, so this file is the one
+      # Every setting cmd/bridge reads is listed here, bar the two GRIDAPPSD_
+      # broker address names noted below, so this file is the one
       # place to see or change configuration. Each is NAME: ${NAME:-default},
       # the bridge's own default unless a comment says why the container
       # differs; four are pinned to literals for the container. Values come from .env (see .env.example); docs/CONFIGURATION.md
-      # describes each. Secrets have no default: compose refuses to start
-      # without them.
+      # describes each. The admin key has no default: compose refuses to start
+      # without it. The broker password is checked by the launcher script.
 
       # GridAPPS-D connection
       # The platform's broker is reached by its container name on the platform network.
       SEP2_STOMP_ADDR: ${SEP2_STOMP_ADDR:-gridappsd:61613}
-      SEP2_STOMP_USER: ${SEP2_STOMP_USER:-system}
-      SEP2_STOMP_PASSWORD: ${SEP2_STOMP_PASSWORD:?set it in .env}
+      # Broker login. Two names for each: the GridAPPS-D standard one and the
+      # SEP2_ override, which wins when both are set. Empty means unset, so the
+      # bridge's own default user (system) applies; scripts/docker-bridge.sh
+      # refuses to start without a password under either name.
+      SEP2_STOMP_USER: ${SEP2_STOMP_USER:-}
+      SEP2_STOMP_PASSWORD: ${SEP2_STOMP_PASSWORD:-}
+      GRIDAPPSD_USER: ${GRIDAPPSD_USER:-}
+      GRIDAPPSD_PASSWORD: ${GRIDAPPSD_PASSWORD:-}
       # The platform broker speaks plaintext STOMP, so the container opts in.
       SEP2_STOMP_ALLOW_PLAINTEXT: ${SEP2_STOMP_ALLOW_PLAINTEXT:-true}
+      # GRIDAPPSD_ADDRESS and GRIDAPPSD_PORT are
+      # deliberately not passed: SEP2_STOMP_ADDR above always carries a value and
+      # would win, and a host address in a shared .env is wrong inside the container.
       SEP2_SIMULATION_ID: ${SEP2_SIMULATION_ID:-}
       SEP2_APPLICATION_ID: ${SEP2_APPLICATION_ID:-IEEE_2030_5}
       SEP2_FEEDER_MRID: ${SEP2_FEEDER_MRID:-_C1C3E687-6FFD-C753-582B-632A27E28507}

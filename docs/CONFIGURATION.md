@@ -21,11 +21,26 @@ make bridge-e2e SEP2_STOMP_ADDR=127.0.0.1:61613 SEP2_STOMP_ALLOW_PLAINTEXT=true
 
 ## GridAPPS-D connection
 
+The `GRIDAPPSD_` names let the bridge share an environment with other
+GridAPPS-D apps. Precedence for each setting, highest first: flag,
+`SEP2_` variable, `GRIDAPPSD_` variable, default. `GRIDAPPSD_ADDRESS`
+and `GRIDAPPSD_PORT` each replace their half of `127.0.0.1:61613`; set
+one and the other keeps its default. A set `SEP2_STOMP_ADDR` wins whole,
+so a `GRIDAPPSD_PORT` beside it is ignored. In the compose file the
+login pair is passed through under both names, with empty defaults, so
+`GRIDAPPSD_USER` and `GRIDAPPSD_PASSWORD` in `.env` work on their own.
+The address pair is not passed; set `SEP2_STOMP_ADDR` to change the
+container's broker address.
+
 | Env var | Flag | Default | Notes |
 |---|---|---|---|
 | `SEP2_STOMP_ADDR` | `-stomp-addr` | `127.0.0.1:61613` | Broker `host:port`. |
 | `SEP2_STOMP_USER` | `-stomp-user` | `system` | Broker login. |
 | `SEP2_STOMP_PASSWORD` | `-stomp-password` | `manager` | Broker password. Credential; see the note above. |
+| `GRIDAPPSD_USER` | (none) | (unset) | Alternate for `SEP2_STOMP_USER`, the name other GridAPPS-D apps read. |
+| `GRIDAPPSD_PASSWORD` | (none) | (unset) | Alternate for `SEP2_STOMP_PASSWORD`. Credential: removed from the process environment after reading and never logged. |
+| `GRIDAPPSD_ADDRESS` | (none) | (unset) | Broker host; replaces the host of the default address. |
+| `GRIDAPPSD_PORT` | (none) | (unset) | Broker port, 1 to 65535; replaces the port of the default address. A bad value stops start-up. |
 | `SEP2_STOMP_ALLOW_PLAINTEXT` | `-stomp-allow-plaintext` | `false` | Fail-closed: with no override the bridge dials TLS against the system trust store. Set `true` only against a broker known to be plaintext, such as a local dev stack. |
 | `SEP2_SIMULATION_ID` | `-simulation-id` | (empty) | GridAPPS-D `simulation_id` to subscribe to. Controls the simulation-output measurement subscribe, the `simulation_id` field in published status, the liveness-probe topic (the per-simulation log topic when set, `/topic/goss.gridappsd.heartbeat` otherwise). `-publish-on-start` is refused at start-up when this is empty. Empty disables the measurement subscribe only; status publishing and control subscription do not depend on it. |
 | `SEP2_APPLICATION_ID` | `-application-id` | `IEEE_2030_5` | GridAPPS-D application id. Device status is published to `/topic/goss.gridappsd.<application id>.output` and controls are read from `/topic/goss.gridappsd.<application id>.input`. Neither topic carries a simulation id, so both work with `SEP2_SIMULATION_ID` unset. The Python service took its application id from `GRIDAPPSD_SERVICE_NAME`; the bridge uses `SEP2_APPLICATION_ID`. Must not be empty. |

@@ -350,9 +350,9 @@ func TestLoadConfigCredentialFlagDefaultsHidden(t *testing.T) {
 }
 
 // TestLoadConfigUnsetsCredentialEnvVars verifies that loadConfig
-// scrubs SEP2_STOMP_PASSWORD and SEP2_STOMP_USER from the process
-// environment after reading them, so they do not remain visible via
-// /proc/<pid>/environ for the rest of process lifetime.
+// scrubs SEP2_STOMP_PASSWORD and SEP2_STOMP_USER from the Go process
+// environment after reading them, so child processes and later
+// os.Getenv calls do not see them.
 func TestLoadConfigUnsetsCredentialEnvVars(t *testing.T) {
 	t.Setenv("SEP2_STOMP_PASSWORD", "topsecret")
 	t.Setenv("SEP2_STOMP_USER", "alsosecret")

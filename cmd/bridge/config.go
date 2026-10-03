@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -422,7 +423,6 @@ const (
 // the same precedence as the non-credential flags.
 func loadConfig(args []string) (config, error) {
 	cfg := config{
-		STOMPAddr:               getenvDefault("SEP2_STOMP_ADDR", defaultSTOMPAddr),
 		SimulationID:            os.Getenv("SEP2_SIMULATION_ID"),
 		ApplicationID:           getenvDefault("SEP2_APPLICATION_ID", defaultApplicationID),
 		FeederMRID:              getenvDefault("SEP2_FEEDER_MRID", defaultFeederMRID),
@@ -434,6 +434,12 @@ func loadConfig(args []string) (config, error) {
 		SEP2AdminUISORLink:      getenvDefault("SEP2_ADMIN_UI_SOR_LINK", ""),
 		Tuning:                  defaultTuning(),
 	}
+	stompAddr, err := resolveBrokerAddr()
+	if err != nil {
+		return config{}, err
+	}
+	cfg.STOMPAddr = stompAddr
+
 	pubFromEnv, err := getenvBool("SEP2_PUBLISH_ON_START", false)
 	if err != nil {
 		return config{}, err
@@ -497,13 +503,13 @@ func loadConfig(args []string) (config, error) {
 	cfg.SEP2TelemetryPublishUnchanged = publishUnchangedFromEnv
 
 	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
-	fs.StringVar(&cfg.STOMPAddr, "stomp-addr", cfg.STOMPAddr, "GridAPPS-D STOMP broker host:port")
+	fs.StringVar(&cfg.STOMPAddr, "stomp-addr", cfg.STOMPAddr, "GridAPPS-D STOMP broker host:port (env: SEP2_STOMP_ADDR, else GRIDAPPSD_ADDRESS and GRIDAPPSD_PORT)")
 	// User and password flags register with an empty default so the
 	// usage banner never echoes a real credential. The precedence merge
 	// (flag, then env, then built-in default) happens below after Parse.
 	var stompUserFlag, stompPasswordFlag string
-	fs.StringVar(&stompUserFlag, "stomp-user", "", "STOMP login user (env: SEP2_STOMP_USER)")
-	fs.StringVar(&stompPasswordFlag, "stomp-password", "", "STOMP login password (env: SEP2_STOMP_PASSWORD)")
+	fs.StringVar(&stompUserFlag, "stomp-user", "", "STOMP login user (env: SEP2_STOMP_USER, else GRIDAPPSD_USER)")
+	fs.StringVar(&stompPasswordFlag, "stomp-password", "", "STOMP login password (env: SEP2_STOMP_PASSWORD, else GRIDAPPSD_PASSWORD)")
 	fs.StringVar(&cfg.SimulationID, "simulation-id", cfg.SimulationID, "GridAPPS-D simulation_id (empty disables the simulation output subscribe only)")
 	fs.StringVar(&cfg.ApplicationID, "application-id", cfg.ApplicationID, "GridAPPS-D application id the status output topic and the control input topic are built from")
 	fs.StringVar(&cfg.FeederMRID, "feeder-mrid", cfg.FeederMRID, "CIM feeder mRID to enumerate DERs from")
@@ -640,14 +646,16 @@ func loadConfig(args []string) (config, error) {
 	// else the compiled-in default. The flag value comes through as
 	// empty when the user did not pass -stomp-user / -stomp-password,
 	// in which case the env-or-default is the right answer.
-	cfg.STOMPUser = resolveCred(stompUserFlag, "SEP2_STOMP_USER", defaultSTOMPUser)
-	cfg.STOMPPassword = resolveCred(stompPasswordFlag, "SEP2_STOMP_PASSWORD", defaultSTOMPPassword)
+	// The GridAPPS-D names are alternates: the SEP2_ name wins when both
+	// are set, and both are scrubbed.
+	cfg.STOMPUser = resolveCred(stompUserFlag, defaultSTOMPUser, "SEP2_STOMP_USER", "GRIDAPPSD_USER")
+	cfg.STOMPPassword = resolveCred(stompPasswordFlag, defaultSTOMPPassword, "SEP2_STOMP_PASSWORD", "GRIDAPPSD_PASSWORD")
 
 	// SEP2AdminUIKey has no compiled-in fallback: an empty result here
 	// (no flag, no env) is the intentional "admin UI disabled" state,
 	// not a missing-required-field error. resolveCred's empty-string
 	// fallback argument encodes exactly that.
-	cfg.SEP2AdminUIKey = resolveCred(adminUIKeyFlag, "SEP2_ADMIN_UI_KEY", "")
+	cfg.SEP2AdminUIKey = resolveCred(adminUIKeyFlag, "", "SEP2_ADMIN_UI_KEY")
 
 	// registrationPINFlag / registrationPINFileFlag are resolved here,
 	// before validate, so a malformed value stops the bridge at config
@@ -667,7 +675,7 @@ func loadConfig(args []string) (config, error) {
 	if registrationPINFlag == "" {
 		pinLabel = "SEP2_REGISTRATION_PIN"
 	}
-	if raw := resolveCred(registrationPINFlag, "SEP2_REGISTRATION_PIN", ""); raw != "" {
+	if raw := resolveCred(registrationPINFlag, "", "SEP2_REGISTRATION_PIN"); raw != "" {
 		pin, err := parseRegistrationPINFlag(raw, pinLabel)
 		if err != nil {
 			return config{}, err
@@ -1229,28 +1237,56 @@ func loadBatteryLegListFile(path string) ([]string, error) {
 }
 
 // resolveCred returns the first non-empty value among the parsed flag,
-// the named env var, and the compiled-in fallback. Used for credential
-// fields whose flag defaults are intentionally registered as empty so
-// flag.PrintDefaults never echoes a real value.
+// the named env vars in order (highest precedence first), and the
+// compiled-in fallback. Used for credential fields whose flag defaults
+// are intentionally registered as empty so flag.PrintDefaults never
+// echoes a real value.
 //
-// As a side effect, the env var is removed from the Go process
+// As a side effect, every named env var is removed from the Go process
 // environment after the read, so child processes and later os.Getenv
 // calls do not see it. The kernel's copy of the initial environment is
 // not changed: the value stays in /proc/<pid>/environ for the life of
 // the process. The resolved value also lives on the config struct.
-func resolveCred(flagVal, envKey, fallback string) string {
-	if flagVal != "" {
-		// Even when the flag wins, remove the env var so a leftover
+func resolveCred(flagVal, fallback string, envKeys ...string) string {
+	resolved := flagVal
+	for _, k := range envKeys {
+		v := os.Getenv(k)
+		// Unset even when an earlier source already won, so a leftover
 		// export does not reach child processes.
-		os.Unsetenv(envKey)
-		return flagVal
+		os.Unsetenv(k)
+		if resolved == "" {
+			resolved = v
+		}
 	}
-	v, ok := os.LookupEnv(envKey)
-	os.Unsetenv(envKey)
-	if ok && v != "" {
-		return v
+	if resolved == "" {
+		return fallback
 	}
-	return fallback
+	return resolved
+}
+
+// resolveBrokerAddr returns the broker host:port before flags are
+// applied. SEP2_STOMP_ADDR wins whole, and GRIDAPPSD_ADDRESS and
+// GRIDAPPSD_PORT are then ignored, port included. Otherwise each of the
+// two GridAPPS-D names replaces only its half of defaultSTOMPAddr.
+func resolveBrokerAddr() (string, error) {
+	if v := os.Getenv("SEP2_STOMP_ADDR"); v != "" {
+		return v, nil
+	}
+	host, port, err := net.SplitHostPort(defaultSTOMPAddr)
+	if err != nil {
+		return "", fmt.Errorf("config: built-in broker address %q: %w", defaultSTOMPAddr, err)
+	}
+	if v := os.Getenv("GRIDAPPSD_ADDRESS"); v != "" {
+		host = v
+	}
+	if v := os.Getenv("GRIDAPPSD_PORT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("config: GRIDAPPSD_PORT must be a port number from 1 to 65535, got %q", v)
+		}
+		port = v
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 // validate enforces the minimum field set the run loop assumes. Empty

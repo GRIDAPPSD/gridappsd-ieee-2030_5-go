@@ -288,15 +288,37 @@ run_script() {
   [ "$status" -eq 0 ]
 }
 
-@test "up: a missing broker password is refused before docker is called; the env file can supply it" {
+@test "up: a missing broker password is refused before docker is called, naming both variables" {
   unset SEP2_STOMP_PASSWORD
   run_script up
   [ "$status" -ne 0 ]
   [[ "$output" == *"SEP2_STOMP_PASSWORD"* ]]
+  [[ "$output" == *"GRIDAPPSD_PASSWORD"* ]]
   [ ! -e "$DOCKER_LOG" ]
-  printf 'SEP2_STOMP_PASSWORD=from-the-file\n' >>"$work/env"
+}
+
+@test "up: either password name in the env file is enough" {
+  unset SEP2_STOMP_PASSWORD
+  printf 'SEP2_STOMP_PASSWORD=from-sep2-file\n' >>"$work/env"
   run_script up
   [ "$status" -eq 0 ]
+  sed -i '/^SEP2_STOMP_PASSWORD=/d' "$work/env"
+  printf 'GRIDAPPSD_PASSWORD=from-gridappsd-file\n' >>"$work/env"
+  rm -f "$DOCKER_LOG"
+  run_script up
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -q 'up' "$DOCKER_LOG"
+}
+
+@test "up: GRIDAPPSD_PASSWORD from the shell is enough, and an empty value is not" {
+  unset SEP2_STOMP_PASSWORD
+  GRIDAPPSD_PASSWORD=shell-pass run_script up
+  [ "$status" -eq 0 ]
+  rm -f "$DOCKER_LOG"
+  printf 'GRIDAPPSD_PASSWORD=\nSEP2_STOMP_PASSWORD=\n' >>"$work/env"
+  run_script up
+  [ "$status" -ne 0 ]
+  [ ! -e "$DOCKER_LOG" ]
 }
 
 # default_env_run copies the script and compose file to a scratch tree whose
