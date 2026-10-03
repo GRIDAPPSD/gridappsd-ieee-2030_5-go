@@ -109,6 +109,14 @@ example_names() {
   done
 }
 
+@test "secrets: the registration PIN and its file are optional, empty by default, and set no value in the example" {
+  for n in SEP2_REGISTRATION_PIN SEP2_REGISTRATION_PIN_FILE; do
+    # shellcheck disable=SC2016 # literal compose syntax
+    /usr/bin/grep -qxF "      $n: \${$n:-}" "$compose"
+    /usr/bin/grep -qx "$n=" "$example"
+  done
+}
+
 @test ".env.example default equals the compose default for every non-secret setting" {
   compared=0
   for n in $(compose_names); do

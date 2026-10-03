@@ -45,7 +45,9 @@ What it does:
   names it reads itself (`SEP2_ADMIN_UI_KEY`, `SEP2_STOMP_PASSWORD` and the
   `BRIDGE_*` launcher settings); compose strips an inline comment from any
   other value, so it is dropped silently there. The
-  registration PIN has no environment variable, so it is not passed. `.env`
+  registration PIN is optional: `SEP2_REGISTRATION_PIN` is a secret with no
+  default, and `SEP2_REGISTRATION_PIN_FILE` must name a path inside a mount
+  (such as the certificate directory); leave both empty for none. `.env`
   is also read by the dev broker's `docker-compose.yml`, which uses different
   variable names. `BRIDGE_ENV_FILE` points the script at another file. Upgrading: the file was
   `.env.bridge`; rename it to `.env`. Four settings are pinned in the compose
