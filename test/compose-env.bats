@@ -14,7 +14,7 @@ setup() {
 # Names the compose file pins to a literal: not user settings, so .env.example
 # carries them only as commented lines saying so.
 PINNED="SEP2_ADMIN_UI_ADDR SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK SEP2_SERVER_ADDR SEP2_SERVER_CERT_DIR"
-SECRETS="SEP2_ADMIN_UI_KEY SEP2_STOMP_PASSWORD"
+SECRETS="SEP2_ADMIN_UI_KEY"
 # Read by the bridge but deliberately not passed to the container: SEP2_STOMP_ADDR
 # always has a value there and wins. .env.example carries them as commented lines.
 NOTPASSED="GRIDAPPSD_ADDRESS GRIDAPPSD_PORT"
@@ -104,8 +104,8 @@ example_names() {
   done
 }
 
-@test "secrets: the admin key and the broker password have no default and are required" {
-  for n in SEP2_ADMIN_UI_KEY SEP2_STOMP_PASSWORD; do
+@test "secrets: the admin key has no default and is required" {
+  for n in SEP2_ADMIN_UI_KEY; do
     # shellcheck disable=SC2016 # literal compose syntax
     /usr/bin/grep -qE "^      $n: \\\$\\{$n:\\?" "$compose"
     [ "$(/usr/bin/grep -cE "$n:-" "$compose")" -eq 0 ]
@@ -123,8 +123,8 @@ example_names() {
   done
 }
 
-@test "GRIDAPPSD_ broker names: user and password are optional and empty in compose and the example; address and port are not passed" {
-  for n in GRIDAPPSD_USER GRIDAPPSD_PASSWORD; do
+@test "broker login: both names of user and password are optional and empty in compose and the example; address and port are not passed" {
+  for n in GRIDAPPSD_USER GRIDAPPSD_PASSWORD SEP2_STOMP_USER SEP2_STOMP_PASSWORD; do
     # shellcheck disable=SC2016 # literal compose syntax
     /usr/bin/grep -qxF "      $n: \${$n:-}" "$compose"
     /usr/bin/grep -qx "$n=" "$example"
@@ -136,6 +136,16 @@ example_names() {
   done
 }
 
+@test "compose config: GRIDAPPSD_USER and GRIDAPPSD_PASSWORD from the env file reach the container environment" {
+  command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 || skip "docker compose is not available"
+  printf 'SEP2_ADMIN_UI_KEY=0123456789abcdef-key\nGRIDAPPSD_USER=gu-value\nGRIDAPPSD_PASSWORD=gp-value\n' >"$BATS_TEST_TMPDIR/env"
+  out=$(env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" BRIDGE_IMAGE=i BRIDGE_USER=1:1 BRIDGE_ADMIN_IP=10.0.0.2 \
+    BRIDGE_SEP2_PORT=1 BRIDGE_ADMIN_PORT=2 BRIDGE_CERT_DIR=/c BRIDGE_CERT_MODE=rw BRIDGE_ADMIN_SUBNET=10.0.0.0/24 \
+    docker compose --env-file "$BATS_TEST_TMPDIR/env" -f "$compose" config)
+  printf '%s\n' "$out" | /usr/bin/grep -qx '      GRIDAPPSD_USER: gu-value'
+  printf '%s\n' "$out" | /usr/bin/grep -qx '      GRIDAPPSD_PASSWORD: gp-value'
+}
+
 @test ".env.example default equals the compose default for every non-secret setting" {
   compared=0
   for n in $(compose_names); do
@@ -145,8 +155,8 @@ example_names() {
     edef=$(/usr/bin/grep -E "^$n=" "$example" | sed -E "s/^$n=//")
     [ "$cdef" = "$edef" ] || { echo "$n: compose '$cdef' example '$edef'" >&2; false; }
   done
-  # Every name except the two secrets, the four pinned ones and the two not passed was compared.
-  [ "$compared" -eq $(($(bridge_env_names | wc -l) - 8)) ]
+  # Every name except the admin key, the four pinned ones and the two not passed was compared.
+  [ "$compared" -eq $(($(bridge_env_names | wc -l) - 7)) ]
 }
 
 @test "pinned: four names are literals in compose, never overridable, and not settings in .env.example" {

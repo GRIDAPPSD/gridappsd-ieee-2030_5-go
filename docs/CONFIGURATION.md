@@ -26,10 +26,11 @@ GridAPPS-D apps. Precedence for each setting, highest first: flag,
 `SEP2_` variable, `GRIDAPPSD_` variable, default. `GRIDAPPSD_ADDRESS`
 and `GRIDAPPSD_PORT` each replace their half of `127.0.0.1:61613`; set
 one and the other keeps its default. A set `SEP2_STOMP_ADDR` wins whole,
-so a `GRIDAPPSD_PORT` beside it is ignored. In the compose file only
-`GRIDAPPSD_USER` and `GRIDAPPSD_PASSWORD` are passed through, and the
-`SEP2_` names there always carry a value, so set the `SEP2_` name to
-change the container's broker settings.
+so a `GRIDAPPSD_PORT` beside it is ignored. In the compose file the
+login pair is passed through under both names, with empty defaults, so
+`GRIDAPPSD_USER` and `GRIDAPPSD_PASSWORD` in `.env` work on their own.
+The address pair is not passed; set `SEP2_STOMP_ADDR` to change the
+container's broker address.
 
 | Env var | Flag | Default | Notes |
 |---|---|---|---|
