@@ -63,6 +63,29 @@ broker to talk to, and certificate material for its embedded IEEE
   a local run against a dev broker. [docs/DOCKER.md](docs/DOCKER.md)
   covers the container path.
 
+## Run with Docker Compose
+
+To run the bridge as a container on the GridAPPS-D platform network:
+
+1. **Prerequisites**: GridAPPS-D platform running from
+   [gridappsd-docker](https://github.com/GRIDAPPSD/gridappsd-docker), and Docker
+   Engine 28 or newer.
+2. **Environment**: Copy `.env.example` to `.env`, then set:
+   - `SEP2_ADMIN_UI_KEY`: 16 or more characters (login password)
+   - `SEP2_STOMP_PASSWORD`: the platform broker password
+3. **Start**: `make docker-up` builds the image and starts the container.
+4. **Monitor**: `make docker-logs` follows the container log.
+5. **Stop**: `make docker-down` stops and removes the container.
+
+The admin UI listens at `http://127.0.0.1:18444/ui` and shows the bridge's
+status, DERs, and telemetry.
+
+Only one bridge may run against a broker at a time. If the binary bridge is
+running, stop it before bringing up the container.
+
+For complete configuration details, see [docs/DOCKER.md](docs/DOCKER.md) and
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
 ## Configuration
 
 The settings you will touch first. A flag beats its env var, which beats
