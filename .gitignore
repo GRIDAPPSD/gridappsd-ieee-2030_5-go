@@ -39,3 +39,6 @@ CLAUDE.md
 
 # Log files
 *.log
+
+# Bridge compose settings (the committed .env.bridge.example holds names only)
+.env.bridge

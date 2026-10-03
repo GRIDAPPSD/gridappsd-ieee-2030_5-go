@@ -1,0 +1,37 @@
+# The bridge next to a running GridAPPS-D platform. Start it with
+# `make docker-up`, which checks the preconditions and exports every
+# BRIDGE_* variable below; running compose by hand fails on the first
+# missing one. Settings come from .env.bridge (see .env.bridge.example).
+name: ieee-2030_5-bridge
+
+services:
+  bridge:
+    image: ${BRIDGE_IMAGE:?use make docker-up}
+    user: ${BRIDGE_USER:?use make docker-up}
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      SEP2_STOMP_ADDR: gridappsd:61613
+      SEP2_STOMP_USER: ${SEP2_STOMP_USER:-system}
+      SEP2_STOMP_PASSWORD: ${SEP2_STOMP_PASSWORD:-manager}
+      SEP2_STOMP_ALLOW_PLAINTEXT: ${SEP2_STOMP_ALLOW_PLAINTEXT:-true}
+      SEP2_FEEDER_MRID: ${SEP2_FEEDER_MRID:-}
+      SEP2_SIMULATION_ID: ${SEP2_SIMULATION_ID:-}
+      SEP2_SERVER_ADDR: 0.0.0.0:18443
+      SEP2_SERVER_CERT_DIR: /etc/sep2/certs
+      # The container's loopback is unreachable from a published port, so the
+      # admin UI binds all interfaces inside; the host side stays on 127.0.0.1.
+      SEP2_ADMIN_UI_ADDR: 0.0.0.0:18444
+      SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: "true"
+      SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:?set it in .env.bridge}
+    ports:
+      - "127.0.0.1:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"
+      - "127.0.0.1:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"
+    volumes:
+      - "${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:${BRIDGE_CERT_MODE:?use make docker-up}"
+
+networks:
+  default:
+    external: true
+    name: gridappsd-docker_default

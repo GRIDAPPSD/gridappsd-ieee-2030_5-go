@@ -1,0 +1,20 @@
+# Keep credentials and local state out of the build context.
+.git
+.github
+.env
+.env.*
+!.env.bridge.example
+*.pem
+*.key
+*.crt
+*.cer
+*.csr
+*.p12
+*.pfx
+*.x509
+sep2-certs
+config
+.config
+/bridge
+bin
+*.log
