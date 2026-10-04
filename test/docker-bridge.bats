@@ -18,6 +18,7 @@ setup() {
     "${BRIDGE_ADMIN_PORT-}" "${BRIDGE_USER-}" "${BRIDGE_CERT_DIR-}" "${BRIDGE_CERT_MODE-}" "${BRIDGE_IMAGE-}" "${BRIDGE_ADMIN_IP-}" "${BRIDGE_ADMIN_SUBNET-}"
 } >>"$DOCKER_LOG"
 if [ "${1-}" = network ] && [ "${NO_NETWORK:-}" = 1 ]; then exit 1; fi
+if [ "${1-}" = pull ] && [ "${PULL_FAIL:-}" = 1 ]; then exit 1; fi
 exit 0
 STUB
   cat >"$work/bin/ss" <<'STUB'
@@ -37,19 +38,80 @@ STUB
   export BRIDGE_ENV_FILE="$work/env"
   export SEP2_STOMP_PASSWORD="broker-pass"
   export BRIDGE_CERT_DIR="$work/certs"
-  unset SEP2_ADMIN_UI_KEY BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE SS_LISTEN NO_NETWORK
+  unset SEP2_ADMIN_UI_KEY BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_IMAGE_TAG BRIDGE_USE_PUBLISHED SS_LISTEN NO_NETWORK PULL_FAIL
 }
 
 run_script() {
   run "$repo/scripts/docker-bridge.sh" "$@"
 }
 
-@test "up: builds, then starts compose with the resolved env and defaults" {
-  run_script up
+@test "up with BRIDGE_USE_PUBLISHED=0: builds the local image, then starts compose with the resolved env and defaults" {
+  BRIDGE_USE_PUBLISHED=0 run_script up
   [ "$status" -eq 0 ]
   /usr/bin/grep -qxF "ARGS: [build] [-f] [$repo/Dockerfile.bridge] [--build-arg] [VERSION=dev] [-t] [gridappsd-ieee-2030_5-go:dev] [$repo]" "$DOCKER_LOG"
   /usr/bin/grep -qxF "ARGS: [compose] [--env-file] [$work/env] [-f] [$repo/docker-compose.bridge.yml] [up] [-d] [--no-build]" "$DOCKER_LOG"
   /usr/bin/grep -qF "ENV: sep2=18443 admin=18444 user=1000:1000 certs=$work/certs mode=rw image=gridappsd-ieee-2030_5-go:dev ip=10.213.168.2 subnet=10.213.168.0/24" "$DOCKER_LOG"
+}
+
+@test "pull: pulls the published image at latest, with no env file and no other docker call" {
+  rm -f "$work/env"
+  run_script pull
+  [ "$status" -eq 0 ]
+  [ "$(/usr/bin/grep -c "^ARGS" "$DOCKER_LOG")" -eq 1 ]
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5:latest]" "$DOCKER_LOG"
+}
+
+@test "pull: BRIDGE_IMAGE_TAG from the shell or the env file picks the version" {
+  BRIDGE_IMAGE_TAG=v1.2.3 run_script pull
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5:v1.2.3]" "$DOCKER_LOG"
+  : >"$DOCKER_LOG"
+  printf 'BRIDGE_IMAGE_TAG=v2.0.0\n' >>"$work/env"
+  run_script pull
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5:v2.0.0]" "$DOCKER_LOG"
+}
+
+@test "up by default: pulls the published image first, skips the build and starts compose with it" {
+  BRIDGE_IMAGE_TAG=v1.2.3 run_script up
+  [ "$status" -eq 0 ]
+  [ "$(/usr/bin/grep -n '^ARGS: \[pull\]' "$DOCKER_LOG" | head -n 1 | cut -d: -f1)" -lt "$(/usr/bin/grep -n '^ARGS: \[compose\]' "$DOCKER_LOG" | head -n 1 | cut -d: -f1)" ]
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5:v1.2.3]" "$DOCKER_LOG"
+  [ "$(/usr/bin/grep -c '^ARGS: \[build\]' "$DOCKER_LOG")" -eq 0 ]
+  /usr/bin/grep -qxF "ARGS: [compose] [--env-file] [$work/env] [-f] [$repo/docker-compose.bridge.yml] [up] [-d] [--no-build]" "$DOCKER_LOG"
+  /usr/bin/grep -qF "image=gridappsd/gridappsd-ieee-2030_5:v1.2.3 " "$DOCKER_LOG"
+}
+
+@test "up by default: a failed pull stops with a named error before compose starts" {
+  PULL_FAIL=1 run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not pull gridappsd/gridappsd-ieee-2030_5:latest; set BRIDGE_USE_PUBLISHED=0"* ]]
+  [ "$(/usr/bin/grep -c '^ARGS: \[compose\]' "$DOCKER_LOG")" -eq 0 ]
+}
+
+@test "up with BRIDGE_USE_PUBLISHED=0: never pulls, and ignores BRIDGE_IMAGE so a local build is what runs" {
+  BRIDGE_USE_PUBLISHED=0 BRIDGE_IMAGE=example:tag run_script up
+  [ "$status" -eq 0 ]
+  [ "$(/usr/bin/grep -c '^ARGS: \[pull\]' "$DOCKER_LOG")" -eq 0 ]
+  /usr/bin/grep -qF "image=gridappsd-ieee-2030_5-go:dev " "$DOCKER_LOG"
+}
+
+@test "up: the same preflights still refuse a bad start on the default path" {
+  printf 'SEP2_ADMIN_UI_KEY=short\n' >"$work/env"
+  run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SEP2_ADMIN_UI_KEY"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+}
+
+@test "up by default: an explicit BRIDGE_IMAGE is the image pulled and run, and a bad switch value is refused" {
+  BRIDGE_IMAGE=example:tag run_script up
+  /usr/bin/grep -qxF "ARGS: [pull] [example:tag]" "$DOCKER_LOG"
+  /usr/bin/grep -qF "image=example:tag " "$DOCKER_LOG"
+  rm -f "$DOCKER_LOG"
+  BRIDGE_USE_PUBLISHED=yes run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BRIDGE_USE_PUBLISHED must be 0 or 1"* ]]
+  [ ! -e "$DOCKER_LOG" ]
 }
 
 @test "up: env file values override the defaults, shell values override the file" {
@@ -148,11 +210,26 @@ run_script() {
   [ ! -e "$DOCKER_LOG" ]
 }
 
-@test "build: passes the version and tag without any preflight" {
+@test "build: passes the version and the local :dev tag without any preflight" {
   rm -f "$work/env"
-  VERSION=v1.2.3 BRIDGE_IMAGE=example:tag run_script build
+  VERSION=v1.2.3 run_script build
   [ "$status" -eq 0 ]
-  /usr/bin/grep -qxF "ARGS: [build] [-f] [$repo/Dockerfile.bridge] [--build-arg] [VERSION=v1.2.3] [-t] [example:tag] [$repo]" "$DOCKER_LOG"
+  /usr/bin/grep -qxF "ARGS: [build] [-f] [$repo/Dockerfile.bridge] [--build-arg] [VERSION=v1.2.3] [-t] [gridappsd-ieee-2030_5-go:dev] [$repo]" "$DOCKER_LOG"
+}
+
+@test "build: never tags a local build with the Hub name, whatever the switch, tag or BRIDGE_IMAGE say" {
+  rm -f "$work/env"
+  for pre in "BRIDGE_USE_PUBLISHED=1" "BRIDGE_USE_PUBLISHED=0" "BRIDGE_IMAGE=gridappsd/gridappsd-ieee-2030_5:latest" \
+    "BRIDGE_USE_PUBLISHED=1 BRIDGE_IMAGE_TAG=v1.2.3" "BRIDGE_USE_PUBLISHED=0 BRIDGE_IMAGE=example:tag"; do
+    rm -f "$DOCKER_LOG"
+    # word splitting of $pre into NAME=value words is the point here
+    # shellcheck disable=SC2086
+    env $pre "$repo/scripts/docker-bridge.sh" build
+    [ "$(/usr/bin/grep -c '^ARGS' "$DOCKER_LOG")" -eq 1 ]
+    /usr/bin/grep -qF "[-t] [gridappsd-ieee-2030_5-go:dev] [$repo]" "$DOCKER_LOG"
+    [ "$(/usr/bin/grep -c '^ARGS.*gridappsd/gridappsd-ieee-2030_5' "$DOCKER_LOG")" -eq 0 ]
+    [ "$(/usr/bin/grep -c '^ARGS.*gridappsd/' "$DOCKER_LOG")" -eq 0 ]
+  done
 }
 
 @test "down: stops the compose stack and nothing else" {

@@ -1,4 +1,4 @@
-.PHONY: help check-go build run docker-build docker-up docker-down docker-logs test test-shell test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
+.PHONY: help check-go build run docker-build docker-pull docker-up docker-down docker-logs test test-shell test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
 
 .DEFAULT_GOAL := help
 
@@ -68,7 +68,10 @@ run: build                ## Build and start the bridge (needs SEP2_ADMIN_UI_KEY
 docker-build:             ## Build the bridge image
 	@VERSION='$(VERSION)' scripts/docker-bridge.sh build
 
-docker-up:                ## Build the image and start the bridge on the platform network
+docker-pull:              ## Pull the published bridge image only (BRIDGE_IMAGE_TAG picks the version, default latest)
+	@scripts/docker-bridge.sh pull
+
+docker-up:                ## Build the image and start the bridge (pulls and runs the published image; BRIDGE_USE_PUBLISHED=0 builds locally)
 	@VERSION='$(VERSION)' scripts/docker-bridge.sh up
 
 docker-down:              ## Stop the bridge container
@@ -80,10 +83,10 @@ docker-logs:              ## Follow the bridge container log
 test: check-go                     ## Run all Go tests
 	go test ./...
 
-# test-shell runs the bats suites for `make run`, the docker targets and the Go version check; it needs bats on PATH and
+# test-shell runs the bats suites for `make run`, the docker targets, the image publish path and the Go version check; it needs bats on PATH and
 # is separate from `test` so `test` stays plain `go test ./...`.
 test-shell:               ## Run the bats suites (needs bats)
-	bats test/run.bats test/go-version.bats test/docker-bridge.bats test/compose-env.bats
+	bats test/run.bats test/go-version.bats test/docker-bridge.bats test/compose-env.bats test/docker-publish.bats
 
 test-race: check-go            ## Run all Go tests with the race detector
 	go test -race ./...

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drives the bridge compose stack for `make docker-build|up|down|logs`.
-# Usage: docker-bridge.sh build|up|down|logs
+# Drives the bridge compose stack for `make docker-build|pull|up|down|logs`.
+# Usage: docker-bridge.sh build|pull|up|down|logs
 # Settings come from the shell environment first, then the env file, then the
 # defaults below; the resolved values are exported for docker-compose.bridge.yml.
 set -euo pipefail
@@ -15,6 +15,8 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 env_file="${BRIDGE_ENV_FILE:-$repo/.env}"
 compose_file="${BRIDGE_COMPOSE_FILE:-$repo/docker-compose.bridge.yml}"
 platform_network="gridappsd-docker_default"
+# The only tag a local build ever carries, so it can never shadow the Hub name.
+local_image="gridappsd-ieee-2030_5-go:dev"
 
 # setting NAME DEFAULT: shell value, else the last NAME= line of the env file,
 # else DEFAULT. The file is parsed, never sourced, so it cannot run code.
@@ -36,6 +38,11 @@ setting() {
     esac
   fi
   printf '%s' "${value:-$default}"
+}
+
+# published_image names the Docker Hub image at BRIDGE_IMAGE_TAG (default latest).
+published_image() {
+  printf 'gridappsd/gridappsd-ieee-2030_5:%s' "$(setting BRIDGE_IMAGE_TAG latest)"
 }
 
 # env_missing says why the env file is unusable, and when the old name is still
@@ -63,7 +70,16 @@ resolve() {
   BRIDGE_CERT_MODE=$(setting BRIDGE_CERT_MODE rw)
   BRIDGE_ADMIN_IP=$(setting BRIDGE_ADMIN_IP 10.213.168.2)
   BRIDGE_ADMIN_SUBNET=$(setting BRIDGE_ADMIN_SUBNET 10.213.168.0/24)
-  BRIDGE_IMAGE="${BRIDGE_IMAGE:-gridappsd-ieee-2030_5-go:dev}"
+  # BRIDGE_USE_PUBLISHED=1 (the default) runs the Hub image, pulled at start;
+  # 0 builds the local image instead. An explicit BRIDGE_IMAGE picks the image
+  # pulled and run when the switch is 1; a local build is always $local_image.
+  use_published=$(setting BRIDGE_USE_PUBLISHED 1)
+  case "$use_published" in 0 | 1) ;; *) die "BRIDGE_USE_PUBLISHED must be 0 or 1, got: $use_published" ;; esac
+  if [ "$use_published" = 1 ]; then
+    BRIDGE_IMAGE="${BRIDGE_IMAGE:-$(published_image)}"
+  else
+    BRIDGE_IMAGE="$local_image"
+  fi
   check_port BRIDGE_SEP2_PORT "$BRIDGE_SEP2_PORT"
   check_port BRIDGE_ADMIN_PORT "$BRIDGE_ADMIN_PORT"
   [ "$BRIDGE_SEP2_PORT" != "$BRIDGE_ADMIN_PORT" ] || die "BRIDGE_SEP2_PORT and BRIDGE_ADMIN_PORT must differ"
@@ -106,16 +122,26 @@ preflight() {
 
 build() {
   local version="${VERSION:-dev}"
-  docker build -f "$repo/Dockerfile.bridge" --build-arg "VERSION=$version" -t "$BRIDGE_IMAGE" "$repo"
+  docker build -f "$repo/Dockerfile.bridge" --build-arg "VERSION=$version" -t "$local_image" "$repo"
+}
+
+# pull fetches the published image only; it needs docker but no env file.
+pull() {
+  command -v docker >/dev/null 2>&1 || die "docker is not on PATH"
+  docker pull "$(published_image)"
 }
 
 main() {
   local action="${1:-}"
-  [ -n "$action" ] || die "usage: docker-bridge.sh build|up|down|logs"
+  [ -n "$action" ] || die "usage: docker-bridge.sh build|pull|up|down|logs"
   case "$action" in
-    build | up | down | logs) ;;
-    *) die "unknown action: $action (use build, up, down or logs)" ;;
+    build | pull | up | down | logs) ;;
+    *) die "unknown action: $action (use build, pull, up, down or logs)" ;;
   esac
+  if [ "$action" = pull ]; then
+    pull
+    return
+  fi
   case "$action" in
     down | logs) [ -r "$env_file" ] || env_missing ;;
   esac
@@ -124,7 +150,13 @@ main() {
     build) build ;;
     up)
       preflight
-      build
+      if [ "$use_published" = 1 ]; then
+        # Pull first so the run uses the current image, not a stale local copy.
+        docker pull "$BRIDGE_IMAGE" ||
+          die "could not pull $BRIDGE_IMAGE; set BRIDGE_USE_PUBLISHED=0 to build the image locally"
+      else
+        build
+      fi
       compose up -d --no-build
       ;;
     down) compose down ;;

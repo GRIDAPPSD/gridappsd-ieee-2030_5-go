@@ -2,8 +2,8 @@
 
 ## The bridge in a container
 
-`make docker-up` builds the image and starts the bridge next to a running
-GridAPPS-D platform; `make docker-down` stops it, `make docker-logs`
+`make docker-up` pulls the published image and starts the bridge next to a
+running GridAPPS-D platform (`BRIDGE_USE_PUBLISHED=0` builds it locally instead); `make docker-down` stops it, `make docker-logs`
 follows its log, and `make docker-build` builds the image alone.
 
 One-time setup:
@@ -82,8 +82,46 @@ The minted server certificate names only `localhost` and `127.0.0.1`
 published loopback port; a client using the host's LAN name or another
 container's DNS name fails certificate verification.
 
-There is no published image and no `latest` tag; the image is built locally
-as `gridappsd-ieee-2030_5-go:dev` (override with `BRIDGE_IMAGE`).
+## The published image
+
+The image is public on Docker Hub, under the `gridappsd` organisation as
+`gridappsd/gridappsd-ieee-2030_5`. Its visibility is set on Docker Hub, not in
+this repository. It is linux/amd64 and every image carries the
+`org.opencontainers.image.version`, `.revision` (the commit it was built from)
+and `.source` labels.
+
+* Pushing a release tag `v*` publishes `:<tag>`, and `:latest` as well when the
+  tag has no suffix and is the highest such version among the repository's
+  tags. A pre-release such as `v0.3.0-rc1`, or a patch on an older line, does
+  not move `latest`. A tag whose commit is not on `main` is refused before
+  login.
+* A push to `main` publishes `:main`. A branch push never moves `latest` or a
+  version tag.
+
+`make docker-up` runs the published image by default: it pulls
+`gridappsd/gridappsd-ieee-2030_5:${BRIDGE_IMAGE_TAG:-latest}` first, so the
+run uses the current image, then starts it with no build. If the pull fails it
+stops and says to set `BRIDGE_USE_PUBLISHED=0`. A push to `main` publishes only
+`:main` and `latest` moves only on a stable `v*` release, so until the first
+stable release the default path fails, so build locally with
+`make docker-up BRIDGE_USE_PUBLISHED=0`: that builds and tags
+`gridappsd-ieee-2030_5-go:dev` and runs it. A local build is always tagged
+`gridappsd-ieee-2030_5-go:dev`, never the Hub name, whatever `BRIDGE_IMAGE` or
+`BRIDGE_IMAGE_TAG` say, so it cannot shadow the published image. With the
+default switch an explicit `BRIDGE_IMAGE` is the image pulled and run; with
+`BRIDGE_USE_PUBLISHED=0` it is ignored. `make docker-pull` pulls the published
+image alone, and `make docker-build` always builds the local `:dev` image. The compose file has
+no `build:`, so compose run by hand only pulls the published image and fails if
+it is missing; it never builds one under the published name. To run the published image, call compose directly
+with the launcher's exports in place and `BRIDGE_IMAGE` unset: compose then uses
+`gridappsd/gridappsd-ieee-2030_5:${BRIDGE_IMAGE_TAG:-latest}`. Pin a version
+with `BRIDGE_IMAGE_TAG=v0.3.0`, in the shell or in `.env`:
+
+```
+docker pull gridappsd/gridappsd-ieee-2030_5:v0.3.0
+docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+  gridappsd/gridappsd-ieee-2030_5:v0.3.0
+```
 
 ## A dev broker for tests
 

@@ -74,7 +74,7 @@ To run the bridge as a container on the GridAPPS-D platform network:
    - `SEP2_ADMIN_UI_KEY`: 16 or more characters (login password)
    - `GRIDAPPSD_PASSWORD`: the platform broker password (`SEP2_STOMP_PASSWORD` also works); `GRIDAPPSD_USER` is optional
    - `SEP2_REGISTRATION_PIN`: optional; the registration PIN your clients expect
-3. **Start**: `make docker-up` builds the image and starts the container.
+3. **Start**: `make docker-up` pulls the published image and starts the container; `make docker-up BRIDGE_USE_PUBLISHED=0` builds the image locally instead.
 4. **Monitor**: `make docker-logs` follows the container log.
 5. **Stop**: `make docker-down` stops and removes the container.
 
