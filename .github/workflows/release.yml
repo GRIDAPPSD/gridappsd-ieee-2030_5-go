@@ -46,7 +46,7 @@ permissions:
 jobs:
   build-and-verify:
     name: Build, stamp version, canary smoke-test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_dry_run: ${{ steps.mode.outputs.is_dry_run }}
@@ -261,7 +261,7 @@ jobs:
     # below can print what it would have done, but the publish step
     # inside it is itself gated on is_dry_run.
     if: needs.build-and-verify.outputs.is_dry_run == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       # Elevated only in this job, only for the duration of the
       # release-create step below.
@@ -294,7 +294,7 @@ jobs:
     name: Report dry-run result
     needs: build-and-verify
     if: needs.build-and-verify.outputs.is_dry_run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Print what would have published
         run: |
