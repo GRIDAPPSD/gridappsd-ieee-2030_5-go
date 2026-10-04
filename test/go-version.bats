@@ -145,7 +145,7 @@ STUB
   stub_go_recording go1.20.4
   PATH="$stubs:$PATH" run make -C "$repo" build BRIDGE="$work/bridge"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"installed Go 1.20.4 is older than the 1.26.3"* ]]
+  [[ "$output" == *"installed Go 1.20.4 is older than the 1.26.8"* ]]
   [ ! -e "$work/compiled" ]
 }
 
