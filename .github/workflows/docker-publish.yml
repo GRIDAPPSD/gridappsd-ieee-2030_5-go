@@ -1,20 +1,23 @@
 name: Docker publish
 
-# Publishes the bridge image to Docker Hub when a release tag `v*` is pushed.
+# Publishes the bridge image to Docker Hub: a release tag `v*` publishes
+# <tag> (and latest for the highest stable version, on main only); a push to
+# main publishes :main. A branch push never moves latest or a version tag.
 # Follows the GRIDAPPSD pattern in gridappsd-python's release.yml (buildx,
 # docker/login-action with the organisation's DOCKER_USERNAME and DOCKER_TOKEN
 # secrets, docker/build-push-action), with two changes: actions are pinned by
 # commit SHA, and the job gets contents: read only (the pattern's
 # packages: write is for GitHub Packages, which this workflow does not use).
 #
-# There is deliberately no workflow_dispatch trigger: a manual run from a
-# branch could otherwise push `latest` from a non-release ref.
+# There is deliberately no workflow_dispatch or pull_request trigger, and the
+# release-tag-check.sh script refuses every other ref.
 #
 # linux/amd64 only. The build stage uses the builder's own GOARCH, so an arm64
 # image would be built under emulation; add it when it is needed.
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
 
 permissions:
@@ -27,34 +30,32 @@ jobs:
   publish:
     name: Build and push the bridge image
     runs-on: ubuntu-latest
-    # A fork has no access to the organisation secrets, and a branch ref must
-    # never reach the push step.
-    if: github.repository_owner == 'GRIDAPPSD' && github.ref_type == 'tag'
+    # A fork has no access to the organisation's credentials.
+    if: github.repository_owner == 'GRIDAPPSD'
+    # Runs for one ref queue rather than overlap, so :main cannot finish out of order.
+    concurrency:
+      group: docker-publish-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every tag and branch, for the ancestry and highest-version checks.
+          fetch-depth: 0
+
+      - name: Fetch main
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Resolve tags
         id: tags
         env:
           # A tag name may hold shell metacharacters, so it reaches the script
-          # through env: and is checked against a strict pattern.
+          # through env: and the script checks it against a strict pattern.
           REF_NAME: ${{ github.ref_name }}
-        run: |
-          if ! [[ "${REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-            echo "tag ${REF_NAME} is not vMAJOR.MINOR.PATCH[-suffix]; refusing to publish" >&2
-            exit 1
-          fi
-          {
-            echo "version=${REF_NAME}"
-            echo "tags<<EOT"
-            echo "${IMAGE}:${REF_NAME}"
-            # A pre-release tag (a suffix after the patch number) must not move latest.
-            if [[ "${REF_NAME}" != *-* ]]; then
-              echo "${IMAGE}:latest"
-            fi
-            echo "EOT"
-          } >> "${GITHUB_OUTPUT}"
+          REF_TYPE: ${{ github.ref_type }}
+        # Refuses a tag that is not on main or a branch other than main, and moves latest only to the highest stable version. Runs before login, so a refused tag never
+        # sees a credential.
+        run: scripts/release-tag-check.sh "${REF_TYPE}" "${REF_NAME}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

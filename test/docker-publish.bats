@@ -25,9 +25,9 @@ step_block() {
   ' "$wf"
 }
 
-@test "workflow triggers only on v* tag pushes: no branch, PR or manual trigger" {
+@test "workflow triggers only on pushes to main and v* tags: no PR, other branch or manual trigger" {
   on_block=$(code_lines "$wf" | awk '/^on:/ { on = 1; print; next } on && /^[^ ]/ { exit } on { print }')
-  [ "$on_block" = "$(printf "on:\n  push:\n    tags: ['v*']")" ]
+  [ "$on_block" = "$(printf "on:\n  push:\n    branches: [main]\n    tags: ['v*']")" ]
 }
 
 @test "every uses: is pinned by a full 40-hex commit SHA with a version comment" {
@@ -52,8 +52,12 @@ step_block() {
   printf '%s\n' "$login" | /usr/bin/grep -qF 'password: ${{ secrets.DOCKER_TOKEN }}'
 }
 
-@test "the push is guarded to the organisation and to a tag ref" {
-  /usr/bin/grep -qF "if: github.repository_owner == 'GRIDAPPSD' && github.ref_type == 'tag'" "$wf"
+@test "the job is guarded to the organisation and runs the ref check before the login step" {
+  /usr/bin/grep -qxF "    if: github.repository_owner == 'GRIDAPPSD'" "$wf"
+  # shellcheck disable=SC2016 # literal text under test, not a shell expansion
+  check=$(/usr/bin/grep -n 'scripts/release-tag-check.sh "${REF_TYPE}" "${REF_NAME}"' "$wf" | cut -d: -f1)
+  login=$(/usr/bin/grep -n 'docker/login-action@' "$wf" | cut -d: -f1)
+  [ -n "$check" ] && [ -n "$login" ] && [ "$check" -lt "$login" ]
 }
 
 @test "the build pushes Dockerfile.bridge for amd64 with the version build-arg and OCI labels" {
@@ -71,41 +75,104 @@ step_block() {
   printf '%s\n' "$b" | /usr/bin/grep -qF 'org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}'
 }
 
-# run_tags REF: runs the Resolve tags script body with REF_NAME=REF and prints
-# the GITHUB_OUTPUT it wrote; the script's exit status is the function's.
-run_tags() {
-  step_block "Resolve tags" | awk '/^        run: \|$/ { on = 1; next } on { sub(/^          /, ""); print }' >"$BATS_TEST_TMPDIR/tags.sh"
-  [ -s "$BATS_TEST_TMPDIR/tags.sh" ]
-  : >"$BATS_TEST_TMPDIR/out"
-  REF_NAME="$1" IMAGE=gridappsd/gridappsd-ieee-2030_5-go GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out" \
-    bash "$BATS_TEST_TMPDIR/tags.sh"
+# mkrepo: builds $BATS_TEST_TMPDIR/r with main at C2, tags v1.0.0 (C1), v1.1.0 (C2), v1.2.0-rc1 (C2),
+# v1.0.1 (C1) and an unmerged branch commit tagged v9.9.9.
+mkrepo() {
+  r="$BATS_TEST_TMPDIR/r"
+  git init -q -b main "$r"
+  git -C "$r" config user.email t@example.test
+  git -C "$r" config user.name t
+  git -C "$r" commit -q --allow-empty -m c1
+  git -C "$r" tag v1.0.0
+  git -C "$r" tag v1.0.1
+  git -C "$r" commit -q --allow-empty -m c2
+  git -C "$r" tag v1.1.0
+  git -C "$r" tag v1.2.0-rc1
+  git -C "$r" checkout -q -b side
+  git -C "$r" commit -q --allow-empty -m unmerged
+  git -C "$r" tag v9.9.9
+  git -C "$r" checkout -q main
+  # MAIN_REF points at the local branch; the workflow's fetched ref is origin/main.
+  export MAIN_REF=refs/heads/main
 }
 
-@test "a stable tag publishes the version tag and latest, and stamps the version" {
-  run_tags v1.2.3
-  [ "$(cat "$BATS_TEST_TMPDIR/out")" = "$(printf 'version=v1.2.3\ntags<<EOT\ngridappsd/gridappsd-ieee-2030_5-go:v1.2.3\ngridappsd/gridappsd-ieee-2030_5-go:latest\nEOT')" ]
+# check KIND NAME: runs release-tag-check.sh in the fixture repo and leaves its
+# GITHUB_OUTPUT in $out_file. The script's exit status is the function's.
+check() {
+  out_file="$BATS_TEST_TMPDIR/out"
+  : >"$out_file"
+  (cd "$r" && IMAGE=gridappsd/gridappsd-ieee-2030_5-go GITHUB_OUTPUT="$out_file" "$repo/scripts/release-tag-check.sh" "$@")
+}
+
+I=gridappsd/gridappsd-ieee-2030_5-go
+
+@test "the highest stable tag on main publishes its version and latest, and stamps the version" {
+  mkrepo
+  check tag v1.1.0
+  [ "$(cat "$out_file")" = "$(printf 'version=v1.1.0\ntags<<EOT\n%s:v1.1.0\n%s:latest\nEOT' "$I" "$I")" ]
+}
+
+@test "a patch on an older line publishes its own tag and does not move latest backwards" {
+  mkrepo
+  check tag v1.0.1
+  [ "$(cat "$out_file")" = "$(printf 'version=v1.0.1\ntags<<EOT\n%s:v1.0.1\nEOT' "$I")" ]
 }
 
 @test "a pre-release tag publishes only its own tag, never latest" {
-  run_tags v1.2.3-rc.1
-  [ "$(cat "$BATS_TEST_TMPDIR/out")" = "$(printf 'version=v1.2.3-rc.1\ntags<<EOT\ngridappsd/gridappsd-ieee-2030_5-go:v1.2.3-rc.1\nEOT')" ]
+  mkrepo
+  check tag v1.2.0-rc1
+  [ "$(cat "$out_file")" = "$(printf 'version=v1.2.0-rc1\ntags<<EOT\n%s:v1.2.0-rc1\nEOT' "$I")" ]
+}
+
+@test "a tag whose commit is not on main is refused before any output is written" {
+  mkrepo
+  run check tag v9.9.9
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not an ancestor"* ]]
+  [ ! -s "$out_file" ]
+}
+
+@test "a tag missing from the clone is refused" {
+  mkrepo
+  run check tag v3.0.0
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not found in this clone"* ]]
+  [ ! -s "$out_file" ]
 }
 
 @test "a tag that is not vMAJOR.MINOR.PATCH is refused and writes no output" {
+  mkrepo
   # shellcheck disable=SC2016 # literal text under test, not a shell expansion
   for bad in v1 v1.2 main 'v1.2.3;id' 'v1.2.3 x' vX.Y.Z 'v1.2.3-$(id)'; do
-    run run_tags "$bad"
+    run check tag "$bad"
     [ "$status" -ne 0 ]
     [[ "$output" == *"refusing to publish"* ]]
-    [ ! -s "$BATS_TEST_TMPDIR/out" ]
+    [ ! -s "$out_file" ]
   done
 }
 
-@test "compose image defaults to the published image at latest, pinned by BRIDGE_IMAGE_TAG, and keeps build" {
+@test "a push to main publishes only that branch name, never latest or a version tag" {
+  mkrepo
+  check branch main
+  sha=$(git -C "$r" rev-parse --short=7 HEAD)
+  [ "$(cat "$out_file")" = "$(printf 'version=main-%s\ntags<<EOT\n%s:main\nEOT' "$sha" "$I")" ]
+}
+
+@test "any other branch, and an unknown kind, is refused and writes no output" {
+  mkrepo
+  for args in "branch side" "branch feature/x" "branch develop" "branch latest" "branch v1.1.0" "ref main"; do
+    # word splitting of $args is the point here
+    # shellcheck disable=SC2086
+    run check $args
+    [ "$status" -ne 0 ]
+    [ ! -s "$out_file" ]
+  done
+}
+
+@test "compose image defaults to the published image at latest, pinned by BRIDGE_IMAGE_TAG, and has no build section" {
   # shellcheck disable=SC2016 # literal text under test, not a shell expansion
   /usr/bin/grep -qxF '    image: ${BRIDGE_IMAGE:-gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}}' "$compose"
-  awk '/^    build:$/ { on = 1; next } on && /^      / { print; next } on { exit }' "$compose" >"$BATS_TEST_TMPDIR/build"
-  [ "$(cat "$BATS_TEST_TMPDIR/build")" = "$(printf '      context: .\n      dockerfile: Dockerfile.bridge')" ]
+  [ "$(/usr/bin/grep -cE '^\s+build:' "$compose")" -eq 0 ]
 }
 
 @test "compose config resolves the image from BRIDGE_IMAGE_TAG and BRIDGE_IMAGE" {

@@ -84,14 +84,27 @@ container's DNS name fails certificate verification.
 
 ## The published image
 
-Pushing a release tag `v*` publishes `gridappsd/gridappsd-ieee-2030_5-go:<tag>`
-to Docker Hub, and `:latest` as well for a tag with no suffix (a pre-release
-such as `v0.3.0-rc1` does not move `latest`). The image is linux/amd64 and
-carries the `org.opencontainers.image.version`, `.revision` and `.source` labels.
+The image is public on Docker Hub, under the `gridappsd` organisation as
+`gridappsd/gridappsd-ieee-2030_5-go`. Its visibility is set on Docker Hub, not in
+this repository. It is linux/amd64 and every image carries the
+`org.opencontainers.image.version`, `.revision` (the commit it was built from)
+and `.source` labels.
+
+* Pushing a release tag `v*` publishes `:<tag>`, and `:latest` as well when the
+  tag has no suffix and is the highest such version among the repository's
+  tags. A pre-release such as `v0.3.0-rc1`, or a patch on an older line, does
+  not move `latest`. A tag whose commit is not on `main` is refused before
+  login.
+* A push to `main` publishes `:main`. A branch push never moves `latest` or a
+  version tag.
 
 `make docker-up` and `make docker-build` never pull: they build locally and tag
 the image `gridappsd-ieee-2030_5-go:dev` (override with `BRIDGE_IMAGE`), and
-`docker-up` runs that build. To run the published image, call compose directly
+`docker-up` runs that build. `make docker-pull` pulls the published image
+(`BRIDGE_IMAGE_TAG` picks the version), and `make docker-up BRIDGE_USE_PUBLISHED=1`
+starts it with every `docker-up` check but no build. The compose file has no `build:`, so compose run by
+hand only pulls the published image and fails if it is missing; it never builds
+one under the published name. To run the published image, call compose directly
 with the launcher's exports in place and `BRIDGE_IMAGE` unset: compose then uses
 `gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}`. Pin a version
 with `BRIDGE_IMAGE_TAG=v0.3.0`, in the shell or in `.env`:

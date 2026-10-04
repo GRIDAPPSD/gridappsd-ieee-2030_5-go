@@ -1,4 +1,4 @@
-.PHONY: help check-go build run docker-build docker-up docker-down docker-logs test test-shell test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
+.PHONY: help check-go build run docker-build docker-pull docker-up docker-down docker-logs test test-shell test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
 
 .DEFAULT_GOAL := help
 
@@ -68,7 +68,10 @@ run: build                ## Build and start the bridge (needs SEP2_ADMIN_UI_KEY
 docker-build:             ## Build the bridge image
 	@VERSION='$(VERSION)' scripts/docker-bridge.sh build
 
-docker-up:                ## Build the image and start the bridge on the platform network
+docker-pull:              ## Pull the published bridge image (BRIDGE_IMAGE_TAG picks the version, default latest)
+	@scripts/docker-bridge.sh pull
+
+docker-up:                ## Build the image and start the bridge (BRIDGE_USE_PUBLISHED=1: run the pulled image, no build)
 	@VERSION='$(VERSION)' scripts/docker-bridge.sh up
 
 docker-down:              ## Stop the bridge container

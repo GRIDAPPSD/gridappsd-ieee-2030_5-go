@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drives the bridge compose stack for `make docker-build|up|down|logs`.
-# Usage: docker-bridge.sh build|up|down|logs
+# Drives the bridge compose stack for `make docker-build|pull|up|down|logs`.
+# Usage: docker-bridge.sh build|pull|up|down|logs
 # Settings come from the shell environment first, then the env file, then the
 # defaults below; the resolved values are exported for docker-compose.bridge.yml.
 set -euo pipefail
@@ -38,6 +38,11 @@ setting() {
   printf '%s' "${value:-$default}"
 }
 
+# published_image names the Docker Hub image at BRIDGE_IMAGE_TAG (default latest).
+published_image() {
+  printf 'gridappsd/gridappsd-ieee-2030_5-go:%s' "$(setting BRIDGE_IMAGE_TAG latest)"
+}
+
 # env_missing says why the env file is unusable, and when the old name is still
 # there, that it only needs renaming.
 env_missing() {
@@ -63,7 +68,15 @@ resolve() {
   BRIDGE_CERT_MODE=$(setting BRIDGE_CERT_MODE rw)
   BRIDGE_ADMIN_IP=$(setting BRIDGE_ADMIN_IP 10.213.168.2)
   BRIDGE_ADMIN_SUBNET=$(setting BRIDGE_ADMIN_SUBNET 10.213.168.0/24)
-  BRIDGE_IMAGE="${BRIDGE_IMAGE:-gridappsd-ieee-2030_5-go:dev}"
+  # BRIDGE_USE_PUBLISHED=1 runs the pulled Hub image instead of a local build;
+  # an explicit BRIDGE_IMAGE still wins over both.
+  use_published=$(setting BRIDGE_USE_PUBLISHED 0)
+  case "$use_published" in 0 | 1) ;; *) die "BRIDGE_USE_PUBLISHED must be 0 or 1, got: $use_published" ;; esac
+  if [ "$use_published" = 1 ]; then
+    BRIDGE_IMAGE="${BRIDGE_IMAGE:-$(published_image)}"
+  else
+    BRIDGE_IMAGE="${BRIDGE_IMAGE:-gridappsd-ieee-2030_5-go:dev}"
+  fi
   check_port BRIDGE_SEP2_PORT "$BRIDGE_SEP2_PORT"
   check_port BRIDGE_ADMIN_PORT "$BRIDGE_ADMIN_PORT"
   [ "$BRIDGE_SEP2_PORT" != "$BRIDGE_ADMIN_PORT" ] || die "BRIDGE_SEP2_PORT and BRIDGE_ADMIN_PORT must differ"
@@ -109,13 +122,23 @@ build() {
   docker build -f "$repo/Dockerfile.bridge" --build-arg "VERSION=$version" -t "$BRIDGE_IMAGE" "$repo"
 }
 
+# pull fetches the published image only; it needs docker but no env file.
+pull() {
+  command -v docker >/dev/null 2>&1 || die "docker is not on PATH"
+  docker pull "$(published_image)"
+}
+
 main() {
   local action="${1:-}"
-  [ -n "$action" ] || die "usage: docker-bridge.sh build|up|down|logs"
+  [ -n "$action" ] || die "usage: docker-bridge.sh build|pull|up|down|logs"
   case "$action" in
-    build | up | down | logs) ;;
-    *) die "unknown action: $action (use build, up, down or logs)" ;;
+    build | pull | up | down | logs) ;;
+    *) die "unknown action: $action (use build, pull, up, down or logs)" ;;
   esac
+  if [ "$action" = pull ]; then
+    pull
+    return
+  fi
   case "$action" in
     down | logs) [ -r "$env_file" ] || env_missing ;;
   esac
@@ -124,7 +147,8 @@ main() {
     build) build ;;
     up)
       preflight
-      build
+      # The published image is pulled by docker-pull (or compose, if missing), never built.
+      [ "$use_published" = 1 ] || build
       compose up -d --no-build
       ;;
     down) compose down ;;

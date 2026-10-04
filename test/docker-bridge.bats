@@ -37,7 +37,7 @@ STUB
   export BRIDGE_ENV_FILE="$work/env"
   export SEP2_STOMP_PASSWORD="broker-pass"
   export BRIDGE_CERT_DIR="$work/certs"
-  unset SEP2_ADMIN_UI_KEY BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE SS_LISTEN NO_NETWORK
+  unset SEP2_ADMIN_UI_KEY BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_IMAGE_TAG BRIDGE_USE_PUBLISHED SS_LISTEN NO_NETWORK
 }
 
 run_script() {
@@ -50,6 +50,50 @@ run_script() {
   /usr/bin/grep -qxF "ARGS: [build] [-f] [$repo/Dockerfile.bridge] [--build-arg] [VERSION=dev] [-t] [gridappsd-ieee-2030_5-go:dev] [$repo]" "$DOCKER_LOG"
   /usr/bin/grep -qxF "ARGS: [compose] [--env-file] [$work/env] [-f] [$repo/docker-compose.bridge.yml] [up] [-d] [--no-build]" "$DOCKER_LOG"
   /usr/bin/grep -qF "ENV: sep2=18443 admin=18444 user=1000:1000 certs=$work/certs mode=rw image=gridappsd-ieee-2030_5-go:dev ip=10.213.168.2 subnet=10.213.168.0/24" "$DOCKER_LOG"
+}
+
+@test "pull: pulls the published image at latest, with no env file and no other docker call" {
+  rm -f "$work/env"
+  run_script pull
+  [ "$status" -eq 0 ]
+  [ "$(/usr/bin/grep -c "^ARGS" "$DOCKER_LOG")" -eq 1 ]
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5-go:latest]" "$DOCKER_LOG"
+}
+
+@test "pull: BRIDGE_IMAGE_TAG from the shell or the env file picks the version" {
+  BRIDGE_IMAGE_TAG=v1.2.3 run_script pull
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5-go:v1.2.3]" "$DOCKER_LOG"
+  : >"$DOCKER_LOG"
+  printf 'BRIDGE_IMAGE_TAG=v2.0.0\n' >>"$work/env"
+  run_script pull
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5-go:v2.0.0]" "$DOCKER_LOG"
+}
+
+@test "up with BRIDGE_USE_PUBLISHED=1: skips the build and starts compose with the published image" {
+  BRIDGE_USE_PUBLISHED=1 BRIDGE_IMAGE_TAG=v1.2.3 run_script up
+  [ "$status" -eq 0 ]
+  [ "$(/usr/bin/grep -c '^ARGS: \[build\]' "$DOCKER_LOG")" -eq 0 ]
+  /usr/bin/grep -qxF "ARGS: [compose] [--env-file] [$work/env] [-f] [$repo/docker-compose.bridge.yml] [up] [-d] [--no-build]" "$DOCKER_LOG"
+  /usr/bin/grep -qF "image=gridappsd/gridappsd-ieee-2030_5-go:v1.2.3 " "$DOCKER_LOG"
+}
+
+@test "up with BRIDGE_USE_PUBLISHED=1: the same preflights still refuse a bad start" {
+  printf 'SEP2_ADMIN_UI_KEY=short\n' >"$work/env"
+  BRIDGE_USE_PUBLISHED=1 run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SEP2_ADMIN_UI_KEY"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+}
+
+@test "up with BRIDGE_USE_PUBLISHED=1: an explicit BRIDGE_IMAGE wins, and a bad switch value is refused" {
+  BRIDGE_USE_PUBLISHED=1 BRIDGE_IMAGE=example:tag run_script up
+  /usr/bin/grep -qF "image=example:tag " "$DOCKER_LOG"
+  rm -f "$DOCKER_LOG"
+  BRIDGE_USE_PUBLISHED=yes run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BRIDGE_USE_PUBLISHED must be 0 or 1"* ]]
+  [ ! -e "$DOCKER_LOG" ]
 }
 
 @test "up: env file values override the defaults, shell values override the file" {
