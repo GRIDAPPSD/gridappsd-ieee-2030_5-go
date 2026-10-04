@@ -58,33 +58,33 @@ run_script() {
   run_script pull
   [ "$status" -eq 0 ]
   [ "$(/usr/bin/grep -c "^ARGS" "$DOCKER_LOG")" -eq 1 ]
-  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5-go:latest]" "$DOCKER_LOG"
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5:latest]" "$DOCKER_LOG"
 }
 
 @test "pull: BRIDGE_IMAGE_TAG from the shell or the env file picks the version" {
   BRIDGE_IMAGE_TAG=v1.2.3 run_script pull
   [ "$status" -eq 0 ]
-  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5-go:v1.2.3]" "$DOCKER_LOG"
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5:v1.2.3]" "$DOCKER_LOG"
   : >"$DOCKER_LOG"
   printf 'BRIDGE_IMAGE_TAG=v2.0.0\n' >>"$work/env"
   run_script pull
-  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5-go:v2.0.0]" "$DOCKER_LOG"
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5:v2.0.0]" "$DOCKER_LOG"
 }
 
 @test "up by default: pulls the published image first, skips the build and starts compose with it" {
   BRIDGE_IMAGE_TAG=v1.2.3 run_script up
   [ "$status" -eq 0 ]
   [ "$(/usr/bin/grep -n '^ARGS: \[pull\]' "$DOCKER_LOG" | head -n 1 | cut -d: -f1)" -lt "$(/usr/bin/grep -n '^ARGS: \[compose\]' "$DOCKER_LOG" | head -n 1 | cut -d: -f1)" ]
-  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5-go:v1.2.3]" "$DOCKER_LOG"
+  /usr/bin/grep -qxF "ARGS: [pull] [gridappsd/gridappsd-ieee-2030_5:v1.2.3]" "$DOCKER_LOG"
   [ "$(/usr/bin/grep -c '^ARGS: \[build\]' "$DOCKER_LOG")" -eq 0 ]
   /usr/bin/grep -qxF "ARGS: [compose] [--env-file] [$work/env] [-f] [$repo/docker-compose.bridge.yml] [up] [-d] [--no-build]" "$DOCKER_LOG"
-  /usr/bin/grep -qF "image=gridappsd/gridappsd-ieee-2030_5-go:v1.2.3 " "$DOCKER_LOG"
+  /usr/bin/grep -qF "image=gridappsd/gridappsd-ieee-2030_5:v1.2.3 " "$DOCKER_LOG"
 }
 
 @test "up by default: a failed pull stops with a named error before compose starts" {
   PULL_FAIL=1 run_script up
   [ "$status" -ne 0 ]
-  [[ "$output" == *"could not pull gridappsd/gridappsd-ieee-2030_5-go:latest; set BRIDGE_USE_PUBLISHED=0"* ]]
+  [[ "$output" == *"could not pull gridappsd/gridappsd-ieee-2030_5:latest; set BRIDGE_USE_PUBLISHED=0"* ]]
   [ "$(/usr/bin/grep -c '^ARGS: \[compose\]' "$DOCKER_LOG")" -eq 0 ]
 }
 
@@ -219,7 +219,7 @@ run_script() {
 
 @test "build: never tags a local build with the Hub name, whatever the switch, tag or BRIDGE_IMAGE say" {
   rm -f "$work/env"
-  for pre in "BRIDGE_USE_PUBLISHED=1" "BRIDGE_USE_PUBLISHED=0" "BRIDGE_IMAGE=gridappsd/gridappsd-ieee-2030_5-go:latest" \
+  for pre in "BRIDGE_USE_PUBLISHED=1" "BRIDGE_USE_PUBLISHED=0" "BRIDGE_IMAGE=gridappsd/gridappsd-ieee-2030_5:latest" \
     "BRIDGE_USE_PUBLISHED=1 BRIDGE_IMAGE_TAG=v1.2.3" "BRIDGE_USE_PUBLISHED=0 BRIDGE_IMAGE=example:tag"; do
     rm -f "$DOCKER_LOG"
     # word splitting of $pre into NAME=value words is the point here
@@ -227,6 +227,7 @@ run_script() {
     env $pre "$repo/scripts/docker-bridge.sh" build
     [ "$(/usr/bin/grep -c '^ARGS' "$DOCKER_LOG")" -eq 1 ]
     /usr/bin/grep -qF "[-t] [gridappsd-ieee-2030_5-go:dev] [$repo]" "$DOCKER_LOG"
+    [ "$(/usr/bin/grep -c '^ARGS.*gridappsd/gridappsd-ieee-2030_5' "$DOCKER_LOG")" -eq 0 ]
     [ "$(/usr/bin/grep -c '^ARGS.*gridappsd/' "$DOCKER_LOG")" -eq 0 ]
   done
 }

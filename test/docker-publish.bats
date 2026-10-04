@@ -42,6 +42,14 @@ step_block() {
   [ "$(/usr/bin/grep -cxF '      cancel-in-progress: false' "$wf")" -eq 1 ]
 }
 
+@test "no tracked file names the retired Hub image, and the Hub name is the one repository" {
+  # The old name is split so this file does not match its own scan.
+  old="gridappsd/gridappsd-ieee-2030_5""-go"
+  [ "$(git -C "$repo" grep -F -c "$old" | wc -l)" -eq 0 ]
+  [ "$(git -C "$repo" grep -F -c "gridappsd/gridappsd-ieee-2030_5" | wc -l)" -ge 5 ]
+  /usr/bin/grep -qxF '  IMAGE: gridappsd/gridappsd-ieee-2030_5' "$wf"
+}
+
 @test "permissions are contents: read at the top and nothing grants write" {
   [ "$(code_lines "$wf" | awk '/^permissions:/ { print; getline; print; exit }')" = "$(printf 'permissions:\n  contents: read')" ]
   [ "$(/usr/bin/grep -cE '^\s+[a-z-]+: (write|write-all)' "$wf")" -eq 0 ]
@@ -106,10 +114,10 @@ mkrepo() {
 check() {
   out_file="$BATS_TEST_TMPDIR/out"
   : >"$out_file"
-  (cd "$r" && IMAGE=gridappsd/gridappsd-ieee-2030_5-go GITHUB_OUTPUT="$out_file" "$repo/scripts/release-tag-check.sh" "$@")
+  (cd "$r" && IMAGE=gridappsd/gridappsd-ieee-2030_5 GITHUB_OUTPUT="$out_file" "$repo/scripts/release-tag-check.sh" "$@")
 }
 
-I=gridappsd/gridappsd-ieee-2030_5-go
+I=gridappsd/gridappsd-ieee-2030_5
 
 @test "the highest stable tag on main publishes its version and latest, and stamps the version" {
   mkrepo
@@ -176,7 +184,7 @@ I=gridappsd/gridappsd-ieee-2030_5-go
 
 @test "compose image defaults to the published image at latest, pinned by BRIDGE_IMAGE_TAG, and has no build section" {
   # shellcheck disable=SC2016 # literal text under test, not a shell expansion
-  /usr/bin/grep -qxF '    image: ${BRIDGE_IMAGE:-gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}}' "$compose"
+  /usr/bin/grep -qxF '    image: ${BRIDGE_IMAGE:-gridappsd/gridappsd-ieee-2030_5:${BRIDGE_IMAGE_TAG:-latest}}' "$compose"
   [ "$(/usr/bin/grep -cE '^\s+build:' "$compose")" -eq 0 ]
 }
 
@@ -188,8 +196,8 @@ I=gridappsd/gridappsd-ieee-2030_5-go
       BRIDGE_SEP2_PORT=1 BRIDGE_ADMIN_PORT=2 BRIDGE_CERT_DIR=/c BRIDGE_CERT_MODE=rw BRIDGE_ADMIN_SUBNET=10.0.0.0/24 \
       docker compose --env-file "$BATS_TEST_TMPDIR/env" -f "$compose" config | /usr/bin/grep -E '^    image:'
   }
-  [ "$(cfg)" = '    image: gridappsd/gridappsd-ieee-2030_5-go:latest' ]
-  [ "$(cfg BRIDGE_IMAGE_TAG=v1.2.3)" = '    image: gridappsd/gridappsd-ieee-2030_5-go:v1.2.3' ]
+  [ "$(cfg)" = '    image: gridappsd/gridappsd-ieee-2030_5:latest' ]
+  [ "$(cfg BRIDGE_IMAGE_TAG=v1.2.3)" = '    image: gridappsd/gridappsd-ieee-2030_5:v1.2.3' ]
   [ "$(cfg BRIDGE_IMAGE=gridappsd-ieee-2030_5-go:dev BRIDGE_IMAGE_TAG=v9)" = '    image: gridappsd-ieee-2030_5-go:dev' ]
 }
 

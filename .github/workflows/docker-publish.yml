@@ -24,7 +24,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: gridappsd/gridappsd-ieee-2030_5-go
+  IMAGE: gridappsd/gridappsd-ieee-2030_5
 
 jobs:
   publish:

@@ -42,7 +42,7 @@ setting() {
 
 # published_image names the Docker Hub image at BRIDGE_IMAGE_TAG (default latest).
 published_image() {
-  printf 'gridappsd/gridappsd-ieee-2030_5-go:%s' "$(setting BRIDGE_IMAGE_TAG latest)"
+  printf 'gridappsd/gridappsd-ieee-2030_5:%s' "$(setting BRIDGE_IMAGE_TAG latest)"
 }
 
 # env_missing says why the env file is unusable, and when the old name is still

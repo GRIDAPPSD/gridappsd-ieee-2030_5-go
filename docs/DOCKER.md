@@ -85,7 +85,7 @@ container's DNS name fails certificate verification.
 ## The published image
 
 The image is public on Docker Hub, under the `gridappsd` organisation as
-`gridappsd/gridappsd-ieee-2030_5-go`. Its visibility is set on Docker Hub, not in
+`gridappsd/gridappsd-ieee-2030_5`. Its visibility is set on Docker Hub, not in
 this repository. It is linux/amd64 and every image carries the
 `org.opencontainers.image.version`, `.revision` (the commit it was built from)
 and `.source` labels.
@@ -99,10 +99,11 @@ and `.source` labels.
   version tag.
 
 `make docker-up` runs the published image by default: it pulls
-`gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}` first, so the
+`gridappsd/gridappsd-ieee-2030_5:${BRIDGE_IMAGE_TAG:-latest}` first, so the
 run uses the current image, then starts it with no build. If the pull fails it
-stops and says to set `BRIDGE_USE_PUBLISHED=0`. Until the first image is on
-Docker Hub the default path fails, so build locally with
+stops and says to set `BRIDGE_USE_PUBLISHED=0`. A push to `main` publishes only
+`:main` and `latest` moves only on a stable `v*` release, so until the first
+stable release the default path fails, so build locally with
 `make docker-up BRIDGE_USE_PUBLISHED=0`: that builds and tags
 `gridappsd-ieee-2030_5-go:dev` and runs it. A local build is always tagged
 `gridappsd-ieee-2030_5-go:dev`, never the Hub name, whatever `BRIDGE_IMAGE` or
@@ -113,13 +114,13 @@ image alone, and `make docker-build` always builds the local `:dev` image. The c
 no `build:`, so compose run by hand only pulls the published image and fails if
 it is missing; it never builds one under the published name. To run the published image, call compose directly
 with the launcher's exports in place and `BRIDGE_IMAGE` unset: compose then uses
-`gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}`. Pin a version
+`gridappsd/gridappsd-ieee-2030_5:${BRIDGE_IMAGE_TAG:-latest}`. Pin a version
 with `BRIDGE_IMAGE_TAG=v0.3.0`, in the shell or in `.env`:
 
 ```
-docker pull gridappsd/gridappsd-ieee-2030_5-go:v0.3.0
+docker pull gridappsd/gridappsd-ieee-2030_5:v0.3.0
 docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-  gridappsd/gridappsd-ieee-2030_5-go:v0.3.0
+  gridappsd/gridappsd-ieee-2030_5:v0.3.0
 ```
 
 ## A dev broker for tests

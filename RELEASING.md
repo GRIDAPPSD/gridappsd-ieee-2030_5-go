@@ -560,15 +560,18 @@ Consequences for the manual sequence in section 11:
   17.6 states the consequence in full.
 - **The tag push also publishes the bridge image.**
   `.github/workflows/docker-publish.yml` builds `Dockerfile.bridge` and pushes
-  `gridappsd/gridappsd-ieee-2030_5-go:<tag>` to Docker Hub under the
+  `gridappsd/gridappsd-ieee-2030_5:<tag>` to Docker Hub under the
   `gridappsd` organisation; the image is public, and its visibility is set on
   Docker Hub, not in this repository. A push to `main` publishes
   `:main` the same way and never moves `latest` or a version tag.
   `scripts/release-tag-check.sh` refuses, before login, a tag whose
   commit is not an ancestor of `origin/main`, and adds `:latest` only when the
   tag has no suffix and is the highest such version among the tags. It has no
-  manual trigger. Verify after the run:
-  `docker buildx imagetools inspect gridappsd/gridappsd-ieee-2030_5-go:<tag>`
+  manual trigger. Publishes queue in one concurrency group, and GitHub keeps one
+  pending run per group, so a tag publish waiting behind a `main` publish can be
+  cancelled by the next push to `main`: check the Actions tab after tagging and
+  re-run a cancelled tag run. Verify after the run:
+  `docker buildx imagetools inspect gridappsd/gridappsd-ieee-2030_5:<tag>`
   resolves, and the image's `org.opencontainers.image.revision` label equals the
   tagged commit (or check the repository's Hub page for the tag). A pushed image
   tag is as immutable in practice as the git tag (section 13).
