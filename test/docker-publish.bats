@@ -37,6 +37,11 @@ step_block() {
   [ "$pinned" -eq "$total" ]
 }
 
+@test "all publishes share one concurrency group that queues rather than cancels" {
+  [ "$(/usr/bin/grep -cxF '      group: docker-publish' "$wf")" -eq 1 ]
+  [ "$(/usr/bin/grep -cxF '      cancel-in-progress: false' "$wf")" -eq 1 ]
+}
+
 @test "permissions are contents: read at the top and nothing grants write" {
   [ "$(code_lines "$wf" | awk '/^permissions:/ { print; getline; print; exit }')" = "$(printf 'permissions:\n  contents: read')" ]
   [ "$(/usr/bin/grep -cE '^\s+[a-z-]+: (write|write-all)' "$wf")" -eq 0 ]

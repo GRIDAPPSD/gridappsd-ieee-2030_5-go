@@ -7,9 +7,9 @@ name: ieee-2030_5-bridge
 
 services:
   bridge:
-    # make docker-up builds the image under its own local tag and passes it in
-    # BRIDGE_IMAGE, so it never pulls. Compose run by hand only pulls the
-    # published image, BRIDGE_IMAGE_TAG picking the version (latest by default),
+    # make docker-up passes the image in BRIDGE_IMAGE: the Hub image it has just
+    # pulled, or the local :dev build when BRIDGE_USE_PUBLISHED=0. Compose run by
+    # hand only pulls the published image, BRIDGE_IMAGE_TAG picking the version (latest by default),
     # and fails if it does not exist. There is no build: here on purpose, so a
     # local build can never be tagged with the published name.
     image: ${BRIDGE_IMAGE:-gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}}

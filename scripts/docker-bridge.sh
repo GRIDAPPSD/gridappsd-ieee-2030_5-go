@@ -15,6 +15,8 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 env_file="${BRIDGE_ENV_FILE:-$repo/.env}"
 compose_file="${BRIDGE_COMPOSE_FILE:-$repo/docker-compose.bridge.yml}"
 platform_network="gridappsd-docker_default"
+# The only tag a local build ever carries, so it can never shadow the Hub name.
+local_image="gridappsd-ieee-2030_5-go:dev"
 
 # setting NAME DEFAULT: shell value, else the last NAME= line of the env file,
 # else DEFAULT. The file is parsed, never sourced, so it cannot run code.
@@ -68,14 +70,15 @@ resolve() {
   BRIDGE_CERT_MODE=$(setting BRIDGE_CERT_MODE rw)
   BRIDGE_ADMIN_IP=$(setting BRIDGE_ADMIN_IP 10.213.168.2)
   BRIDGE_ADMIN_SUBNET=$(setting BRIDGE_ADMIN_SUBNET 10.213.168.0/24)
-  # BRIDGE_USE_PUBLISHED=1 runs the pulled Hub image instead of a local build;
-  # an explicit BRIDGE_IMAGE still wins over both.
-  use_published=$(setting BRIDGE_USE_PUBLISHED 0)
+  # BRIDGE_USE_PUBLISHED=1 (the default) runs the Hub image, pulled at start;
+  # 0 builds the local image instead. An explicit BRIDGE_IMAGE picks the image
+  # pulled and run when the switch is 1; a local build is always $local_image.
+  use_published=$(setting BRIDGE_USE_PUBLISHED 1)
   case "$use_published" in 0 | 1) ;; *) die "BRIDGE_USE_PUBLISHED must be 0 or 1, got: $use_published" ;; esac
   if [ "$use_published" = 1 ]; then
     BRIDGE_IMAGE="${BRIDGE_IMAGE:-$(published_image)}"
   else
-    BRIDGE_IMAGE="${BRIDGE_IMAGE:-gridappsd-ieee-2030_5-go:dev}"
+    BRIDGE_IMAGE="$local_image"
   fi
   check_port BRIDGE_SEP2_PORT "$BRIDGE_SEP2_PORT"
   check_port BRIDGE_ADMIN_PORT "$BRIDGE_ADMIN_PORT"
@@ -119,7 +122,7 @@ preflight() {
 
 build() {
   local version="${VERSION:-dev}"
-  docker build -f "$repo/Dockerfile.bridge" --build-arg "VERSION=$version" -t "$BRIDGE_IMAGE" "$repo"
+  docker build -f "$repo/Dockerfile.bridge" --build-arg "VERSION=$version" -t "$local_image" "$repo"
 }
 
 # pull fetches the published image only; it needs docker but no env file.
@@ -147,8 +150,13 @@ main() {
     build) build ;;
     up)
       preflight
-      # The published image is pulled by docker-pull (or compose, if missing), never built.
-      [ "$use_published" = 1 ] || build
+      if [ "$use_published" = 1 ]; then
+        # Pull first so the run uses the current image, not a stale local copy.
+        docker pull "$BRIDGE_IMAGE" ||
+          die "could not pull $BRIDGE_IMAGE; set BRIDGE_USE_PUBLISHED=0 to build the image locally"
+      else
+        build
+      fi
       compose up -d --no-build
       ;;
     down) compose down ;;

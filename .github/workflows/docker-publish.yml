@@ -32,9 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     # A fork has no access to the organisation's credentials.
     if: github.repository_owner == 'GRIDAPPSD'
-    # Runs for one ref queue rather than overlap, so :main cannot finish out of order.
+    # One group for every publish, so runs queue and two tags cannot race on latest.
     concurrency:
-      group: docker-publish-${{ github.ref }}
+      group: docker-publish
       cancel-in-progress: false
     steps:
       - name: Checkout

@@ -2,8 +2,8 @@
 
 ## The bridge in a container
 
-`make docker-up` builds the image and starts the bridge next to a running
-GridAPPS-D platform; `make docker-down` stops it, `make docker-logs`
+`make docker-up` pulls the published image and starts the bridge next to a
+running GridAPPS-D platform (`BRIDGE_USE_PUBLISHED=0` builds it locally instead); `make docker-down` stops it, `make docker-logs`
 follows its log, and `make docker-build` builds the image alone.
 
 One-time setup:
@@ -98,13 +98,20 @@ and `.source` labels.
 * A push to `main` publishes `:main`. A branch push never moves `latest` or a
   version tag.
 
-`make docker-up` and `make docker-build` never pull: they build locally and tag
-the image `gridappsd-ieee-2030_5-go:dev` (override with `BRIDGE_IMAGE`), and
-`docker-up` runs that build. `make docker-pull` pulls the published image
-(`BRIDGE_IMAGE_TAG` picks the version), and `make docker-up BRIDGE_USE_PUBLISHED=1`
-starts it with every `docker-up` check but no build. The compose file has no `build:`, so compose run by
-hand only pulls the published image and fails if it is missing; it never builds
-one under the published name. To run the published image, call compose directly
+`make docker-up` runs the published image by default: it pulls
+`gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}` first, so the
+run uses the current image, then starts it with no build. If the pull fails it
+stops and says to set `BRIDGE_USE_PUBLISHED=0`. Until the first image is on
+Docker Hub the default path fails, so build locally with
+`make docker-up BRIDGE_USE_PUBLISHED=0`: that builds and tags
+`gridappsd-ieee-2030_5-go:dev` and runs it. A local build is always tagged
+`gridappsd-ieee-2030_5-go:dev`, never the Hub name, whatever `BRIDGE_IMAGE` or
+`BRIDGE_IMAGE_TAG` say, so it cannot shadow the published image. With the
+default switch an explicit `BRIDGE_IMAGE` is the image pulled and run; with
+`BRIDGE_USE_PUBLISHED=0` it is ignored. `make docker-pull` pulls the published
+image alone, and `make docker-build` always builds the local `:dev` image. The compose file has
+no `build:`, so compose run by hand only pulls the published image and fails if
+it is missing; it never builds one under the published name. To run the published image, call compose directly
 with the launcher's exports in place and `BRIDGE_IMAGE` unset: compose then uses
 `gridappsd/gridappsd-ieee-2030_5-go:${BRIDGE_IMAGE_TAG:-latest}`. Pin a version
 with `BRIDGE_IMAGE_TAG=v0.3.0`, in the shell or in `.env`:
