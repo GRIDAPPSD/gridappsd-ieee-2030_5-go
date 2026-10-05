@@ -1540,10 +1540,10 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 //
 // hook, when non-nil, is a read-only observation point: this
 // function is the down path's only writer, so it is the only place that
-// calls hook.Applied / hook.Skipped. A malformed frame that never
-// resolves to a delta is not counted at all (there is no delta to
-// report skipping); only a decoded delta that ApplyControlDelta accepts
-// or rejects is counted.
+// calls hook.Applied / hook.Restated / hook.Skipped. A frame that is not
+// JSON is logged and not counted; a frame that decodes to no forward
+// differences is logged (rate-limited) and counted by hook.EmptyFrame.
+// Every other delta is counted exactly once: issued, restated, or refused.
 func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.Embed, reg *registry.Registry, appID string, hook *controlobs.Hook, history *historySink) error {
 	dest := sim.ApplicationInputTopic(appID, "")
 	if dest == "" {
@@ -1556,26 +1556,50 @@ func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *
 		return fmt.Errorf("control subscriber: subscribe %s: %w", dest, err)
 	}
 
+	logEmptyFrame := newRateLimitedLogf(historyLogInterval, time.Now, log.Printf)
 	for msg := range sub.Messages() {
 		var envelope diff.Message
 		if derr := json.Unmarshal(msg.Body, &envelope); derr != nil {
 			log.Printf("control subscriber: skip malformed frame on %s: %v", dest, derr)
 			continue
 		}
-		for _, delta := range envelope.Input.Message.ForwardDifferences {
-			aerr := embed.ApplyControlDelta(ctx, reg, delta)
-			history.recordApplied(reg, envelope, delta, aerr == nil)
-			if aerr != nil {
+		payload := envelope.Input.Message
+		if len(payload.ForwardDifferences) == 0 {
+			logEmptyFrame("control subscriber: frame on %s carries no forward_differences, nothing to apply", dest)
+			if hook != nil {
+				hook.EmptyFrame()
+				hook.RecordMessage(payload.DifferenceMRID, nil)
+			}
+			continue
+		}
+		outcomes := make([]controlobs.DeltaOutcome, 0, len(payload.ForwardDifferences))
+		for _, delta := range payload.ForwardDifferences {
+			outcome, aerr := applyControlDelta(ctx, embed, reg, delta)
+			history.recordApplied(reg, envelope, delta, aerr == nil && outcome == sep2embed.ControlIssued)
+			rec := controlobs.DeltaOutcome{Object: delta.Object, Attribute: delta.Attribute}
+			switch {
+			case aerr != nil:
 				log.Printf("control subscriber: skip delta object=%q attribute=%q: %v",
 					delta.Object, delta.Attribute, aerr)
+				rec.Result, rec.Reason = controlobs.ResultRefused, aerr.Error()
 				if hook != nil {
 					hook.Skipped()
 				}
-				continue
+			case outcome == sep2embed.ControlRestated:
+				rec.Result = controlobs.ResultRestated
+				if hook != nil {
+					hook.Restated()
+				}
+			default:
+				rec.Result = controlobs.ResultIssued
+				if hook != nil {
+					hook.Applied(delta)
+				}
 			}
-			if hook != nil {
-				hook.Applied(delta)
-			}
+			outcomes = append(outcomes, rec)
+		}
+		if hook != nil {
+			hook.RecordMessage(payload.DifferenceMRID, outcomes)
 		}
 	}
 
@@ -1587,4 +1611,14 @@ func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *
 		return endErr
 	}
 	return fmt.Errorf("control subscriber: subscription ended: %w", endErr)
+}
+
+// applyControlDelta runs the shared validator, then applies the delta, so
+// the subscriber and any sender that pre-checks a message agree on what a
+// valid delta is.
+func applyControlDelta(ctx context.Context, embed *sep2embed.Embed, reg *registry.Registry, delta diff.Difference) (sep2embed.ControlOutcome, error) {
+	if err := sep2embed.ValidateControlDelta(reg, delta); err != nil {
+		return 0, err
+	}
+	return embed.ApplyControlDeltaOutcome(ctx, reg, delta)
 }

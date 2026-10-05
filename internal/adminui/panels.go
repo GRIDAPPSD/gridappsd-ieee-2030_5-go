@@ -232,7 +232,9 @@ func (s *Server) controlFlowView(context.Context) (sep2admin.Descriptor, error) 
 		Heading: "Counters",
 		Entries: []sep2admin.DefinitionEntry{
 			{Key: "Applied", Value: number(snap.Applied)},
+			{Key: "Restated", Value: number(snap.Restated)},
 			{Key: "Skipped", Value: number(snap.Skipped)},
+			{Key: "Empty frames", Value: number(snap.EmptyFrames)},
 		},
 	})
 

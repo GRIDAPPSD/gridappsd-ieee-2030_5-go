@@ -356,8 +356,10 @@ func TestControlFlowPanelCarriesEverySnapshotField(t *testing.T) {
 	appliedAt := time.Date(2026, 7, 18, 12, 30, 0, 0, time.UTC)
 	src := testSources()
 	src.Flow = &fakeFlow{snap: controlobs.Snapshot{
-		Applied: 4,
-		Skipped: 1,
+		Applied:     4,
+		Restated:    3,
+		Skipped:     1,
+		EmptyFrames: 2,
 		Last: &controlobs.LastDelta{
 			Object:    "mrid-inv-1",
 			Attribute: "DERControl.DERControlBase.opModTargetW",
@@ -375,7 +377,9 @@ func TestControlFlowPanelCarriesEverySnapshotField(t *testing.T) {
 		"Simulation output topic":   "/topic/goss.gridappsd.simulation.output.12345",
 		"Control delta input topic": "/topic/goss.gridappsd.simulation.input.12345",
 		"Applied":                   "4",
+		"Restated":                  "3",
 		"Skipped":                   "1",
+		"Empty frames":              "2",
 	} {
 		if state[k].Text != v {
 			t.Errorf("%s = %+v, want %q", k, state[k], v)
