@@ -4,7 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 )
+
+// maxErrorText bounds the platform error text carried into an error, so
+// a hostile or runaway response cannot flood logs.
+const maxErrorText = 512
 
 // Requester is the minimal STOMP request/reply primitive this package
 // needs. *cimstomp.Client satisfies it. The interface is declared on
@@ -36,9 +42,93 @@ func NewClient(r Requester) *Client {
 // "error" field. Only error and responseComplete are decoded eagerly;
 // data is left as RawMessage for the per-call typed decode step.
 type envelopeMeta struct {
-	Error            string          `json:"error,omitempty"`
+	Error            envelopeError   `json:"error,omitempty"`
 	ResponseComplete *bool           `json:"responseComplete,omitempty"`
 	Data             json.RawMessage `json:"data,omitempty"`
+}
+
+// envelopeError is the "error" member of a response envelope. The
+// platform sends either a string or an object; null and absent both mean
+// no error, and so does an empty string. An object or any other
+// non-string value always counts as an error, even when it carries no
+// message.
+type envelopeError struct {
+	set  bool
+	text string
+}
+
+// UnmarshalJSON accepts any JSON value; it never fails, so a new error
+// shape surfaces as a server error rather than a decode failure.
+func (e *envelopeError) UnmarshalJSON(b []byte) error {
+	*e = envelopeError{}
+	trimmed := strings.TrimSpace(string(b))
+	if trimmed == "null" {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		if s != "" {
+			*e = envelopeError{set: true, text: boundText(s)}
+		}
+		return nil
+	}
+	*e = envelopeError{set: true, text: describeErrorValue(b)}
+	return nil
+}
+
+// describeErrorValue renders a non-string error value: the message of an
+// object when it has one, else the object as JSON with credential-like
+// keys redacted.
+func describeErrorValue(b []byte) string {
+	var obj map[string]any
+	if json.Unmarshal(b, &obj) != nil {
+		return boundText(strings.TrimSpace(string(b)))
+	}
+	for _, k := range []string{"message", "msg", "detail", "reason", "description", "error"} {
+		if m, ok := obj[k].(string); ok && m != "" {
+			return boundText(m)
+		}
+	}
+	redactCredentials(obj)
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return "unrepresentable error object"
+	}
+	return boundText(string(out))
+}
+
+// redactCredentials blanks values whose key looks like a credential, at
+// any depth.
+func redactCredentials(v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			lk := strings.ToLower(k)
+			if strings.Contains(lk, "pass") || strings.Contains(lk, "secret") ||
+				strings.Contains(lk, "token") || strings.Contains(lk, "credential") ||
+				strings.Contains(lk, "authorization") || strings.Contains(lk, "key") {
+				t[k] = "[redacted]"
+				continue
+			}
+			redactCredentials(val)
+		}
+	case []any:
+		for _, val := range t {
+			redactCredentials(val)
+		}
+	}
+}
+
+// boundText truncates s to maxErrorText bytes on a rune boundary.
+func boundText(s string) string {
+	if len(s) <= maxErrorText {
+		return s
+	}
+	cut := maxErrorText
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // decodeEnvelope inspects the standard CIM response envelope. It
@@ -51,8 +141,8 @@ func decodeEnvelope(raw []byte, checkComplete bool) (json.RawMessage, error) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, fmt.Errorf("cim: decode envelope: %w", err)
 	}
-	if env.Error != "" {
-		return nil, fmt.Errorf("%w: %s", ErrServerError, env.Error)
+	if env.Error.set {
+		return nil, fmt.Errorf("%w: %s", ErrServerError, env.Error.text)
 	}
 	if checkComplete && env.ResponseComplete != nil && !*env.ResponseComplete {
 		return nil, fmt.Errorf("%w", ErrIncompleteResponse)
@@ -156,8 +246,8 @@ func (c *Client) GetPlatformStatus(ctx context.Context) (*PlatformStatus, error)
 	// Platform status responses do not wrap in a "data" envelope per the
 	// catalog; check for an error key, then decode the body directly.
 	var probe envelopeMeta
-	if err := json.Unmarshal(raw, &probe); err == nil && probe.Error != "" {
-		return nil, fmt.Errorf("cim.GetPlatformStatus: %w: %s", ErrServerError, probe.Error)
+	if err := json.Unmarshal(raw, &probe); err == nil && probe.Error.set {
+		return nil, fmt.Errorf("cim.GetPlatformStatus: %w: %s", ErrServerError, probe.Error.text)
 	}
 
 	var res PlatformStatus

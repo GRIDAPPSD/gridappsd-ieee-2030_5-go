@@ -497,3 +497,77 @@ func TestQueryModelInfoRequesterError(t *testing.T) {
 		t.Errorf("err = %v, want wrapping %v", err, want)
 	}
 }
+
+func TestDecodeEnvelopeErrorShapes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		body      string
+		wantErr   bool
+		wantInErr []string
+		notInErr  []string
+	}{
+		{name: "string", body: `{"error":"boom"}`, wantErr: true, wantInErr: []string{"boom"}},
+		{name: "empty string is no error", body: `{"error":"","data":{}}`},
+		{name: "null is no error", body: `{"error":null,"data":{}}`},
+		{name: "absent is no error", body: `{"data":{}}`},
+		{
+			name: "object with message", wantErr: true,
+			body:      `{"error":{"code":500,"message":"model not found"},"data":{}}`,
+			wantInErr: []string{"model not found"},
+		},
+		{
+			name: "object without message", wantErr: true,
+			body:      `{"error":{"code":500,"status":"x"}}`,
+			wantInErr: []string{`"code":500`},
+		},
+		{name: "empty object still fails", body: `{"error":{}}`, wantErr: true, wantInErr: []string{"{}"}},
+		{
+			name: "credential keys redacted", wantErr: true,
+			body:      `{"error":{"password":"hunter2","token":"abc123","code":1}}`,
+			wantInErr: []string{`"code":1`},
+			notInErr:  []string{"hunter2", "abc123"},
+		},
+		{
+			name: "message is bounded", wantErr: true,
+			body:     `{"error":{"message":"` + strings.Repeat("a", 5000) + `"}}`,
+			notInErr: []string{strings.Repeat("a", 1000)},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := decodeEnvelope([]byte(tc.body), true)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err == nil {
+				return
+			}
+			if !errors.Is(err, ErrServerError) {
+				t.Errorf("err = %v, want errors.Is ErrServerError", err)
+			}
+			for _, s := range tc.wantInErr {
+				if !strings.Contains(err.Error(), s) {
+					t.Errorf("err = %q, want containing %q", err, s)
+				}
+			}
+			for _, s := range tc.notInErr {
+				if strings.Contains(err.Error(), s) {
+					t.Errorf("err contains %q", s)
+				}
+			}
+		})
+	}
+}
+
+func TestGetPlatformStatusObjectError(t *testing.T) {
+	t.Parallel()
+
+	c := NewClient(&mockRequester{resp: []byte(`{"error":{"message":"not ready"}}`)})
+	_, err := c.GetPlatformStatus(context.Background())
+	if !errors.Is(err, ErrServerError) || !strings.Contains(err.Error(), "not ready") {
+		t.Errorf("err = %v, want ErrServerError containing 'not ready'", err)
+	}
+}

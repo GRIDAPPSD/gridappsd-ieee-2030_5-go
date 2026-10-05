@@ -1242,7 +1242,7 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 	// PEC-sourced only, per issue #115's done-when.
 	ecRes, err := c.QueryEnergyConsumers(ctx, feederMRID)
 	if err != nil {
-		return nil, fmt.Errorf("query energy consumers: %w", err)
+		return nil, fmt.Errorf("query energy consumers (feeder %q): %w", feederMRID, err)
 	}
 	houseDevices, feederECs, err := projectEnergyConsumers(ecRes)
 	if err != nil {
@@ -1426,7 +1426,7 @@ func queryDevices(
 ) ([]cimDevice, error) {
 	res, err := query(ctx, feederMRID)
 	if err != nil {
-		return nil, fmt.Errorf("query %s: %w", kind, err)
+		return nil, fmt.Errorf("query %s (feeder %q): %w", kind, feederMRID, err)
 	}
 	if res == nil {
 		return nil, nil
