@@ -27,11 +27,12 @@ const (
 )
 
 var (
-	ErrInvalidTopic  = errors.New("busmonitor: topic must be /topic/ plus 1 to 200 characters of dot-separated segments; a segment is A-Z a-z 0-9 _ - or *, and > may only end the name")
-	ErrProbeTopic    = errors.New("busmonitor: topic is the bus health probe and cannot be watched")
-	ErrTooManyTopics = fmt.Errorf("busmonitor: at most %d topics can be watched at once", MaxTopics)
-	ErrClosed        = errors.New("busmonitor: monitor closed")
-	ErrSlowViewer    = errors.New("busmonitor: viewer closed because it did not keep up")
+	ErrInvalidTopic   = errors.New("busmonitor: topic must be /topic/ plus 1 to 200 characters of dot-separated segments; a segment is A-Z a-z 0-9 _ - or *, and > may only end the name")
+	ErrProbeTopic     = errors.New("busmonitor: topic is the bus health probe and cannot be watched")
+	ErrTooManyTopics  = fmt.Errorf("busmonitor: at most %d topics can be watched at once", MaxTopics)
+	ErrSensitiveTopic = errors.New("busmonitor: topic can carry credentials or connection details and cannot be watched")
+	ErrClosed         = errors.New("busmonitor: monitor closed")
+	ErrSlowViewer     = errors.New("busmonitor: viewer closed because it did not keep up")
 )
 
 const (
@@ -90,14 +91,48 @@ func ValidateTopic(name, probe string) error {
 	if !ok {
 		return ErrInvalidTopic
 	}
-	if probe == "" {
-		return nil
+	if probe != "" {
+		if psegs, ok := parseTopic(probe); ok && matches(segs, psegs) {
+			return ErrProbeTopic
+		}
+		if name == probe {
+			return ErrProbeTopic
+		}
 	}
-	if psegs, ok := parseTopic(probe); ok && matches(segs, psegs) {
-		return ErrProbeTopic
-	}
-	if name == probe {
-		return ErrProbeTopic
+	for _, sp := range sensitivePatterns {
+		if overlaps(segs, sp) {
+			return ErrSensitiveTopic
+		}
 	}
 	return nil
+}
+
+// sensitivePatterns are the topics a viewer must never see, written without
+// the /topic/ prefix. A requested name is refused when any message could match
+// both it and one of these, so wildcards that cover them are refused too.
+var sensitivePatterns = [][]string{
+	// Every cimstomp Connect publishes base64(user:password) to
+	// pnnl.goss.token.topic; the ring would keep the credential of each
+	// client that connects, and viewers would read it. The whole token
+	// namespace goes with it.
+	{"pnnl", "goss", "token", ">"},
+	// ActiveMQ advisory topics announce every connection, consumer and
+	// destination, including client ids and remote addresses.
+	{"ActiveMQ", "Advisory", ">"},
+}
+
+// overlaps reports whether some literal topic matches both patterns a and b.
+func overlaps(a, b []string) bool {
+	for i := 0; ; i++ {
+		switch {
+		case i < len(a) && a[i] == ">":
+			return len(b) > i
+		case i < len(b) && b[i] == ">":
+			return len(a) > i
+		case i >= len(a) || i >= len(b):
+			return i >= len(a) && i >= len(b)
+		case a[i] != "*" && b[i] != "*" && a[i] != b[i]:
+			return false
+		}
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -156,6 +157,12 @@ type TopicInfo struct {
 
 const viewerBuffer = 256
 
+// MaxViewersPerTopic bounds the memory a topic can pin: each viewer holds a
+// 256-event buffer.
+const MaxViewersPerTopic = 16
+
+var ErrTooManyViewers = fmt.Errorf("busmonitor: at most %d viewers per topic", MaxViewersPerTopic)
+
 // Monitor owns the watched topics. All state sits under one mutex; viewer
 // sends never block under it.
 type Monitor struct {
@@ -260,6 +267,9 @@ func (m *Monitor) attach(name string) (*Viewer, error) {
 		t = &topic{name: name, viewers: make(map[*Viewer]struct{}), status: Status{State: StateConnecting}}
 		m.topics[name] = t
 	}
+	if len(t.viewers) >= MaxViewersPerTopic {
+		return nil, ErrTooManyViewers
+	}
 	if t.idle != nil {
 		t.idle.Stop()
 		t.idle = nil
@@ -280,7 +290,7 @@ func (m *Monitor) attach(name string) (*Viewer, error) {
 	return v, nil
 }
 
-// Topics lists the watched topics, sorted by nothing in particular.
+// Topics lists the watched topics sorted by name.
 func (m *Monitor) Topics() []TopicInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -288,6 +298,7 @@ func (m *Monitor) Topics() []TopicInfo {
 	for _, t := range m.topics {
 		out = append(out, TopicInfo{Name: t.name, State: t.status.State, Viewers: len(t.viewers), Buffered: len(t.ring)})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
@@ -404,6 +415,7 @@ func (m *Monitor) broadcastLocked(t *topic, ev Event) {
 			v.err = ErrSlowViewer
 			close(v.events)
 			delete(t.viewers, v)
+			m.armIdleLocked(t)
 		}
 	}
 }

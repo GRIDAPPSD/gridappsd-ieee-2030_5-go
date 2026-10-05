@@ -68,14 +68,14 @@ func TestValidateTopic(t *testing.T) {
 		})
 	}
 	for _, c := range cases {
-		if c.want == ErrInvalidTopic {
+		if c.want == ErrInvalidTopic || c.in == "/topic/>" {
 			continue
 		}
 		if err := ValidateTopic(c.in, ""); err != nil {
 			t.Fatalf("with no probe set %q is valid, got %v", c.in, err)
 		}
 	}
-	if err := ValidateTopic("/topic/>", ""); err != nil {
+	if err := ValidateTopic("/topic/test.>", ""); err != nil {
 		t.Fatalf("with no probe set a wildcard is valid, got %v", err)
 	}
 }
@@ -458,5 +458,102 @@ func TestCleanReason(t *testing.T) {
 	}
 	if got := cleanReason(strings.Repeat("z", 2000)); len(got) != maxReasonBytes {
 		t.Fatalf("len = %d, want %d", len(got), maxReasonBytes)
+	}
+}
+
+func TestSensitiveTopicsAreRefused(t *testing.T) {
+	cases := []struct {
+		in   string
+		want error
+	}{
+		{"/topic/pnnl.goss.token.topic", ErrSensitiveTopic},
+		{"/topic/pnnl.goss.token.>", ErrSensitiveTopic},
+		{"/topic/pnnl.goss.token.*", ErrSensitiveTopic},
+		{"/topic/pnnl.goss.*.topic", ErrSensitiveTopic},
+		{"/topic/pnnl.goss.>", ErrSensitiveTopic},
+		{"/topic/pnnl.>", ErrSensitiveTopic},
+		{"/topic/*.goss.token.topic", ErrSensitiveTopic},
+		{"/topic/>", ErrSensitiveTopic},
+		{"/topic/ActiveMQ.Advisory.Connection", ErrSensitiveTopic},
+		{"/topic/ActiveMQ.Advisory.>", ErrSensitiveTopic},
+		{"/topic/ActiveMQ.>", ErrSensitiveTopic},
+		{"/topic/ActiveMQ.*.Connection", ErrSensitiveTopic},
+		// Siblings that cannot match a sensitive name stay watchable.
+		{"/topic/pnnl.goss.other", nil},
+		{"/topic/pnnl.goss.token", nil},
+		{"/topic/pnnl.goss.tokens.topic", nil},
+		{"/topic/ActiveMQ.Admin", nil},
+		{"/topic/ActiveMQ", nil},
+		{"/topic/goss.gridappsd.simulation.>", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := ValidateTopic(c.in, ""); !errors.Is(got, c.want) {
+				t.Fatalf("ValidateTopic(%q) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSlowViewerDropFreesTheTopicSlot(t *testing.T) {
+	b := newBroker()
+	m := newTestMonitor(t, b, func(c *Config) { c.IdleClose = 60 * time.Millisecond })
+	if _, err := m.Watch("/topic/slow"); err != nil {
+		t.Fatal(err)
+	}
+	r := b.next(t, "/topic/slow")
+	for i := 0; i < viewerBuffer+20; i++ {
+		r.send([]byte("x"))
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !r.sess.closed.Load() || len(m.Topics()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("topic held after its only viewer was dropped: closed=%v topics=%v", r.sess.closed.Load(), m.Topics())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for i := 0; i < MaxTopics+1; i++ {
+		if _, err := m.Watch(fmt.Sprintf("/topic/n%d", i)); err != nil {
+			if i < MaxTopics {
+				t.Fatalf("topic %d: %v", i, err)
+			}
+			return
+		}
+		if i == MaxTopics {
+			t.Fatal("ninth topic accepted")
+		}
+	}
+}
+
+func TestViewersPerTopicAreCapped(t *testing.T) {
+	b := newBroker()
+	m := newTestMonitor(t, b, nil)
+	for i := 0; i < MaxViewersPerTopic; i++ {
+		if _, err := m.Watch("/topic/v"); err != nil {
+			t.Fatalf("viewer %d: %v", i, err)
+		}
+	}
+	if _, err := m.Watch("/topic/v"); !errors.Is(err, ErrTooManyViewers) {
+		t.Fatalf("viewer %d: %v, want ErrTooManyViewers", MaxViewersPerTopic+1, err)
+	}
+	if n := b.dials.Load(); n != 1 {
+		t.Fatalf("dials = %d, want 1", n)
+	}
+}
+
+func TestTopicsSortedByName(t *testing.T) {
+	b := newBroker()
+	m := newTestMonitor(t, b, nil)
+	for _, n := range []string{"/topic/c", "/topic/a", "/topic/d", "/topic/b"} {
+		if _, err := m.Watch(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	for _, ti := range m.Topics() {
+		got = append(got, ti.Name)
+	}
+	if fmt.Sprint(got) != "[/topic/a /topic/b /topic/c /topic/d]" {
+		t.Fatalf("Topics order = %v", got)
 	}
 }
