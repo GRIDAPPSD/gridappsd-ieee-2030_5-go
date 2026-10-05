@@ -196,6 +196,13 @@ type config struct {
 	// change.
 	SEP2AdminUISORLink string
 
+	// SEP2AdminUIBusPublishAtStart sets the admin UI sender's publish
+	// switch on at start-up, from -admin-ui-bus-publish-at-start (env
+	// SEP2_ADMIN_UI_BUS_PUBLISH_AT_START). Default false: a restart must
+	// not silently re-arm writes to the simulation, so an operator turns
+	// publishing on again from the UI unless this opts in.
+	SEP2AdminUIBusPublishAtStart bool
+
 	// AdminPlane holds the server's SEP2_EDITION, SEP2_PEN,
 	// SEP2_FLOW_RESERVATION_DEADLINE_SECONDS and
 	// SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS, parsed at startup
@@ -458,6 +465,12 @@ func loadConfig(args []string) (config, error) {
 	// SEP2AdminUIAllowNonLoopback mirrors AllowPlaintext's explicit
 	// opt-in shape: defaults false, and only an explicit env or flag
 	// override flips it on.
+	busPublishAtStartFromEnv, err := getenvBool("SEP2_ADMIN_UI_BUS_PUBLISH_AT_START", false)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.SEP2AdminUIBusPublishAtStart = busPublishAtStartFromEnv
+
 	adminUINonLoopbackFromEnv, err := getenvBool("SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK", false)
 	if err != nil {
 		return config{}, err
@@ -530,6 +543,7 @@ func loadConfig(args []string) (config, error) {
 	var adminUIKeyFlag string
 	fs.StringVar(&adminUIKeyFlag, "admin-ui-key", "", "admin UI key, the Bearer token and login password, at least 16 characters; unset disables the admin UI (env: SEP2_ADMIN_UI_KEY)")
 	fs.StringVar(&cfg.SEP2AdminUISORLink, "admin-ui-sor-link", cfg.SEP2AdminUISORLink, "optional server of record dashboard URL exposed via the admin UI (env: SEP2_ADMIN_UI_SOR_LINK)")
+	fs.BoolVar(&cfg.SEP2AdminUIBusPublishAtStart, "admin-ui-bus-publish-at-start", cfg.SEP2AdminUIBusPublishAtStart, "turn the admin UI sender's publish switch on at start-up (default false: off after every start; env: SEP2_ADMIN_UI_BUS_PUBLISH_AT_START)")
 	fs.BoolVar(&cfg.SEP2NotificationAllowLoopback, "sep2-notification-allow-loopback", cfg.SEP2NotificationAllowLoopback,
 		"allow subscription notificationURIs to target any loopback destination on the host (dev/test-only; default false)")
 
