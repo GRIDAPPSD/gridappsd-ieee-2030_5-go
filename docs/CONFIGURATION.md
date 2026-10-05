@@ -97,7 +97,16 @@ it entirely (logged at start-up) rather than serving anything
 unauthenticated. A key that is set but shorter than 16 characters stops the
 bridge at start-up with an error naming the rule.
 
-Every route needs the key, from loopback too, except the login page and
+`SEP2_ADMIN_UI_INSECURE_NO_KEY=true` is the explicit opt-in to run the UI
+with no key for the operator: leave `SEP2_ADMIN_UI_KEY` blank, and the bridge
+holds a random key of its own and authenticates every request with it, so the
+UI opens with no login. With it on, anyone who can reach the admin address can read every panel and, when publishing is switched on, send control messages; the publishing switch is reachable too, so the switch protects against accident, not against a person. The Host allowlist and the
+cross-origin refusal stay on, so a web page the operator visits cannot drive
+it. Setting this together with a key stops the bridge at start-up. The bridge
+logs a warning when the listener binds, before it serves, and drops the per-request
+`admin_auth_success` log line.
+
+Every route needs the key (unless no-key mode is on), from loopback too, except the login page and
 form. The plane is read-only: no admin write route is mounted (the bridge
 seeds and writes the stores itself), so a write button in the server's UI
 gets 404 or 405. `/api/health` and `/api/clients` stay as Bearer-only JSON
@@ -107,6 +116,7 @@ routes for scripts.
 |---|---|---|---|
 | `SEP2_ADMIN_UI_ADDR` | `-admin-ui-addr` | `127.0.0.1:8444` | Admin UI listener bind address. Loopback only unless `SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK` is also set. |
 | `SEP2_ADMIN_UI_KEY` | `-admin-ui-key` | (empty, disabled) | Admin credential: the Bearer token and the login password, at least 16 characters. Credential; see the note above. |
+| `SEP2_ADMIN_UI_INSECURE_NO_KEY` | `-admin-ui-insecure-no-key` | `false` | INSECURE: run the admin UI with no key. A boolean. A blank `SEP2_ADMIN_UI_KEY` still disables the UI when this is false; both set stops the start. See above. |
 | `SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK` | `-admin-ui-allow-non-loopback` | `false` | Explicit opt-in to bind the admin UI to a non-loopback host. |
 | `SEP2_ADMIN_UI_ALLOWED_HOSTS` | (none) | (empty) | Comma-separated extra accepted `Host` header values, in addition to the built-in `localhost`, `127.0.0.1`, and `::1`. |
 | `SEP2_ADMIN_UI_SOR_LINK` | `-admin-ui-sor-link` | (empty) | Optional server-of-record dashboard URL, returned read-only from `/api/health`. Not a credential. |

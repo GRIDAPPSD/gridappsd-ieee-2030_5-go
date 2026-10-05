@@ -104,14 +104,24 @@ example_names() {
   done
 }
 
-@test "secrets: the admin key has no default and is required" {
+@test "secrets: the admin key has no default; blank is allowed in compose and the bridge disables the UI" {
   n=SEP2_ADMIN_UI_KEY
   # shellcheck disable=SC2016 # literal compose syntax
-  /usr/bin/grep -qE "^      $n: \\\$\\{$n:\\?" "$compose"
-  [ "$(/usr/bin/grep -cE "$n:-" "$compose")" -eq 0 ]
+  /usr/bin/grep -qxF "      $n: \${$n:-}" "$compose"
+  # The exact line above is the only place the name takes a default form, and
+  # the required form is gone.
+  [ "$(/usr/bin/grep -cF "{$n:-" "$compose")" -eq 1 ]
+  [ "$(/usr/bin/grep -cF "{$n:?" "$compose")" -eq 0 ]
   # The example carries the name with an empty value: a placeholder that
-  # fails the 16 character check and the required check.
+  # fails the 16 character check in the launcher.
   /usr/bin/grep -qx "$n=" "$example"
+}
+
+@test "no-key mode: off by default in compose and the example" {
+  n=SEP2_ADMIN_UI_INSECURE_NO_KEY
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qxF "      $n: \${$n:-false}" "$compose"
+  /usr/bin/grep -qx "$n=false" "$example"
 }
 
 @test "secrets: the registration PIN and its file are optional, empty by default, and set no value in the example" {

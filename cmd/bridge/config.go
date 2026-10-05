@@ -186,6 +186,12 @@ type config struct {
 	// and adminui.New refuses a short one at start-up.
 	SEP2AdminUIKey string
 
+	// SEP2AdminUIInsecureNoKey runs the admin UI with no key for the
+	// operator (SEP2_ADMIN_UI_INSECURE_NO_KEY). Default false: a blank
+	// SEP2AdminUIKey still disables the UI. Setting it together with a key
+	// is refused by validate.
+	SEP2AdminUIInsecureNoKey bool
+
 	// SEP2AdminUIAllowedHosts is an additional, comma separated set of
 	// Host header values the admin UI's host allowlist middleware
 	// accepts, beyond its own built in defaults (localhost, 127.0.0.1,
@@ -483,6 +489,12 @@ func loadConfig(args []string) (config, error) {
 	}
 	cfg.SEP2AdminUIAllowNonLoopback = adminUINonLoopbackFromEnv
 
+	insecureNoKeyFromEnv, err := getenvBool("SEP2_ADMIN_UI_INSECURE_NO_KEY", false)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.SEP2AdminUIInsecureNoKey = insecureNoKeyFromEnv
+
 	// SEP2EnableCCM mirrors AllowPlaintext's explicit opt-in shape:
 	// defaults false, and only an explicit env or flag override flips it
 	// on. See the field's doc comment for the observer trade-off this
@@ -545,6 +557,7 @@ func loadConfig(args []string) (config, error) {
 		"accept running -sep2-enable-ccm with the connection observer disabled, losing the rejected-device record (kept pending issue 127; default false)")
 	fs.StringVar(&cfg.SEP2AdminUIAddr, "admin-ui-addr", cfg.SEP2AdminUIAddr, "admin UI HTTP listener host:port (defaults to loopback only)")
 	fs.BoolVar(&cfg.SEP2AdminUIAllowNonLoopback, "admin-ui-allow-non-loopback", cfg.SEP2AdminUIAllowNonLoopback, "bind the admin UI listener to a non-loopback host (dev-only; default false)")
+	fs.BoolVar(&cfg.SEP2AdminUIInsecureNoKey, "admin-ui-insecure-no-key", cfg.SEP2AdminUIInsecureNoKey, "INSECURE: run the admin UI with no key for the operator; anyone who can reach the address gets full access (default false; env: SEP2_ADMIN_UI_INSECURE_NO_KEY)")
 	// admin-ui-key registers with an empty default so flag.PrintDefaults
 	// never echoes a real token, matching -stomp-user / -stomp-password
 	// above. The precedence merge happens below after Parse.
@@ -1319,6 +1332,9 @@ func resolveBrokerAddr() (string, error) {
 // "admin UI disabled" state (adminui.New's fail closed contract), not a
 // missing-required-field error.
 func (c config) validate() error {
+	if c.SEP2AdminUIInsecureNoKey && strings.TrimSpace(c.SEP2AdminUIKey) != "" {
+		return errors.New("config: SEP2_ADMIN_UI_INSECURE_NO_KEY and SEP2_ADMIN_UI_KEY are both set; unset one")
+	}
 	if c.STOMPAddr == "" {
 		return errors.New("config: SEP2_STOMP_ADDR / -stomp-addr is required")
 	}

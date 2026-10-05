@@ -19,7 +19,13 @@ if [ -z "$key" ] && [ -n "${ADMIN_UI_KEY_FILE:-}" ]; then
   # Command substitution drops the trailing newline an editor leaves behind.
   key=$(cat -- "$ADMIN_UI_KEY_FILE")
 fi
-[ -n "$key" ] || die "no admin key: set SEP2_ADMIN_UI_KEY or ADMIN_UI_KEY_FILE (at least 16 characters)"
+if [ -z "$key" ]; then
+  case "${SEP2_ADMIN_UI_INSECURE_NO_KEY:-}" in
+    "" | 0 | f | F | FALSE | false | False) ;;
+    *) die "no admin key: SEP2_ADMIN_UI_INSECURE_NO_KEY is set, but no-key mode is supported only through make docker-up; set SEP2_ADMIN_UI_KEY or ADMIN_UI_KEY_FILE (at least 16 characters)" ;;
+  esac
+  die "no admin key: set SEP2_ADMIN_UI_KEY or ADMIN_UI_KEY_FILE (at least 16 characters)"
+fi
 [ "${#key}" -ge 16 ] || die "admin key is shorter than 16 characters"
 
 args=(

@@ -145,3 +145,10 @@ mk() {
   done
   [ "$n" -ge 11 ]
 }
+
+@test "no-key flag set: still refuses, and says no-key mode is only through make docker-up" {
+  SEP2_ADMIN_UI_INSECURE_NO_KEY=true run mk
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no-key mode is supported only through make docker-up"* ]]
+  [ ! -e "$STUB_OUT" ]
+}

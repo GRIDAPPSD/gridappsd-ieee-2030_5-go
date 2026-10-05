@@ -12,11 +12,14 @@
 // The listener is off by default: New returns ErrDisabled when Config.Key
 // is unset or blank, so cmd/bridge opens no listener rather than serving
 // an unauthenticated admin plane. A key that is set but too short fails
-// start instead.
+// start instead. Config.InsecureNoKey is the explicit opt-out: the server
+// holds a generated key and authenticates every request with it.
 package adminui
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -81,6 +84,12 @@ type Config struct {
 	// password. Unset or blank disables the admin UI (ErrDisabled); set, it
 	// must be at least sep2adminplane.MinAdminKeyLength characters.
 	Key string
+
+	// InsecureNoKey runs the UI with no credential for the operator
+	// (SEP2_ADMIN_UI_INSECURE_NO_KEY). The server generates a random key,
+	// never shown, and sets it as the Bearer on every request. Setting Key
+	// as well is a start failure.
+	InsecureNoKey bool
 
 	// AllowedHosts are Host header values accepted beyond the loopback
 	// names (localhost, 127.0.0.1, ::1), by the plane and by the bridge
@@ -263,7 +272,16 @@ type Server struct {
 // A non-loopback Addr without AllowNonLoopback is refused before any
 // socket opens.
 func New(cfg Config, src Sources) (*Server, error) {
-	if cfg.Key == "" {
+	if cfg.InsecureNoKey {
+		if strings.TrimSpace(cfg.Key) != "" {
+			return nil, errors.New("adminui: SEP2_ADMIN_UI_INSECURE_NO_KEY and SEP2_ADMIN_UI_KEY are both set; unset one")
+		}
+		generated, err := generateKey()
+		if err != nil {
+			return nil, fmt.Errorf("adminui: generate session key: %w", err)
+		}
+		cfg.Key = generated
+	} else if cfg.Key == "" {
 		return nil, ErrDisabled
 	}
 	if cfg.Addr == "" {
@@ -349,7 +367,32 @@ func New(cfg Config, src Sources) (*Server, error) {
 	s.plane = plane
 	s.planePatterns = plane.Patterns()
 	s.handler = s.buildHandler(plane.Handler())
+	if cfg.InsecureNoKey {
+		log.Print(s.noKeyWarning())
+	}
 	return s, nil
+}
+
+// generateKey returns 32 random bytes as hex, the key the server holds
+// for itself in no-key mode.
+func generateKey() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// noKeyWarning is the line logged from New in no-key mode, after the listener binds and before Run serves.
+func (s *Server) noKeyWarning() string {
+	addr := s.Addr()
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+			addr = "all interfaces (" + addr + ")"
+		}
+	}
+	return fmt.Sprintf("adminui: WARNING admin UI running WITHOUT A KEY (SEP2_ADMIN_UI_INSECURE_NO_KEY=true) on %s; accepted Host values: %s; anyone who can reach this address can read every panel and, when publishing is switched on, send control messages",
+		addr, strings.Join(s.allowedHosts(), ", "))
 }
 
 // allowedHosts is the loopback names plus Config.AllowedHosts, blanks

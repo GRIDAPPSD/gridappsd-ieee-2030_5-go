@@ -98,7 +98,10 @@ services:
       # to them. Non-loopback is allowed because that address is not loopback.
       SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444
       SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: "true"
-      SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:?set it in .env}
+      # A blank key disables the UI in the bridge; make docker-up refuses a blank
+      # key unless SEP2_ADMIN_UI_INSECURE_NO_KEY is true.
+      SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:-}
+      SEP2_ADMIN_UI_INSECURE_NO_KEY: ${SEP2_ADMIN_UI_INSECURE_NO_KEY:-false}
       SEP2_ADMIN_UI_ALLOWED_HOSTS: ${SEP2_ADMIN_UI_ALLOWED_HOSTS:-}
       SEP2_ADMIN_UI_SOR_LINK: ${SEP2_ADMIN_UI_SOR_LINK:-}
       SEP2_ADMIN_UI_BUS_PUBLISH_AT_START: ${SEP2_ADMIN_UI_BUS_PUBLISH_AT_START:-false}
