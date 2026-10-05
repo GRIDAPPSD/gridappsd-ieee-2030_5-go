@@ -4,7 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
+	"unicode/utf8"
 )
+
+// maxErrorText bounds the platform error text carried into an error, so
+// a hostile or runaway response cannot flood logs.
+const maxErrorText = 512
 
 // Requester is the minimal STOMP request/reply primitive this package
 // needs. *cimstomp.Client satisfies it. The interface is declared on
@@ -36,9 +43,137 @@ func NewClient(r Requester) *Client {
 // "error" field. Only error and responseComplete are decoded eagerly;
 // data is left as RawMessage for the per-call typed decode step.
 type envelopeMeta struct {
-	Error            string          `json:"error,omitempty"`
+	Error            envelopeError   `json:"error,omitempty"`
 	ResponseComplete *bool           `json:"responseComplete,omitempty"`
 	Data             json.RawMessage `json:"data,omitempty"`
+}
+
+// envelopeError is the "error" member of a response envelope. The
+// platform sends either a string or an object; null and absent both mean
+// no error, and so does an empty string. An object or any other
+// non-string value always counts as an error, even when it carries no
+// message.
+type envelopeError struct {
+	set  bool
+	text string
+}
+
+// UnmarshalJSON accepts any JSON value; it never fails, so a new error
+// shape surfaces as a server error rather than a decode failure.
+func (e *envelopeError) UnmarshalJSON(b []byte) error {
+	// A repeated "error" member never replaces the first one that set it.
+	if e.set {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(b))
+	if trimmed == "null" {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		if s != "" {
+			*e = envelopeError{set: true, text: boundText(s)}
+		}
+		return nil
+	}
+	*e = envelopeError{set: true, text: describeErrorValue(b)}
+	return nil
+}
+
+// messageKeys are the object members shown as the error text, in order.
+// The platform's object shape is not documented; when none of these is
+// present the object's key names are shown, so the first real failure
+// says which key to add.
+var messageKeys = []string{"message", "msg", "detail", "reason", "description", "error"}
+
+const (
+	maxErrorDepth   = 3
+	maxErrorKeys    = 8
+	maxErrorKeyName = 32
+)
+
+// describeErrorValue renders a non-string error value by position, never
+// by content: an object shows only a message-like string member (or the
+// sorted key names), a scalar shows its literal, and an array shows its
+// length. No other value is rendered, so a credential under any other
+// member never reaches the text.
+func describeErrorValue(b []byte) string {
+	b = []byte(strings.TrimSpace(string(b)))
+	if len(b) == 0 {
+		return "unrecognized error value"
+	}
+	switch b[0] {
+	case '{':
+		return describeErrorObject(b, 1)
+	case '[':
+		var elems []json.RawMessage
+		if json.Unmarshal(b, &elems) != nil {
+			return "unrecognized error value"
+		}
+		return fmt.Sprintf("array error, %d elements", len(elems))
+	case 't', 'f':
+		if string(b) == "true" || string(b) == "false" {
+			return string(b)
+		}
+	default:
+		var n json.Number
+		if json.Unmarshal(b, &n) == nil {
+			return boundText(n.String())
+		}
+	}
+	return "unrecognized error value"
+}
+
+// describeErrorObject applies the object rule at the given depth
+// (1 for the outermost object).
+func describeErrorObject(b []byte, depth int) string {
+	var members map[string]json.RawMessage
+	if json.Unmarshal(b, &members) != nil {
+		return "unrecognized error value"
+	}
+	for _, k := range messageKeys {
+		var m string
+		if raw, ok := members[k]; ok && json.Unmarshal(raw, &m) == nil && m != "" {
+			return boundText(m)
+		}
+	}
+	if raw, ok := members["error"]; ok && depth < maxErrorDepth && len(raw) > 0 && raw[0] == '{' {
+		return describeErrorObject(raw, depth+1)
+	}
+	names := make([]string, 0, len(members))
+	for k := range members {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	if len(names) > maxErrorKeys {
+		names = names[:maxErrorKeys]
+	}
+	for i, k := range names {
+		names[i] = fmt.Sprintf("%q", cutString(k, maxErrorKeyName))
+	}
+	if len(names) == 0 {
+		return "object error, no keys"
+	}
+	return boundText("object error, keys: " + strings.Join(names, ", "))
+}
+
+// boundText truncates s to maxErrorText bytes on a rune boundary.
+func boundText(s string) string {
+	if len(s) <= maxErrorText {
+		return s
+	}
+	return cutString(s, maxErrorText) + "..."
+}
+
+// cutString truncates s to at most n bytes on a rune boundary.
+func cutString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // decodeEnvelope inspects the standard CIM response envelope. It
@@ -48,11 +183,13 @@ type envelopeMeta struct {
 // platform-status and config responses do not carry that field.
 func decodeEnvelope(raw []byte, checkComplete bool) (json.RawMessage, error) {
 	var env envelopeMeta
-	if err := json.Unmarshal(raw, &env); err != nil {
+	// A type error in another field must not hide a present error member:
+	// json.Unmarshal still fills the fields it could decode.
+	if err := json.Unmarshal(raw, &env); err != nil && !env.Error.set {
 		return nil, fmt.Errorf("cim: decode envelope: %w", err)
 	}
-	if env.Error != "" {
-		return nil, fmt.Errorf("%w: %s", ErrServerError, env.Error)
+	if env.Error.set {
+		return nil, fmt.Errorf("%w: %s", ErrServerError, env.Error.text)
 	}
 	if checkComplete && env.ResponseComplete != nil && !*env.ResponseComplete {
 		return nil, fmt.Errorf("%w", ErrIncompleteResponse)
@@ -156,8 +293,9 @@ func (c *Client) GetPlatformStatus(ctx context.Context) (*PlatformStatus, error)
 	// Platform status responses do not wrap in a "data" envelope per the
 	// catalog; check for an error key, then decode the body directly.
 	var probe envelopeMeta
-	if err := json.Unmarshal(raw, &probe); err == nil && probe.Error != "" {
-		return nil, fmt.Errorf("cim.GetPlatformStatus: %w: %s", ErrServerError, probe.Error)
+	_ = json.Unmarshal(raw, &probe) // a type error elsewhere must not hide the error member
+	if probe.Error.set {
+		return nil, fmt.Errorf("cim.GetPlatformStatus: %w: %s", ErrServerError, probe.Error.text)
 	}
 
 	var res PlatformStatus
