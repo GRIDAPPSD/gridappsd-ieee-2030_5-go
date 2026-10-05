@@ -115,12 +115,12 @@ no `build:`, so compose run by hand only pulls the published image and fails if
 it is missing; it never builds one under the published name. To run the published image, call compose directly
 with the launcher's exports in place and `BRIDGE_IMAGE` unset: compose then uses
 `gridappsd/gridappsd-ieee-2030_5:${BRIDGE_IMAGE_TAG:-latest}`. Pin a version
-with `BRIDGE_IMAGE_TAG=v0.3.0`, in the shell or in `.env`:
+with `BRIDGE_IMAGE_TAG=v0.1.0`, in the shell or in `.env`:
 
 ```
-docker pull gridappsd/gridappsd-ieee-2030_5:v0.3.0
+docker pull gridappsd/gridappsd-ieee-2030_5:v0.1.0
 docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-  gridappsd/gridappsd-ieee-2030_5:v0.3.0
+  gridappsd/gridappsd-ieee-2030_5:v0.1.0
 ```
 
 ## Behind a TLS-inspecting proxy
