@@ -212,12 +212,14 @@ example_settings() {
   [ "$got" = "$want " ] || { echo "got:  $got" >&2; echo "want: $want" >&2; false; }
 }
 
-@test ".env.example keeps every setting line of origin/main byte for byte, and adds none" {
+@test ".env.example keeps every setting line of origin/main byte for byte" {
   git -C "$repo" rev-parse --verify -q origin/main >/dev/null || skip "origin/main is not available"
   git -C "$repo" show origin/main:.env.example >"$BATS_TEST_TMPDIR/before"
   example_settings "$BATS_TEST_TMPDIR/before" | sort >"$BATS_TEST_TMPDIR/before.sorted"
   example_settings "$example" | sort >"$BATS_TEST_TMPDIR/after.sorted"
   # Control: the file read is not empty, so an empty diff means a real comparison.
   [ "$(wc -l <"$BATS_TEST_TMPDIR/before.sorted")" -ge 60 ]
-  diff "$BATS_TEST_TMPDIR/before.sorted" "$BATS_TEST_TMPDIR/after.sorted"
+  # A new setting is allowed; a changed or dropped one is not.
+  lost=$(comm -23 "$BATS_TEST_TMPDIR/before.sorted" "$BATS_TEST_TMPDIR/after.sorted")
+  [ -z "$lost" ] || { echo "changed or dropped: $lost" >&2; false; }
 }

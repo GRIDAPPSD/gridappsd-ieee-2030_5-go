@@ -57,6 +57,12 @@ var defaultTimeouts = timeouts{
 	shutdown:   5 * time.Second,
 }
 
+// DefaultClientIdleAfter is how long a client may go unseen before the
+// panel and /api/clients call it idle. Five minutes is several poll
+// periods of a typical 2030.5 client, so a quiet but live client is not
+// flagged, while a stopped one clears within a few minutes.
+const DefaultClientIdleAfter = 5 * time.Minute
+
 // Config configures a Server.
 type Config struct {
 	// Addr is the "host:port" the admin HTTP listener binds. Required.
@@ -107,6 +113,11 @@ type Config struct {
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
+
+	// ClientIdleAfter is the age past which a client that was seen before
+	// reads as idle instead of connected. Zero keeps
+	// DefaultClientIdleAfter.
+	ClientIdleAfter time.Duration
 }
 
 // DefaultTimeouts reports the listener timeouts used when Config leaves
@@ -217,6 +228,9 @@ type Server struct {
 	clients  ClientObserverSource
 	history  HistorySource
 
+	// idleAfter is Config.ClientIdleAfter with its default applied.
+	idleAfter time.Duration
+
 	startedAt time.Time
 	// now is the clock the graph panel ages samples against.
 	now      func() time.Time
@@ -257,8 +271,13 @@ func New(cfg Config, src Sources) (*Server, error) {
 		return nil, fmt.Errorf("adminui: Addr %q is not loopback; set Config.AllowNonLoopback to bind a non-loopback address", cfg.Addr)
 	}
 
+	idleAfter := cfg.ClientIdleAfter
+	if idleAfter <= 0 {
+		idleAfter = DefaultClientIdleAfter
+	}
 	s := &Server{
 		cfg:       cfg,
+		idleAfter: idleAfter,
 		registry:  src.Registry,
 		devices:   src.Devices,
 		programs:  src.Programs,

@@ -364,3 +364,58 @@ func TestConcurrentRecordRequestAndHandshakeIsRaceFree(t *testing.T) {
 		t.Errorf("Snapshot().Handshakes len = %d, want %d (capped)", len(snap.Handshakes), maxHandshakeLog)
 	}
 }
+
+// TestSnapshotAgeFollowsTheHookClock drives the injected clock and
+// asserts Age and LastSeen as exact values, so the age is the clock's
+// difference and not wall time.
+func TestSnapshotAgeFollowsTheHookClock(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	now := base
+	h := Hook{Now: func() time.Time { return now }}
+
+	h.RecordRequest("LFDIA", "/dcap")
+	now = base.Add(90 * time.Second)
+	h.RecordRequest("LFDIB", "/dcap")
+	now = base.Add(5 * time.Minute)
+
+	snap := h.Snapshot()
+	if len(snap.Clients) != 2 {
+		t.Fatalf("Clients len = %d, want 2", len(snap.Clients))
+	}
+	want := []struct {
+		lfdi     string
+		lastSeen time.Time
+		age      time.Duration
+	}{
+		{"LFDIA", base, 5 * time.Minute},
+		{"LFDIB", base.Add(90 * time.Second), 210 * time.Second},
+	}
+	for i, w := range want {
+		c := snap.Clients[i]
+		if c.LFDI != w.lfdi || !c.LastSeen.Equal(w.lastSeen) || c.Age != w.age {
+			t.Errorf("Clients[%d] = {%s %v %v}, want {%s %v %v}", i, c.LFDI, c.LastSeen, c.Age, w.lfdi, w.lastSeen, w.age)
+		}
+	}
+
+	now = base.Add(10 * time.Minute)
+	h.RecordRequest("LFDIA", "/dcap")
+	if got := h.Snapshot().Clients[0].Age; got != 0 {
+		t.Errorf("Age right after a request = %v, want 0", got)
+	}
+}
+
+// TestSnapshotAgeNeverNegative covers a clock that steps backwards.
+func TestSnapshotAgeNeverNegative(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	now := base
+	h := Hook{Now: func() time.Time { return now }}
+	h.RecordRequest("LFDIA", "/dcap")
+	now = base.Add(-time.Minute)
+	if got := h.Snapshot().Clients[0].Age; got != 0 {
+		t.Errorf("Age with a clock stepped back = %v, want 0", got)
+	}
+}

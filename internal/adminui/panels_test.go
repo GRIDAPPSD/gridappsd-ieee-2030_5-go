@@ -418,7 +418,7 @@ func TestClientsPanelCarriesClientsHandshakesAndServedStatus(t *testing.T) {
 	handshakeAt := time.Date(2026, 7, 27, 9, 14, 0, 0, time.UTC)
 	src := testSources()
 	src.Clients = &fakeClientObserver{snap: connobs.Snapshot{
-		Clients: []connobs.ClientSnapshot{{LFDI: "LFDIA", LastSeen: lastSeen, RequestCount: 7, Paths: []string{"/dcap", "/edev"}}},
+		Clients: []connobs.ClientSnapshot{{LFDI: "LFDIA", LastSeen: lastSeen, Age: 3*time.Minute + 12*time.Second + 400*time.Millisecond, RequestCount: 7, Paths: []string{"/dcap", "/edev"}}},
 		Handshakes: []connobs.HandshakeAttempt{
 			{LFDI: "LFDIX", RemoteAddr: "10.0.0.5:54321", Accepted: false, Reason: "x509: unknown authority", Known: false, At: handshakeAt},
 			{LFDI: "LFDIA", RemoteAddr: "", Accepted: true, Reason: "", Known: true, At: handshakeAt},
@@ -432,28 +432,28 @@ func TestClientsPanelCarriesClientsHandshakesAndServedStatus(t *testing.T) {
 	d := getPanel(t, s, panelClients)
 
 	clients := section(t, d, "Connected clients")
-	assertColumns(t, clients, "LFDI", "Last seen", "Requests", "Paths touched")
+	assertColumns(t, clients, "LFDI", "Status", "Last seen", "Age", "Requests", "Paths touched")
 	if len(clients.Body.Rows) != 1 {
 		t.Fatalf("client rows = %d, want 1", len(clients.Body.Rows))
 	}
-	if got := texts(clients.Body.Rows[0]); !slices.Equal(got, []string{"LFDIA", "2026-07-27T09:15:30.000Z", "7", "/dcap, /edev"}) {
+	if got := texts(clients.Body.Rows[0]); !slices.Equal(got, []string{"LFDIA", "connected", "2026-07-27T09:15:30.000Z", "3m12s", "7", "/dcap, /edev"}) {
 		t.Errorf("client row = %q", got)
 	}
-	if c := clients.Body.Rows[0][1]; c.Kind != "time" || c.DateTime != "2026-07-27T09:15:30Z" {
+	if c := clients.Body.Rows[0][2]; c.Kind != "time" || c.DateTime != "2026-07-27T09:15:30Z" {
 		t.Errorf("Last seen = %+v, want a time cell", c)
 	}
 
 	served := section(t, d, "Served EndDevices: connection status")
-	assertColumns(t, served, "EndDevice", "LFDI", "Status", "Last seen", "Requests")
+	assertColumns(t, served, "EndDevice", "LFDI", "Status", "Last seen", "Age", "Requests")
 	if len(served.Body.Rows) != 2 {
 		t.Fatalf("served rows = %d, want 2", len(served.Body.Rows))
 	}
 	a, b := served.Body.Rows[0], served.Body.Rows[1]
-	if got := texts(a); got[0] != "edev-a" || got[1] != "LFDIA" || got[3] != "2026-07-27T09:15:30.000Z" || got[4] != "7" {
+	if got := texts(a); got[0] != "edev-a" || got[1] != "LFDIA" || got[3] != "2026-07-27T09:15:30.000Z" || got[4] != "3m12s" || got[5] != "7" {
 		t.Errorf("served row a = %q", got)
 	}
 	assertBadge(t, "served a status", a[2], "ok", "connected")
-	if got := texts(b); got[0] != "edev-b" || got[1] != "LFDIB" || got[3] != "-" || got[4] != "-" {
+	if got := texts(b); got[0] != "edev-b" || got[1] != "LFDIB" || got[3] != "-" || got[4] != "-" || got[5] != "-" {
 		t.Errorf("served row b = %q", got)
 	}
 	assertBadge(t, "served b status", b[2], "warn", "never connected")
@@ -863,5 +863,59 @@ func TestControlFlowPanelSaysNoSimulationIDInsteadOfBlank(t *testing.T) {
 	}
 	if got := state["Control delta input topic"].Text; got != "/topic/goss.gridappsd.IEEE_2030_5.input" {
 		t.Errorf("Control delta input topic = %q", got)
+	}
+}
+
+// TestClientsPanelShowsIdleClientsAndCountsOnlyConnected: with a 5 minute
+// threshold, a client 1s inside it reads connected and is counted, one
+// exactly at it and one 1s past it read idle and are not, a served device
+// never seen stays "never connected", and every client row is kept.
+func TestClientsPanelShowsIdleClientsAndCountsOnlyConnected(t *testing.T) {
+	t.Parallel()
+
+	const idleAfter = 5 * time.Minute
+	lastSeen := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	src := testSources()
+	src.Clients = &fakeClientObserver{snap: connobs.Snapshot{Clients: []connobs.ClientSnapshot{
+		{LFDI: "LFDIA", LastSeen: lastSeen, Age: idleAfter - time.Second, RequestCount: 1},
+		{LFDI: "LFDIB", LastSeen: lastSeen, Age: idleAfter, RequestCount: 1},
+		{LFDI: "LFDIC", LastSeen: lastSeen, Age: idleAfter + time.Second, RequestCount: 1},
+	}}}
+	src.Devices = &fakeEndDevices{edevs: []sep2embed.EndDeviceSnapshot{
+		{ID: "edev-a", LFDI: "LFDIA"},
+		{ID: "edev-b", LFDI: "LFDIB"},
+		{ID: "edev-c", LFDI: "LFDIC"},
+		{ID: "edev-d", LFDI: "LFDID"},
+	}}
+	s := newServer(t, Config{Key: testKey, ClientIdleAfter: idleAfter}, src)
+	d := getPanel(t, s, panelClients)
+
+	clients := section(t, d, "Connected clients")
+	if len(clients.Body.Rows) != 3 {
+		t.Fatalf("client rows = %d, want all 3 kept", len(clients.Body.Rows))
+	}
+	wantStatus := []struct{ variant, text, age string }{
+		{"ok", "connected", "4m59s"}, {"warn", "idle", "5m0s"}, {"warn", "idle", "5m1s"},
+	}
+	for i, w := range wantStatus {
+		row := clients.Body.Rows[i]
+		assertBadge(t, "client status "+row[0].Text, row[1], w.variant, w.text)
+		if row[3].Text != w.age {
+			t.Errorf("client %s age = %q, want %q", row[0].Text, row[3].Text, w.age)
+		}
+	}
+	if len(clients.Prose) == 0 || !strings.HasPrefix(clients.Prose[0], "1 connected, 2 idle.") {
+		t.Errorf("clients prose = %q, want it to open with \"1 connected, 2 idle.\"", clients.Prose)
+	}
+
+	served := section(t, d, "Served EndDevices: connection status")
+	wantServed := []struct{ variant, text string }{
+		{"ok", "connected"}, {"warn", "idle"}, {"warn", "idle"}, {"warn", "never connected"},
+	}
+	if len(served.Body.Rows) != len(wantServed) {
+		t.Fatalf("served rows = %d, want %d", len(served.Body.Rows), len(wantServed))
+	}
+	for i, w := range wantServed {
+		assertBadge(t, "served status "+served.Body.Rows[i][0].Text, served.Body.Rows[i][2], w.variant, w.text)
 	}
 }
