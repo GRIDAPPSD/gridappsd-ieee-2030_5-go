@@ -123,6 +123,15 @@ docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image
   gridappsd/gridappsd-ieee-2030_5:v0.3.0
 ```
 
+## Behind a TLS-inspecting proxy
+
+If `make docker-up` with `BRIDGE_USE_PUBLISHED=0` fails in the image build with `x509: certificate signed by unknown authority`, your network re-signs HTTPS with its own CA. Two things need that CA:
+
+* Docker pulls (the base images): install the CA on the host and restart the Docker daemon.
+* The build's Go downloads: set `BRIDGE_EXTRA_CA_FILE` in `.env` to the host path of a PEM bundle holding the CA.
+
+The launcher refuses a path that is missing, unreadable or has no PEM certificate. The file reaches the build as a BuildKit secret for the download step only, so it is in no image layer. Unset, the build is unchanged. The published image needs none of this.
+
 ## A dev broker for tests
 
 `docker-compose.yml` at the repo root brings up a bare ActiveMQ Classic

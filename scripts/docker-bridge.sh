@@ -120,9 +120,27 @@ preflight() {
   done
 }
 
+# extra_ca_file prints the validated BRIDGE_EXTRA_CA_FILE path, or nothing when
+# unset. It never prints file contents: the bundle may sit beside private material.
+extra_ca_file() {
+  local path
+  path=$(setting BRIDGE_EXTRA_CA_FILE "")
+  [ -n "$path" ] || return 0
+  [ -f "$path" ] || die "BRIDGE_EXTRA_CA_FILE is not a file: $path"
+  [ -r "$path" ] || die "BRIDGE_EXTRA_CA_FILE is not readable: $path"
+  /usr/bin/grep -q -e '-----BEGIN CERTIFICATE-----' "$path" ||
+    die "BRIDGE_EXTRA_CA_FILE has no PEM certificate (no BEGIN CERTIFICATE line): $path"
+  printf '%s' "$path"
+}
+
 build() {
-  local version="${VERSION:-dev}"
-  docker build -f "$repo/Dockerfile.bridge" --build-arg "VERSION=$version" -t "$local_image" "$repo"
+  local version="${VERSION:-dev}" ca
+  local -a secret=()
+  ca=$(extra_ca_file)
+  if [ -n "$ca" ]; then
+    secret=(--secret "id=extra_ca,src=$ca")
+  fi
+  docker build -f "$repo/Dockerfile.bridge" --build-arg "VERSION=$version" "${secret[@]+"${secret[@]}"}" -t "$local_image" "$repo"
 }
 
 # pull fetches the published image only; it needs docker but no env file.

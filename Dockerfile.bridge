@@ -5,7 +5,14 @@
 FROM golang:1.26.8 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# BRIDGE_EXTRA_CA_FILE reaches this step as a BuildKit secret, so the CA is
+# never in a layer: the combined bundle is deleted in the same RUN that writes it.
+RUN --mount=type=secret,id=extra_ca,required=false \
+    if [ -s /run/secrets/extra_ca ]; then \
+        cat /etc/ssl/certs/ca-certificates.crt /run/secrets/extra_ca > /tmp/ca-bundle.crt; \
+        export SSL_CERT_FILE=/tmp/ca-bundle.crt; \
+    fi; \
+    go mod download && rm -f /tmp/ca-bundle.crt
 COPY cmd ./cmd
 COPY internal ./internal
 ARG VERSION=dev

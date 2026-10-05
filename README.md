@@ -1,7 +1,6 @@
 # gridappsd-ieee-2030_5-go
 
 [![Build, vet, and test](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/actions/workflows/codeql.yml)
 [![Go 1.26.8](https://img.shields.io/badge/go-1.26.8-00ADD8?logo=go)](https://go.dev)
 
 Go bridge between the IEEE 2030.5 protocol and the GridAPPS-D platform.
