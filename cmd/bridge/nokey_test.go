@@ -126,3 +126,75 @@ func TestNoKeyLogFilterDropsOnlyAuthSuccess(t *testing.T) {
 		t.Errorf("log.Printf format changed:\n%s", out)
 	}
 }
+
+// TestNoKeyLogFilterGateFollowsTheFlag drives the gate run() uses, against
+// slog's default handler as production has it: with the flag on the
+// admin_auth_success audit line is gone, with it off (keyed mode) the line
+// stays, and the restore puts it back.
+func TestNoKeyLogFilterGateFollowsTheFlag(t *testing.T) {
+	var buf bytes.Buffer
+	prevSlog := slog.Default()
+	prevW, prevF := log.Writer(), log.Flags()
+	t.Cleanup(func() { slog.SetDefault(prevSlog); log.SetOutput(prevW); log.SetFlags(prevF) })
+	slog.SetDefault(slog.New(processDefaultHandler))
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+
+	emit := func() { slog.Info("admit", "event", "admin_auth_success") }
+
+	restore := adminLogFilterFor(config{SEP2AdminUIInsecureNoKey: false})
+	emit()
+	restore()
+	if !strings.Contains(buf.String(), "admin_auth_success") {
+		t.Fatalf("keyed mode dropped the audit line:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	restore = adminLogFilterFor(config{SEP2AdminUIInsecureNoKey: true})
+	emit()
+	if strings.Contains(buf.String(), "admin_auth_success") {
+		t.Errorf("no-key mode kept the success line:\n%s", buf.String())
+	}
+	restore()
+	emit()
+	if !strings.Contains(buf.String(), "admin_auth_success") {
+		t.Errorf("restore did not bring the line back:\n%s", buf.String())
+	}
+}
+
+// TestNoKeyLogFilterKeepsWarnAndError: only Info and below is dropped.
+func TestNoKeyLogFilterKeepsWarnAndError(t *testing.T) {
+	var buf bytes.Buffer
+	prevSlog := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevSlog) })
+	slog.SetDefault(slog.New(dropAuthSuccess{inner: slog.NewTextHandler(&buf, nil)}))
+	slog.Debug("d", "event", "admin_auth_success")
+	slog.Info("i", "event", "admin_auth_success")
+	slog.Warn("w", "event", "admin_auth_success")
+	slog.Error("e", "event", "admin_auth_success")
+	out := buf.String()
+	if !strings.Contains(out, "msg=w") || !strings.Contains(out, "msg=e") {
+		t.Errorf("warn or error record dropped:\n%s", out)
+	}
+	if strings.Contains(out, "msg=i ") || strings.Contains(out, "msg=d ") {
+		t.Errorf("info or debug record kept:\n%s", out)
+	}
+}
+
+// TestValidateTreatsAWhitespaceKeyAsBlankInNoKeyMode: a key of spaces is
+// not a key, so the flag is accepted with it; a real key still refuses.
+func TestValidateTreatsAWhitespaceKeyAsBlankInNoKeyMode(t *testing.T) {
+	t.Setenv("SEP2_ADMIN_UI_INSECURE_NO_KEY", "true")
+	t.Setenv("SEP2_ADMIN_UI_KEY", "   ")
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig with a whitespace key: %v", err)
+	}
+	if !cfg.SEP2AdminUIInsecureNoKey {
+		t.Error("flag not set")
+	}
+}
+
+// processDefaultHandler is slog's built in handler, captured before any test
+// replaces it; it writes through the log package, as production's does.
+var processDefaultHandler = slog.Default().Handler()

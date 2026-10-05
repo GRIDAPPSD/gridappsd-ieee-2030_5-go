@@ -383,7 +383,7 @@ func generateKey() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// noKeyWarning is the line logged once the listener has bound in no-key mode.
+// noKeyWarning is the line logged from New in no-key mode, after the listener binds and before Run serves.
 func (s *Server) noKeyWarning() string {
 	addr := s.Addr()
 	if host, _, err := net.SplitHostPort(addr); err == nil {

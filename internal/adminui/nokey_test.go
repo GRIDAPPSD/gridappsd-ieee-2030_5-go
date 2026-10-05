@@ -212,3 +212,17 @@ func TestNoKeyWarnsOnceAfterBind(t *testing.T) {
 		t.Error("keyed mode logged the no-key warning")
 	}
 }
+
+// TestNoKeyTreatsAWhitespaceKeyAsBlank: a key of spaces is not a key, so
+// no-key mode starts with it and the server still holds its own key.
+func TestNoKeyTreatsAWhitespaceKeyAsBlank(t *testing.T) {
+	t.Parallel()
+
+	s := newServer(t, Config{Key: "   ", InsecureNoKey: true}, testSources())
+	if strings.TrimSpace(s.cfg.Key) == "" || s.cfg.Key == "   " {
+		t.Errorf("server key %q was not replaced by a generated one", s.cfg.Key)
+	}
+	if rec := doRequest(t, s.Handler(), http.MethodGet, "/api/health", "", "localhost"); rec.Code != http.StatusOK {
+		t.Errorf("GET /api/health = %d, want 200", rec.Code)
+	}
+}

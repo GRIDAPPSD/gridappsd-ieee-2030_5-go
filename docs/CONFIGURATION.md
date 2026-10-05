@@ -103,7 +103,7 @@ holds a random key of its own and authenticates every request with it, so the
 UI opens with no login. With it on, anyone who can reach the admin address can read every panel and, when publishing is switched on, send control messages; the publishing switch is reachable too, so the switch protects against accident, not against a person. The Host allowlist and the
 cross-origin refusal stay on, so a web page the operator visits cannot drive
 it. Setting this together with a key stops the bridge at start-up. The bridge
-logs a warning once the listener binds, and drops the per-request
+logs a warning when the listener binds, before it serves, and drops the per-request
 `admin_auth_success` log line.
 
 Every route needs the key (unless no-key mode is on), from loopback too, except the login page and

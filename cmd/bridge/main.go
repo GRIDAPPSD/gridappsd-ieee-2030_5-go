@@ -390,9 +390,7 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	var adminUIRun func(context.Context) error
-	if cfg.SEP2AdminUIInsecureNoKey {
-		defer installNoKeyLogFilter()()
-	}
+	defer adminLogFilterFor(cfg)()
 	adminSrv, err := adminui.New(adminUIConfig(cfg), adminui.Sources{
 		Registry: reg,
 		Devices:  embed,

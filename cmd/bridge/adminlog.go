@@ -11,7 +11,8 @@ import (
 const authSuccessEvent = "admin_auth_success"
 
 // dropAuthSuccess drops records whose event attribute is authSuccessEvent
-// and passes every other record, including admin_auth_failure.
+// at Info and below, and passes every other record, including
+// admin_auth_failure and any Warn or Error.
 type dropAuthSuccess struct {
 	inner slog.Handler
 	// drop is set when a WithAttrs call already carried the event.
@@ -23,6 +24,9 @@ func (h dropAuthSuccess) Enabled(ctx context.Context, l slog.Level) bool {
 }
 
 func (h dropAuthSuccess) Handle(ctx context.Context, r slog.Record) error {
+	if r.Level > slog.LevelInfo {
+		return h.inner.Handle(ctx, r)
+	}
 	drop := h.drop
 	r.Attrs(func(a slog.Attr) bool {
 		if isAuthSuccess(a) {
@@ -68,4 +72,13 @@ func installNoKeyLogFilter() (restore func()) {
 		log.SetOutput(prevWriter)
 		log.SetFlags(prevFlags)
 	}
+}
+
+// adminLogFilterFor installs the filter only in no-key mode and returns the
+// undo; keyed mode keeps the admin_auth_success audit line and gets a no-op.
+func adminLogFilterFor(cfg config) (restore func()) {
+	if !cfg.SEP2AdminUIInsecureNoKey {
+		return func() {}
+	}
+	return installNoKeyLogFilter()
 }

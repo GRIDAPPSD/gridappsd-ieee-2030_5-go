@@ -44,7 +44,7 @@ What it does:
   and `.env` is where you change them; [CONFIGURATION.md](CONFIGURATION.md)
   describes each. The admin key `SEP2_ADMIN_UI_KEY` has no default and is required, unless
   `SEP2_ADMIN_UI_INSECURE_NO_KEY=true` and the key is blank: the UI then opens
-  with no login. With it on, anyone who can reach the admin address can read every panel and, when publishing is switched on, send control messages; the publishing switch is reachable too, so the switch protects against accident, not against a person. `make docker-up` warns with the address
+  with no login. The risks are in [CONFIGURATION.md](CONFIGURATION.md#admin-ui). `make docker-up` warns with the address
   `BRIDGE_ADMIN_BIND_IP:BRIDGE_ADMIN_PORT` and refuses to start when both the
   key and the setting are present. The broker
   login is read as `GRIDAPPSD_USER` and `GRIDAPPSD_PASSWORD`, the names other
