@@ -50,7 +50,7 @@ run_script() {
   [ "$status" -eq 0 ]
   /usr/bin/grep -qxF "ARGS: [build] [-f] [$repo/Dockerfile.bridge] [--build-arg] [VERSION=dev] [-t] [gridappsd-ieee-2030_5-go:dev] [$repo]" "$DOCKER_LOG"
   /usr/bin/grep -qxF "ARGS: [compose] [--env-file] [$work/env] [-f] [$repo/docker-compose.bridge.yml] [up] [-d] [--no-build]" "$DOCKER_LOG"
-  /usr/bin/grep -qF "ENV: sep2=18443 admin=18444 user=1000:1000 certs=$work/certs mode=rw image=gridappsd-ieee-2030_5-go:dev ip=10.213.168.2 subnet=10.213.168.0/24 bind=127.0.0.1 admin_bind=127.0.0.1" "$DOCKER_LOG"
+  /usr/bin/grep -qF "ENV: sep2=18443 admin=18444 user=1000:1000 certs=$work/certs mode=rw image=gridappsd-ieee-2030_5-go:dev ip=10.213.168.2 subnet=10.213.168.0/24 bind=0.0.0.0 admin_bind=127.0.0.1" "$DOCKER_LOG"
 }
 
 @test "pull: pulls the published image at latest, with no env file and no other docker call" {
@@ -502,10 +502,10 @@ make_ca() {
   [ ! -e "$DOCKER_LOG" ]
 }
 
-@test "bind ips: default to 127.0.0.1 for both ports and reach compose" {
+@test "bind ips: 2030.5 defaults to 0.0.0.0, admin to 127.0.0.1, and both reach compose" {
   run_script up
   [ "$status" -eq 0 ]
-  /usr/bin/grep -qF 'bind=127.0.0.1 admin_bind=127.0.0.1' "$DOCKER_LOG"
+  /usr/bin/grep -qF 'bind=0.0.0.0 admin_bind=127.0.0.1' "$DOCKER_LOG"
 }
 
 @test "bind ips: valid values from the shell and the env file reach compose separately" {
@@ -516,7 +516,7 @@ make_ca() {
   printf 'BRIDGE_ADMIN_BIND_IP=10.0.0.7\n' >>"$work/env"
   run_script up
   [ "$status" -eq 0 ]
-  /usr/bin/grep -qF 'bind=127.0.0.1 admin_bind=10.0.0.7' "$DOCKER_LOG"
+  /usr/bin/grep -qF 'bind=0.0.0.0 admin_bind=10.0.0.7' "$DOCKER_LOG"
 }
 
 @test "bind ips: invalid values are refused by name before docker is called" {
