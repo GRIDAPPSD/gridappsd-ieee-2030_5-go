@@ -55,6 +55,10 @@ type Config struct {
 	Now         func() time.Time
 	// Sleep waits d or returns ctx's error. Tests replace it.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Redact lists strings, such as the broker user and password, that
+	// are replaced in every reason a viewer is shown: connect errors can
+	// carry them.
+	Redact []string
 }
 
 func (c Config) withDefaults() Config {
@@ -113,6 +117,7 @@ const (
 // Message is one buffered frame. Body holds at most MaxBodyBytes; Size is the
 // true body length.
 type Message struct {
+	// Seq is the event's place in the monitor-wide sequence (see Event.Seq).
 	Seq uint64
 	// Destination is the topic the frame arrived on, which differs from the
 	// watched name when that name is a wildcard.
@@ -141,6 +146,10 @@ const (
 
 // Event is one item of a viewer's live feed.
 type Event struct {
+	// Seq rises across every event of the monitor, messages and status
+	// changes alike, and across a topic being closed and watched again, so
+	// a viewer can resume from the last one it showed.
+	Seq     uint64
 	Kind    EventKind
 	Time    time.Time
 	Message Message
@@ -174,6 +183,7 @@ type Monitor struct {
 
 	mu     sync.Mutex
 	topics map[string]*topic
+	seq    uint64
 	closed bool
 	wg     sync.WaitGroup
 }
@@ -181,7 +191,6 @@ type Monitor struct {
 type topic struct {
 	name    string
 	ring    []Message
-	seq     uint64
 	viewers map[*Viewer]struct{}
 	status  Status
 	cancel  context.CancelFunc
@@ -203,6 +212,8 @@ type Viewer struct {
 	events  chan Event
 	backlog []Message
 	status  Status
+	joinSeq uint64
+	endSeq  uint64
 	closed  bool
 	err     error
 }
@@ -213,9 +224,21 @@ func (v *Viewer) Backlog() []Message { return v.backlog }
 // Status is the topic's state at the moment the viewer joined.
 func (v *Viewer) Status() Status { return v.status }
 
+// JoinSeq is the sequence number of the join: above every Backlog message
+// and below every live event.
+func (v *Viewer) JoinSeq() uint64 { return v.joinSeq }
+
 // Events delivers live messages and status changes. It is closed by Close,
 // Monitor.Close, or when the viewer falls behind (see Err).
 func (v *Viewer) Events() <-chan Event { return v.events }
+
+// EndSeq is the sequence number of the monitor closing this viewer, or 0
+// when the viewer closed itself. It is valid once Events is closed.
+func (v *Viewer) EndSeq() uint64 {
+	v.m.mu.Lock()
+	defer v.m.mu.Unlock()
+	return v.endSeq
+}
 
 // Err says why Events was closed by the monitor, or nil.
 func (v *Viewer) Err() error {
@@ -279,12 +302,14 @@ func (m *Monitor) attach(name string) (*Viewer, error) {
 		t.status = Status{State: StateConnecting}
 		m.startLocked(t)
 	}
+	m.seq++
 	v := &Viewer{
 		m:       m,
 		t:       t,
 		events:  make(chan Event, viewerBuffer),
 		backlog: append([]Message(nil), t.ring...),
 		status:  t.status,
+		joinSeq: m.seq,
 	}
 	t.viewers[v] = struct{}{}
 	return v, nil
@@ -318,6 +343,8 @@ func (m *Monitor) Close() {
 		for v := range t.viewers {
 			v.closed = true
 			v.err = ErrClosed
+			m.seq++
+			v.endSeq = m.seq
 			close(v.events)
 		}
 		t.viewers = map[*Viewer]struct{}{}
@@ -373,7 +400,8 @@ func (m *Monitor) finish(t *topic, st Status) {
 	defer m.mu.Unlock()
 	t.status = st
 	t.running = false
-	m.broadcastLocked(t, Event{Kind: EventStatus, Time: m.cfg.Now(), Status: st})
+	m.seq++
+	m.broadcastLocked(t, Event{Seq: m.seq, Kind: EventStatus, Time: m.cfg.Now(), Status: st})
 }
 
 // setStatus records st and tells every viewer.
@@ -381,7 +409,8 @@ func (m *Monitor) setStatus(t *topic, st Status) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t.status = st
-	m.broadcastLocked(t, Event{Kind: EventStatus, Time: m.cfg.Now(), Status: st})
+	m.seq++
+	m.broadcastLocked(t, Event{Seq: m.seq, Kind: EventStatus, Time: m.cfg.Now(), Status: st})
 }
 
 func (m *Monitor) record(t *topic, dest string, body []byte) {
@@ -394,14 +423,14 @@ func (m *Monitor) record(t *topic, dest string, body []byte) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t.seq++
-	msg.Seq = t.seq
+	m.seq++
+	msg.Seq = m.seq
 	if len(t.ring) >= RingSize {
 		copy(t.ring, t.ring[1:])
 		t.ring = t.ring[:RingSize-1]
 	}
 	t.ring = append(t.ring, msg)
-	m.broadcastLocked(t, Event{Kind: EventMessage, Time: msg.Received, Message: msg})
+	m.broadcastLocked(t, Event{Seq: msg.Seq, Kind: EventMessage, Time: msg.Received, Message: msg})
 }
 
 // broadcastLocked never blocks: a viewer whose buffer is full is closed with
@@ -413,6 +442,8 @@ func (m *Monitor) broadcastLocked(t *topic, ev Event) {
 		default:
 			v.closed = true
 			v.err = ErrSlowViewer
+			m.seq++
+			v.endSeq = m.seq
 			close(v.events)
 			delete(t.viewers, v)
 			m.armIdleLocked(t)
@@ -432,6 +463,7 @@ func (m *Monitor) run(ctx context.Context, t *topic) {
 			return
 		}
 		if reason, refused := refusal(err); refused {
+			reason = m.redact(reason)
 			m.finish(t, Status{State: StateRefused, Reason: reason})
 			return
 		}
@@ -440,7 +472,7 @@ func (m *Monitor) run(ctx context.Context, t *topic) {
 			delay = m.cfg.BackoffMin
 		}
 		attempt++
-		reason := cleanReason(err.Error())
+		reason := m.redact(err.Error())
 		if attempt > m.cfg.MaxTries {
 			m.finish(t, Status{State: StateFailed, Reason: fmt.Sprintf("gave up after %d reconnect tries: %s", m.cfg.MaxTries, reason), Attempt: attempt - 1})
 			return
@@ -509,7 +541,18 @@ func refusal(err error) (string, bool) {
 	if body := strings.TrimSpace(string(se.Frame.Body)); body != "" {
 		reason += ": " + body
 	}
-	return cleanReason(reason), true
+	return reason, true
+}
+
+// redact replaces each Config.Redact string in s, then makes s safe to
+// show, in that order so truncation cannot leave part of a secret.
+func (m *Monitor) redact(s string) string {
+	for _, r := range m.cfg.Redact {
+		if r != "" {
+			s = strings.ReplaceAll(s, r, "[redacted]")
+		}
+	}
+	return cleanReason(s)
 }
 
 // cleanReason makes broker text safe to show: control bytes become spaces, non-ASCII bytes become '?', and

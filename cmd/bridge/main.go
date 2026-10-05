@@ -34,6 +34,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -57,9 +59,11 @@ import (
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/busmonitor"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
@@ -171,10 +175,30 @@ func redactCreds(cfg config, msg string) string {
 		msg = strings.ReplaceAll(msg, cfg.SEP2AdminUIKey, "[REDACTED]")
 	}
 	if cfg.STOMPUser != "" && cfg.STOMPPassword != "" {
-		authBlob := base64.StdEncoding.EncodeToString([]byte(cfg.STOMPUser + ":" + cfg.STOMPPassword))
-		msg = strings.ReplaceAll(msg, authBlob, "[REDACTED]")
+		msg = strings.ReplaceAll(msg, gossAuthBlob(cfg), "[REDACTED]")
 	}
 	return msg
+}
+
+// gossAuthBlob is the base64(user:password) the GOSS token bootstrap sends.
+func gossAuthBlob(cfg config) string {
+	return base64.StdEncoding.EncodeToString([]byte(cfg.STOMPUser + ":" + cfg.STOMPPassword))
+}
+
+// monitorRedactions are the strings the bus monitor removes from every
+// reason a viewer sees. Unlike a log line, a viewer must not learn even the
+// broker user, which the token bootstrap's reply queue name carries.
+func monitorRedactions(cfg config) []string {
+	var out []string
+	for _, s := range []string{cfg.STOMPPassword, cfg.STOMPUser} {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	if cfg.STOMPUser != "" && cfg.STOMPPassword != "" {
+		out = append([]string{gossAuthBlob(cfg)}, out...)
+	}
+	return out
 }
 
 // handleVersionFlag reports whether err is loadConfig's
@@ -350,6 +374,15 @@ func run(ctx context.Context, cfg config) error {
 	}
 	telemetryRun := pub.Run
 
+	// The bus monitor opens nothing until a viewer watches a topic, and
+	// then one connection per topic under the bridge's own credential.
+	mon := busmonitor.New(ctx, busmonitor.Config{
+		Dial:   busmonitor.NewDialer(monitorSTOMPConfig(cfg)),
+		Probe:  func() string { return probeDestination(cfg) },
+		Redact: monitorRedactions(cfg),
+	})
+	defer mon.Close()
+
 	var adminUIRun func(context.Context) error
 	adminSrv, err := adminui.New(adminUIConfig(cfg), adminui.Sources{
 		Registry: reg,
@@ -361,6 +394,7 @@ func run(ctx context.Context, cfg config) error {
 		Clients:  &connHook,
 		Protocol: embed,
 		History:  &inputHistory,
+		Monitor:  mon,
 	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
@@ -863,6 +897,21 @@ func busConfig(cfg config) gridappsd.Config {
 		AllowPlaintext: cfg.AllowPlaintext,
 		HeartBeat:      cfg.Tuning.Heartbeat,
 	}
+}
+
+// monitorSTOMPConfig is busConfig for the bus monitor's own connections:
+// the same broker, credential and transport choice. A TLS dial verifies
+// the broker against the system trust store, as gridappsd.Config's does.
+func monitorSTOMPConfig(cfg config) cimstomp.STOMPConfig {
+	sc := cimstomp.STOMPConfig{Address: cfg.STOMPAddr, User: cfg.STOMPUser, Password: cfg.STOMPPassword}
+	if !cfg.AllowPlaintext {
+		host, _, err := net.SplitHostPort(cfg.STOMPAddr)
+		if err != nil {
+			host = cfg.STOMPAddr
+		}
+		sc.TLS = &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+	}
+	return sc
 }
 
 // connectClient dials the GridAPPS-D broker, runs the two-step GOSS

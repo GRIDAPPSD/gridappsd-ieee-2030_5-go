@@ -54,6 +54,9 @@ func (s *Server) panels() []sep2admin.Panel {
 		}
 		out = append(out, p)
 	}
+	if s.monitor != nil {
+		out = append(out, s.monitor.panel(len(views)+1))
+	}
 	return out
 }
 

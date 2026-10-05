@@ -1,7 +1,8 @@
 // Package adminui serves the bridge's admin listener: the server's admin
 // UI and admin API (pkg/sep2adminplane) as the root handler, with the
-// bridge's own read-only views registered as seven gridappsd-* panels that
-// the server's shell renders after its own tabs.
+// bridge's own views registered as gridappsd-* panels that the server's
+// shell renders after its own tabs: seven read-only views, and the bus
+// monitor when Sources.Monitor is set.
 //
 // Two bridge JSON routes, /api/health and /api/clients, stay beside the
 // plane under the bridge's own Bearer, Host and GET-only gates, because
@@ -213,6 +214,10 @@ type Sources struct {
 	Protocol ProtocolSource
 	// History holds the device status samples, read by the graph panel.
 	History HistorySource
+
+	// Monitor, when set, adds the bus monitor panel. It is the one
+	// optional field.
+	Monitor MonitorSource
 }
 
 // Server is the admin listener: a bound, not yet serving listener and
@@ -227,6 +232,7 @@ type Server struct {
 	stomp    StompSource
 	clients  ClientObserverSource
 	history  HistorySource
+	monitor  *monitorPanel
 
 	// idleAfter is Config.ClientIdleAfter with its default applied.
 	idleAfter time.Duration
@@ -238,6 +244,7 @@ type Server struct {
 
 	ln      net.Listener
 	handler http.Handler
+	plane   *sep2adminplane.Plane
 
 	// planePatterns are the routes the admin plane mounted, as
 	// sep2adminplane.Plane.Patterns reports them.
@@ -290,6 +297,9 @@ func New(cfg Config, src Sources) (*Server, error) {
 		now:       time.Now,
 		timeouts:  defaultTimeouts.withOverrides(cfg),
 	}
+	if src.Monitor != nil {
+		s.monitor = newMonitorPanel(src.Monitor, s.startedAt)
+	}
 
 	plane, err := sep2adminplane.New(sep2adminplane.Config{
 		Stores:       src.Protocol.Stores(),
@@ -326,6 +336,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		return nil, fmt.Errorf("adminui: listen: %w", err)
 	}
 	s.ln = ln
+	s.plane = plane
 	s.planePatterns = plane.Patterns()
 	s.handler = s.buildHandler(plane.Handler())
 	return s, nil
@@ -380,7 +391,15 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.timeouts.shutdown)
+		// One shutdown bound covers both steps. The plane closes first, so
+		// each panel stream gets its final status event rather than a cut
+		// connection, and running panel actions are told to stop and
+		// waited for, for at most half the bound.
+		deadline := time.Now().Add(s.timeouts.shutdown)
+		if n := s.plane.Close(s.timeouts.shutdown / 2); n > 0 {
+			log.Printf("adminui: %d panel action(s) still running at shutdown; they may still take effect", n)
+		}
+		shutdownCtx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			<-serveErr

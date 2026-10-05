@@ -57,6 +57,8 @@ func TestValidateTopic(t *testing.T) {
 		{"wildcard matching probe", "/topic/goss.gridappsd.>", ErrProbeTopic},
 		{"star matching probe", "/topic/goss.gridappsd.*", ErrProbeTopic},
 		{"top wildcard matching probe", "/topic/>", ErrProbeTopic},
+		// The broker delivers the bare parent to an "A.>" subscriber.
+		{"probe parent of a trailing wildcard", probe + ".>", ErrProbeTopic},
 		{"wildcard not matching probe", "/topic/goss.gridappsd.simulation.>", nil},
 		{"star with wrong depth", "/topic/goss.*", nil},
 	}
@@ -316,14 +318,66 @@ func TestRingKeepsNewest200(t *testing.T) {
 	if len(bl) != RingSize {
 		t.Fatalf("backlog = %d, want %d", len(bl), RingSize)
 	}
-	if bl[0].Seq != 51 || string(bl[0].Body) != "m51" || bl[199].Seq != 250 || string(bl[199].Body) != "m250" {
-		t.Fatalf("backlog spans %d/%s .. %d/%s, want 51/m51 .. 250/m250", bl[0].Seq, bl[0].Body, bl[199].Seq, bl[199].Body)
+	if string(bl[0].Body) != "m51" || string(bl[199].Body) != "m250" || bl[199].Seq-bl[0].Seq != 199 {
+		t.Fatalf("backlog spans %d/%s .. %d/%s, want m51 .. m250 with consecutive seqs", bl[0].Seq, bl[0].Body, bl[199].Seq, bl[199].Body)
 	}
-	// Replay then live: the next frame arrives after the backlog with the next seq.
+	// Replay, join, then live: the join and the next frame sort after the backlog.
 	r.send([]byte("m251"))
 	got := waitMessages(t, late, 1)[0]
-	if got.Seq != 251 || string(got.Body) != "m251" {
-		t.Fatalf("live after replay = %d/%s", got.Seq, got.Body)
+	if string(got.Body) != "m251" || !(bl[199].Seq < late.JoinSeq() && late.JoinSeq() < got.Seq) {
+		t.Fatalf("backlog end %d, join %d, live %d/%s: want rising", bl[199].Seq, late.JoinSeq(), got.Seq, got.Body)
+	}
+}
+
+// TestSeqRisesAcrossStatusesAndATopicWatchedAgain: a viewer resumes by
+// sequence number, so statuses take numbers too, and a topic closed for
+// idleness and watched again must not restart below what a viewer saw.
+func TestSeqRisesAcrossStatusesAndATopicWatchedAgain(t *testing.T) {
+	b := newBroker()
+	m := newTestMonitor(t, b, func(c *Config) { c.IdleClose = 10 * time.Millisecond })
+	v, err := m.Watch("/topic/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := b.next(t, "/topic/s")
+	var last uint64 = v.JoinSeq()
+	next := func(want EventKind) Event {
+		t.Helper()
+		select {
+		case ev := <-v.Events():
+			if ev.Kind != want || ev.Seq <= last {
+				t.Fatalf("event %+v after seq %d, want a %s above it", ev, last, want)
+			}
+			if ev.Kind == EventMessage && ev.Message.Seq != ev.Seq {
+				t.Fatalf("message seq %d, event seq %d", ev.Message.Seq, ev.Seq)
+			}
+			last = ev.Seq
+			return ev
+		case <-time.After(3 * time.Second):
+			t.Fatalf("no %s event", want)
+			return Event{}
+		}
+	}
+	next(EventStatus) // live
+	r.send([]byte("a"))
+	next(EventMessage)
+	r.end(errors.New("dropped"))
+	next(EventStatus) // reconnecting
+	v.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for len(m.Topics()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("topic not closed after idle: %+v", m.Topics())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	again, err := m.Watch("/topic/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Backlog()) != 0 || again.JoinSeq() <= last {
+		t.Fatalf("watched again: backlog %d, join %d, want empty and above %d", len(again.Backlog()), again.JoinSeq(), last)
 	}
 }
 
@@ -432,6 +486,47 @@ func TestSlowViewerIsClosedNotBlocking(t *testing.T) {
 	}
 }
 
+// TestMonitorClosingAViewerNumbersTheClose: a viewer the monitor drops gets
+// a sequence number of its own, above what it was sent and below anything
+// the topic records afterwards, so a resume after it skips nothing.
+func TestMonitorClosingAViewerNumbersTheClose(t *testing.T) {
+	b := newBroker()
+	m := newTestMonitor(t, b, nil)
+	slow, _ := m.Watch("/topic/e")
+	fast, _ := m.Watch("/topic/e")
+	r := b.next(t, "/topic/e")
+	go func() {
+		for i := 0; i < viewerBuffer+1; i++ {
+			r.send([]byte("x"))
+		}
+	}()
+	waitMessages(t, fast, viewerBuffer+1)
+	var last uint64
+	for ev := range slow.Events() {
+		last = ev.Seq
+	}
+	if !errors.Is(slow.Err(), ErrSlowViewer) || slow.EndSeq() <= last {
+		t.Fatalf("slow viewer: err %v, end seq %d after last event %d", slow.Err(), slow.EndSeq(), last)
+	}
+	r.send([]byte("after"))
+	if got := waitMessages(t, fast, 1)[0]; got.Seq <= slow.EndSeq() {
+		t.Fatalf("next message seq %d, want above the close at %d", got.Seq, slow.EndSeq())
+	}
+}
+
+// TestReasonsNeverCarryTheBrokerCredential: a connect error that names the
+// user or password reaches viewers redacted.
+func TestReasonsNeverCarryTheBrokerCredential(t *testing.T) {
+	b := newBroker()
+	b.dialErr.Store(errors.New("subscribe /queue/temp.token_resp.opsuser.1: denied for opsuser with s3cret-pw"))
+	m := newTestMonitor(t, b, func(c *Config) { c.Redact = []string{"opsuser", "s3cret-pw", ""} })
+	v, _ := m.Watch("/topic/cred")
+	st := waitStatus(t, v, StateReconnecting)
+	if strings.Contains(st.Reason, "opsuser") || strings.Contains(st.Reason, "s3cret-pw") || !strings.Contains(st.Reason, "[redacted]") {
+		t.Fatalf("reason = %q, want the credential redacted", st.Reason)
+	}
+}
+
 func TestMonitorCloseClosesEverything(t *testing.T) {
 	b := newBroker()
 	m := New(context.Background(), Config{Dial: b.dial})
@@ -441,11 +536,16 @@ func TestMonitorCloseClosesEverything(t *testing.T) {
 	if !r.sess.closed.Load() {
 		t.Fatal("session left open after Close")
 	}
-	for range v.Events() {
+	var last uint64
+	for ev := range v.Events() {
 		// drain buffered status events; the range ends only when Close closed the channel
+		last = ev.Seq
 	}
 	if !errors.Is(v.Err(), ErrClosed) {
 		t.Fatalf("viewer err = %v", v.Err())
+	}
+	if v.EndSeq() <= last || v.EndSeq() <= v.JoinSeq() {
+		t.Fatalf("end seq %d, want above the join %d and the last event %d", v.EndSeq(), v.JoinSeq(), last)
 	}
 	if _, err := m.Watch("/topic/c"); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Watch after Close: %v", err)
@@ -480,7 +580,10 @@ func TestSensitiveTopicsAreRefused(t *testing.T) {
 		{"/topic/ActiveMQ.*.Connection", ErrSensitiveTopic},
 		// Siblings that cannot match a sensitive name stay watchable.
 		{"/topic/pnnl.goss.other", nil},
-		{"/topic/pnnl.goss.token", nil},
+		// The broker delivers the bare parent to a "pnnl.goss.token.>"
+		// subscriber, so the parent is in the token namespace too.
+		{"/topic/pnnl.goss.token", ErrSensitiveTopic},
+		{"/topic/ActiveMQ.Advisory", ErrSensitiveTopic},
 		{"/topic/pnnl.goss.tokens.topic", nil},
 		{"/topic/ActiveMQ.Admin", nil},
 		{"/topic/ActiveMQ", nil},
