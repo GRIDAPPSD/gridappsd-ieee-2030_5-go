@@ -109,6 +109,7 @@ routes for scripts.
 | `SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK` | `-admin-ui-allow-non-loopback` | `false` | Explicit opt-in to bind the admin UI to a non-loopback host. |
 | `SEP2_ADMIN_UI_ALLOWED_HOSTS` | (none) | (empty) | Comma-separated extra accepted `Host` header values, in addition to the built-in `localhost`, `127.0.0.1`, and `::1`. |
 | `SEP2_ADMIN_UI_SOR_LINK` | `-admin-ui-sor-link` | (empty) | Optional server-of-record dashboard URL, returned read-only from `/api/health`. Not a credential. |
+| `SEP2_ADMIN_UI_BUS_PUBLISH_AT_START` | `-admin-ui-bus-publish-at-start` | `false` | Whether the admin UI sender's publish switch is on at start-up. Off by default, so a restart never re-arms writes to the simulation; the switch is in memory only and returns to this value at every start. While it is off every send is refused. |
 | `SEP2_ADMIN_UI_READ_HEADER_TIMEOUT` | `-admin-ui-read-header-timeout` | `5s` | A Go duration such as `15s` or `1m`. Admin listener: time to read a request's headers. Allowed range: 1s-1h. |
 | `SEP2_ADMIN_UI_READ_TIMEOUT` | `-admin-ui-read-timeout` | `10s` | A Go duration such as `15s` or `1m`. Admin listener: time to read a whole request. Allowed range: 1s-1h. |
 | `SEP2_ADMIN_UI_WRITE_TIMEOUT` | `-admin-ui-write-timeout` | `10s` | A Go duration such as `15s` or `1m`. Admin listener: time to write a response. Allowed range: 1s-1h. |

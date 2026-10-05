@@ -28,6 +28,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("SEP2_APPLICATION_ID", "")
 	t.Setenv("SEP2_FEEDER_MRID", "")
 	t.Setenv("SEP2_PUBLISH_ON_START", "")
+	t.Setenv("SEP2_ADMIN_UI_BUS_PUBLISH_AT_START", "")
 	t.Setenv("SEP2_STOMP_ALLOW_PLAINTEXT", "")
 	t.Setenv("SEP2_SERVER_ADDR", "")
 	t.Setenv("SEP2_SERVER_CERT_DIR", "")
@@ -202,6 +203,42 @@ func TestLoadConfigSEP2ServerCertDirRequired(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SEP2_SERVER_CERT_DIR") {
 		t.Errorf("error should name the field: %v", err)
+	}
+}
+
+// TestLoadConfigBusPublishAtStart pins the sender switch's start state: off
+// unless the env var or the flag turns it on, the flag winning, and a value that
+// is not a boolean refused by name.
+func TestLoadConfigBusPublishAtStart(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		args []string
+		want bool
+	}{
+		{"default is off", "", nil, false},
+		{"env true", "true", nil, true},
+		{"env false", "false", nil, false},
+		{"flag true over env false", "false", []string{"-admin-ui-bus-publish-at-start=true"}, true},
+		{"flag false over env true", "true", []string{"-admin-ui-bus-publish-at-start=false"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SEP2_ADMIN_UI_BUS_PUBLISH_AT_START", tc.env)
+			cfg, err := loadConfig(tc.args)
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if cfg.SEP2AdminUIBusPublishAtStart != tc.want {
+				t.Errorf("SEP2AdminUIBusPublishAtStart = %v, want %v", cfg.SEP2AdminUIBusPublishAtStart, tc.want)
+			}
+		})
+	}
+
+	t.Setenv("SEP2_ADMIN_UI_BUS_PUBLISH_AT_START", "yesplease")
+	_, err := loadConfig(nil)
+	if err == nil || !strings.Contains(err.Error(), "SEP2_ADMIN_UI_BUS_PUBLISH_AT_START") {
+		t.Errorf("loadConfig with a non-boolean: err = %v, want one naming SEP2_ADMIN_UI_BUS_PUBLISH_AT_START", err)
 	}
 }
 
