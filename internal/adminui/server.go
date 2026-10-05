@@ -395,20 +395,21 @@ func (s *Server) Run(ctx context.Context) error {
 		IdleTimeout:       s.timeouts.idle,
 	}
 	httpSrv.RegisterOnShutdown(cancelBase)
-	httpSrv.RegisterOnShutdown(s.plane.CloseStreams)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.Serve(s.ln) }()
 
 	select {
 	case <-ctx.Done():
-		// Before Shutdown, so each panel stream gets its final status
-		// event rather than a cut connection, and running panel actions
-		// are told to stop and waited for.
-		if n := s.plane.Close(s.timeouts.shutdown); n > 0 {
+		// One shutdown bound covers both steps. The plane closes first, so
+		// each panel stream gets its final status event rather than a cut
+		// connection, and running panel actions are told to stop and
+		// waited for, for at most half the bound.
+		deadline := time.Now().Add(s.timeouts.shutdown)
+		if n := s.plane.Close(s.timeouts.shutdown / 2); n > 0 {
 			log.Printf("adminui: %d panel action(s) still running at shutdown; they may still take effect", n)
 		}
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.timeouts.shutdown)
+		shutdownCtx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			<-serveErr

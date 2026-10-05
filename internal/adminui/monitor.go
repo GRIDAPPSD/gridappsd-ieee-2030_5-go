@@ -80,14 +80,13 @@ func (p *monitorPanel) view(context.Context) (sep2admin.Descriptor, error) {
 }
 
 // open attaches a viewer and feeds it from its own goroutine until the
-// stream ends. A topic the monitor refuses gets one status event saying
-// why, rather than a bare failed request the browser cannot explain.
+// stream ends. A topic the monitor refuses fails the open, the one way a
+// source can refuse without holding one of the plane's stream slots; the
+// plane logs the reason, and the browser only learns the stream was refused.
 func (p *monitorPanel) open(ctx context.Context, req sep2admin.StreamRequest, send sep2admin.StreamSendFunc) error {
 	v, err := p.mon.Watch(req.Param)
 	if err != nil {
-		send(sep2admin.StreamEvent{ID: p.idBase + 1, Time: time.Now(), Kind: sep2admin.StreamStatus,
-			Text: "not watched: " + strings.TrimPrefix(err.Error(), "busmonitor: ")})
-		return nil
+		return fmt.Errorf("topic %q not watched: %w", req.Param, err)
 	}
 	go p.feed(ctx, v, req.After, send)
 	return nil
@@ -100,8 +99,7 @@ func (p *monitorPanel) feed(ctx context.Context, v *busmonitor.Viewer, after uin
 			return
 		}
 	}
-	last := p.idBase + v.JoinSeq()
-	if !send(sep2admin.StreamEvent{ID: last, Time: time.Now(), Kind: sep2admin.StreamStatus, Text: statusText(v.Status())}) {
+	if !send(sep2admin.StreamEvent{ID: p.idBase + v.JoinSeq(), Time: time.Now(), Kind: sep2admin.StreamStatus, Text: statusText(v.Status())}) {
 		return
 	}
 	for {
@@ -110,17 +108,13 @@ func (p *monitorPanel) feed(ctx context.Context, v *busmonitor.Viewer, after uin
 			return
 		case ev, ok := <-v.Events():
 			if !ok {
-				// The monitor numbers no event for a closed view; one above
-				// the last ID sent keeps the plane from dropping this one.
-				send(sep2admin.StreamEvent{ID: last + 1, Time: time.Now(), Kind: sep2admin.StreamStatus,
+				send(sep2admin.StreamEvent{ID: p.idBase + v.EndSeq(), Time: time.Now(), Kind: sep2admin.StreamStatus,
 					Text: "monitor stopped this view: " + viewerEndReason(v.Err()) + "; press Start to watch again"})
 				return
 			}
-			out := p.event(ev)
-			if !send(out) {
+			if !send(p.event(ev)) {
 				return
 			}
-			last = out.ID
 		}
 	}
 }
