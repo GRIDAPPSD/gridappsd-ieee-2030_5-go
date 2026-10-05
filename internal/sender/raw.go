@@ -64,6 +64,11 @@ func validateRaw(reg *registry.Registry, body []byte) (parsedMessage, error) {
 	if err != nil {
 		return out, bad("body", "invalid JSON: %v", err)
 	}
+	if path, dup, err := firstDuplicateKey(body); err != nil {
+		return out, bad("body", "invalid JSON: %v", err)
+	} else if dup {
+		return out, bad(path, "duplicate field")
+	}
 	top, ok := doc.(map[string]any)
 	if !ok {
 		return out, bad("body", "must be a JSON object")
@@ -171,6 +176,55 @@ func decodeWithNumbers(body []byte) (any, error) {
 		return nil, errors.New("data after the first JSON value")
 	}
 	return v, nil
+}
+
+// firstDuplicateKey finds the first object key, in document order, that an
+// object repeats, and returns its JSON path. The map view validateRaw checks
+// keeps the last of two equal keys, while the subscriber's struct decode merges
+// them, so a repeat would let the subscriber see fields validation never did.
+func firstDuplicateKey(body []byte) (path string, dup bool, err error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	return scanForDuplicate(dec, "")
+}
+
+func scanForDuplicate(dec *json.Decoder, path string) (string, bool, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return "", false, err
+	}
+	delim, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return "", false, nil
+	}
+	switch delim {
+	case '{':
+		seen := map[string]struct{}{}
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return "", false, err
+			}
+			key, _ := keyTok.(string)
+			child := join(path, key)
+			if _, again := seen[key]; again {
+				return child, true, nil
+			}
+			seen[key] = struct{}{}
+			if p, found, err := scanForDuplicate(dec, child); err != nil || found {
+				return p, found, err
+			}
+		}
+	case '[':
+		for i := 0; dec.More(); i++ {
+			if p, found, err := scanForDuplicate(dec, fmt.Sprintf("%s[%d]", path, i)); err != nil || found {
+				return p, found, err
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return "", false, err
+	}
+	return "", false, nil
 }
 
 // deltaErrPath points at the member of forward_differences[i] the

@@ -112,11 +112,14 @@ func TestSendWhileOffIsRefusedAndNothingIsPublished(t *testing.T) {
 	if n := r.bus.count(); n != 0 {
 		t.Errorf("%d frames reached the bus while publishing was off", n)
 	}
-	recent := r.s.Recent()
-	if len(recent) != len(sends) {
-		t.Fatalf("%d recent rows, want %d", len(recent), len(sends))
+	refusals := r.s.Refusals()
+	if len(refusals) != len(sends) {
+		t.Fatalf("%d refusal rows, want %d", len(refusals), len(sends))
 	}
-	for _, e := range recent {
+	if n := len(r.s.Recent()); n != 0 {
+		t.Errorf("%d rows in the recent list, want refusals kept apart from it", n)
+	}
+	for _, e := range refusals {
 		if e.Outcome != OutcomeRefused || e.Reason != "publishing is off" || e.Remote != "ra" {
 			t.Errorf("row = %+v, want refused with reason %q from ra", e, "publishing is off")
 		}
@@ -206,9 +209,9 @@ func TestFormFieldRangeAndUnknownDeviceAreRefusedBeforeTheBus(t *testing.T) {
 	if r.bus.count() != 0 {
 		t.Errorf("%d frames published for refused forms", r.bus.count())
 	}
-	recent := r.s.Recent()
+	recent := r.s.Refusals()
 	if len(recent) != 2 || recent[0].Outcome != OutcomeRefused || !strings.Contains(recent[0].Reason, "forward_differences[0].object") || recent[1].Outcome != OutcomeRefused {
-		t.Errorf("recent = %+v, want two refused rows naming the reason", recent)
+		t.Errorf("refusals = %+v, want two refused rows naming the reason", recent)
 	}
 }
 
@@ -222,7 +225,7 @@ func TestInvalidRawIsRefusedWithItsPathAndNotPublished(t *testing.T) {
 	if r.bus.count() != 0 {
 		t.Error("an invalid body reached the bus")
 	}
-	if e := r.s.Recent()[0]; e.Outcome != OutcomeRefused || !strings.Contains(e.Reason, "forward_differences[0].value.multiplier") {
+	if e := r.s.Refusals()[0]; e.Outcome != OutcomeRefused || !strings.Contains(e.Reason, "forward_differences[0].value.multiplier") {
 		t.Errorf("row = %+v", e)
 	}
 }
@@ -272,7 +275,7 @@ func TestRateLimitedSendIsRecordedAsRefused(t *testing.T) {
 	for i := 0; i < RateBurst+1; i++ {
 		_, _ = r.s.SendConnect(ctx, "ra", "_dev-a", true)
 	}
-	e := r.s.Recent()[0]
+	e := r.s.Refusals()[0]
 	if e.Outcome != OutcomeRefused || e.Reason != ErrRateLimited.Error() || e.Destination != "" {
 		t.Errorf("row = %+v, want refused: %s", e, ErrRateLimited)
 	}
@@ -407,11 +410,11 @@ func TestMixedOutcomeCountsAsRefusedWhenAnyDifferenceWasRefused(t *testing.T) {
 
 func TestAnOutcomeOlderThanTheSendIsNotTheSendsOutcome(t *testing.T) {
 	r := newRig(t, true)
-	r.obs.put(controlobs.MessageOutcome{DifferenceMRID: "reused", At: t0.Add(-time.Hour), Deltas: []controlobs.DeltaOutcome{{Result: controlobs.ResultIssued}}})
 	r.clk.advance(time.Minute)
 	if _, err := r.s.SendRaw(ctx, "ra", rawBody("reused", "_dev-a", 0, 1)); err != nil {
 		t.Fatal(err)
 	}
+	r.obs.put(controlobs.MessageOutcome{DifferenceMRID: "reused", At: t0.Add(-time.Hour), Deltas: []controlobs.DeltaOutcome{{Result: controlobs.ResultIssued}}})
 	if got := r.s.Recent()[0].Outcome; got != OutcomePending {
 		t.Errorf("outcome = %q, want pending: the only record predates the send", got)
 	}
