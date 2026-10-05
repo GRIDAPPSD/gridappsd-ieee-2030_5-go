@@ -103,13 +103,36 @@ func describeErrorValue(b []byte) string {
 	return boundText(redactText(string(out)))
 }
 
-// secretText matches "name=value", "name: value" and "bearer value"
-// where the name looks like a credential.
-var secretText = regexp.MustCompile(`(?i)\b(pass(?:word|wd)?|pwd|secret|token|credential|authorization|auth|cookie|api[_-]?key|key)\b\s*[:=]\s*(?:bearer\s+)?[^\s,;&"']+|\bbearer\s+[^\s,;&"']+`)
+// redactHeadroom is how much text is kept before redaction runs, so the
+// regex never scans an unbounded response. It is far above maxErrorText,
+// so a secret cut at the edge lies beyond the final bound anyway.
+const redactHeadroom = 4096
 
-// redactText blanks credential-looking values inside free text.
+// secretText matches a credential-looking name (optionally prefixed, as
+// in access_token or db_password, and optionally quoted) followed by : or =
+// and a quoted or bare value. For authorization the credential after any
+// scheme (Basic, Bearer, ...) is secret too. A bare "bearer value" is also
+// matched.
+var secretText = regexp.MustCompile(`(?i)[\w-]*authorization["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&"']+(?:\s+[^\s,;&"']+)?)` +
+	`|[\w-]*(?:pass(?:word|wd)?|pwd|secret|token|credential|auth|cookie|key)["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;&"']+)` +
+	`|\bbearer\s+[^\s,;&"']+`)
+
+// redactInput cuts s to redactHeadroom bytes on a rune boundary.
+func redactInput(s string) string {
+	if len(s) <= redactHeadroom {
+		return s
+	}
+	cut := redactHeadroom
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// redactText blanks credential-looking values inside free text. It cuts
+// first, so the work is bounded whatever the input size.
 func redactText(s string) string {
-	return secretText.ReplaceAllString(s, "[redacted]")
+	return secretText.ReplaceAllString(redactInput(s), "[redacted]")
 }
 
 // redactCredentials blanks values whose key looks like a credential, at

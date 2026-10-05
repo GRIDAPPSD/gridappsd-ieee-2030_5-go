@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockRequester captures the last (destination, body) pair passed to Request
@@ -637,5 +638,65 @@ func TestFirstErrorSticks(t *testing.T) {
 	_, err = decodeEnvelope([]byte(`{"error":"first","error":"second"}`), true)
 	if err == nil || !strings.Contains(err.Error(), "first") || strings.Contains(err.Error(), "second") {
 		t.Errorf("err = %v, want only first", err)
+	}
+}
+
+func TestRedactTextPrefixedAndQuotedSecrets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ in, secret string }{
+		{"access_token=AAA1 failed", "AAA1"},
+		{"client_secret=BBB2 failed", "BBB2"},
+		{"db_password=CCC3 failed", "CCC3"},
+		{`password="DDD4" failed`, "DDD4"},
+		{`password: 'EEE5' failed`, "EEE5"},
+		{`bad {'password': 'FFF6'} given`, "FFF6"},
+		{`bad {"password": "GGG7"} given`, "GGG7"},
+		{"Authorization: Basic HHH8user rejected", "HHH8user"},
+		{"x-api-key: III9 rejected", "III9"},
+	}
+	for _, tc := range tests {
+		for _, body := range []string{
+			mustJSON(t, map[string]any{"error": tc.in}),
+			mustJSON(t, map[string]any{"error": map[string]any{"message": tc.in}}),
+		} {
+			_, err := decodeEnvelope([]byte(body), true)
+			if !errors.Is(err, ErrServerError) {
+				t.Fatalf("%q: err = %v", tc.in, err)
+			}
+			if strings.Contains(err.Error(), tc.secret) {
+				t.Errorf("%q: err %q leaks %q", tc.in, err, tc.secret)
+			}
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestLargeErrorTextIsCutBeforeRedaction(t *testing.T) {
+	t.Parallel()
+
+	big := strings.Repeat("password=x ", 1<<20) // about 11 MiB
+	start := time.Now()
+	_, err := decodeEnvelope([]byte(mustJSON(t, map[string]any{"error": big})), true)
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrServerError) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(err.Error()) > 2*maxErrorText {
+		t.Errorf("error length %d not bounded", len(err.Error()))
+	}
+	if elapsed > time.Second {
+		t.Errorf("took %v, want redaction work bounded by a pre-cut", elapsed)
+	}
+	if got := len(redactInput(big)); got > redactHeadroom {
+		t.Errorf("redactInput length %d, want <= %d", got, redactHeadroom)
 	}
 }
