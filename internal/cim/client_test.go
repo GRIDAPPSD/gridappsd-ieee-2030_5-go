@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
-	"time"
+	"unicode/utf8"
 )
 
 // mockRequester captures the last (destination, body) pair passed to Request
@@ -521,14 +522,16 @@ func TestDecodeEnvelopeErrorShapes(t *testing.T) {
 		{
 			name: "object without message", wantErr: true,
 			body:      `{"error":{"code":500,"status":"x"}}`,
-			wantInErr: []string{`"code":500`},
+			wantInErr: []string{`"code"`, `"status"`},
+			notInErr:  []string{"500"},
 		},
-		{name: "empty object still fails", body: `{"error":{}}`, wantErr: true, wantInErr: []string{"{}"}},
+		{name: "empty object still fails", body: `{"error":{}}`, wantErr: true, wantInErr: []string{"no keys"}},
 		{
-			name: "credential keys redacted", wantErr: true,
-			body:      `{"error":{"password":"hunter2","token":"abc123","code":1}}`,
-			wantInErr: []string{`"code":1`},
-			notInErr:  []string{"hunter2", "abc123"},
+			name: "credential values never shown", wantErr: true,
+			body: `{"error":{"password":"hunter2","token":"abc123","code":1,` +
+				`"auth":"a1","bearer":"b1","cookie":"c1","pwd":"p1"}}`,
+			wantInErr: []string{`"code"`, `"password"`, `"token"`, `"auth"`, `"bearer"`, `"cookie"`, `"pwd"`},
+			notInErr:  []string{"hunter2", "abc123", "a1\"", "b1\"", "c1\"", "p1\""},
 		},
 		{
 			name: "message is bounded", wantErr: true,
@@ -573,49 +576,13 @@ func TestGetPlatformStatusObjectError(t *testing.T) {
 	}
 }
 
-func TestDecodeEnvelopeRedactsEveryShape(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		body     string
-		notInErr []string
-		inErr    []string
-	}{
-		{"array of objects", `{"error":[{"password":"hunter2"}]}`, []string{"hunter2"}, nil},
-		{"nested in array in object", `{"error":{"errors":[{"auth":"hunter2"}]}}`, []string{"hunter2"}, nil},
-		{"bearer key", `{"error":{"bearer":"hunter2","cookie":"c00kie","pwd":"pw1","auth":"a1","x":1}}`, []string{"hunter2", "c00kie", "pw1", "a1"}, []string{`"x":1`}},
-		{"kv in message", `{"error":{"message":"login failed token=abc123 for u"}}`, []string{"abc123"}, []string{"login failed"}},
-		{"colon kv in string", `{"error":"bad password: hunter2 given"}`, []string{"hunter2"}, []string{"bad"}},
-		{"bearer header text", `{"error":"Authorization: Bearer abc123xyz rejected"}`, []string{"abc123xyz"}, nil},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			_, err := decodeEnvelope([]byte(tc.body), true)
-			if !errors.Is(err, ErrServerError) {
-				t.Fatalf("err = %v, want ErrServerError", err)
-			}
-			for _, s := range tc.notInErr {
-				if strings.Contains(err.Error(), s) {
-					t.Errorf("err %q leaks %q", err, s)
-				}
-			}
-			for _, s := range tc.inErr {
-				if !strings.Contains(err.Error(), s) {
-					t.Errorf("err %q missing %q", err, s)
-				}
-			}
-		})
-	}
-}
-
 func TestErrorSurvivesOtherFieldTypeError(t *testing.T) {
 	t.Parallel()
 
 	for _, body := range []string{
 		`{"error":"boom","responseComplete":"no"}`,
 		`{"error":{"message":"boom"},"responseComplete":"no"}`,
+		`{"error":{"message":"boom"},"responseComplete":1}`,
 	} {
 		_, err := decodeEnvelope([]byte(body), true)
 		if !errors.Is(err, ErrServerError) || !strings.Contains(err.Error(), "boom") {
@@ -641,34 +608,15 @@ func TestFirstErrorSticks(t *testing.T) {
 	}
 }
 
-func TestRedactTextPrefixedAndQuotedSecrets(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct{ in, secret string }{
-		{"access_token=AAA1 failed", "AAA1"},
-		{"client_secret=BBB2 failed", "BBB2"},
-		{"db_password=CCC3 failed", "CCC3"},
-		{`password="DDD4" failed`, "DDD4"},
-		{`password: 'EEE5' failed`, "EEE5"},
-		{`bad {'password': 'FFF6'} given`, "FFF6"},
-		{`bad {"password": "GGG7"} given`, "GGG7"},
-		{"Authorization: Basic HHH8user rejected", "HHH8user"},
-		{"x-api-key: III9 rejected", "III9"},
+// errText decodes body and returns the error text, failing the test
+// unless it is an ErrServerError.
+func errText(t *testing.T, body string) string {
+	t.Helper()
+	_, err := decodeEnvelope([]byte(body), true)
+	if !errors.Is(err, ErrServerError) {
+		t.Fatalf("decodeEnvelope(%.80s) err = %v, want ErrServerError", body, err)
 	}
-	for _, tc := range tests {
-		for _, body := range []string{
-			mustJSON(t, map[string]any{"error": tc.in}),
-			mustJSON(t, map[string]any{"error": map[string]any{"message": tc.in}}),
-		} {
-			_, err := decodeEnvelope([]byte(body), true)
-			if !errors.Is(err, ErrServerError) {
-				t.Fatalf("%q: err = %v", tc.in, err)
-			}
-			if strings.Contains(err.Error(), tc.secret) {
-				t.Errorf("%q: err %q leaks %q", tc.in, err, tc.secret)
-			}
-		}
-	}
+	return err.Error()
 }
 
 func mustJSON(t *testing.T, v any) string {
@@ -680,23 +628,153 @@ func mustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-func TestLargeErrorTextIsCutBeforeRedaction(t *testing.T) {
+// secretTexts are the shapes the earlier regex rounds chased. Under a
+// non-message key none may appear; as a string error or message they are
+// shown verbatim, the same as before this change.
+var secretTexts = []struct{ text, secret string }{
+	{"access_token=AAA1 failed", "AAA1"},
+	{"client_secret=BBB2 failed", "BBB2"},
+	{"db_password=CCC3 failed", "CCC3"},
+	{`password="DDD4" failed`, "DDD4"},
+	{`password: 'EEE5' failed`, "EEE5"},
+	{`{'password': 'FFF6'}`, "FFF6"},
+	{`{"password": "GGG7"}`, "GGG7"},
+	{"Authorization: Basic HHH8user", "HHH8user"},
+	{"x-api-key: III9", "III9"},
+	{`password="ab\"LLL1"`, "LLL1"},
+	{`Digest response="MMM2", username="u"`, "MMM2"},
+}
+
+func TestErrorObjectNeverShowsNonMessageValues(t *testing.T) {
 	t.Parallel()
 
-	big := strings.Repeat("password=x ", 1<<20) // about 11 MiB
-	start := time.Now()
-	_, err := decodeEnvelope([]byte(mustJSON(t, map[string]any{"error": big})), true)
-	elapsed := time.Since(start)
-	if !errors.Is(err, ErrServerError) {
-		t.Fatalf("err = %v", err)
+	for _, tc := range secretTexts {
+		body := mustJSON(t, map[string]any{"error": map[string]any{"code": 1, "note": tc.text}})
+		got := errText(t, body)
+		if strings.Contains(got, tc.secret) {
+			t.Errorf("%q: %q leaks %q", tc.text, got, tc.secret)
+		}
+		if !strings.Contains(got, `"code"`) || !strings.Contains(got, `"note"`) {
+			t.Errorf("%q: %q missing key names", tc.text, got)
+		}
 	}
-	if len(err.Error()) > 2*maxErrorText {
-		t.Errorf("error length %d not bounded", len(err.Error()))
+	got := errText(t, `{"error":[{"password":"hunter2"}]}`)
+	if !strings.Contains(got, "array error, 1 elements") || strings.Contains(got, "hunter2") {
+		t.Errorf("array error text = %q", got)
 	}
-	if elapsed > time.Second {
-		t.Errorf("took %v, want redaction work bounded by a pre-cut", elapsed)
+	got = errText(t, `{"error":{"code":1,"note":"password=\"DDD4\""}}`)
+	if strings.Contains(got, "DDD4") {
+		t.Errorf("escaped note leaked: %q", got)
 	}
-	if got := len(redactInput(big)); got > redactHeadroom {
-		t.Errorf("redactInput length %d, want <= %d", got, redactHeadroom)
+}
+
+func TestErrorTextShownVerbatim(t *testing.T) {
+	t.Parallel()
+
+	texts := []string{
+		"missing key: feeder_id", "bypass: model not loaded", "test pass: 2",
+		"Authorization: failed for user admin",
+		// Pinned on purpose: a message the platform writes is shown as is,
+		// exactly like a string error at the base commit.
+		"login failed token=abc123",
+	}
+	for _, tc := range secretTexts {
+		texts = append(texts, tc.text)
+	}
+	for _, text := range texts {
+		for _, body := range []string{
+			mustJSON(t, map[string]any{"error": text}),
+			mustJSON(t, map[string]any{"error": map[string]any{"message": text}}),
+		} {
+			if got := errText(t, body); !strings.HasSuffix(got, ": "+text) {
+				t.Errorf("error text = %q, want it to end with %q", got, text)
+			}
+		}
+	}
+}
+
+func TestErrorScalarsAndEmptyShapesFail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ body, want string }{
+		{`{"error":0}`, ": 0"},
+		{`{"error":false}`, ": false"},
+		{`{"error":true}`, ": true"},
+		{`{"error":{}}`, "no keys"},
+		{`{"error":[]}`, "array error, 0 elements"},
+		{`{"error":{"message":""}}`, `"message"`},
+	}
+	for _, tc := range tests {
+		if got := errText(t, tc.body); !strings.Contains(got, tc.want) {
+			t.Errorf("%s: %q does not contain %q", tc.body, got, tc.want)
+		}
+	}
+}
+
+func TestErrorNestedObjectDepth(t *testing.T) {
+	t.Parallel()
+
+	got := errText(t, `{"error":{"error":{"message":"feeder not loaded"}}}`)
+	if !strings.Contains(got, "feeder not loaded") {
+		t.Errorf("text = %q, want nested message", got)
+	}
+	got = errText(t, `{"error":{"error":{"error":{"error":{"message":"too deep"}}}}}`)
+	if strings.Contains(got, "too deep") || !strings.Contains(got, `"error"`) {
+		t.Errorf("text = %q, want key names at depth cap", got)
+	}
+}
+
+func TestErrorTextLengthBounds(t *testing.T) {
+	t.Parallel()
+
+	const limit = 512 + 128 // text bound plus the fixed prefix and ellipsis
+	deep := strings.Repeat(`{"a":`, 9000) + `1` + strings.Repeat(`}`, 9000)
+	var keys strings.Builder
+	keys.WriteString(`{"error":{`)
+	for i := 0; i < 50; i++ {
+		if i > 0 {
+			keys.WriteByte(',')
+		}
+		fmt.Fprintf(&keys, `"k%02d%s":1`, i, strings.Repeat("n", 1024))
+	}
+	keys.WriteString(`}}`)
+	tests := map[string]string{
+		"deep object":   `{"error":` + deep + `}`,
+		"20 MiB object": `{"error":{"note":"` + strings.Repeat("x", 20<<20) + `"}}`,
+		"16 MiB string": `{"error":"` + strings.Repeat("password=x ", 1<<20) + `"}`,
+		"50 long keys":  keys.String(),
+		"long message":  `{"error":{"message":"` + strings.Repeat("m", 5000) + `"}}`,
+		"long number":   `{"error":` + strings.Repeat("9", 5000) + `}`,
+		"20 MiB array":  `{"error":[` + strings.Repeat("1,", 1<<20) + `1]}`,
+	}
+	for name, body := range tests {
+		if got := errText(t, body); len(got) > limit {
+			t.Errorf("%s: error length %d, want at most %d", name, len(got), limit)
+		}
+	}
+	got := errText(t, keys.String())
+	if n := strings.Count(got, `"k`); n > 8 {
+		t.Errorf("50 keys showed %d names, want at most 8", n)
+	}
+}
+
+func TestErrorTextStaysValidUTF8AtTheCut(t *testing.T) {
+	t.Parallel()
+
+	for pad := 0; pad < 4; pad++ {
+		msg := strings.Repeat("a", 510+pad) + strings.Repeat("\u00e9", 8)
+		for _, body := range []string{
+			`{"error":"` + msg + `"}`,
+			`{"error":{"message":"` + msg + `"}}`,
+		} {
+			if got := errText(t, body); !utf8.ValidString(got) {
+				t.Errorf("pad %d: invalid UTF-8 in %q", pad, got)
+			}
+		}
+	}
+	long := strings.Repeat("\u00e9", 40)
+	got := errText(t, `{"error":{"`+long+`":1}}`)
+	if !utf8.ValidString(got) {
+		t.Errorf("key name cut produced invalid UTF-8: %q", got)
 	}
 }

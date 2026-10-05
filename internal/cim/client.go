@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -72,7 +72,7 @@ func (e *envelopeError) UnmarshalJSON(b []byte) error {
 	var s string
 	if json.Unmarshal(b, &s) == nil {
 		if s != "" {
-			*e = envelopeError{set: true, text: boundText(redactText(s))}
+			*e = envelopeError{set: true, text: boundText(s)}
 		}
 		return nil
 	}
@@ -80,87 +80,81 @@ func (e *envelopeError) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// describeErrorValue renders a non-string error value: the message of an
-// object when it has one, else the object as JSON with credential-like
-// keys redacted.
+// messageKeys are the object members shown as the error text, in order.
+// The platform's object shape is not documented; when none of these is
+// present the object's key names are shown, so the first real failure
+// says which key to add.
+var messageKeys = []string{"message", "msg", "detail", "reason", "description", "error"}
+
+const (
+	maxErrorDepth   = 3
+	maxErrorKeys    = 8
+	maxErrorKeyName = 32
+)
+
+// describeErrorValue renders a non-string error value by position, never
+// by content: an object shows only a message-like string member (or the
+// sorted key names), a scalar shows its literal, and an array shows its
+// length. No other value is rendered, so a credential under any other
+// member never reaches the text.
 func describeErrorValue(b []byte) string {
-	var v any
-	if json.Unmarshal(b, &v) != nil {
-		return boundText(redactText(strings.TrimSpace(string(b))))
+	b = []byte(strings.TrimSpace(string(b)))
+	if len(b) == 0 {
+		return "unrecognized error value"
 	}
-	if obj, ok := v.(map[string]any); ok {
-		for _, k := range []string{"message", "msg", "detail", "reason", "description", "error"} {
-			if m, ok := obj[k].(string); ok && m != "" {
-				return boundText(redactText(m))
-			}
+	switch b[0] {
+	case '{':
+		return describeErrorObject(b, 1)
+	case '[':
+		var elems []json.RawMessage
+		if json.Unmarshal(b, &elems) != nil {
+			return "unrecognized error value"
+		}
+		return fmt.Sprintf("array error, %d elements", len(elems))
+	case 't', 'f':
+		if string(b) == "true" || string(b) == "false" {
+			return string(b)
+		}
+	default:
+		var n json.Number
+		if json.Unmarshal(b, &n) == nil {
+			return boundText(n.String())
 		}
 	}
-	redactCredentials(v)
-	out, err := json.Marshal(v)
-	if err != nil {
-		return "unrepresentable error value"
-	}
-	return boundText(redactText(string(out)))
+	return "unrecognized error value"
 }
 
-// redactHeadroom is how much text is kept before redaction runs, so the
-// regex never scans an unbounded response. It is far above maxErrorText,
-// so a secret cut at the edge lies beyond the final bound anyway.
-const redactHeadroom = 4096
-
-// secretText matches a credential-looking name (optionally prefixed, as
-// in access_token or db_password, and optionally quoted) followed by : or =
-// and a quoted or bare value. For authorization the credential after any
-// scheme (Basic, Bearer, ...) is secret too. A bare "bearer value" is also
-// matched.
-var secretText = regexp.MustCompile(`(?i)[\w-]*authorization["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&"']+(?:\s+[^\s,;&"']+)?)` +
-	`|[\w-]*(?:pass(?:word|wd)?|pwd|secret|token|credential|auth|cookie|key)["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;&"']+)` +
-	`|\bbearer\s+[^\s,;&"']+`)
-
-// redactInput cuts s to redactHeadroom bytes on a rune boundary.
-func redactInput(s string) string {
-	if len(s) <= redactHeadroom {
-		return s
+// describeErrorObject applies the object rule at the given depth
+// (1 for the outermost object).
+func describeErrorObject(b []byte, depth int) string {
+	var members map[string]json.RawMessage
+	if json.Unmarshal(b, &members) != nil {
+		return "unrecognized error value"
 	}
-	cut := redactHeadroom
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
-}
-
-// redactText blanks credential-looking values inside free text. It cuts
-// first, so the work is bounded whatever the input size.
-func redactText(s string) string {
-	return secretText.ReplaceAllString(redactInput(s), "[redacted]")
-}
-
-// redactCredentials blanks values whose key looks like a credential, at
-// any depth.
-func redactCredentials(v any) {
-	switch t := v.(type) {
-	case map[string]any:
-		for k, val := range t {
-			lk := strings.ToLower(k)
-			for _, frag := range credentialKeyFragments {
-				if strings.Contains(lk, frag) {
-					t[k] = "[redacted]"
-					break
-				}
-			}
-			if t[k] != "[redacted]" {
-				redactCredentials(val)
-			}
-		}
-	case []any:
-		for _, val := range t {
-			redactCredentials(val)
+	for _, k := range messageKeys {
+		var m string
+		if raw, ok := members[k]; ok && json.Unmarshal(raw, &m) == nil && m != "" {
+			return boundText(m)
 		}
 	}
-}
-
-var credentialKeyFragments = []string{
-	"pass", "pwd", "secret", "token", "credential", "auth", "bearer", "cookie", "key",
+	if raw, ok := members["error"]; ok && depth < maxErrorDepth && len(raw) > 0 && raw[0] == '{' {
+		return describeErrorObject(raw, depth+1)
+	}
+	names := make([]string, 0, len(members))
+	for k := range members {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	if len(names) > maxErrorKeys {
+		names = names[:maxErrorKeys]
+	}
+	for i, k := range names {
+		names[i] = fmt.Sprintf("%q", cutString(k, maxErrorKeyName))
+	}
+	if len(names) == 0 {
+		return "object error, no keys"
+	}
+	return boundText("object error, keys: " + strings.Join(names, ", "))
 }
 
 // boundText truncates s to maxErrorText bytes on a rune boundary.
@@ -168,11 +162,18 @@ func boundText(s string) string {
 	if len(s) <= maxErrorText {
 		return s
 	}
-	cut := maxErrorText
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
+	return cutString(s, maxErrorText) + "..."
+}
+
+// cutString truncates s to at most n bytes on a rune boundary.
+func cutString(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return s[:cut] + "..."
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // decodeEnvelope inspects the standard CIM response envelope. It
