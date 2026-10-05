@@ -276,6 +276,9 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job has no checkout, so gh cannot infer the repository
+          # from a git remote and must be told.
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build-and-verify.outputs.version }}
           # Assigned via env: for the same reason as VERSION above:
           # never interpolate ${{ }} directly into the shell body.
