@@ -37,8 +37,15 @@ type LastDelta struct {
 // state, safe to hand to a caller (for example a JSON handler) with no
 // risk of that caller reaching back into the hook's mutable fields.
 type Snapshot struct {
-	Applied     uint64
-	Skipped     uint64
+	// Applied counts deltas that issued a new control.
+	Applied uint64
+	// Restated counts deltas that repeated the setpoint already in force
+	// and so issued nothing.
+	Restated uint64
+	Skipped  uint64
+	// EmptyFrames counts decodable frames that carried no forward
+	// differences, which is valid JSON of the wrong shape.
+	EmptyFrames uint64
 	Last        *LastDelta
 	OutputTopic string
 	InputTopic  string
@@ -51,7 +58,10 @@ type Snapshot struct {
 type Hook struct {
 	mu          sync.Mutex
 	applied     uint64
+	restated    uint64
 	skipped     uint64
+	emptyFrames uint64
+	outcomes    []MessageOutcome
 	last        *LastDelta
 	outputTopic string
 	inputTopic  string
@@ -113,9 +123,112 @@ func (h *Hook) Snapshot() Snapshot {
 
 	return Snapshot{
 		Applied:     h.applied,
+		Restated:    h.restated,
 		Skipped:     h.skipped,
+		EmptyFrames: h.emptyFrames,
 		Last:        last,
 		OutputTopic: h.outputTopic,
 		InputTopic:  h.inputTopic,
 	}
+}
+
+// MaxOutcomeMessages is how many messages the outcome ring keeps.
+const MaxOutcomeMessages = 100
+
+// Result values a DeltaOutcome carries.
+const (
+	ResultIssued   = "issued"
+	ResultRestated = "restated"
+	ResultRefused  = "refused"
+)
+
+// maxOutcomeText bounds every input-derived string the ring stores, so
+// a hostile publisher cannot grow the ring past its message cap in bytes.
+const maxOutcomeText = 256
+
+// DeltaOutcome is what the control path did with one forward difference.
+// Reason is set only when Result is ResultRefused.
+type DeltaOutcome struct {
+	Object    string
+	Attribute string
+	Result    string
+	Reason    string
+}
+
+// MessageOutcome is the outcome of every difference in one input message,
+// keyed by the message's difference_mrid. Deltas is empty for a message
+// that carried no forward differences.
+type MessageOutcome struct {
+	DifferenceMRID string
+	At             time.Time
+	Deltas         []DeltaOutcome
+}
+
+// Restated records a delta that repeated the setpoint already in force.
+// It leaves Last untouched: Last is the last delta that took effect.
+func (h *Hook) Restated() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.restated++
+}
+
+// EmptyFrame records a frame that decoded but carried no forward
+// differences.
+func (h *Hook) EmptyFrame() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.emptyFrames++
+}
+
+// RecordMessage keeps the outcome of one message in the ring of the
+// newest MaxOutcomeMessages, dropping the oldest beyond that. An earlier
+// entry with the same difference_mrid is replaced, so a lookup never
+// returns a stale outcome for a re-sent message.
+func (h *Hook) RecordMessage(mrid string, deltas []DeltaOutcome) {
+	rec := MessageOutcome{
+		DifferenceMRID: clip(mrid),
+		At:             time.Now().UTC(),
+		Deltas:         make([]DeltaOutcome, len(deltas)),
+	}
+	for i, d := range deltas {
+		rec.Deltas[i] = DeltaOutcome{
+			Object:    clip(d.Object),
+			Attribute: clip(d.Attribute),
+			Result:    d.Result,
+			Reason:    clip(d.Reason),
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.outcomes {
+		if h.outcomes[i].DifferenceMRID == rec.DifferenceMRID {
+			h.outcomes = append(h.outcomes[:i], h.outcomes[i+1:]...)
+			break
+		}
+	}
+	h.outcomes = append(h.outcomes, rec)
+	if over := len(h.outcomes) - MaxOutcomeMessages; over > 0 {
+		h.outcomes = append([]MessageOutcome(nil), h.outcomes[over:]...)
+	}
+}
+
+// Outcome returns a copy of the stored outcome for a difference_mrid.
+func (h *Hook) Outcome(mrid string) (MessageOutcome, bool) {
+	mrid = clip(mrid)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, m := range h.outcomes {
+		if m.DifferenceMRID == mrid {
+			m.Deltas = append([]DeltaOutcome(nil), m.Deltas...)
+			return m, true
+		}
+	}
+	return MessageOutcome{}, false
+}
+
+func clip(s string) string {
+	if len(s) <= maxOutcomeText {
+		return s
+	}
+	return s[:maxOutcomeText]
 }

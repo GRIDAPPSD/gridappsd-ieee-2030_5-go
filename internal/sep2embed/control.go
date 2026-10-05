@@ -342,30 +342,65 @@ func derControlScope(edevID, fsaID, derpID string) string {
 // hardcoded here: ApplyControlDelta carries no opinion on the values, only
 // the plumbing to stamp them.
 func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, policy ControlPolicy, delta ControlDelta) error {
+	_, err := ApplyControlDeltaOutcome(ctx, stores, notifier, reg, policy, delta)
+	return err
+}
+
+// ControlOutcome says what an accepted control delta did.
+type ControlOutcome int
+
+const (
+	// ControlIssued means a new DERControl was written.
+	ControlIssued ControlOutcome = iota + 1
+	// ControlRestated means the delta repeated the setpoint already in
+	// force, so nothing was written.
+	ControlRestated
+)
+
+// ValidateControlDelta is the one decode and registry check for a control
+// delta: the attribute shape, the registered device, and the value bound for
+// its mode. It writes nothing, so the input subscriber and any sender that
+// pre-checks a message share it and cannot disagree about what is valid.
+func ValidateControlDelta(reg *registry.Registry, delta ControlDelta) error {
+	_, _, err := resolveControlDelta(reg, delta)
+	return err
+}
+
+// resolveControlDelta returns the registry entry and the decoded base a valid
+// delta names.
+func resolveControlDelta(reg *registry.Registry, delta ControlDelta) (registry.Entry, sep2.DERControlBase, error) {
+	var base sep2.DERControlBase
+	field, ok := strings.CutPrefix(delta.Attribute, derControlAttributePrefix)
+	if !ok || field == "" {
+		return registry.Entry{}, base, fmt.Errorf("%w: attribute %q (want prefix %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix)
+	}
+	entry, ok := reg.Get(delta.Object)
+	if !ok {
+		return registry.Entry{}, base, fmt.Errorf("%w: mrid=%q", ErrUnknownControlDevice, delta.Object)
+	}
+	if err := applyDERControlBaseField(&base, field, delta.Value); err != nil {
+		return registry.Entry{}, base, fmt.Errorf("sep2embed: control delta: %w", err)
+	}
+	return entry, base, nil
+}
+
+// ApplyControlDeltaOutcome is ApplyControlDelta that also reports whether the
+// delta issued a control or restated the one in force.
+func ApplyControlDeltaOutcome(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, policy ControlPolicy, delta ControlDelta) (ControlOutcome, error) {
 	// Checked before anything is resolved or written, so a misconfigured
 	// bridge cannot create a DERProgram or a DefaultDERControl as a side
 	// effect of a delta it is going to refuse.
 	if policy.Control.Duration == 0 {
-		return fmt.Errorf("%w: set -sep2-control-duration to at least 1 second", ErrDERControlDurationUnset)
+		return 0, fmt.Errorf("%w: set -sep2-control-duration to at least 1 second", ErrDERControlDurationUnset)
 	}
 	if !sep2config.RandomizeDurationInRange(policy.Control.RandomizeDuration) {
-		return fmt.Errorf("%w: policy.Control.RandomizeDuration %d, bound is -%d to %d seconds",
+		return 0, fmt.Errorf("%w: policy.Control.RandomizeDuration %d, bound is -%d to %d seconds",
 			ErrDERControlRandomizeDurationOutOfRange, policy.Control.RandomizeDuration, sep2config.MaxRandomizeSeconds, sep2config.MaxRandomizeSeconds)
 	}
 
-	field, ok := strings.CutPrefix(delta.Attribute, derControlAttributePrefix)
-	if !ok || field == "" {
-		return fmt.Errorf("%w: attribute %q (want prefix %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix)
-	}
-
-	// edevID must be the device's ADVERTISED store id: the opaque URL
-	// index rather than the LFDI.
-	// reg.Get resolves the delta's mRID to its Entry; the index allocator
-	// then maps that same mRID (its device key, as used by seed.go) to the
-	// id the device is actually seeded and advertised under.
-	entry, ok := reg.Get(delta.Object)
-	if !ok {
-		return fmt.Errorf("%w: mrid=%q", ErrUnknownControlDevice, delta.Object)
+	entry, base, err := resolveControlDelta(reg, delta)
+	if err != nil {
+		return 0, err
 	}
 
 	// IndexFor, not Allocate: this path must never mint an index. An mRID
@@ -375,7 +410,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// clean failure into a dangling control.
 	edevID, ok := stores.EndDeviceIndexes.IndexFor(entry.MRID)
 	if !ok {
-		return fmt.Errorf("%w: mrid=%q has no seeded URL index", ErrUnknownControlDevice, entry.MRID)
+		return 0, fmt.Errorf("%w: mrid=%q has no seeded URL index", ErrUnknownControlDevice, entry.MRID)
 	}
 
 	// Defense in depth: the registry and stores.EndDevices are seeded
@@ -383,12 +418,12 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// were ever to drift, fail closed rather than write a DERControl
 	// with no corresponding seeded device.
 	if _, err := stores.EndDevices.Get(ctx, edevID); err != nil {
-		return fmt.Errorf("%w: edev %q (mrid=%q) not seeded: %v",
+		return 0, fmt.Errorf("%w: edev %q (mrid=%q) not seeded: %v",
 			ErrUnknownControlDevice, edevID, entry.MRID, err)
 	}
 
 	if err := ensureDERProgram(ctx, stores, edevID, entry.LFDI, controlFSAID, controlDERProgramID, policy); err != nil {
-		return fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
+		return 0, fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
 	}
 
 	scope := derControlScope(edevID, controlFSAID, controlDERProgramID)
@@ -397,11 +432,8 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// not inherit the modes of previously issued controls: those remain in
 	// force as their own events (2018 rule t)1) and t)2) p.92), and copying
 	// them forward would make every delta's control set a superset of the
-	// last, turning independent modes into same-set supersessions.
-	var base sep2.DERControlBase
-	if err := applyDERControlBaseField(&base, field, delta.Value); err != nil {
-		return fmt.Errorf("sep2embed: control delta: %w", err)
-	}
+	// last, turning independent modes into same-set supersessions. The value
+	// was decoded into base by the shared validator above.
 
 	// Everything already stored for this device, read before anything is
 	// written, so both the creation-instant guard and the supersession pass
@@ -413,7 +445,7 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// an event that is not examined is an event that is left Active.
 	priorList, err := stores.DERControls.List(ctx, scope, store.ListOptions{Unbounded: true})
 	if err != nil {
-		return fmt.Errorf("sep2embed: control delta: list existing controls: %w", err)
+		return 0, fmt.Errorf("sep2embed: control delta: list existing controls: %w", err)
 	}
 
 	// ONE clock read for the whole event. interval.start and
@@ -431,20 +463,20 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// response cycle, which is the whole point of not re-issuing it.
 	restatement, err := restatesControlInForce(priorList.Items, &base, wallUnix)
 	if err != nil {
-		return fmt.Errorf("sep2embed: control delta: %w", err)
+		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 	if restatement {
-		return nil
+		return ControlRestated, nil
 	}
 
 	creationTime, err := nextEventCreationTime(priorList.Items, base, wallUnix)
 	if err != nil {
-		return fmt.Errorf("sep2embed: control delta: %w", err)
+		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 
 	mrid, err := deriveEventMRID(mridKindDERControl, entry.LFDI, creationTime, &base)
 	if err != nil {
-		return fmt.Errorf("sep2embed: control delta: %w", err)
+		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 	controlID := derControlID(creationTime, mrid)
 
@@ -497,18 +529,18 @@ func ApplyControlDelta(ctx context.Context, stores *assembly.Stores, notifier *c
 	// this id IS this event, already published; there is nothing to write and
 	// nothing to change.
 	if err := stores.DERControls.Create(ctx, scope, controlID, control); err != nil && !errors.Is(err, store.ErrAlreadyExists) {
-		return fmt.Errorf("sep2embed: control delta: write control: %w", err)
+		return 0, fmt.Errorf("sep2embed: control delta: write control: %w", err)
 	}
 
 	if err := supersedePriorControls(ctx, stores.DERControls, scope, priorList.Items, control); err != nil {
-		return fmt.Errorf("sep2embed: control delta: %w", err)
+		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 
 	if notifier != nil {
 		notifier.Notify(ctx, derProgramListHref(edevID, controlFSAID), sep2.NotificationStatusDefault)
 	}
 
-	return nil
+	return ControlIssued, nil
 }
 
 // nextEventCreationTime returns the creation instant to stamp on a control

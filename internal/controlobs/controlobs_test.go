@@ -1,6 +1,8 @@
 package controlobs
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
@@ -161,5 +163,71 @@ func TestSnapshotReturnsIndependentCopyOfLast(t *testing.T) {
 	again := h.Snapshot()
 	if again.Last.Object != "mrid-inv-1" {
 		t.Errorf("Hook.Snapshot().Last.Object after caller mutation = %q, want %q (Snapshot must return an independent copy)", again.Last.Object, "mrid-inv-1")
+	}
+}
+
+func TestRestatedAndEmptyFrameCountSeparatelyAndKeepLast(t *testing.T) {
+	t.Parallel()
+
+	var h Hook
+	h.Applied(diff.Difference{Object: "m", Attribute: "a", Value: 1.0})
+	h.Restated()
+	h.Restated()
+	h.EmptyFrame()
+
+	snap := h.Snapshot()
+	if snap.Applied != 1 || snap.Restated != 2 || snap.Skipped != 0 || snap.EmptyFrames != 1 {
+		t.Errorf("counts applied=%d restated=%d skipped=%d empty=%d, want 1 2 0 1",
+			snap.Applied, snap.Restated, snap.Skipped, snap.EmptyFrames)
+	}
+	if snap.Last == nil || snap.Last.Object != "m" {
+		t.Errorf("Last = %+v, want the applied delta untouched by restatements", snap.Last)
+	}
+}
+
+func TestOutcomeRingKeepsNewestHundredKeyedByMRID(t *testing.T) {
+	t.Parallel()
+
+	var h Hook
+	total := MaxOutcomeMessages + 5
+	for i := 0; i < total; i++ {
+		h.RecordMessage(fmt.Sprintf("diff-%03d", i), []DeltaOutcome{{Object: "o", Attribute: "a", Result: ResultIssued}})
+	}
+	if _, ok := h.Outcome("diff-004"); ok {
+		t.Errorf("oldest message beyond the cap is still held")
+	}
+	got, ok := h.Outcome("diff-005")
+	if !ok || len(got.Deltas) != 1 || got.Deltas[0].Result != ResultIssued {
+		t.Errorf("Outcome(diff-005) = %+v, found=%v, want the oldest kept message", got, ok)
+	}
+	if _, ok := h.Outcome(fmt.Sprintf("diff-%03d", total-1)); !ok {
+		t.Errorf("newest message missing")
+	}
+	if n := len(h.outcomes); n != MaxOutcomeMessages {
+		t.Errorf("ring holds %d messages, want %d", n, MaxOutcomeMessages)
+	}
+}
+
+func TestOutcomeResendReplacesAndTextIsBounded(t *testing.T) {
+	t.Parallel()
+
+	var h Hook
+	h.RecordMessage("same", []DeltaOutcome{{Result: ResultRefused, Reason: "first"}})
+	long := strings.Repeat("x", 10*maxOutcomeText)
+	h.RecordMessage("same", []DeltaOutcome{{Object: long, Result: ResultRestated}})
+
+	got, ok := h.Outcome("same")
+	if !ok || len(got.Deltas) != 1 || got.Deltas[0].Result != ResultRestated {
+		t.Fatalf("Outcome(same) = %+v, want the re-sent restated outcome", got)
+	}
+	if len(got.Deltas[0].Object) != maxOutcomeText {
+		t.Errorf("stored object length %d, want clipped to %d", len(got.Deltas[0].Object), maxOutcomeText)
+	}
+	if len(h.outcomes) != 1 {
+		t.Errorf("ring holds %d entries for one mrid, want 1", len(h.outcomes))
+	}
+	got.Deltas[0].Result = "mutated"
+	if again, _ := h.Outcome("same"); again.Deltas[0].Result != ResultRestated {
+		t.Errorf("Outcome returned a live slice, not a copy")
 	}
 }

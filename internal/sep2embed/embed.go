@@ -599,6 +599,13 @@ func (e *Embed) Notifier() assembly.ResourceNotifier {
 // honest: an event that is out of service is not a predecessor for the
 // incoming control to mark.
 func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, delta ControlDelta) error {
+	_, err := e.ApplyControlDeltaOutcome(ctx, reg, delta)
+	return err
+}
+
+// ApplyControlDeltaOutcome is ApplyControlDelta that also reports whether
+// the delta issued a control or restated the one in force.
+func (e *Embed) ApplyControlDeltaOutcome(ctx context.Context, reg *registry.Registry, delta ControlDelta) (ControlOutcome, error) {
 	// ONE clock read for the sweep and the write together, for the same
 	// reason ApplyControlDelta reads the clock once for creationTime,
 	// interval.start and EventStatus.dateTime: two reads could land on
@@ -608,9 +615,9 @@ func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, d
 	nowUnix := e.policy.Control.now().UTC().Unix()
 
 	if _, err := e.expireEndedControlsAt(ctx, nowUnix); err != nil {
-		return fmt.Errorf("sep2embed: control delta: %w", err)
+		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
-	return ApplyControlDelta(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta)
+	return ApplyControlDeltaOutcome(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta)
 }
 
 // pinnedClockPolicy returns a copy of policy whose control clock reports
