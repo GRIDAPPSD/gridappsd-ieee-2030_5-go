@@ -2,7 +2,7 @@
 # The build stage reaches the public GRIDAPPSD modules through the default
 # Go proxy, so no credential enters a layer. Only the binary reaches the
 # runtime stage, which has no shell and runs as a non-root user.
-FROM golang:1.26.3 AS build
+FROM golang:1.26.8 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 # BRIDGE_EXTRA_CA_FILE reaches this step as a BuildKit secret, so the CA is
