@@ -390,6 +390,9 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	var adminUIRun func(context.Context) error
+	if cfg.SEP2AdminUIInsecureNoKey {
+		defer installNoKeyLogFilter()()
+	}
 	adminSrv, err := adminui.New(adminUIConfig(cfg), adminui.Sources{
 		Registry: reg,
 		Devices:  embed,
@@ -840,6 +843,7 @@ func adminUIConfig(cfg config) adminui.Config {
 		Addr:                cfg.SEP2AdminUIAddr,
 		AllowNonLoopback:    cfg.SEP2AdminUIAllowNonLoopback,
 		Key:                 cfg.SEP2AdminUIKey,
+		InsecureNoKey:       cfg.SEP2AdminUIInsecureNoKey,
 		AllowedHosts:        cfg.SEP2AdminUIAllowedHosts,
 		FeederMRID:          cfg.FeederMRID,
 		SimulationID:        cfg.SimulationID,

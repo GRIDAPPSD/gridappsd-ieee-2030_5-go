@@ -126,6 +126,27 @@ compose() {
   docker compose --env-file "$env_file" -f "$compose_file" "$@"
 }
 
+# admin_key_check enforces the admin credential rules. With
+# SEP2_ADMIN_UI_INSECURE_NO_KEY true the key must be blank and the launcher warns
+# on stderr; otherwise the key must be at least 16 characters. The accepted
+# boolean spellings are the ones the bridge's own parser accepts.
+admin_key_check() {
+  local key no_key
+  key=$(setting SEP2_ADMIN_UI_KEY "")
+  no_key=$(setting SEP2_ADMIN_UI_INSECURE_NO_KEY false)
+  case "$no_key" in
+    1 | t | T | TRUE | true | True) no_key=true ;;
+    0 | f | F | FALSE | false | False) no_key=false ;;
+    *) die "SEP2_ADMIN_UI_INSECURE_NO_KEY must be true or false, got: $no_key" ;;
+  esac
+  if [ "$no_key" = true ]; then
+    [ -z "$key" ] || die "SEP2_ADMIN_UI_INSECURE_NO_KEY and SEP2_ADMIN_UI_KEY are both set; unset one"
+    echo "docker-bridge: WARNING admin UI will run WITHOUT A KEY (SEP2_ADMIN_UI_INSECURE_NO_KEY=true); anyone who can reach $BRIDGE_ADMIN_BIND_IP:$BRIDGE_ADMIN_PORT can read every panel and, when publishing is switched on, send control messages" >&2
+    return
+  fi
+  [ "${#key}" -ge 16 ] || die "SEP2_ADMIN_UI_KEY in $env_file is missing or shorter than 16 characters"
+}
+
 port_in_use() {
   [ -n "$(ss -H -ltn "sport = :$1")" ]
 }
@@ -134,9 +155,7 @@ preflight() {
   command -v docker >/dev/null 2>&1 || die "docker is not on PATH"
   command -v ss >/dev/null 2>&1 || die "ss is required for the port check and is not on PATH"
   [ -r "$env_file" ] || env_missing "copy .env.example to .env and fill it in"
-  local key
-  key=$(setting SEP2_ADMIN_UI_KEY "")
-  [ "${#key}" -ge 16 ] || die "SEP2_ADMIN_UI_KEY in $env_file is missing or shorter than 16 characters"
+  admin_key_check
   # Compose passes an empty password through and the bridge would then fall back
   # to its built-in default, so refuse here, before the image is built.
   [ -n "$(setting SEP2_STOMP_PASSWORD "")" ] || [ -n "$(setting GRIDAPPSD_PASSWORD "")" ] ||

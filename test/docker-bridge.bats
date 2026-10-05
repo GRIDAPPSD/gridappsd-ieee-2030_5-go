@@ -38,7 +38,7 @@ STUB
   export BRIDGE_ENV_FILE="$work/env"
   export SEP2_STOMP_PASSWORD="broker-pass"
   export BRIDGE_CERT_DIR="$work/certs"
-  unset SEP2_ADMIN_UI_KEY SEP2_DEVICE_CERT_MODE BRIDGE_SEP2_BIND_IP BRIDGE_ADMIN_BIND_IP BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_IMAGE_TAG BRIDGE_USE_PUBLISHED BRIDGE_EXTRA_CA_FILE SS_LISTEN NO_NETWORK PULL_FAIL
+  unset SEP2_ADMIN_UI_KEY SEP2_ADMIN_UI_INSECURE_NO_KEY SEP2_DEVICE_CERT_MODE BRIDGE_SEP2_BIND_IP BRIDGE_ADMIN_BIND_IP BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_IMAGE_TAG BRIDGE_USE_PUBLISHED BRIDGE_EXTRA_CA_FILE SS_LISTEN NO_NETWORK PULL_FAIL
 }
 
 run_script() {
@@ -265,7 +265,9 @@ run_script() {
   # shellcheck disable=SC2016 # literal compose syntax
   /usr/bin/grep -qF 'SEP2_STOMP_ADDR: ${SEP2_STOMP_ADDR:-gridappsd:61613}' "$f"
   # shellcheck disable=SC2016 # literal compose syntax
-  /usr/bin/grep -qF 'SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:?' "$f"
+  /usr/bin/grep -qF 'SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:-}' "$f"
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qF 'SEP2_ADMIN_UI_INSECURE_NO_KEY: ${SEP2_ADMIN_UI_INSECURE_NO_KEY:-false}' "$f"
 }
 
 @test "dockerignore: allowlist, and every deny pattern matches at any depth" {
@@ -363,6 +365,52 @@ run_script() {
   printf 'SEP2_ADMIN_UI_KEY=%s\n' 0123456789012345 >"$work/env"
   run_script up
   [ "$status" -eq 0 ]
+}
+
+@test "up with no-key mode and a blank key: starts, and warns on stderr naming the published address" {
+  printf 'SEP2_ADMIN_UI_KEY=\nSEP2_ADMIN_UI_INSECURE_NO_KEY=true\n' >"$work/env"
+  run_script up
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WITHOUT A KEY"* ]]
+  [[ "$output" == *"127.0.0.1:18444"* ]]
+  /usr/bin/grep -qF "[up] [-d] [--no-build]" "$DOCKER_LOG"
+}
+
+@test "up with no-key mode: the published address in the warning follows the bind settings" {
+  printf 'SEP2_ADMIN_UI_INSECURE_NO_KEY=1\nBRIDGE_ADMIN_BIND_IP=0.0.0.0\nBRIDGE_ADMIN_PORT=28444\n' >"$work/env"
+  run_script up
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"0.0.0.0:28444"* ]]
+}
+
+@test "up with no-key mode and a key set: refused before docker is called, key not echoed" {
+  printf 'SEP2_ADMIN_UI_KEY=%s\nSEP2_ADMIN_UI_INSECURE_NO_KEY=true\n' "$goodkey" >"$work/env"
+  run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SEP2_ADMIN_UI_INSECURE_NO_KEY and SEP2_ADMIN_UI_KEY are both set; unset one"* ]]
+  [[ "$output" != *"$goodkey"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+}
+
+@test "up with no-key mode off or false and a blank key: still refused for the missing key" {
+  printf 'SEP2_ADMIN_UI_KEY=\nSEP2_ADMIN_UI_INSECURE_NO_KEY=false\n' >"$work/env"
+  run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SEP2_ADMIN_UI_KEY"* ]]
+  [[ "$output" != *"WITHOUT A KEY"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+}
+
+@test "up: a no-key setting that is not a boolean is refused by name; the shell value beats the file" {
+  printf 'SEP2_ADMIN_UI_INSECURE_NO_KEY=maybe\n' >"$work/env"
+  run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SEP2_ADMIN_UI_INSECURE_NO_KEY must be true or false"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+  printf 'SEP2_ADMIN_UI_INSECURE_NO_KEY=true\nSEP2_ADMIN_UI_KEY=\n' >"$work/env"
+  SEP2_ADMIN_UI_INSECURE_NO_KEY=false run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"missing or shorter than 16"* ]]
 }
 
 @test "up: a missing broker password is refused before docker is called, naming both variables" {

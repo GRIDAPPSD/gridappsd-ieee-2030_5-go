@@ -10,7 +10,8 @@ One-time setup:
 
 ```bash
 cp .env.example .env && chmod 600 .env
-# set SEP2_ADMIN_UI_KEY (16+ characters, e.g. `openssl rand -hex 24`)
+# set SEP2_ADMIN_UI_KEY (16+ characters, e.g. `openssl rand -hex 24`),
+# or leave it blank and set SEP2_ADMIN_UI_INSECURE_NO_KEY=true (see below)
 # and GRIDAPPSD_PASSWORD (the platform broker password; SEP2_STOMP_PASSWORD also works)
 make docker-up
 ```
@@ -41,7 +42,11 @@ What it does:
   image. `docker-compose.bridge.yml` lists every setting the bridge reads,
   each as `NAME: ${NAME:-default}`, so that file is the one place to see them
   and `.env` is where you change them; [CONFIGURATION.md](CONFIGURATION.md)
-  describes each. The admin key `SEP2_ADMIN_UI_KEY` has no default and is required. The broker
+  describes each. The admin key `SEP2_ADMIN_UI_KEY` has no default and is required, unless
+  `SEP2_ADMIN_UI_INSECURE_NO_KEY=true` and the key is blank: the UI then opens
+  with no login. With it on, anyone who can reach the admin address can read every panel and, when publishing is switched on, send control messages; the publishing switch is reachable too, so the switch protects against accident, not against a person. `make docker-up` warns with the address
+  `BRIDGE_ADMIN_BIND_IP:BRIDGE_ADMIN_PORT` and refuses to start when both the
+  key and the setting are present. The broker
   login is read as `GRIDAPPSD_USER` and `GRIDAPPSD_PASSWORD`, the names other
   GridAPPS-D apps use; `SEP2_STOMP_USER` and `SEP2_STOMP_PASSWORD` override
   them. The password is required under one of the two names, and `make

@@ -32,7 +32,9 @@ path with `BRIDGE=`), with its version stamped in from `git describe`.
 
 `make run` builds, then starts the bridge in the foreground. It needs an
 admin key of at least 16 characters, from `SEP2_ADMIN_UI_KEY` or from a
-file named by `ADMIN_UI_KEY_FILE`, and refuses to start without one:
+file named by `ADMIN_UI_KEY_FILE`, and refuses to start without one (the
+bridge itself can run the UI with no key when `SEP2_ADMIN_UI_INSECURE_NO_KEY=true`
+and the key is blank; anyone who can reach the admin address can read every panel and, when publishing is switched on, send control messages; the publishing switch is reachable too, so the switch protects against accident, not against a person.):
 
 ```bash
 export SEP2_ADMIN_UI_KEY=...   # or use ADMIN_UI_KEY_FILE below
@@ -99,7 +101,7 @@ environment.
 
 | Setting | Flag | Env var | make run variable | Default | What it controls |
 |---|---|---|---|---|---|
-| Admin UI key (login) | `-admin-ui-key` | `SEP2_ADMIN_UI_KEY` | `ADMIN_UI_KEY_FILE` (path to a file holding the key) | none: no key, no admin UI (`make run` refuses to start) | The admin UI login password and the API Bearer token. At least 16 characters. |
+| Admin UI key (login) | `-admin-ui-key` | `SEP2_ADMIN_UI_KEY` | `ADMIN_UI_KEY_FILE` (path to a file holding the key) | none: no key, no admin UI (`make run` refuses to start) | The admin UI login password and the API Bearer token. At least 16 characters. `SEP2_ADMIN_UI_INSECURE_NO_KEY=true` with a blank key runs the UI with no login; anyone who can reach the admin address can read every panel and, when publishing is switched on, send control messages; the publishing switch is reachable too, so the switch protects against accident, not against a person. |
 | STOMP user | `-stomp-user` | `SEP2_STOMP_USER` | none | built-in default | Login to the GridAPPS-D broker. |
 | STOMP password | `-stomp-password` | `SEP2_STOMP_PASSWORD` | none | built-in default | Login to the GridAPPS-D broker. |
 | 2030.5 address | `-sep2-server-addr` | `SEP2_SERVER_ADDR` | `SEP2_SERVER_ADDR` | `127.0.0.1:8443` (`make run`: `127.0.0.1:18443`) | Where the embedded IEEE 2030.5 mTLS server listens. |

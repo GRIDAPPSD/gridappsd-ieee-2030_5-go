@@ -31,7 +31,24 @@ func (s *Server) buildHandler(plane http.Handler) http.Handler {
 		mux.Handle(p, gated)
 	}
 	mux.Handle("/", withRemote(plane))
-	return keepStreamsOpen(mux)
+	var h http.Handler = keepStreamsOpen(mux)
+	if s.cfg.InsecureNoKey {
+		h = s.injectBearer(h)
+	}
+	return h
+}
+
+// injectBearer authenticates every request as the operator with the key
+// generated at start, replacing whatever Authorization the client sent.
+// It is outermost, so the plane and the bridge routes alike see a real
+// Bearer credential, which the plane's sensitive prefixes require.
+func (s *Server) injectBearer(next http.Handler) http.Handler {
+	value := "Bearer " + s.cfg.Key
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r2 := r.Clone(r.Context())
+		r2.Header.Set("Authorization", value)
+		next.ServeHTTP(w, r2)
+	})
 }
 
 // bearerAuth rejects any request whose Authorization header is not
