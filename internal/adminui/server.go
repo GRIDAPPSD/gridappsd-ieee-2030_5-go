@@ -5,9 +5,10 @@
 // monitor when Sources.Monitor is set, and the bus sender when
 // Sources.Sender is set.
 //
-// Two bridge JSON routes, /api/health and /api/clients, stay beside the
-// plane under the bridge's own Bearer, Host and GET-only gates, because
-// the mTLS conformance harness reads them.
+// Three bridge JSON routes, /api/health, /api/clients and /api/registry,
+// stay beside the plane under the bridge's own Bearer, Host and GET-only
+// gates, because the mTLS conformance harness and the client config
+// generator read them.
 //
 // The listener is off by default: New returns ErrDisabled when Config.Key
 // is unset or blank, so cmd/bridge opens no listener rather than serving
