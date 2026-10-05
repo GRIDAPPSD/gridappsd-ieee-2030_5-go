@@ -11,9 +11,10 @@ import (
 var defaultAllowedHosts = []string{"localhost", "127.0.0.1", "::1"}
 
 // bridgeJSONRoutes are the bridge's own JSON routes kept beside the plane.
-// The plane mounts neither path, and TestPlaneMountsNoBridgeJSONRoute
+// The plane mounts none of these paths, and TestPlaneMountsNoBridgeJSONRoute
 // pins that, so the exact patterns below never shadow a plane route.
-var bridgeJSONRoutes = []string{"/api/health", "/api/clients"}
+// /api/registry feeds the EPRI client's config generator.
+var bridgeJSONRoutes = []string{"/api/health", "/api/clients", "/api/registry"}
 
 // buildHandler puts the bridge JSON routes in front of the plane, which
 // takes every other path. The JSON routes keep the bridge's own chain, in
@@ -24,6 +25,7 @@ func (s *Server) buildHandler(plane http.Handler) http.Handler {
 	jsonMux := http.NewServeMux()
 	jsonMux.HandleFunc("/api/health", s.handleHealth)
 	jsonMux.HandleFunc("/api/clients", s.handleClients)
+	jsonMux.HandleFunc("/api/registry", s.handleRegistry)
 	gated := s.hostAllowlist(s.bearerAuth(requireGET(jsonMux)))
 
 	mux := http.NewServeMux()

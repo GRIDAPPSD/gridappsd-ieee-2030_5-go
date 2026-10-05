@@ -109,7 +109,7 @@ logs a warning when the listener binds, before it serves, and drops the per-requ
 Every route needs the key (unless no-key mode is on), from loopback too, except the login page and
 form. The plane is read-only: no admin write route is mounted (the bridge
 seeds and writes the stores itself), so a write button in the server's UI
-gets 404 or 405. `/api/health` and `/api/clients` stay as Bearer-only JSON
+gets 404 or 405. `/api/health`, `/api/clients` and `/api/registry` stay as Bearer-only JSON
 routes for scripts.
 
 | Env var | Flag | Default | Notes |

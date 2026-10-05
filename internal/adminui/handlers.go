@@ -75,6 +75,28 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.health())
 }
 
+// registryEntryResponse is one /api/registry element. A distinct type, so
+// a field registry.Entry gains later does not reach the wire without a
+// decision. The client config generator reads mrid, name, lfdi and
+// placeholder.
+type registryEntryResponse struct {
+	MRID        string `json:"mrid"`
+	Name        string `json:"name"`
+	LFDI        string `json:"lfdi"`
+	SFDI        string `json:"sfdi"`
+	Placeholder bool   `json:"placeholder"`
+}
+
+// handleRegistry serves the registry as a JSON array, [] when empty.
+func (s *Server) handleRegistry(w http.ResponseWriter, _ *http.Request) {
+	entries := s.registry.Snapshot()
+	out := make([]registryEntryResponse, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, registryEntryResponse{MRID: e.MRID, Name: e.Name, LFDI: e.LFDI, SFDI: e.SFDI, Placeholder: e.Placeholder})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // discoveredDER is one DER of one served EndDevice. FeederMRID is the
 // bridge's single configured feeder, stamped on every entry; it is not a
 // per-DER value.
