@@ -66,11 +66,13 @@ services:
       # Embedded IEEE 2030.5 server
       # Pinned for the container, not overridable from .env or the shell: a
       # published port reaches the container's address, not its loopback, so the
-      # listener binds all addresses (the host side is 127.0.0.1), and the cert
-      # dir is the volumes: mount target below. Each has one correct value here.
+      # listener binds all addresses (the host side is BRIDGE_SEP2_BIND_IP,
+      # 127.0.0.1 by default), and the cert dir is the volumes: mount target
+      # below. Each has one correct value here.
       SEP2_SERVER_ADDR: 0.0.0.0:18443
       SEP2_SERVER_CERT_DIR: /etc/sep2/certs
       SEP2_DEVICE_CERT_MODE: ${SEP2_DEVICE_CERT_MODE:-dev-mint}
+      SEP2_SERVER_CERT_HOSTS: ${SEP2_SERVER_CERT_HOSTS:-}
       SEP2_POLL_RATE: ${SEP2_POLL_RATE:-}
       SEP2_POST_RATE: ${SEP2_POST_RATE:-}
       SEP2_NOTIFICATION_ALLOW_LOOPBACK: ${SEP2_NOTIFICATION_ALLOW_LOOPBACK:-false}
@@ -124,8 +126,8 @@ services:
         # so this one must outrank the platform network.
         gw_priority: 100
     ports:
-      - "127.0.0.1:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"
-      - "127.0.0.1:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"
+      - "${BRIDGE_SEP2_BIND_IP:?use make docker-up}:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"
+      - "${BRIDGE_ADMIN_BIND_IP:?use make docker-up}:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"
     volumes:
       - "${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:${BRIDGE_CERT_MODE:?use make docker-up}"
 

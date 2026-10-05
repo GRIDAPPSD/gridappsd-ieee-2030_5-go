@@ -74,6 +74,12 @@ type Config struct {
 	// version control.
 	CertDir string
 
+	// ServerCertHosts are extra DNS names or IP addresses for the server
+	// leaf, added to localhost and 127.0.0.1 when dev-mint mints it. An
+	// existing leaf is never re-minted; New logs a warning when it lacks
+	// one of these.
+	ServerCertHosts []string
+
 	// DeviceCertMode selects how device identity certificates are sourced
 	// AND, because the two questions have one answer, which files the
 	// embedded server's own identity set must contain.
@@ -386,10 +392,11 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	// backs live TLS sessions, so both are fixed for the process
 	// lifetime. Per-device certificates are the material that IS
 	// re-evaluated later; see ensureDeviceCert.
-	certFile, keyFile, caFile, err := ensureServerIdentity(cfg.CertDir, cfg.DeviceCertMode)
+	certFile, keyFile, caFile, err := ensureServerIdentity(cfg.CertDir, cfg.DeviceCertMode, cfg.ServerCertHosts...)
 	if err != nil {
 		return nil, fmt.Errorf("sep2embed: server identity: %w", err)
 	}
+	warnMissingServerHosts(certFile, cfg.ServerCertHosts)
 
 	policy := ControlPolicy{
 		DefaultControl: cfg.DefaultControl,

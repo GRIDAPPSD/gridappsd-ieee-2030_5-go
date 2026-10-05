@@ -195,6 +195,39 @@ fresh CAs and every previously trusted certificate, device and server
 alike, stops chaining to them. This material is development-only. Do
 not point a production deployment at it.
 
+Dev-mint puts `localhost` and `127.0.0.1` in the server leaf. To add
+host names or IPs that clients dial, set `SEP2_SERVER_CERT_HOSTS` to a
+comma-separated list before the first start. It is read only when the
+directory is empty: an existing `server.pem` is never re-minted, and the
+bridge logs a warning when it lacks a requested name. Move the directory
+aside to mint a new set (new CAs too).
+
+## A certificate set made on another computer
+
+The bridge runs from a set made elsewhere, mounted read-only, with
+`SEP2_DEVICE_CERT_MODE=preprovisioned`. In the container that is
+`BRIDGE_CERT_DIR=/path/to/set`, `BRIDGE_CERT_MODE=ro` and
+`SEP2_DEVICE_CERT_MODE=preprovisioned` in `.env`. The set needs:
+
+| Path | Content |
+|---|---|
+| `ca.pem` | Device CA certificate; every device certificate must chain to it. |
+| `server.pem`, `server-key.pem` | Server leaf and key. The leaf needs the ServerAuth usage and a SAN naming every address or host name clients dial, such as the LAN IP. |
+| `serving-ca.pem` | Optional unless the leaf is signed by a CA other than `ca.pem`; the CA that signed `server.pem`. This is the file clients are given to verify the bridge. |
+| `devices/<safe-mrid>-<hash>.x509` | One per device mRID the CIM query returns, raw DER. `<safe-mrid>` is the mRID with every character outside letters, digits, `-` and `_` replaced by `_`, cut to 64 characters; `<hash>` is the first 8 bytes of the SHA-256 of the unmodified mRID as 16 hex digits. |
+
+Write keys as PKCS8 PEM ECDSA, the form core's `sep2cert` produces and
+its key parser requires; the device key sits beside its certificate as
+`<safe-mrid>-<hash>.pem` (the client side reads it). Leave
+`ca-key.pem` and `serving-ca-key.pem` out of the mount: preprovisioned
+mode never reads them. Every device mRID without a certificate stops the
+start. Device certificates need the `HardwareModuleName` SAN described
+below, so make them with core's `sep2cert` (as the test
+`foreign_certset_test.go` does) or copy the `devices/` directory from a
+dev-mint run on the other computer. The device LFDI is the SHA-256 of the
+DER. `go test ./internal/sep2embed -run ForeignCertSet` builds such a set,
+mounts it read-only, and completes an mTLS handshake against a LAN address.
+
 ## Manual path: generating your own CA and server certificate
 
 Use this if you want to inspect, version, or preprovision the server

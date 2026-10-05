@@ -264,7 +264,7 @@ func run(ctx context.Context, cfg config) error {
 		return err
 	}
 	qctx, cancelQuery := cimQueryContext(ctx, cfg)
-	reg, err := bootstrapRegistry(qctx, cimClient, cfg.FeederMRID, cfg.SEP2ServerCertDir, mode, cfg.SEP2BatteryLegs)
+	reg, err := bootstrapRegistry(qctx, cimClient, cfg.FeederMRID, cfg.SEP2ServerCertDir, mode, cfg.SEP2ServerCertHosts, cfg.SEP2BatteryLegs)
 	cancelQuery()
 	if err != nil {
 		return err
@@ -770,8 +770,9 @@ func sep2EmbedConfig(cfg config, policy sep2config.SEP2Policy, connHook *connobs
 		observer = nil
 	}
 	return sep2embed.Config{
-		Addr:    cfg.SEP2ServerAddr,
-		CertDir: cfg.SEP2ServerCertDir,
+		Addr:            cfg.SEP2ServerAddr,
+		CertDir:         cfg.SEP2ServerCertDir,
+		ServerCertHosts: cfg.SEP2ServerCertHosts,
 		// The SAME mode bootstrapRegistry sourced device certs with, by
 		// construction: run parses it once and passes that one value to
 		// both. It decides which files the server's own identity set must
@@ -1109,7 +1110,7 @@ func deviceCertMode(s string) (sep2embed.DeviceCertMode, error) {
 // sep2embed.EnsureDeviceIdentities's doc comment for why this must run
 // before sep2embed.New's own load-or-create call against the same
 // dir). mode selects dev-mint vs fail-closed preprovisioned sourcing.
-func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir string, mode sep2embed.DeviceCertMode, batteryLegs []string) (*registry.Registry, error) {
+func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir string, mode sep2embed.DeviceCertMode, serverHosts, batteryLegs []string) (*registry.Registry, error) {
 	log.Printf("bridge: querying CIM feeder %s", feederMRID)
 
 	inverters, err := queryDevices(ctx, "inverter", c.QueryInverter, feederMRID)
@@ -1261,7 +1262,7 @@ func bootstrapRegistry(ctx context.Context, c *cim.Client, feederMRID, certDir s
 		mrids[i] = d.MRID
 	}
 
-	identities, err := sep2embed.EnsureDeviceIdentities(certDir, mode, mrids)
+	identities, err := sep2embed.EnsureDeviceIdentities(certDir, mode, mrids, serverHosts...)
 	if err != nil {
 		return nil, fmt.Errorf("device identities: %w", err)
 	}

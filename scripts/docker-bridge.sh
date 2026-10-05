@@ -61,10 +61,39 @@ check_port() {
     die "$label must be a port number 1-65535, got: $port"
 }
 
+# check_ipv4 requires a dotted quad with every octet 0-255 and no leading zeros,
+# so 999.1.1.1 and 010.0.0.1 are refused rather than handed to compose.
+check_ipv4() {
+  local label="$1" ip="$2" octet
+  local -a octets
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "$label must be an IPv4 address, got: $ip"
+  IFS=. read -r -a octets <<<"$ip"
+  for octet in "${octets[@]}"; do
+    { [ "$octet" -le 255 ] && { [ "${#octet}" -eq 1 ] || [ "${octet:0:1}" != 0 ]; }; } ||
+      die "$label must be an IPv4 address, got: $ip"
+  done
+}
+
+# cross_check_cert_mode compares the device cert mode the container will run
+# with against the mount mode: dev-mint writes device certificates, so a
+# read-only mount fails at the first mint, late and with a file error.
+cross_check_cert_mode() {
+  local device_mode
+  device_mode=$(setting SEP2_DEVICE_CERT_MODE dev-mint)
+  if [ "$device_mode" = dev-mint ] && [ "$BRIDGE_CERT_MODE" = ro ]; then
+    die "BRIDGE_CERT_MODE=ro cannot be used with SEP2_DEVICE_CERT_MODE=dev-mint: dev-mint writes certificates into the mount; set SEP2_DEVICE_CERT_MODE=preprovisioned, or BRIDGE_CERT_MODE=rw"
+  fi
+  if [ "$device_mode" = preprovisioned ] && [ "$BRIDGE_CERT_MODE" = rw ]; then
+    echo "docker-bridge: warning: SEP2_DEVICE_CERT_MODE=preprovisioned never writes to the cert dir; BRIDGE_CERT_MODE=ro is the safer mount" >&2
+  fi
+}
+
 # resolve reads and validates every launcher setting, then exports them.
 resolve() {
   BRIDGE_SEP2_PORT=$(setting BRIDGE_SEP2_PORT 18443)
   BRIDGE_ADMIN_PORT=$(setting BRIDGE_ADMIN_PORT 18444)
+  BRIDGE_SEP2_BIND_IP=$(setting BRIDGE_SEP2_BIND_IP 127.0.0.1)
+  BRIDGE_ADMIN_BIND_IP=$(setting BRIDGE_ADMIN_BIND_IP 127.0.0.1)
   BRIDGE_USER=$(setting BRIDGE_USER 1000:1000)
   BRIDGE_CERT_DIR=$(setting BRIDGE_CERT_DIR "${HOME:?HOME is not set}/.config/gridappsd/2030.5server/sep2-certs")
   BRIDGE_CERT_MODE=$(setting BRIDGE_CERT_MODE rw)
@@ -83,11 +112,14 @@ resolve() {
   check_port BRIDGE_SEP2_PORT "$BRIDGE_SEP2_PORT"
   check_port BRIDGE_ADMIN_PORT "$BRIDGE_ADMIN_PORT"
   [ "$BRIDGE_SEP2_PORT" != "$BRIDGE_ADMIN_PORT" ] || die "BRIDGE_SEP2_PORT and BRIDGE_ADMIN_PORT must differ"
+  check_ipv4 BRIDGE_SEP2_BIND_IP "$BRIDGE_SEP2_BIND_IP"
+  check_ipv4 BRIDGE_ADMIN_BIND_IP "$BRIDGE_ADMIN_BIND_IP"
   [[ "$BRIDGE_USER" =~ ^[0-9]+:[0-9]+$ ]] || die "BRIDGE_USER must be uid:gid, got: $BRIDGE_USER"
   [[ "$BRIDGE_ADMIN_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "BRIDGE_ADMIN_IP must be an IPv4 address, got: $BRIDGE_ADMIN_IP"
   [[ "$BRIDGE_ADMIN_SUBNET" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] || die "BRIDGE_ADMIN_SUBNET must be an IPv4 CIDR, got: $BRIDGE_ADMIN_SUBNET"
   case "$BRIDGE_CERT_MODE" in ro | rw) ;; *) die "BRIDGE_CERT_MODE must be ro or rw, got: $BRIDGE_CERT_MODE" ;; esac
-  export BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_DIR BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET
+  cross_check_cert_mode
+  export BRIDGE_SEP2_BIND_IP BRIDGE_ADMIN_BIND_IP BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_DIR BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET
 }
 
 compose() {

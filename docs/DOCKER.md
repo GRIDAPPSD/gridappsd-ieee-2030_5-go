@@ -27,8 +27,10 @@ What it does:
   `gridappsd-docker_default` and reaches the broker at `gridappsd:61613`, so
   the platform must be up first.
 - **Ports.** The 2030.5 listener (18443) and the admin UI (18444) are
-  published on `127.0.0.1` only. Change the host side with
-  `BRIDGE_SEP2_PORT` and `BRIDGE_ADMIN_PORT`.
+  published on `127.0.0.1` only by default. Change the host ports with
+  `BRIDGE_SEP2_PORT` and `BRIDGE_ADMIN_PORT`, and the address each is
+  published on with `BRIDGE_SEP2_BIND_IP` and `BRIDGE_ADMIN_BIND_IP` (IPv4;
+  see "Reaching the bridge from another machine").
 - **Admin UI isolation.** The admin UI is plain HTTP behind one key, so it
   is not put on the platform network. The bridge joins a second network of
   its own (`BRIDGE_ADMIN_SUBNET`, default `10.213.168.0/24`, address
@@ -60,10 +62,12 @@ What it does:
   uses `gw_priority`, which older engines do not support.
 - **Certs.** The cert directory is bind-mounted at `/etc/sep2/certs` from
   `BRIDGE_CERT_DIR` (default
-  `~/.config/gridappsd/2030.5server/sep2-certs`). The container always runs
-  the default `dev-mint` mode, which may write new device certs, so the mount
-  is `rw` (`BRIDGE_CERT_MODE`, default `rw`) and a compromised bridge could
-  write that directory. The files are mode 0600 and owned by the host user,
+  `~/.config/gridappsd/2030.5server/sep2-certs`). With the default `dev-mint`
+  mode (`SEP2_DEVICE_CERT_MODE`) the bridge may write new device certs, so the
+  mount is `rw` (`BRIDGE_CERT_MODE`, default `rw`) and a compromised bridge
+  could write that directory. With `SEP2_DEVICE_CERT_MODE=preprovisioned` it
+  writes nothing, and `BRIDGE_CERT_MODE=ro` is the better mount; the launcher
+  refuses `ro` with `dev-mint` and warns on `preprovisioned` with `rw`. The files are mode 0600 and owned by the host user,
   so the container runs as `BRIDGE_USER` (default `1000:1000`); set it to
   your uid and gid if they differ.
 - **Hardening.** The root filesystem is read-only with a small `/tmp`
@@ -77,10 +81,36 @@ by a local `start.sh` holds the same ports: stop it first. Only one bridge
 may run against a broker at a time, because two would register on the same
 feeder.
 
-The minted server certificate names only `localhost` and `127.0.0.1`
-([CERTIFICATES.md](CERTIFICATES.md)). Clients must connect through the
-published loopback port; a client using the host's LAN name or another
-container's DNS name fails certificate verification.
+## Reaching the bridge from another machine
+
+By default only the host itself can reach the bridge. To serve clients on
+the LAN:
+
+1. Set `BRIDGE_SEP2_BIND_IP` to the host address to publish the 2030.5 port
+   on (for example `192.168.1.50`, or `0.0.0.0` for every address).
+2. Make the server certificate name the address or host name clients dial.
+   The leaf dev-mint creates names only `localhost` and `127.0.0.1`, so a
+   client using anything else fails verification. Either set
+   `SEP2_SERVER_CERT_HOSTS=192.168.1.50,bridge.lan` before the first start, or
+   mount a certificate set that names them (see
+   [CERTIFICATES.md](CERTIFICATES.md), "A certificate set made on another
+   computer"). Give the clients `serving-ca.pem`.
+3. An existing certificate directory keeps its old `server.pem`:
+   `SEP2_SERVER_CERT_HOSTS` is read only when the directory is empty, and the
+   bridge logs a warning at start when the leaf lacks a requested name. To
+   re-mint, stop the bridge and move the directory aside (that also replaces
+   both CAs, so every client must be given the new `serving-ca.pem` and
+   every device certificate is minted again).
+4. Open the host firewall for the port yourself; the launcher does not.
+
+What a non-loopback bind exposes: the 2030.5 port is mTLS, so a peer needs a
+certificate signed by the device CA. The admin UI port is plain HTTP behind
+one key, and its `Host` allowlist is not a defence (a client chooses its own
+`Host` header), so leave `BRIDGE_ADMIN_BIND_IP` on `127.0.0.1`. If you
+publish it anyway, add the name or address you browse to in
+`SEP2_ADMIN_UI_ALLOWED_HOSTS`, or the UI answers 403 for it. The in-container
+admin bind (`BRIDGE_ADMIN_IP` on its own network) is unchanged by any of
+these settings.
 
 ## The published image
 
