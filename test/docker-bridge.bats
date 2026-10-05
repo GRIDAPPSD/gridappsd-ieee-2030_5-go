@@ -38,7 +38,7 @@ STUB
   export BRIDGE_ENV_FILE="$work/env"
   export SEP2_STOMP_PASSWORD="broker-pass"
   export BRIDGE_CERT_DIR="$work/certs"
-  unset SEP2_ADMIN_UI_KEY BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_IMAGE_TAG BRIDGE_USE_PUBLISHED SS_LISTEN NO_NETWORK PULL_FAIL
+  unset SEP2_ADMIN_UI_KEY BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_IMAGE_TAG BRIDGE_USE_PUBLISHED BRIDGE_EXTRA_CA_FILE SS_LISTEN NO_NETWORK PULL_FAIL
 }
 
 run_script() {
@@ -447,5 +447,57 @@ default_env_run() {
     [[ "$output" == *"rename $work/r/.env.bridge to $work/r/.env"* ]]
     [[ "$output" != *oldkeyoldkeyoldkey* ]]
   done
+  [ ! -e "$DOCKER_LOG" ]
+}
+
+make_ca() {
+  printf -- '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n' >"$1"
+}
+
+@test "build: BRIDGE_EXTRA_CA_FILE unset passes no --secret" {
+  BRIDGE_USE_PUBLISHED=0 run_script build
+  [ "$status" -eq 0 ]
+  [ "$(/usr/bin/grep -c -F -e '--secret' "$DOCKER_LOG")" -eq 0 ]
+}
+
+@test "build: BRIDGE_EXTRA_CA_FILE set passes exactly one secret naming that file" {
+  make_ca "$work/ca.pem"
+  BRIDGE_EXTRA_CA_FILE="$work/ca.pem" BRIDGE_USE_PUBLISHED=0 run_script build
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qxF "ARGS: [build] [-f] [$repo/Dockerfile.bridge] [--build-arg] [VERSION=dev] [--secret] [id=extra_ca,src=$work/ca.pem] [-t] [gridappsd-ieee-2030_5-go:dev] [$repo]" "$DOCKER_LOG"
+  [ "$(/usr/bin/grep -c -F -e '[--secret]' "$DOCKER_LOG")" -eq 1 ]
+}
+
+@test "build: BRIDGE_EXTRA_CA_FILE from the env file is honoured" {
+  make_ca "$work/ca.pem"
+  printf 'BRIDGE_EXTRA_CA_FILE=%s\n' "$work/ca.pem" >>"$work/env"
+  BRIDGE_USE_PUBLISHED=0 run_script build
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qF "[id=extra_ca,src=$work/ca.pem]" "$DOCKER_LOG"
+}
+
+@test "build: a missing BRIDGE_EXTRA_CA_FILE is refused naming the variable, and docker never runs" {
+  BRIDGE_EXTRA_CA_FILE="$work/nope.pem" BRIDGE_USE_PUBLISHED=0 run_script build
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BRIDGE_EXTRA_CA_FILE is not a file: $work/nope.pem"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+}
+
+@test "build: an unreadable BRIDGE_EXTRA_CA_FILE is refused naming the variable" {
+  if [ "$(id -u)" -eq 0 ]; then skip "root reads everything"; fi
+  make_ca "$work/ca.pem"
+  chmod 000 "$work/ca.pem"
+  BRIDGE_EXTRA_CA_FILE="$work/ca.pem" BRIDGE_USE_PUBLISHED=0 run_script build
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BRIDGE_EXTRA_CA_FILE is not readable: $work/ca.pem"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+}
+
+@test "build: a non-PEM BRIDGE_EXTRA_CA_FILE is refused and its contents are not echoed" {
+  printf 'not-a-cert-SECRETMARKER\n' >"$work/bad.pem"
+  BRIDGE_EXTRA_CA_FILE="$work/bad.pem" BRIDGE_USE_PUBLISHED=0 run_script build
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BRIDGE_EXTRA_CA_FILE has no PEM certificate"* ]]
+  [[ "$output" != *SECRETMARKER* ]]
   [ ! -e "$DOCKER_LOG" ]
 }
