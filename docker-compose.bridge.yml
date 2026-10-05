@@ -67,7 +67,7 @@ services:
       # Pinned for the container, not overridable from .env or the shell: a
       # published port reaches the container's address, not its loopback, so the
       # listener binds all addresses (the host side is BRIDGE_SEP2_BIND_IP,
-      # 127.0.0.1 by default), and the cert dir is the volumes: mount target
+      # 0.0.0.0 by default), and the cert dir is the volumes: mount target
       # below. Each has one correct value here.
       SEP2_SERVER_ADDR: 0.0.0.0:18443
       SEP2_SERVER_CERT_DIR: /etc/sep2/certs

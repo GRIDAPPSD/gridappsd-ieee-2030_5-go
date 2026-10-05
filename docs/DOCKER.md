@@ -26,8 +26,8 @@ What it does:
 - **Network.** The container joins the external network
   `gridappsd-docker_default` and reaches the broker at `gridappsd:61613`, so
   the platform must be up first.
-- **Ports.** The 2030.5 listener (18443) and the admin UI (18444) are
-  published on `127.0.0.1` only by default. Change the host ports with
+- **Ports.** The 2030.5 listener (18443) is published on `0.0.0.0` by
+  default and the admin UI (18444) on `127.0.0.1` only. Change the host ports with
   `BRIDGE_SEP2_PORT` and `BRIDGE_ADMIN_PORT`, and the address each is
   published on with `BRIDGE_SEP2_BIND_IP` and `BRIDGE_ADMIN_BIND_IP` (IPv4;
   see "Reaching the bridge from another machine").
@@ -83,11 +83,15 @@ feeder.
 
 ## Reaching the bridge from another machine
 
-By default only the host itself can reach the bridge. To serve clients on
-the LAN:
+The 2030.5 port is published on `0.0.0.0` by default, so clients on the
+network can reach it. Docker-published ports bypass the host firewall's
+INPUT rules (ufw, firewalld), so a firewall rule on the host does not close
+this port; mTLS is what protects it. To restrict it, set
+`BRIDGE_SEP2_BIND_IP=127.0.0.1` (host only) or a LAN address, or add rules
+to the `DOCKER-USER` iptables chain. To serve clients on the LAN:
 
-1. Set `BRIDGE_SEP2_BIND_IP` to the host address to publish the 2030.5 port
-   on (for example `192.168.1.50`, or `0.0.0.0` for every address).
+1. Leave `BRIDGE_SEP2_BIND_IP` at its default, or set it to the host address
+   to publish the 2030.5 port on (for example `192.168.1.50`).
 2. Make the server certificate name the address or host name clients dial.
    The leaf dev-mint creates names only `localhost` and `127.0.0.1`, so a
    client using anything else fails verification. Either set
@@ -101,12 +105,13 @@ the LAN:
    re-mint, stop the bridge and move the directory aside (that also replaces
    both CAs, so every client must be given the new `serving-ca.pem` and
    every device certificate is minted again).
-4. Open the host firewall for the port yourself; the launcher does not.
+4. No host firewall change is needed to publish the port; see the note
+   above on restricting it.
 
-What a non-loopback bind exposes: the 2030.5 port is mTLS, so a peer needs a
+What the default bind exposes: the 2030.5 port is mTLS, so a peer needs a
 certificate signed by the device CA. The admin UI port is plain HTTP behind
 one key, and its `Host` allowlist is not a defence (a client chooses its own
-`Host` header), so leave `BRIDGE_ADMIN_BIND_IP` on `127.0.0.1`. If you
+`Host` header), so leave `BRIDGE_ADMIN_BIND_IP` on its `127.0.0.1` default. If you
 publish it anyway, add the name or address you browse to in
 `SEP2_ADMIN_UI_ALLOWED_HOSTS`, or the UI answers 403 for it. The in-container
 admin bind (`BRIDGE_ADMIN_IP` on its own network) is unchanged by any of

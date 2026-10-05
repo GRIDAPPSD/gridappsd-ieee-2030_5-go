@@ -92,7 +92,7 @@ cross_check_cert_mode() {
 resolve() {
   BRIDGE_SEP2_PORT=$(setting BRIDGE_SEP2_PORT 18443)
   BRIDGE_ADMIN_PORT=$(setting BRIDGE_ADMIN_PORT 18444)
-  BRIDGE_SEP2_BIND_IP=$(setting BRIDGE_SEP2_BIND_IP 127.0.0.1)
+  BRIDGE_SEP2_BIND_IP=$(setting BRIDGE_SEP2_BIND_IP 0.0.0.0)
   BRIDGE_ADMIN_BIND_IP=$(setting BRIDGE_ADMIN_BIND_IP 127.0.0.1)
   BRIDGE_USER=$(setting BRIDGE_USER 1000:1000)
   BRIDGE_CERT_DIR=$(setting BRIDGE_CERT_DIR "${HOME:?HOME is not set}/.config/gridappsd/2030.5server/sep2-certs")
