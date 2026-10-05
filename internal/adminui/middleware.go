@@ -30,7 +30,7 @@ func (s *Server) buildHandler(plane http.Handler) http.Handler {
 	for _, p := range bridgeJSONRoutes {
 		mux.Handle(p, gated)
 	}
-	mux.Handle("/", plane)
+	mux.Handle("/", withRemote(plane))
 	return keepStreamsOpen(mux)
 }
 

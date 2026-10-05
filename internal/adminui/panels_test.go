@@ -511,7 +511,7 @@ func TestEveryRouteAnswers401WithoutACredential(t *testing.T) {
 		t.Fatalf("only %d routes: %q", len(routes), routes)
 	}
 	login := map[string]bool{"GET /login": true, "POST /auth/login": true}
-	fill := strings.NewReplacer("{id}", "x", "{lfdi}", "x", "{edevId}", "x", "{frqId}", "x", "{$}", "")
+	fill := strings.NewReplacer("{id}", "x", "{action}", "x", "{lfdi}", "x", "{edevId}", "x", "{frqId}", "x", "{$}", "")
 	checked := 0
 	for _, p := range routes {
 		method, path, ok := strings.Cut(p, " ")
@@ -620,14 +620,15 @@ func TestNoControlWriteRouteIsMounted(t *testing.T) {
 
 // TestListenerMountsNoWriteRoute: the bridge seeds and writes the stores
 // itself, so every route on the listener reads, except the two auth POSTs
-// that login and the SSE ticket need. A plane pattern with no method
-// would accept every method, so it fails too; the bridge JSON routes are
-// method-less but sit behind requireGET.
+// that login and the SSE ticket need and the panel action route, whose
+// actions publish to the bus and write no store. A plane pattern with no
+// method would accept every method, so it fails too; the bridge JSON
+// routes are method-less but sit behind requireGET.
 func TestListenerMountsNoWriteRoute(t *testing.T) {
 	t.Parallel()
 
 	s := newServer(t, Config{Key: testKey}, testSources())
-	allowed := map[string]bool{"POST /auth/login": true, "POST /auth/ticket": true}
+	allowed := map[string]bool{"POST /auth/login": true, "POST /auth/ticket": true, "POST /api/ui/panels/{id}/actions/{action}": true}
 	if len(s.planePatterns) == 0 {
 		t.Fatal("the plane reports no patterns, so this test checks nothing")
 	}

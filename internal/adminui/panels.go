@@ -55,7 +55,11 @@ func (s *Server) panels() []sep2admin.Panel {
 		out = append(out, p)
 	}
 	if s.monitor != nil {
-		out = append(out, s.monitor.panel(len(views)+1))
+		out = append(out, s.monitor.panel(len(out)+1))
+	}
+	if s.sender != nil {
+		out = append(out, s.sender.switchPanel(len(out)+1))
+		out = append(out, s.sender.panel(len(out)+1))
 	}
 	return out
 }
@@ -116,7 +120,7 @@ func (s *Server) healthView(context.Context) (sep2admin.Descriptor, error) {
 	if h.SORLink != "" {
 		sor = linkOrText(h.SORLink, "Server of record dashboard")
 	}
-	return descriptor(definitions("Bridge", "", sep2admin.DefinitionGroup{Entries: []sep2admin.DefinitionEntry{
+	groups := append([]sep2admin.DefinitionGroup{{Entries: []sep2admin.DefinitionEntry{
 		{Key: "Status", Value: sep2admin.BadgeCell(sep2admin.BadgeOK, sep2admin.Value(h.Status))},
 		{Key: "STOMP connection", Value: stomp},
 		{Key: "mTLS listener", Value: text(h.MTLSListener)},
@@ -129,7 +133,26 @@ func (s *Server) healthView(context.Context) (sep2admin.Descriptor, error) {
 		{Key: "Certificate derived identities", Value: number(h.CertificateCount)},
 		{Key: "Uptime (seconds)", Value: number(h.UptimeSeconds)},
 		{Key: "Server of record", Value: sor},
-	}})), nil
+	}}}, s.publishingGroup()...)
+	return descriptor(definitions("Bridge", "", groups...)), nil
+}
+
+// publishingGroup repeats the sender's switch on the health panel, so the
+// state of writes to the simulation is visible without opening the sender.
+func (s *Server) publishingGroup() []sep2admin.DefinitionGroup {
+	if s.sender == nil {
+		return nil
+	}
+	st := s.sender.s.Publishing()
+	badge := sep2admin.BadgeCell(sep2admin.BadgeNeutral, "OFF")
+	if st.On {
+		badge = sep2admin.BadgeCell(sep2admin.BadgeWarn, "ON")
+	}
+	return []sep2admin.DefinitionGroup{{Heading: "Bus sender", Entries: []sep2admin.DefinitionEntry{
+		{Key: "Publishing", Value: badge},
+		{Key: "Last changed", Value: timeCell(st.ChangedAt)},
+		{Key: "Changed from", Value: text(st.ChangedBy)},
+	}}}
 }
 
 func (s *Server) registryView(context.Context) (sep2admin.Descriptor, error) {

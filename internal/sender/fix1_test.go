@@ -302,7 +302,7 @@ func TestDuplicateKeysAreRefusedWithTheirPath(t *testing.T) {
 }
 
 // Item 6: pending expires.
-func TestPendingBecomesNoOutcomeAfterTheBound(t *testing.T) {
+func TestPendingBecomesOutcomeUnknownAfterTheBound(t *testing.T) {
 	r := newRig(t, true)
 	if _, err := r.s.SendRaw(ctx, "a", rawBody("lost", "_dev-a", 0, 1)); err != nil {
 		t.Fatal(err)
@@ -312,8 +312,10 @@ func TestPendingBecomesNoOutcomeAfterTheBound(t *testing.T) {
 		t.Errorf("just inside the bound: outcome = %q, want pending", got)
 	}
 	r.clk.advance(2 * time.Second)
-	if got := r.s.Recent()[0].Outcome; got != OutcomeNone || OutcomeNone != "no outcome" {
-		t.Errorf("past the bound: outcome = %q, want %q", got, "no outcome")
+	// The ring may have evicted a record nobody read, so the row must not
+	// claim that nothing was recorded.
+	if got := r.s.Recent()[0]; got.Outcome != "outcome unknown" || !strings.Contains(got.Reason, "evicted before it was read") {
+		t.Errorf("past the bound: row = %+v, want outcome unknown with a reason naming eviction", got)
 	}
 	r.obs.put(controlobs.MessageOutcome{DifferenceMRID: "lost", At: r.clk.now(), Deltas: []controlobs.DeltaOutcome{{Result: controlobs.ResultIssued}}})
 	if got := r.s.Recent()[0].Outcome; got != OutcomeIssued {

@@ -32,8 +32,9 @@ const (
 	RateInterval = time.Second
 
 	// PendingExpiry is how long a published send may stay pending before its
-	// row reads "no outcome": the frame may have been lost after a
-	// fire-and-forget publish, and the control path will never record it.
+	// row reads "outcome unknown": the frame may have been lost after a
+	// fire-and-forget publish, or the control path's record of it may have
+	// been evicted before anyone read it.
 	PendingExpiry = 30 * time.Second
 	// DefaultFlipWait bounds how long switching off waits for sends in flight.
 	// go-stomp's Send ignores its context and can block for 10 seconds.
@@ -60,16 +61,23 @@ const (
 	// OutcomeFailed: the bus refused the publish, or the switch went off
 	// while it was in flight and cancelled it.
 	OutcomeFailed = "failed"
-	// OutcomeNone: published, and the control path recorded nothing within
-	// PendingExpiry.
-	OutcomeNone = "no outcome"
+	// OutcomeNone: published, and no record of it could be read from the
+	// control path within PendingExpiry. That is not proof nothing was
+	// recorded, so the row says the outcome is unknown.
+	OutcomeNone = "outcome unknown"
 )
+
+// unknownReason explains an OutcomeNone row.
+var unknownReason = fmt.Sprintf("no control path record after %s: the frame may have been lost, or its record evicted before it was read", PendingExpiry)
 
 var (
 	// ErrPublishingOff is returned for every send while the switch is off.
 	ErrPublishingOff = errors.New("publishing is off")
 	// ErrRateLimited is returned when the send limit is spent.
 	ErrRateLimited = errors.New("send rate limit exceeded")
+	// ErrPublishFailed wraps an error from the bus itself, including a send
+	// the switch cancelled, as against a refusal before publishing.
+	ErrPublishFailed = errors.New("sender: publish failed")
 	// ErrDuplicateMRID is returned for a raw send whose difference_mrid was
 	// already used: the control path keys outcomes by it, so a reuse would
 	// show one message's outcome on another's row.
@@ -112,6 +120,9 @@ type State struct {
 	// ChangedBy is the remote address of the last flip, or "start" for the
 	// state the process began in.
 	ChangedBy string
+	// StillInFlight is, after an off flip, how many sends were still in
+	// flight when its wait ended. Any of them may still reach the bus.
+	StillInFlight int
 }
 
 // Delta is one forward difference of a recorded send. Result and Reason come
@@ -152,10 +163,12 @@ type Device struct {
 }
 
 // record is a stored row. final is set once the outcome came from the control
-// path, so a later eviction from that path's ring cannot change the row.
+// path, so a later eviction from that path's ring cannot change the row. flip
+// orders switch rows by when the flip was made, not when its row was added.
 type record struct {
 	Entry
 	final bool
+	flip  uint64
 }
 
 // flight is one send between admission and the end of its Send.
@@ -180,6 +193,7 @@ type Sender struct {
 
 	mu       sync.Mutex
 	state    State
+	flips    uint64
 	tokens   float64
 	refill   time.Time
 	recent   []*record
@@ -238,11 +252,15 @@ func (s *Sender) Publishing() State {
 // in flight, and waits up to the flip wait for them to end before recording
 // the off row, so the row follows the sends it waited for. A bus whose Send
 // ignores its context (go-stomp's does) can still deliver a send that outlasts
-// the wait; the off row's Reason then says how many were still in flight.
+// the wait; the off row's Reason and the returned StillInFlight then say how
+// many were still in flight. A flip made during that wait keeps its row
+// newest.
 func (s *Sender) SetPublishing(on bool, remote string) State {
 	now := s.now()
 	s.mu.Lock()
 	old := s.state
+	s.flips++
+	flip := s.flips
 	if old.On != on {
 		s.state = State{On: on, ChangedAt: now, ChangedBy: remote}
 	}
@@ -265,20 +283,23 @@ func (s *Sender) SetPublishing(on bool, remote string) State {
 		case <-timer.C:
 		}
 		timer.Stop()
-		s.mu.Lock()
-		if n := len(s.inflight); n > 0 {
-			reason = fmt.Sprintf("%d send(s) still in flight after %s; they may still be delivered", n, s.flipWait)
-		}
-		s.mu.Unlock()
 	}
 
 	outcome := "off"
 	if on {
 		outcome = "on"
 	}
-	e := Entry{Time: now, Kind: KindSwitch, Remote: remote, Outcome: outcome, Reason: reason}
 	s.mu.Lock()
-	s.addLocked(e)
+	if wait != nil {
+		if n := len(s.inflight); n > 0 {
+			reason = fmt.Sprintf("%d send(s) still in flight after %s; they may still be delivered", n, s.flipWait)
+			cur.StillInFlight = n
+			if s.flips == flip {
+				s.state.StillInFlight = n
+			}
+		}
+	}
+	s.addFlipLocked(Entry{Time: now, Kind: KindSwitch, Remote: remote, Outcome: outcome, Reason: reason}, flip)
 	s.mu.Unlock()
 	s.logf("sender: audit kind=switch remote=%q old=%s new=%s changed=%t at=%s reason=%q",
 		remote, onOff(old.On), onOff(cur.On), old.On != on, now.UTC().Format(time.RFC3339), reason)
@@ -391,7 +412,7 @@ func (s *Sender) publish(ctx context.Context, kind, remote string, build func(ti
 	e := Entry{Time: now, Kind: kind, Remote: remote, Destination: s.dest, DifferenceMRID: parsed.DifferenceMRID, Deltas: deltas}
 	var result Result
 	if sendErr != nil {
-		sendErr = fmt.Errorf("sender: publish to %s: %w", s.dest, sendErr)
+		sendErr = fmt.Errorf("%w: to %s: %w", ErrPublishFailed, s.dest, sendErr)
 		e.Outcome, e.Reason = OutcomeFailed, sendErr.Error()
 	} else {
 		result = Result{DifferenceMRID: parsed.DifferenceMRID, Destination: s.dest}
@@ -441,7 +462,9 @@ func (s *Sender) admit(now time.Time, checkMRID bool, mrid string, cancel contex
 
 // mridUsedLocked reports whether mrid belongs to a send in flight, a send still
 // in the recent list, or a message the control path still holds. Refusals are
-// not in these lists, so a corrected resend of a refused body is allowed.
+// not in these lists, and a failed or cancelled send does not hold its mrid,
+// so either may be sent again with the same one; the control path check still
+// refuses it if the first attempt reached the bus after all.
 func (s *Sender) mridUsedLocked(mrid string) bool {
 	for f := range s.inflight {
 		if f.mrid == mrid {
@@ -449,7 +472,7 @@ func (s *Sender) mridUsedLocked(mrid string) bool {
 		}
 	}
 	for _, r := range s.recent {
-		if r.Kind != KindSwitch && r.DifferenceMRID == mrid {
+		if r.Kind != KindSwitch && r.Outcome != OutcomeFailed && r.DifferenceMRID == mrid {
 			return true
 		}
 	}
@@ -489,6 +512,25 @@ func (s *Sender) refuse(now time.Time, kind, remote, mrid string, err error) {
 
 func (s *Sender) addLocked(e Entry) {
 	s.recent = append(s.recent, &record{Entry: e})
+	s.trimLocked()
+}
+
+// addFlipLocked adds a switch row ahead of any switch row of a later flip,
+// which an off flip's wait can let in first.
+func (s *Sender) addFlipLocked(e Entry, flip uint64) {
+	rec := &record{Entry: e, flip: flip}
+	at := len(s.recent)
+	for i, r := range s.recent {
+		if r.Kind == KindSwitch && r.flip > flip {
+			at = i
+			break
+		}
+	}
+	s.recent = append(s.recent[:at], append([]*record{rec}, s.recent[at:]...)...)
+	s.trimLocked()
+}
+
+func (s *Sender) trimLocked() {
 	if over := len(s.recent) - MaxRecent; over > 0 {
 		s.recent = append([]*record(nil), s.recent[over:]...)
 	}
@@ -533,7 +575,7 @@ func (s *Sender) Refusals() []Entry {
 // send's outcome read from the control path. Once the control path has
 // recorded a send the answer is kept on the row, so the shared outcome ring
 // evicting it later changes nothing. A send not yet recorded is pending, and
-// reads "no outcome" once PendingExpiry has passed; a record that arrives
+// reads "outcome unknown" once PendingExpiry has passed; a record that arrives
 // later still resolves it. A record older than the send belongs to an earlier
 // message that reused the difference_mrid and is ignored.
 func (s *Sender) Recent() []Entry {
@@ -562,7 +604,7 @@ func (s *Sender) Recent() []Entry {
 			recs[i].final = true
 			s.mu.Unlock()
 		} else if now.Sub(e.Time) > PendingExpiry {
-			e.Outcome = OutcomeNone
+			e.Outcome, e.Reason = OutcomeNone, unknownReason
 		}
 	}
 	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {

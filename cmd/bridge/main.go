@@ -68,6 +68,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sender"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
@@ -383,6 +384,11 @@ func run(ctx context.Context, cfg config) error {
 	})
 	defer mon.Close()
 
+	busSender, err := newBusSender(cfg, bus, reg, &controlHook)
+	if err != nil {
+		return fmt.Errorf("bus sender: %w", err)
+	}
+
 	var adminUIRun func(context.Context) error
 	adminSrv, err := adminui.New(adminUIConfig(cfg), adminui.Sources{
 		Registry: reg,
@@ -395,6 +401,7 @@ func run(ctx context.Context, cfg config) error {
 		Protocol: embed,
 		History:  &inputHistory,
 		Monitor:  mon,
+		Sender:   busSender,
 	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
@@ -897,6 +904,29 @@ func busConfig(cfg config) gridappsd.Config {
 		AllowPlaintext: cfg.AllowPlaintext,
 		HeartBeat:      cfg.Tuning.Heartbeat,
 	}
+}
+
+// senderFlipWait bounds how long switching publishing off waits for sends in
+// flight. It sits under the admin plane's 5 s action timeout, so the off
+// answer, with its count of sends still in flight, reaches the operator.
+const senderFlipWait = 4 * time.Second
+
+// newBusSender builds the admin UI's sender for the application input topic
+// the control subscriber reads, with outcomes read from that subscriber's
+// hook. With no application id there is no input topic, and no sender.
+func newBusSender(cfg config, bus sender.Bus, reg *registry.Registry, outcomes sender.OutcomeSource) (*sender.Sender, error) {
+	if cfg.ApplicationID == "" {
+		log.Printf("bridge: no application id; the admin UI bus sender is off")
+		return nil, nil
+	}
+	return sender.New(sender.Config{
+		Bus:            bus,
+		Registry:       reg,
+		Destination:    sim.ApplicationInputTopic(cfg.ApplicationID, ""),
+		Outcomes:       outcomes,
+		PublishAtStart: cfg.SEP2AdminUIBusPublishAtStart,
+		FlipWait:       senderFlipWait,
+	})
 }
 
 // monitorSTOMPConfig is busConfig for the bus monitor's own connections:
