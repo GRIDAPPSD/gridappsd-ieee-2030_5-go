@@ -52,8 +52,8 @@ func TestOnFlipDuringAnOffFlipsWaitStaysNewest(t *testing.T) {
 func TestFailedRawSendMayBeRetriedWithItsMRID(t *testing.T) {
 	r := newRig(t, true)
 	r.bus.err = errors.New("broker gone")
-	if _, err := r.s.SendRaw(ctx, "a", rawBody("retry-me", "_dev-a", 0, 1)); err == nil {
-		t.Fatal("send over a failing bus succeeded")
+	if _, err := r.s.SendRaw(ctx, "a", rawBody("retry-me", "_dev-a", 0, 1)); !errors.Is(err, ErrPublishFailed) {
+		t.Fatalf("send over a failing bus: err = %v, want ErrPublishFailed", err)
 	}
 	r.bus.err = nil
 	r.clk.advance(time.Second)
@@ -97,5 +97,39 @@ func TestOffFlipReportsSendsStillInFlight(t *testing.T) {
 	<-done
 	if st := r.s.SetPublishing(true, "operator"); st.StillInFlight != 0 {
 		t.Errorf("after on: %+v, want StillInFlight 0", st)
+	}
+}
+
+// An off flip whose wait ends after a later flip must not write its
+// in-flight count onto the newer state: the switch is on again, and nothing
+// it did is in flight.
+func TestOffFlipCountDoesNotLandOnALaterFlip(t *testing.T) {
+	bus := newHoldBus(false)
+	r := rigWithBus(t, bus, 200*time.Millisecond)
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		_, _ = r.s.SendRaw(ctx, "a", rawBody("held", "_dev-a", 0, 1))
+	}()
+	<-bus.entered
+	offDone := make(chan State)
+	go func() { offDone <- r.s.SetPublishing(false, "off-flipper") }()
+	deadline := time.Now().Add(3 * time.Second)
+	for r.s.Publishing().On {
+		if time.Now().After(deadline) {
+			t.Fatal("switch never went off")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	r.s.SetPublishing(true, "on-flipper")
+	off := <-offDone // the send is still held, so the off flip counts it
+	close(bus.release)
+	<-sent
+
+	if off.On || off.StillInFlight != 1 {
+		t.Errorf("off flip returned %+v, want off with 1 in flight", off)
+	}
+	if st := r.s.Publishing(); !st.On || st.StillInFlight != 0 || st.ChangedBy != "on-flipper" {
+		t.Errorf("state = %+v, want on by on-flipper with nothing in flight", st)
 	}
 }

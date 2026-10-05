@@ -3,8 +3,10 @@ package adminui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -17,6 +19,9 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sender"
 )
 
+// switchPanelID is the panel the Publishing switch is served from.
+const switchPanelID = panelPublishing
+
 const testInputTopic = "/topic/goss.gridappsd.simulation.IEEE_2030_5.input"
 
 // recordingBus keeps every frame; hold, when set, blocks each Send until
@@ -26,6 +31,7 @@ type recordingBus struct {
 	frames  []recordedFrame
 	hold    chan struct{}
 	entered chan struct{}
+	err     error
 }
 
 type recordedFrame struct {
@@ -40,6 +46,9 @@ func (b *recordingBus) Send(_ context.Context, dest, _ string, body []byte) erro
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.err != nil {
+		return b.err
+	}
 	b.frames = append(b.frames, recordedFrame{dest, append([]byte(nil), body...)})
 	return nil
 }
@@ -80,7 +89,12 @@ func senderServer(t *testing.T, snd *sender.Sender) *Server {
 // loopback address doRequest uses.
 func postAction(t *testing.T, h http.Handler, action, body string) (int, map[string]any) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/ui/panels/"+panelSender+"/actions/"+action, strings.NewReader(body))
+	return postPanelAction(t, h, panelSender, action, body)
+}
+
+func postPanelAction(t *testing.T, h http.Handler, panel, action, body string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/ui/panels/"+panel+"/actions/"+action, strings.NewReader(body))
 	req.RemoteAddr = "127.0.0.1:40000"
 	req.Host = "localhost"
 	req.Header.Set("Authorization", "Bearer "+testKey)
@@ -95,14 +109,46 @@ func postAction(t *testing.T, h http.Handler, action, body string) (int, map[str
 }
 
 // TestSenderPanelDeclaresTheSwitchFormsAndRawBox: the shell is told every
-// action with its fields, ranges and the device choices it may submit.
+// action with its fields, ranges and the device choices it may submit, the
+// switch alone on its own panel and the sends on the sender panel.
 func TestSenderPanelDeclaresTheSwitchFormsAndRawBox(t *testing.T) {
 	t.Parallel()
 	s := senderServer(t, newTestSender(t, &recordingBus{}, false))
 
-	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelSender+"/actions", "Bearer "+testKey, "localhost")
+	shape := map[string]string{}
+	for _, panel := range []string{switchPanelID, panelSender} {
+		for id, d := range actionShapes(t, s, panel) {
+			shape[panel+"/"+id] = d
+		}
+	}
+	device := "device:choice Alpha=_dev-a Bravo=_dev-b"
+	want := map[string]string{
+		switchPanelID + "/publishing":   "on:toggle",
+		panelSender + "/active-power":   device + "; multiplier:integer[-9,9]; value:integer[-32768,32767]",
+		panelSender + "/reactive-power": device + "; multiplier:integer[-9,9]; value:integer[-32768,32767]",
+		panelSender + "/connect":        device + "; connect:boolean",
+		panelSender + "/energize":       device + "; energize:boolean",
+		panelSender + "/raw":            "json:text<=16384",
+	}
+	if len(shape) != len(want) {
+		t.Errorf("actions = %v, want %d", shape, len(want))
+	}
+	for id, w := range want {
+		if shape[id] != w {
+			t.Errorf("action %s = %q, want %q", id, shape[id], w)
+		}
+	}
+	sw := entries(t, section(t, getPanel(t, s, switchPanelID), "Publishing switch"))
+	assertBadge(t, "switch panel", sw["Publishing"], "neutral", "OFF")
+}
+
+// actionShapes reads a panel's action list as the shell does and writes each
+// action's fields as name:kind, with any range, cap and choices.
+func actionShapes(t *testing.T, s *Server, panel string) map[string]string {
+	t.Helper()
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panel+"/actions", "Bearer "+testKey, "localhost")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET actions: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("GET %s actions: %d %s", panel, rec.Code, rec.Body.String())
 	}
 	var got struct {
 		Actions []struct {
@@ -139,23 +185,7 @@ func TestSenderPanelDeclaresTheSwitchFormsAndRawBox(t *testing.T) {
 		}
 		shape[a.ID] = strings.Join(fs, "; ")
 	}
-	device := "device:choice Alpha=_dev-a Bravo=_dev-b"
-	want := map[string]string{
-		"publishing":     "on:toggle",
-		"active-power":   device + "; multiplier:integer[-9,9]; value:integer[-32768,32767]",
-		"reactive-power": device + "; multiplier:integer[-9,9]; value:integer[-32768,32767]",
-		"connect":        device + "; connect:boolean",
-		"energize":       device + "; energize:boolean",
-		"raw":            "json:text<=16384",
-	}
-	if len(shape) != len(want) {
-		t.Errorf("actions = %v, want %d", shape, len(want))
-	}
-	for id, w := range want {
-		if shape[id] != w {
-			t.Errorf("action %s = %q, want %q", id, shape[id], w)
-		}
-	}
+	return shape
 }
 
 // TestSenderFormPublishesTheValuesSubmitted: a form reaches the input
@@ -233,7 +263,7 @@ func TestSenderRawAndRefusalsReachTheOperator(t *testing.T) {
 	if code != http.StatusUnprocessableEntity || out["error"] != "publishing is off" {
 		t.Errorf("raw while off: %d %v, want 422 publishing is off", code, out)
 	}
-	if code, out := postAction(t, s.Handler(), "publishing", `{"on":true}`); code != http.StatusOK || out["message"] != "Publishing is ON." {
+	if code, out := postPanelAction(t, s.Handler(), switchPanelID, "publishing", `{"on":true}`); code != http.StatusOK || out["message"] != "Publishing is ON." {
 		t.Fatalf("switch on: %d %v", code, out)
 	}
 	if code, out := postAction(t, s.Handler(), "raw", string(rawField)); code != http.StatusOK {
@@ -272,7 +302,7 @@ func TestSenderViewShowsTheTrueSwitchAndRows(t *testing.T) {
 		t.Errorf("changed from = %+v, want start", sw["Changed from"])
 	}
 
-	postAction(t, s.Handler(), "publishing", `{"on":true}`)
+	postPanelAction(t, s.Handler(), switchPanelID, "publishing", `{"on":true}`)
 	postAction(t, s.Handler(), "energize", `{"device":"_dev-a","energize":true}`)
 	postAction(t, s.Handler(), "connect", `{"device":"_nope","connect":true}`) // not a choice: refused by the plane
 
@@ -317,7 +347,7 @@ func TestSenderOffFlipShowsSendsStillInFlight(t *testing.T) {
 		_, _ = snd.SendConnect(context.Background(), "a", "_dev-a", true)
 	}()
 	<-bus.entered
-	code, out := postAction(t, s.Handler(), "publishing", `{"on":false}`)
+	code, out := postPanelAction(t, s.Handler(), switchPanelID, "publishing", `{"on":false}`)
 	close(bus.hold)
 	<-done
 	msg, _ := out["message"].(string)
@@ -380,5 +410,118 @@ func TestRunWaitsForARunningAction(t *testing.T) {
 	// The operator was told the outcome is not known, not that it failed.
 	if got := <-answer; !strings.HasPrefix(got, "503 ") || !strings.Contains(got, "may still complete") {
 		t.Errorf("action answer = %q, want 503 saying it may still complete", got)
+	}
+}
+
+// TestSwitchTurnsOffWhileAPanelSendIsBlocked: the off flip must reach the
+// sender while a send made through the panel is held on the bus, which a
+// panel answering one call at a time would refuse as busy. The flip then
+// waits its bound for the held send and reports it.
+func TestSwitchTurnsOffWhileAPanelSendIsBlocked(t *testing.T) {
+	t.Parallel()
+	bus := &recordingBus{hold: make(chan struct{}), entered: make(chan struct{}, 1)}
+	snd := newTestSender(t, bus, true)
+	s := senderServer(t, snd)
+
+	sendDone := make(chan int, 1)
+	go func() {
+		code, _ := postAction(t, s.Handler(), "energize", `{"device":"_dev-a","energize":true}`)
+		sendDone <- code
+	}()
+	<-bus.entered
+
+	start := time.Now()
+	code, out := postPanelAction(t, s.Handler(), switchPanelID, "publishing", `{"on":false}`)
+	waited := time.Since(start)
+	close(bus.hold)
+	<-sendDone
+
+	msg, _ := out["message"].(string)
+	if code != http.StatusOK || !strings.Contains(msg, "Publishing is OFF. 1 send(s) were still in flight") {
+		t.Fatalf("off flip during a held send: %d %v, want 200 reporting the held send", code, out)
+	}
+	if snd.Publishing().On {
+		t.Error("the switch is still on")
+	}
+	if waited < 100*time.Millisecond {
+		t.Errorf("the flip returned after %v, want it to wait its 100ms bound for the held send", waited)
+	}
+}
+
+// TestBusFailureIsAFailureNotARefusal: a send the bus rejects is answered
+// as a failed action, with no transport text in the answer, and its row
+// keeps the cause for the operator.
+func TestBusFailureIsAFailureNotARefusal(t *testing.T) {
+	t.Parallel()
+	bus := &recordingBus{err: errors.New("write tcp 10.0.0.9:61613: broken pipe")}
+	snd := newTestSender(t, bus, true)
+	s := senderServer(t, snd)
+
+	code, out := postAction(t, s.Handler(), "connect", `{"device":"_dev-a","connect":true}`)
+	if code != http.StatusInternalServerError || out["error"] != "action failed" {
+		t.Errorf("bus failure: %d %v, want 500 action failed", code, out)
+	}
+	if strings.Contains(fmt.Sprint(out), "broken pipe") || strings.Contains(fmt.Sprint(out), "10.0.0.9") {
+		t.Errorf("answer %v carries the transport error", out)
+	}
+	rows := snd.Recent()
+	if len(rows) != 1 || rows[0].Outcome != sender.OutcomeFailed || !strings.Contains(rows[0].Reason, "broken pipe") {
+		t.Errorf("rows = %+v, want one failed row naming the cause", rows)
+	}
+}
+
+// TestShutdownStaysWithinOneBound: an action that never returns and a
+// client that never finishes its request each hold one shutdown step; the
+// two steps share the one configured bound instead of taking it twice.
+func TestShutdownStaysWithinOneBound(t *testing.T) {
+	t.Parallel()
+	bus := &recordingBus{hold: make(chan struct{}), entered: make(chan struct{}, 1)}
+	t.Cleanup(func() { close(bus.hold) })
+	src := testSources()
+	src.Sender = newTestSender(t, bus, true)
+	s := newServer(t, Config{Key: testKey}, src)
+	const bound = time.Second
+	s.timeouts.shutdown = bound
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- s.Run(ctx) }()
+
+	go func() {
+		req, _ := http.NewRequest(http.MethodPost, "http://"+s.Addr()+"/api/ui/panels/"+panelSender+"/actions/energize",
+			strings.NewReader(`{"device":"_dev-a","energize":true}`))
+		req.Host = "localhost"
+		req.Header.Set("Authorization", "Bearer "+testKey)
+		req.Header.Set("Content-Type", "application/json")
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	select {
+	case <-bus.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the action never reached the bus")
+	}
+	// A request whose headers never finish keeps its connection active,
+	// so Shutdown waits for it until its deadline.
+	conn, err := net.Dial("tcp", s.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write([]byte("GET /api/health HTTP/1.1\r\nHost: localhost\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-runErr:
+		t.Logf("Run returned %v after %v", err, time.Since(start))
+		if d := time.Since(start); d > bound+bound/2 {
+			t.Errorf("Run took %v with a %v shutdown bound", d, bound)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
 	}
 }

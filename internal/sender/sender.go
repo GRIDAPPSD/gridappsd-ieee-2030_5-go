@@ -75,6 +75,9 @@ var (
 	ErrPublishingOff = errors.New("publishing is off")
 	// ErrRateLimited is returned when the send limit is spent.
 	ErrRateLimited = errors.New("send rate limit exceeded")
+	// ErrPublishFailed wraps an error from the bus itself, including a send
+	// the switch cancelled, as against a refusal before publishing.
+	ErrPublishFailed = errors.New("sender: publish failed")
 	// ErrDuplicateMRID is returned for a raw send whose difference_mrid was
 	// already used: the control path keys outcomes by it, so a reuse would
 	// show one message's outcome on another's row.
@@ -409,7 +412,7 @@ func (s *Sender) publish(ctx context.Context, kind, remote string, build func(ti
 	e := Entry{Time: now, Kind: kind, Remote: remote, Destination: s.dest, DifferenceMRID: parsed.DifferenceMRID, Deltas: deltas}
 	var result Result
 	if sendErr != nil {
-		sendErr = fmt.Errorf("sender: publish to %s: %w", s.dest, sendErr)
+		sendErr = fmt.Errorf("%w: to %s: %w", ErrPublishFailed, s.dest, sendErr)
 		e.Outcome, e.Reason = OutcomeFailed, sendErr.Error()
 	} else {
 		result = Result{DifferenceMRID: parsed.DifferenceMRID, Destination: s.dest}

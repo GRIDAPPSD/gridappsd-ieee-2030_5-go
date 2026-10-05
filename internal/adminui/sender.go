@@ -2,6 +2,7 @@ package adminui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -12,7 +13,13 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sender"
 )
 
-const panelSender = "gridappsd-sender"
+// The switch has a panel of its own: the plane runs one call per panel at
+// a time, so on the sends' panel an off flip would wait behind the very
+// send it is meant to stop, which can block in go-stomp for 10 s.
+const (
+	panelPublishing = "gridappsd-publishing"
+	panelSender     = "gridappsd-sender"
+)
 
 // stillDeliverable is shown with every off flip: go-stomp's Send ignores
 // cancellation, so the switch cannot recall a frame it already holds.
@@ -56,8 +63,6 @@ func (p *senderPanel) panel(slot int) sep2admin.Panel {
 		DescriptorVersion: sep2admin.CurrentDescriptorVersion,
 		View:              p.view,
 		Actions: []sep2admin.Action{
-			{ID: "publishing", Label: "Publishing switch", Run: p.flip,
-				Fields: []sep2admin.ActionField{{Name: "on", Label: "Publishing on", Kind: sep2admin.ActionToggle}}},
 			{ID: "active-power", Label: "Set active power target", Run: p.activePower,
 				Fields: []sep2admin.ActionField{device, multiplier, value("W")}},
 			{ID: "reactive-power", Label: "Set reactive power target", Run: p.reactivePower,
@@ -69,6 +74,20 @@ func (p *senderPanel) panel(slot int) sep2admin.Panel {
 			{ID: "raw", Label: "Send raw JSON", Run: p.raw,
 				Fields: []sep2admin.ActionField{{Name: "json", Label: "Message JSON (difference_mrid required)", Kind: sep2admin.ActionText, MaxLen: sep2admin.MaxActionTextLen}}},
 		},
+	}
+}
+
+func (p *senderPanel) switchPanel(slot int) sep2admin.Panel {
+	return sep2admin.Panel{
+		ID:                panelPublishing,
+		Label:             "Bus publishing",
+		Placement:         sep2admin.ExtensionSlot(slot),
+		DescriptorVersion: sep2admin.CurrentDescriptorVersion,
+		View: func(context.Context) (sep2admin.Descriptor, error) {
+			return descriptor(p.switchSection()), nil
+		},
+		Actions: []sep2admin.Action{{ID: "publishing", Label: "Publishing switch", Run: p.flip,
+			Fields: []sep2admin.ActionField{{Name: "on", Label: "Publishing on", Kind: sep2admin.ActionToggle}}}},
 	}
 }
 
@@ -113,10 +132,14 @@ func (p *senderPanel) raw(ctx context.Context, v sep2admin.ActionValues) (sep2ad
 	return sent(p.s.SendRaw(ctx, remoteFrom(ctx), []byte(v.String("json"))))
 }
 
-// sent answers a send. Every sender error is written for the operator
-// (the switch, the rate, the first failing JSON path, a bus failure), so
-// each is a refusal the shell shows rather than a bare failure.
+// sent answers a send. A refusal (the switch, the rate, the first failing
+// JSON path) is written for the operator and shown as one. A bus failure is
+// a failure: the plane logs its detail, which is transport text, and
+// answers a bare 500; the send's row reads failed.
 func sent(res sender.Result, err error) (sep2admin.ActionResult, error) {
+	if errors.Is(err, sender.ErrPublishFailed) {
+		return sep2admin.ActionResult{}, fmt.Errorf("bus sender: %w", err)
+	}
 	if err != nil {
 		return sep2admin.ActionResult{}, &sep2admin.ActionRefusal{Reason: strings.TrimPrefix(err.Error(), "sender: ")}
 	}
@@ -124,7 +147,7 @@ func sent(res sender.Result, err error) (sep2admin.ActionResult, error) {
 		res.DifferenceMRID, res.Destination)}, nil
 }
 
-func (p *senderPanel) view(context.Context) (sep2admin.Descriptor, error) {
+func (p *senderPanel) switchSection() sep2admin.Section {
 	st := p.s.Publishing()
 	state := sep2admin.BadgeCell(sep2admin.BadgeNeutral, "OFF")
 	if st.On {
@@ -139,14 +162,18 @@ func (p *senderPanel) view(context.Context) (sep2admin.Descriptor, error) {
 		entries = append(entries, sep2admin.DefinitionEntry{Key: "Still in flight at the off flip",
 			Value: sep2admin.BadgeCell(sep2admin.BadgeWarn, sep2admin.Value(fmt.Sprintf("%d send(s); they may still be delivered", st.StillInFlight)))})
 	}
-	sw := sep2admin.Section{
+	return sep2admin.Section{
 		Heading: "Publishing switch",
 		Prose: []string{
-			"Publishing is off after every start unless SEP2_ADMIN_UI_BUS_PUBLISH_AT_START is true. While it is off every send is refused.",
+			"Publishing is off after every start unless SEP2_ADMIN_UI_BUS_PUBLISH_AT_START is true. While it is off every send is refused. The switch is on the Bus publishing tab.",
 			"Switching off refuses new sends at once and waits a few seconds for sends in flight. " + stillDeliverable,
 		},
 		Body: sep2admin.NewDefinitionListBody(sep2admin.DefinitionListBody{Groups: []sep2admin.DefinitionGroup{{Entries: entries}}}),
 	}
+}
+
+func (p *senderPanel) view(context.Context) (sep2admin.Descriptor, error) {
+	sw := p.switchSection()
 
 	recent := p.s.Recent()
 	recentRows := make([]sep2admin.Row, 0, len(recent))
