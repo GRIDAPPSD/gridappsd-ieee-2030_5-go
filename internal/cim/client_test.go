@@ -571,3 +571,71 @@ func TestGetPlatformStatusObjectError(t *testing.T) {
 		t.Errorf("err = %v, want ErrServerError containing 'not ready'", err)
 	}
 }
+
+func TestDecodeEnvelopeRedactsEveryShape(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		body     string
+		notInErr []string
+		inErr    []string
+	}{
+		{"array of objects", `{"error":[{"password":"hunter2"}]}`, []string{"hunter2"}, nil},
+		{"nested in array in object", `{"error":{"errors":[{"auth":"hunter2"}]}}`, []string{"hunter2"}, nil},
+		{"bearer key", `{"error":{"bearer":"hunter2","cookie":"c00kie","pwd":"pw1","auth":"a1","x":1}}`, []string{"hunter2", "c00kie", "pw1", "a1"}, []string{`"x":1`}},
+		{"kv in message", `{"error":{"message":"login failed token=abc123 for u"}}`, []string{"abc123"}, []string{"login failed"}},
+		{"colon kv in string", `{"error":"bad password: hunter2 given"}`, []string{"hunter2"}, []string{"bad"}},
+		{"bearer header text", `{"error":"Authorization: Bearer abc123xyz rejected"}`, []string{"abc123xyz"}, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := decodeEnvelope([]byte(tc.body), true)
+			if !errors.Is(err, ErrServerError) {
+				t.Fatalf("err = %v, want ErrServerError", err)
+			}
+			for _, s := range tc.notInErr {
+				if strings.Contains(err.Error(), s) {
+					t.Errorf("err %q leaks %q", err, s)
+				}
+			}
+			for _, s := range tc.inErr {
+				if !strings.Contains(err.Error(), s) {
+					t.Errorf("err %q missing %q", err, s)
+				}
+			}
+		})
+	}
+}
+
+func TestErrorSurvivesOtherFieldTypeError(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		`{"error":"boom","responseComplete":"no"}`,
+		`{"error":{"message":"boom"},"responseComplete":"no"}`,
+	} {
+		_, err := decodeEnvelope([]byte(body), true)
+		if !errors.Is(err, ErrServerError) || !strings.Contains(err.Error(), "boom") {
+			t.Errorf("decodeEnvelope(%s) err = %v, want ErrServerError boom", body, err)
+		}
+		_, err = NewClient(&mockRequester{resp: []byte(body)}).GetPlatformStatus(context.Background())
+		if !errors.Is(err, ErrServerError) || !strings.Contains(err.Error(), "boom") {
+			t.Errorf("GetPlatformStatus(%s) err = %v, want ErrServerError boom", body, err)
+		}
+	}
+}
+
+func TestFirstErrorSticks(t *testing.T) {
+	t.Parallel()
+
+	_, err := decodeEnvelope([]byte(`{"error":"first","error":null}`), true)
+	if !errors.Is(err, ErrServerError) || !strings.Contains(err.Error(), "first") {
+		t.Errorf("err = %v, want first error", err)
+	}
+	_, err = decodeEnvelope([]byte(`{"error":"first","error":"second"}`), true)
+	if err == nil || !strings.Contains(err.Error(), "first") || strings.Contains(err.Error(), "second") {
+		t.Errorf("err = %v, want only first", err)
+	}
+}

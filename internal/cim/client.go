@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -60,7 +61,10 @@ type envelopeError struct {
 // UnmarshalJSON accepts any JSON value; it never fails, so a new error
 // shape surfaces as a server error rather than a decode failure.
 func (e *envelopeError) UnmarshalJSON(b []byte) error {
-	*e = envelopeError{}
+	// A repeated "error" member never replaces the first one that set it.
+	if e.set {
+		return nil
+	}
 	trimmed := strings.TrimSpace(string(b))
 	if trimmed == "null" {
 		return nil
@@ -68,7 +72,7 @@ func (e *envelopeError) UnmarshalJSON(b []byte) error {
 	var s string
 	if json.Unmarshal(b, &s) == nil {
 		if s != "" {
-			*e = envelopeError{set: true, text: boundText(s)}
+			*e = envelopeError{set: true, text: boundText(redactText(s))}
 		}
 		return nil
 	}
@@ -80,21 +84,32 @@ func (e *envelopeError) UnmarshalJSON(b []byte) error {
 // object when it has one, else the object as JSON with credential-like
 // keys redacted.
 func describeErrorValue(b []byte) string {
-	var obj map[string]any
-	if json.Unmarshal(b, &obj) != nil {
-		return boundText(strings.TrimSpace(string(b)))
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		return boundText(redactText(strings.TrimSpace(string(b))))
 	}
-	for _, k := range []string{"message", "msg", "detail", "reason", "description", "error"} {
-		if m, ok := obj[k].(string); ok && m != "" {
-			return boundText(m)
+	if obj, ok := v.(map[string]any); ok {
+		for _, k := range []string{"message", "msg", "detail", "reason", "description", "error"} {
+			if m, ok := obj[k].(string); ok && m != "" {
+				return boundText(redactText(m))
+			}
 		}
 	}
-	redactCredentials(obj)
-	out, err := json.Marshal(obj)
+	redactCredentials(v)
+	out, err := json.Marshal(v)
 	if err != nil {
-		return "unrepresentable error object"
+		return "unrepresentable error value"
 	}
-	return boundText(string(out))
+	return boundText(redactText(string(out)))
+}
+
+// secretText matches "name=value", "name: value" and "bearer value"
+// where the name looks like a credential.
+var secretText = regexp.MustCompile(`(?i)\b(pass(?:word|wd)?|pwd|secret|token|credential|authorization|auth|cookie|api[_-]?key|key)\b\s*[:=]\s*(?:bearer\s+)?[^\s,;&"']+|\bbearer\s+[^\s,;&"']+`)
+
+// redactText blanks credential-looking values inside free text.
+func redactText(s string) string {
+	return secretText.ReplaceAllString(s, "[redacted]")
 }
 
 // redactCredentials blanks values whose key looks like a credential, at
@@ -104,19 +119,25 @@ func redactCredentials(v any) {
 	case map[string]any:
 		for k, val := range t {
 			lk := strings.ToLower(k)
-			if strings.Contains(lk, "pass") || strings.Contains(lk, "secret") ||
-				strings.Contains(lk, "token") || strings.Contains(lk, "credential") ||
-				strings.Contains(lk, "authorization") || strings.Contains(lk, "key") {
-				t[k] = "[redacted]"
-				continue
+			for _, frag := range credentialKeyFragments {
+				if strings.Contains(lk, frag) {
+					t[k] = "[redacted]"
+					break
+				}
 			}
-			redactCredentials(val)
+			if t[k] != "[redacted]" {
+				redactCredentials(val)
+			}
 		}
 	case []any:
 		for _, val := range t {
 			redactCredentials(val)
 		}
 	}
+}
+
+var credentialKeyFragments = []string{
+	"pass", "pwd", "secret", "token", "credential", "auth", "bearer", "cookie", "key",
 }
 
 // boundText truncates s to maxErrorText bytes on a rune boundary.
@@ -138,7 +159,9 @@ func boundText(s string) string {
 // platform-status and config responses do not carry that field.
 func decodeEnvelope(raw []byte, checkComplete bool) (json.RawMessage, error) {
 	var env envelopeMeta
-	if err := json.Unmarshal(raw, &env); err != nil {
+	// A type error in another field must not hide a present error member:
+	// json.Unmarshal still fills the fields it could decode.
+	if err := json.Unmarshal(raw, &env); err != nil && !env.Error.set {
 		return nil, fmt.Errorf("cim: decode envelope: %w", err)
 	}
 	if env.Error.set {
@@ -246,7 +269,8 @@ func (c *Client) GetPlatformStatus(ctx context.Context) (*PlatformStatus, error)
 	// Platform status responses do not wrap in a "data" envelope per the
 	// catalog; check for an error key, then decode the body directly.
 	var probe envelopeMeta
-	if err := json.Unmarshal(raw, &probe); err == nil && probe.Error.set {
+	_ = json.Unmarshal(raw, &probe) // a type error elsewhere must not hide the error member
+	if probe.Error.set {
 		return nil, fmt.Errorf("cim.GetPlatformStatus: %w: %s", ErrServerError, probe.Error.text)
 	}
 
