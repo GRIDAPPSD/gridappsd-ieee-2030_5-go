@@ -78,7 +78,8 @@ To run the bridge as a container on the GridAPPS-D platform network:
 5. **Stop**: `make docker-down` stops and removes the container.
 
 The admin UI listens at `http://127.0.0.1:18444/ui` and shows the bridge's
-status, DERs, and telemetry.
+status, DERs, and telemetry. Its Bus monitor tab watches any `/topic/` on the
+broker live, each topic on its own connection under the bridge's credential.
 
 Only one bridge may run against a broker at a time. If the binary bridge is
 running, stop it before bringing up the container.
@@ -149,7 +150,8 @@ Three layers, slowest last:
    `integration`-tagged tests in `internal/cimstomp/`, and tears the
    broker down. Fast; good for iterating on cimstomp internals.
 3. `make test-gridappsd` runs the `gridappsd`-tagged tests in
-   `internal/cimstomp/` against a real GridAPPS-D platform stack
+   `internal/cimstomp/`, `internal/busmonitor/` and `internal/adminui/`
+   against a real GridAPPS-D platform stack
    (broker plugins, auth-token responder, request routing). The
    platform must already be running: this target probes the STOMP
    port and fails fast with a hint if it is not reachable. Bring the

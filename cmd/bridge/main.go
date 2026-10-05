@@ -34,6 +34,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -57,9 +59,11 @@ import (
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/buildinfo"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/busmonitor"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/sim"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/gridappsdclient"
@@ -350,6 +354,14 @@ func run(ctx context.Context, cfg config) error {
 	}
 	telemetryRun := pub.Run
 
+	// The bus monitor opens nothing until a viewer watches a topic, and
+	// then one connection per topic under the bridge's own credential.
+	mon := busmonitor.New(ctx, busmonitor.Config{
+		Dial:  busmonitor.NewDialer(monitorSTOMPConfig(cfg)),
+		Probe: func() string { return probeDestination(cfg) },
+	})
+	defer mon.Close()
+
 	var adminUIRun func(context.Context) error
 	adminSrv, err := adminui.New(adminUIConfig(cfg), adminui.Sources{
 		Registry: reg,
@@ -361,6 +373,7 @@ func run(ctx context.Context, cfg config) error {
 		Clients:  &connHook,
 		Protocol: embed,
 		History:  &inputHistory,
+		Monitor:  mon,
 	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
@@ -863,6 +876,21 @@ func busConfig(cfg config) gridappsd.Config {
 		AllowPlaintext: cfg.AllowPlaintext,
 		HeartBeat:      cfg.Tuning.Heartbeat,
 	}
+}
+
+// monitorSTOMPConfig is busConfig for the bus monitor's own connections:
+// the same broker, credential and transport choice. A TLS dial verifies
+// the broker against the system trust store, as gridappsd.Config's does.
+func monitorSTOMPConfig(cfg config) cimstomp.STOMPConfig {
+	sc := cimstomp.STOMPConfig{Address: cfg.STOMPAddr, User: cfg.STOMPUser, Password: cfg.STOMPPassword}
+	if !cfg.AllowPlaintext {
+		host, _, err := net.SplitHostPort(cfg.STOMPAddr)
+		if err != nil {
+			host = cfg.STOMPAddr
+		}
+		sc.TLS = &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+	}
+	return sc
 }
 
 // connectClient dials the GridAPPS-D broker, runs the two-step GOSS

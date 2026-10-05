@@ -316,14 +316,66 @@ func TestRingKeepsNewest200(t *testing.T) {
 	if len(bl) != RingSize {
 		t.Fatalf("backlog = %d, want %d", len(bl), RingSize)
 	}
-	if bl[0].Seq != 51 || string(bl[0].Body) != "m51" || bl[199].Seq != 250 || string(bl[199].Body) != "m250" {
-		t.Fatalf("backlog spans %d/%s .. %d/%s, want 51/m51 .. 250/m250", bl[0].Seq, bl[0].Body, bl[199].Seq, bl[199].Body)
+	if string(bl[0].Body) != "m51" || string(bl[199].Body) != "m250" || bl[199].Seq-bl[0].Seq != 199 {
+		t.Fatalf("backlog spans %d/%s .. %d/%s, want m51 .. m250 with consecutive seqs", bl[0].Seq, bl[0].Body, bl[199].Seq, bl[199].Body)
 	}
-	// Replay then live: the next frame arrives after the backlog with the next seq.
+	// Replay, join, then live: the join and the next frame sort after the backlog.
 	r.send([]byte("m251"))
 	got := waitMessages(t, late, 1)[0]
-	if got.Seq != 251 || string(got.Body) != "m251" {
-		t.Fatalf("live after replay = %d/%s", got.Seq, got.Body)
+	if string(got.Body) != "m251" || !(bl[199].Seq < late.JoinSeq() && late.JoinSeq() < got.Seq) {
+		t.Fatalf("backlog end %d, join %d, live %d/%s: want rising", bl[199].Seq, late.JoinSeq(), got.Seq, got.Body)
+	}
+}
+
+// TestSeqRisesAcrossStatusesAndATopicWatchedAgain: a viewer resumes by
+// sequence number, so statuses take numbers too, and a topic closed for
+// idleness and watched again must not restart below what a viewer saw.
+func TestSeqRisesAcrossStatusesAndATopicWatchedAgain(t *testing.T) {
+	b := newBroker()
+	m := newTestMonitor(t, b, func(c *Config) { c.IdleClose = 10 * time.Millisecond })
+	v, err := m.Watch("/topic/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := b.next(t, "/topic/s")
+	var last uint64 = v.JoinSeq()
+	next := func(want EventKind) Event {
+		t.Helper()
+		select {
+		case ev := <-v.Events():
+			if ev.Kind != want || ev.Seq <= last {
+				t.Fatalf("event %+v after seq %d, want a %s above it", ev, last, want)
+			}
+			if ev.Kind == EventMessage && ev.Message.Seq != ev.Seq {
+				t.Fatalf("message seq %d, event seq %d", ev.Message.Seq, ev.Seq)
+			}
+			last = ev.Seq
+			return ev
+		case <-time.After(3 * time.Second):
+			t.Fatalf("no %s event", want)
+			return Event{}
+		}
+	}
+	next(EventStatus) // live
+	r.send([]byte("a"))
+	next(EventMessage)
+	r.end(errors.New("dropped"))
+	next(EventStatus) // reconnecting
+	v.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for len(m.Topics()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("topic not closed after idle: %+v", m.Topics())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	again, err := m.Watch("/topic/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Backlog()) != 0 || again.JoinSeq() <= last {
+		t.Fatalf("watched again: backlog %d, join %d, want empty and above %d", len(again.Backlog()), again.JoinSeq(), last)
 	}
 }
 
