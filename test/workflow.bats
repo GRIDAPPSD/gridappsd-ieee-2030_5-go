@@ -20,3 +20,26 @@ setup() {
   count=$(git grep "runs-on: ubuntu-24.04" -- .github/workflows | wc -l)
   [ "$count" -gt 0 ]
 }
+
+# A job with no checkout has no .git, so gh cannot infer the repository and
+# fails with "not a git repository". Such a job must set GH_REPO or pass
+# -R/--repo to every gh call.
+@test "jobs without checkout name the repository for gh" {
+  cd "$repo"
+  bad=""
+  for f in .github/workflows/*.yml; do
+    out=$(awk -v file="$f" '
+      function flush() {
+        if (job != "" && !has_checkout && has_gh && !has_repo) printf "%s:%s ", file, job
+      }
+      /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { flush(); job=$1; has_checkout=0; has_gh=0; has_repo=0; next }
+      /actions\/checkout/ { has_checkout=1 }
+      /^[[:space:]]+gh (release|pr|issue|api|run|workflow|repo) / { has_gh=1 }
+      /GH_REPO:|[[:space:]]-R[[:space:]]|--repo/ { has_repo=1 }
+      END { flush() }
+    ' "$f")
+    bad="$bad$out"
+  done
+  echo "jobs missing a repository: $bad"
+  [ -z "$bad" ]
+}
