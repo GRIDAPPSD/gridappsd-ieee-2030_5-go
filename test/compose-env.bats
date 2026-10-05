@@ -198,3 +198,26 @@ example_names() {
   shared=$(comm -12 <(printf '%s\n' "$dev") <(bridge_env_names))
   [ -z "$shared" ]
 }
+
+# example_settings prints each assignment line of a file, active or commented
+# default (`NAME=value` or `# NAME=value`), in file order.
+example_settings() {
+  /usr/bin/grep -E '^(# )?[A-Z][A-Z0-9_]+=' "$1"
+}
+
+@test ".env.example opens with the host ports and network, then the required credentials, then grid ids" {
+  want="BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_ADMIN_SUBNET BRIDGE_ADMIN_IP SEP2_STOMP_ADDR SEP2_STOMP_ALLOW_PLAINTEXT SEP2_ADMIN_UI_KEY GRIDAPPSD_USER GRIDAPPSD_PASSWORD SEP2_STOMP_USER SEP2_STOMP_PASSWORD SEP2_REGISTRATION_PIN SEP2_REGISTRATION_PIN_FILE SEP2_SIMULATION_ID SEP2_APPLICATION_ID SEP2_FEEDER_MRID"
+  count=$(wc -w <<<"$want")
+  got=$(example_settings "$example" | sed -E 's/^(# )?([A-Z][A-Z0-9_]+)=.*/\2/' | head -n "$count" | tr '\n' ' ')
+  [ "$got" = "$want " ] || { echo "got:  $got" >&2; echo "want: $want" >&2; false; }
+}
+
+@test ".env.example keeps every setting line of origin/main byte for byte, and adds none" {
+  git -C "$repo" rev-parse --verify -q origin/main >/dev/null || skip "origin/main is not available"
+  git -C "$repo" show origin/main:.env.example >"$BATS_TEST_TMPDIR/before"
+  example_settings "$BATS_TEST_TMPDIR/before" | sort >"$BATS_TEST_TMPDIR/before.sorted"
+  example_settings "$example" | sort >"$BATS_TEST_TMPDIR/after.sorted"
+  # Control: the file read is not empty, so an empty diff means a real comparison.
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/before.sorted")" -ge 60 ]
+  diff "$BATS_TEST_TMPDIR/before.sorted" "$BATS_TEST_TMPDIR/after.sorted"
+}
