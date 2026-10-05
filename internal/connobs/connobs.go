@@ -75,6 +75,10 @@ type ClientSnapshot struct {
 	// request from this LFDI.
 	LastSeen time.Time
 
+	// Age is how long before this Snapshot the last request was recorded,
+	// by the Hook's clock. It is never negative.
+	Age time.Duration
+
 	// RequestCount is the cumulative number of requests recorded from
 	// this LFDI since the Hook was created.
 	RequestCount uint64
@@ -151,10 +155,21 @@ type clientState struct {
 // Hook is the mutex-guarded observation point. The zero value is ready to
 // use: no constructor is required.
 type Hook struct {
+	// Now is the clock for recorded times and ages; nil means time.Now.
+	// Set it before the Hook is shared, as tests do to control time.
+	Now func() time.Time
+
 	mu         sync.Mutex
 	clients    map[string]*clientState
 	handshakes []HandshakeAttempt
 	seenSeq    uint64
+}
+
+func (h *Hook) now() time.Time {
+	if h.Now != nil {
+		return h.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // RecordRequest records one request from lfdi against path: increments
@@ -187,7 +202,7 @@ func (h *Hook) RecordRequest(lfdi, path string) {
 		h.clients[lfdi] = c
 	}
 	c.requestCount++
-	c.lastSeen = time.Now().UTC()
+	c.lastSeen = h.now()
 	h.seenSeq++
 	c.seen = h.seenSeq
 	if _, seen := c.paths[path]; !seen && len(c.paths) < maxPathsPerClient {
@@ -223,7 +238,7 @@ func (h *Hook) evictOldestLocked() {
 // maxHandshakeLog entries, the oldest entry is dropped to make room for
 // the new one.
 func (h *Hook) RecordHandshake(attempt HandshakeAttempt) {
-	attempt.At = time.Now().UTC()
+	attempt.At = h.now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.handshakes = append(h.handshakes, attempt)
@@ -239,6 +254,7 @@ func (h *Hook) Snapshot() Snapshot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	now := h.now()
 	clients := make([]ClientSnapshot, 0, len(h.clients))
 	for lfdi, c := range h.clients {
 		paths := make([]string, 0, len(c.paths))
@@ -249,6 +265,7 @@ func (h *Hook) Snapshot() Snapshot {
 		clients = append(clients, ClientSnapshot{
 			LFDI:         lfdi,
 			LastSeen:     c.lastSeen,
+			Age:          max(now.Sub(c.lastSeen), 0),
 			RequestCount: c.requestCount,
 			Paths:        paths,
 		})

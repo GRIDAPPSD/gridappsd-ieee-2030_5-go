@@ -48,6 +48,7 @@ func tuningCases() []tuningCase {
 		{"admin-ui-write-timeout", "SEP2_ADMIN_UI_WRITE_TIMEOUT", 10 * s, "13s", 13 * s, dur(func(t tuning) time.Duration { return t.AdminWriteTimeout }), false},
 		{"admin-ui-idle-timeout", "SEP2_ADMIN_UI_IDLE_TIMEOUT", time.Minute, "90s", 90 * s, dur(func(t tuning) time.Duration { return t.AdminIdleTimeout }), false},
 		{"admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", 5 * s, "15s", 15 * s, dur(func(t tuning) time.Duration { return t.AdminShutdownTimeout }), false},
+		{"admin-ui-client-idle-after", "SEP2_ADMIN_UI_CLIENT_IDLE_AFTER", 5 * time.Minute, "7m", 7 * time.Minute, dur(func(t tuning) time.Duration { return t.AdminClientIdleAfter }), false},
 		{"sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", 10 * s, "2s", 2 * s, dur(func(t tuning) time.Duration { return t.ControlSweepInterval }), false},
 		{"sep2-notify-post-timeout", "SEP2_NOTIFY_POST_TIMEOUT", 30 * s, "31s", 31 * s, dur(func(t tuning) time.Duration { return t.NotifyPostTimeout }), false},
 		{"sep2-notify-dial-timeout", "SEP2_NOTIFY_DIAL_TIMEOUT", 30 * s, "32s", 32 * s, dur(func(t tuning) time.Duration { return t.NotifyDialTimeout }), false},
@@ -181,6 +182,7 @@ func testTuningConfig() config {
 		AdminWriteTimeout:      43 * time.Second,
 		AdminIdleTimeout:       44 * time.Second,
 		AdminShutdownTimeout:   45 * time.Second,
+		AdminClientIdleAfter:   46 * time.Minute,
 
 		ControlSweepInterval: 51 * time.Second,
 
@@ -289,6 +291,9 @@ func TestTuningReachesEmbedAndAdminConfig(t *testing.T) {
 		ac.IdleTimeout != 44*time.Second || ac.ShutdownTimeout != 45*time.Second {
 		t.Errorf("admin timeouts = %v/%v/%v/%v/%v, want 41s..45s", ac.ReadHeaderTimeout, ac.ReadTimeout, ac.WriteTimeout, ac.IdleTimeout, ac.ShutdownTimeout)
 	}
+	if ac.ClientIdleAfter != 46*time.Minute {
+		t.Errorf("admin ClientIdleAfter = %s, want 46m", ac.ClientIdleAfter)
+	}
 }
 
 // tuningRanges is the allowed range of each knob, as the operator would
@@ -315,6 +320,7 @@ var tuningRanges = []struct {
 	{"admin-ui-write-timeout", "SEP2_ADMIN_UI_WRITE_TIMEOUT", "1s", "1h", "999ms", "3601s"},
 	{"admin-ui-idle-timeout", "SEP2_ADMIN_UI_IDLE_TIMEOUT", "1s", "1h", "999ms", "3601s"},
 	{"admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", "1s", "5m", "999ms", "301s"},
+	{"admin-ui-client-idle-after", "SEP2_ADMIN_UI_CLIENT_IDLE_AFTER", "30s", "24h", "29s", "1441m"},
 	{"sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", "1s", "1h", "999ms", "3601s"},
 	{"sep2-notify-post-timeout", "SEP2_NOTIFY_POST_TIMEOUT", "1s", "5m", "999ms", "301s"},
 	{"sep2-notify-dial-timeout", "SEP2_NOTIFY_DIAL_TIMEOUT", "1s", "5m", "999ms", "301s"},

@@ -46,6 +46,7 @@ type tuning struct {
 	AdminWriteTimeout      time.Duration
 	AdminIdleTimeout       time.Duration
 	AdminShutdownTimeout   time.Duration
+	AdminClientIdleAfter   time.Duration
 
 	ControlSweepInterval time.Duration
 
@@ -83,6 +84,7 @@ func defaultTuning() tuning {
 		AdminWriteTimeout:      adminWrite,
 		AdminIdleTimeout:       adminIdle,
 		AdminShutdownTimeout:   adminShutdown,
+		AdminClientIdleAfter:   adminui.DefaultClientIdleAfter,
 
 		ControlSweepInterval: sep2embed.DefaultControlSweepInterval,
 
@@ -146,6 +148,7 @@ func tuningKnobs(t *tuning) []*tuningKnob {
 		d("admin-ui-write-timeout", "SEP2_ADMIN_UI_WRITE_TIMEOUT", "admin UI response write timeout (default 10s)", &t.AdminWriteTimeout, s, h),
 		d("admin-ui-idle-timeout", "SEP2_ADMIN_UI_IDLE_TIMEOUT", "admin UI keep-alive idle timeout (default 1m)", &t.AdminIdleTimeout, s, h),
 		d("admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", "admin UI graceful drain bound at shutdown (default 5s)", &t.AdminShutdownTimeout, s, 5*m),
+		d("admin-ui-client-idle-after", "SEP2_ADMIN_UI_CLIENT_IDLE_AFTER", "age past which a client not seen again shows as idle in the admin UI (default 5m)", &t.AdminClientIdleAfter, 30*s, 24*h),
 
 		d("sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", "how often ended DERControls are expired fleet-wide (default 10s)", &t.ControlSweepInterval, s, h),
 

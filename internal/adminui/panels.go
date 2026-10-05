@@ -266,9 +266,13 @@ func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) 
 	disabled := s.cfg.ObservationDisabled
 
 	clientRows := make([]sep2admin.Row, 0, len(snap.Clients))
+	connectedCount := 0
 	for _, c := range snap.Clients {
+		if s.clientConnected(c) {
+			connectedCount++
+		}
 		clientRows = append(clientRows, sep2admin.Row{
-			text(c.LFDI), timeCell(c.LastSeen), number(c.RequestCount), text(strings.Join(c.Paths, ", ")),
+			text(c.LFDI), s.clientStatus(c), timeCell(c.LastSeen), ageCell(c.Age), number(c.RequestCount), text(strings.Join(c.Paths, ", ")),
 		})
 	}
 	clientsEmpty := "No clients connected yet."
@@ -297,23 +301,44 @@ func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) 
 
 	return tables(
 		table("Connected clients", clientsEmpty,
-			[]string{"LFDIs that have issued authenticated requests. Read only."},
-			[]string{"LFDI", "Last seen", "Requests", "Paths touched"}, clientRows),
+			[]string{
+				fmt.Sprintf("%d connected, %d idle. A client is idle once unseen for %s; idle clients stay listed. Read only.",
+					connectedCount, len(snap.Clients)-connectedCount, s.idleAfter),
+			},
+			[]string{"LFDI", "Status", "Last seen", "Age", "Requests", "Paths touched"}, clientRows),
 		s.servedStatusSection(ctx, snap.Clients, disabled),
 		table("Handshake attempts (cert validity)", handshakesEmpty, nil,
 			[]string{"LFDI", "Remote address", "Result", "Reason", "Known", "At"}, handshakeRows),
 	), nil
 }
 
+// clientConnected reports whether c was seen strictly within the idle
+// threshold, so a client exactly at it is already idle.
+func (s *Server) clientConnected(c connobs.ClientSnapshot) bool {
+	return c.Age < s.idleAfter
+}
+
+func (s *Server) clientStatus(c connobs.ClientSnapshot) sep2admin.Cell {
+	if s.clientConnected(c) {
+		return sep2admin.BadgeCell(sep2admin.BadgeOK, "connected")
+	}
+	return sep2admin.BadgeCell(sep2admin.BadgeWarn, "idle")
+}
+
+// ageCell shows an age in whole seconds, such as "3m12s".
+func ageCell(d time.Duration) sep2admin.Cell {
+	return text(d.Truncate(time.Second).String())
+}
+
 // servedStatusSection cross-references the served EndDevices with the
 // client snapshot by LFDI, so a device that never made a request reads
-// "never connected". With the observer off nothing can show a
+// "never connected" and one unseen past the idle threshold reads "idle". With the observer off nothing can show a
 // connection, so every device reads "unknown" instead of a false claim.
 // A roster read failure empties only this section, so the client
 // snapshot still shows.
 func (s *Server) servedStatusSection(ctx context.Context, clients []connobs.ClientSnapshot, disabled bool) tableSpec {
 	const heading = "Served EndDevices: connection status"
-	columns := []string{"EndDevice", "LFDI", "Status", "Last seen", "Requests"}
+	columns := []string{"EndDevice", "LFDI", "Status", "Last seen", "Age", "Requests"}
 	prose := []string{"Cross references the served roster against the connected-client snapshot by LFDI."}
 	if disabled {
 		prose = []string{"The connection observer is disabled on this bridge (SEP2_ENABLE_CCM). Status is unknown for every served device, not \"never connected\"."}
@@ -331,21 +356,21 @@ func (s *Server) servedStatusSection(ctx context.Context, clients []connobs.Clie
 	}
 	rows := make([]sep2admin.Row, 0, len(edevs))
 	for _, e := range edevs {
-		c, connected := byLFDI[e.LFDI]
+		c, seen := byLFDI[e.LFDI]
 		var status sep2admin.Cell
 		switch {
-		case connected:
-			status = sep2admin.BadgeCell(sep2admin.BadgeOK, "connected")
+		case seen:
+			status = s.clientStatus(c)
 		case disabled:
 			status = sep2admin.BadgeCell(sep2admin.BadgeNeutral, "unknown")
 		default:
 			status = sep2admin.BadgeCell(sep2admin.BadgeWarn, "never connected")
 		}
-		lastSeen, requests := text("-"), text("-")
-		if connected {
-			lastSeen, requests = timeCell(c.LastSeen), number(c.RequestCount)
+		lastSeen, age, requests := text("-"), text("-"), text("-")
+		if seen {
+			lastSeen, age, requests = timeCell(c.LastSeen), ageCell(c.Age), number(c.RequestCount)
 		}
-		rows = append(rows, sep2admin.Row{text(e.ID), text(e.LFDI), status, lastSeen, requests})
+		rows = append(rows, sep2admin.Row{text(e.ID), text(e.LFDI), status, lastSeen, age, requests})
 	}
 	return table(heading, "No EndDevices served.", prose, columns, rows)
 }

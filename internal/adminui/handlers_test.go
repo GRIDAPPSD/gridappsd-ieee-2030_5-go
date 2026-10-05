@@ -120,6 +120,7 @@ func TestHandleClientsReturnsExactSnapshotFieldValues(t *testing.T) {
 			{
 				LFDI:         "AAAABBBBCCCCDDDDEEEEFFFFAAAABBBBCCCCDDDD",
 				LastSeen:     lastSeen,
+				Age:          42 * time.Second,
 				RequestCount: 7,
 				Paths:        []string{"/dcap", "/edev"},
 			},
@@ -161,6 +162,9 @@ func TestHandleClientsReturnsExactSnapshotFieldValues(t *testing.T) {
 	}
 	if len(gotClient.Paths) != 2 || gotClient.Paths[0] != "/dcap" || gotClient.Paths[1] != "/edev" {
 		t.Errorf("Clients[0].Paths = %v, want [/dcap /edev]", gotClient.Paths)
+	}
+	if !gotClient.Connected || gotClient.AgeSeconds != 42 {
+		t.Errorf("Clients[0] connected/ageSeconds = %v/%d, want true/42", gotClient.Connected, gotClient.AgeSeconds)
 	}
 
 	if len(got.Handshakes) != 1 {
@@ -247,5 +251,61 @@ func decodeJSON(t *testing.T, body []byte, v any) {
 	t.Helper()
 	if err := json.Unmarshal(body, v); err != nil {
 		t.Fatalf("json.Unmarshal(%s): %v", body, err)
+	}
+}
+
+// TestHandleClientsConnectedFollowsTheIdleThreshold: with a 5 minute
+// threshold, a client 1s inside it is connected, one exactly at it and one
+// 1s past it are idle, and all three stay listed with their ages. The
+// existing fields stay in the JSON beside the new ones.
+func TestHandleClientsConnectedFollowsTheIdleThreshold(t *testing.T) {
+	t.Parallel()
+
+	const idleAfter = 5 * time.Minute
+	src := testSources()
+	src.Clients = &fakeClientObserver{snap: connobs.Snapshot{Clients: []connobs.ClientSnapshot{
+		{LFDI: "INSIDE", Age: idleAfter - time.Second, RequestCount: 1},
+		{LFDI: "ATEDGE", Age: idleAfter, RequestCount: 1},
+		{LFDI: "PAST", Age: idleAfter + time.Second + 900*time.Millisecond, RequestCount: 1},
+	}}}
+	s := newServer(t, Config{Key: testKey, ClientIdleAfter: idleAfter}, src)
+
+	rec := doRequest(t, s.Handler(), "GET", "/api/clients", "Bearer "+testKey, "localhost")
+	var got clientsResponse
+	decodeJSON(t, rec.Body.Bytes(), &got)
+	want := []struct {
+		lfdi      string
+		connected bool
+		age       int64
+	}{{"INSIDE", true, 299}, {"ATEDGE", false, 300}, {"PAST", false, 301}}
+	if len(got.Clients) != len(want) {
+		t.Fatalf("Clients has %d entries, want %d (idle clients stay listed)", len(got.Clients), len(want))
+	}
+	for i, w := range want {
+		c := got.Clients[i]
+		if c.LFDI != w.lfdi || c.Connected != w.connected || c.AgeSeconds != w.age {
+			t.Errorf("Clients[%d] = %s connected=%v ageSeconds=%d, want %s %v %d", i, c.LFDI, c.Connected, c.AgeSeconds, w.lfdi, w.connected, w.age)
+		}
+	}
+	body := rec.Body.String()
+	for _, key := range []string{`"lfdi":`, `"lastSeen":`, `"requestCount":`, `"paths":`, `"connected":`, `"ageSeconds":`} {
+		if !strings.Contains(body, key) {
+			t.Errorf("body = %s, want the %s field", body, key)
+		}
+	}
+}
+
+// TestClientIdleAfterDefaultsWhenUnset: a zero Config.ClientIdleAfter
+// keeps the 5 minute default.
+func TestClientIdleAfterDefaultsWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	s := newServer(t, Config{Key: testKey}, testSources())
+	if s.idleAfter != 5*time.Minute {
+		t.Errorf("idleAfter = %s, want 5m", s.idleAfter)
+	}
+	s = newServer(t, Config{Key: testKey, ClientIdleAfter: 90 * time.Second}, testSources())
+	if s.idleAfter != 90*time.Second {
+		t.Errorf("idleAfter = %s, want 90s", s.idleAfter)
 	}
 }

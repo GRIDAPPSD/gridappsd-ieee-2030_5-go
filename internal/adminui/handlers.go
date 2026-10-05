@@ -131,6 +131,12 @@ type clientSnapshotResponse struct {
 	LastSeen     string   `json:"lastSeen"`
 	RequestCount uint64   `json:"requestCount"`
 	Paths        []string `json:"paths"`
+
+	// Connected is true when the client was seen within the idle
+	// threshold; an idle client stays listed with it false. AgeSeconds is
+	// whole seconds since LastSeen, truncated.
+	Connected  bool  `json:"connected"`
+	AgeSeconds int64 `json:"ageSeconds"`
 }
 
 // handshakeAttemptResponse mirrors connobs.HandshakeAttempt's exported
@@ -164,6 +170,8 @@ func (s *Server) handleClients(w http.ResponseWriter, _ *http.Request) {
 			LastSeen:     c.LastSeen.Format(timeFormat),
 			RequestCount: c.RequestCount,
 			Paths:        c.Paths,
+			Connected:    s.clientConnected(c),
+			AgeSeconds:   int64(c.Age / time.Second),
 		})
 	}
 

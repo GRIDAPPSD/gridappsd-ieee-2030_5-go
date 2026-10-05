@@ -809,6 +809,7 @@ func adminUIConfig(cfg config) adminui.Config {
 		WriteTimeout:        cfg.Tuning.AdminWriteTimeout,
 		IdleTimeout:         cfg.Tuning.AdminIdleTimeout,
 		ShutdownTimeout:     cfg.Tuning.AdminShutdownTimeout,
+		ClientIdleAfter:     cfg.Tuning.AdminClientIdleAfter,
 	}
 }
 
