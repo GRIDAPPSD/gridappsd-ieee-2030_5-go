@@ -1,8 +1,9 @@
 // Package adminui serves the bridge's admin listener: the server's admin
 // UI and admin API (pkg/sep2adminplane) as the root handler, with the
 // bridge's own views registered as gridappsd-* panels that the server's
-// shell renders after its own tabs: seven read-only views, and the bus
-// monitor when Sources.Monitor is set.
+// shell renders after its own tabs: seven read-only views, the bus
+// monitor when Sources.Monitor is set, and the bus sender when
+// Sources.Sender is set.
 //
 // Two bridge JSON routes, /api/health and /api/clients, stay beside the
 // plane under the bridge's own Bearer, Host and GET-only gates, because
@@ -31,6 +32,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sender"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
@@ -215,9 +217,10 @@ type Sources struct {
 	// History holds the device status samples, read by the graph panel.
 	History HistorySource
 
-	// Monitor, when set, adds the bus monitor panel. It is the one
-	// optional field.
+	// Monitor and Sender are the optional fields: each, when set, adds its
+	// panel.
 	Monitor MonitorSource
+	Sender  *sender.Sender
 }
 
 // Server is the admin listener: a bound, not yet serving listener and
@@ -233,6 +236,7 @@ type Server struct {
 	clients  ClientObserverSource
 	history  HistorySource
 	monitor  *monitorPanel
+	sender   *senderPanel
 
 	// idleAfter is Config.ClientIdleAfter with its default applied.
 	idleAfter time.Duration
@@ -300,6 +304,9 @@ func New(cfg Config, src Sources) (*Server, error) {
 	if src.Monitor != nil {
 		s.monitor = newMonitorPanel(src.Monitor, s.startedAt)
 	}
+	if src.Sender != nil {
+		s.sender = &senderPanel{s: src.Sender}
+	}
 
 	plane, err := sep2adminplane.New(sep2adminplane.Config{
 		Stores:       src.Protocol.Stores(),
@@ -313,9 +320,12 @@ func New(cfg Config, src Sources) (*Server, error) {
 		// seeds and writes these stores itself: an admin write (an FSA
 		// assignment, a new EndDevice, a DER control) would be a second
 		// writer behind its back, so the plane mounts no write route.
+		// Panel actions write no store: the sender publishes to the bus,
+		// and the control subscriber stays the only store writer.
 		LoopbackBypass: false,
 		ControlWrites:  false,
 		ReadOnly:       true,
+		PanelActions:   true,
 		Panels:         s.panels(),
 	})
 	switch {

@@ -80,6 +80,8 @@ To run the bridge as a container on the GridAPPS-D platform network:
 The admin UI listens at `http://127.0.0.1:18444/ui` and shows the bridge's
 status, DERs, and telemetry. Its Bus monitor tab watches any `/topic/` on the
 broker live, each topic on its own connection under the bridge's credential.
+Its Bus sender tab publishes DER controls to the bridge's application input
+topic, behind a Publishing switch that is off after every start.
 
 Only one bridge may run against a broker at a time. If the binary bridge is
 running, stop it before bringing up the container.
