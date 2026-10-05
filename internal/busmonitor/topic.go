@@ -69,11 +69,12 @@ func parseTopic(name string) ([]string, bool) {
 }
 
 // matches reports whether the ActiveMQ pattern segs would deliver a message
-// published to the literal topic lit.
+// published to the literal topic lit. The broker delivers the bare parent to
+// an "A.>" subscriber too, so ">" matches zero or more segments.
 func matches(segs, lit []string) bool {
 	for i, seg := range segs {
 		if seg == ">" {
-			return len(lit) > i
+			return len(lit) >= i
 		}
 		if i >= len(lit) || (seg != "*" && seg != lit[i]) {
 			return false
@@ -125,10 +126,10 @@ var sensitivePatterns = [][]string{
 func overlaps(a, b []string) bool {
 	for i := 0; ; i++ {
 		switch {
-		case i < len(a) && a[i] == ">":
-			return len(b) > i
-		case i < len(b) && b[i] == ">":
-			return len(a) > i
+		// ">" matches zero or more segments, as matches says, and every
+		// earlier segment already overlapped.
+		case i < len(a) && a[i] == ">", i < len(b) && b[i] == ">":
+			return true
 		case i >= len(a) || i >= len(b):
 			return i >= len(a) && i >= len(b)
 		case a[i] != "*" && b[i] != "*" && a[i] != b[i]:

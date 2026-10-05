@@ -27,3 +27,23 @@ func TestMonitorSTOMPConfigMatchesTheBusTransport(t *testing.T) {
 		t.Errorf("plaintext config = %+v", plain)
 	}
 }
+
+// TestMonitorRedactionsCoverTheCredentialInEveryForm: the blob comes first,
+// so replacing the user or password cannot break it up before it is found.
+func TestMonitorRedactionsCoverTheCredentialInEveryForm(t *testing.T) {
+	t.Parallel()
+
+	got := monitorRedactions(config{STOMPUser: "opsuser", STOMPPassword: "s3cret"})
+	want := []string{gossAuthBlob(config{STOMPUser: "opsuser", STOMPPassword: "s3cret"}), "s3cret", "opsuser"}
+	if len(got) != len(want) {
+		t.Fatalf("redactions = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("redactions = %q, want %q", got, want)
+		}
+	}
+	if got := monitorRedactions(config{}); len(got) != 0 {
+		t.Errorf("empty credential: %q, want none (an empty string would match everywhere)", got)
+	}
+}

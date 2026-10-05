@@ -291,27 +291,81 @@ func TestMonitorStreamReplaysThenPushesMessagesAndStatus(t *testing.T) {
 	}
 }
 
-// TestMonitorStreamRefusalIsAStatusLine: a topic the monitor will not
-// watch answers with one status event giving the reason, and opens no
-// connection.
-func TestMonitorStreamRefusalIsAStatusLine(t *testing.T) {
+// TestMonitorStreamRefusalFreesItsSlot: a topic the monitor will not watch
+// fails the open, so it opens no connection and holds none of the plane's
+// eight stream slots.
+func TestMonitorStreamRefusalFreesItsSlot(t *testing.T) {
 	t.Parallel()
 	mon, _ := newTestMonitor(t)
 	_, hs := monitorServer(t, mon)
 
-	for topic, want := range map[string]string{
-		"/queue/x":                      "not watched: topic must be /topic/",
-		testProbe:                       "not watched: topic is the bus health probe",
-		"/topic/pnnl.goss.token.topic":  "not watched: topic can carry credentials",
-		"/topic/ActiveMQ.Advisory.Conn": "not watched: topic can carry credentials",
-	} {
-		ev := openMonitorStream(t, hs.URL, topic, "").next()
-		if ev.Kind != "status" || !strings.HasPrefix(ev.Text, want) {
-			t.Errorf("%s: %+v, want status starting %q", topic, ev, want)
+	refused := []string{"/queue/x", testProbe, testProbe + ".>", "/topic/pnnl.goss.token.topic", "/topic/ActiveMQ.Advisory.Conn"}
+	for i := 0; i < 9; i++ {
+		topic := refused[i%len(refused)]
+		req, err := http.NewRequest(http.MethodGet, hs.URL+"/api/ui/panels/"+panelBusMonitor+"/stream?param="+url.QueryEscape(topic), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = "localhost"
+		req.Header.Set("Authorization", "Bearer "+testKey)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+		if err != nil {
+			cancel()
+			t.Fatalf("%s: %v", topic, err)
+		}
+		// The body is left open on purpose: a stream that was accepted
+		// would keep its slot for as long as this connection lives.
+		t.Cleanup(func() { _ = resp.Body.Close(); cancel() })
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("%s: 200, want the open refused", topic)
 		}
 	}
 	if got := mon.Topics(); len(got) != 0 {
 		t.Errorf("refused topics opened %+v", got)
+	}
+	if ev := openMonitorStream(t, hs.URL, "/topic/test.after-refusals", "").next(); ev.Kind != "status" {
+		t.Errorf("valid stream after nine refusals: %+v", ev)
+	}
+}
+
+// TestMonitorStoppedViewIDCannotHideALaterMessage: the status for a view
+// the monitor stopped takes its own number from the monitor's sequence, so
+// a browser resuming from it still replays the next message.
+func TestMonitorStoppedViewIDCannotHideALaterMessage(t *testing.T) {
+	t.Parallel()
+	mon, b := newTestMonitor(t)
+	s, hs := monitorServer(t, mon)
+	const topic = "/topic/test.stopped"
+
+	sr := openMonitorStream(t, hs.URL, topic, "")
+	join := sr.next()
+	b.next(t, topic)
+	// Another topic numbers events after this stream's last one; closing
+	// the monitor then stops this view.
+	other, err := mon.Watch("/topic/test.other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	osub := b.next(t, "/topic/test.other")
+	osub.in <- cimstomp.Message{Destination: "/topic/test.other", Body: []byte("o")}
+	var otherSeq uint64
+	for ev := range other.Events() {
+		if ev.Kind == busmonitor.EventMessage {
+			otherSeq = ev.Seq
+			break
+		}
+	}
+	mon.Close()
+	for {
+		ev := sr.next()
+		if ev.Kind == "status" && strings.HasPrefix(ev.Text, "monitor stopped this view: monitor closed") {
+			if ev.id <= join.id || ev.id <= uint64(s.startedAt.UnixMicro())+otherSeq {
+				t.Fatalf("stopped id %d: want above the join %d and above every event the monitor numbered before (other topic at %d)",
+					ev.id, join.id, uint64(s.startedAt.UnixMicro())+otherSeq)
+			}
+			return
+		}
 	}
 }
 

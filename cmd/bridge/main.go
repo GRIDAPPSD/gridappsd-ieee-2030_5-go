@@ -175,10 +175,30 @@ func redactCreds(cfg config, msg string) string {
 		msg = strings.ReplaceAll(msg, cfg.SEP2AdminUIKey, "[REDACTED]")
 	}
 	if cfg.STOMPUser != "" && cfg.STOMPPassword != "" {
-		authBlob := base64.StdEncoding.EncodeToString([]byte(cfg.STOMPUser + ":" + cfg.STOMPPassword))
-		msg = strings.ReplaceAll(msg, authBlob, "[REDACTED]")
+		msg = strings.ReplaceAll(msg, gossAuthBlob(cfg), "[REDACTED]")
 	}
 	return msg
+}
+
+// gossAuthBlob is the base64(user:password) the GOSS token bootstrap sends.
+func gossAuthBlob(cfg config) string {
+	return base64.StdEncoding.EncodeToString([]byte(cfg.STOMPUser + ":" + cfg.STOMPPassword))
+}
+
+// monitorRedactions are the strings the bus monitor removes from every
+// reason a viewer sees. Unlike a log line, a viewer must not learn even the
+// broker user, which the token bootstrap's reply queue name carries.
+func monitorRedactions(cfg config) []string {
+	var out []string
+	for _, s := range []string{cfg.STOMPPassword, cfg.STOMPUser} {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	if cfg.STOMPUser != "" && cfg.STOMPPassword != "" {
+		out = append([]string{gossAuthBlob(cfg)}, out...)
+	}
+	return out
 }
 
 // handleVersionFlag reports whether err is loadConfig's
@@ -357,8 +377,9 @@ func run(ctx context.Context, cfg config) error {
 	// The bus monitor opens nothing until a viewer watches a topic, and
 	// then one connection per topic under the bridge's own credential.
 	mon := busmonitor.New(ctx, busmonitor.Config{
-		Dial:  busmonitor.NewDialer(monitorSTOMPConfig(cfg)),
-		Probe: func() string { return probeDestination(cfg) },
+		Dial:   busmonitor.NewDialer(monitorSTOMPConfig(cfg)),
+		Probe:  func() string { return probeDestination(cfg) },
+		Redact: monitorRedactions(cfg),
 	})
 	defer mon.Close()
 

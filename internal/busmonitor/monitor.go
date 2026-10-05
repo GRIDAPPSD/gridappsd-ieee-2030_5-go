@@ -55,6 +55,10 @@ type Config struct {
 	Now         func() time.Time
 	// Sleep waits d or returns ctx's error. Tests replace it.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Redact lists strings, such as the broker user and password, that
+	// are replaced in every reason a viewer is shown: connect errors can
+	// carry them.
+	Redact []string
 }
 
 func (c Config) withDefaults() Config {
@@ -209,6 +213,7 @@ type Viewer struct {
 	backlog []Message
 	status  Status
 	joinSeq uint64
+	endSeq  uint64
 	closed  bool
 	err     error
 }
@@ -226,6 +231,14 @@ func (v *Viewer) JoinSeq() uint64 { return v.joinSeq }
 // Events delivers live messages and status changes. It is closed by Close,
 // Monitor.Close, or when the viewer falls behind (see Err).
 func (v *Viewer) Events() <-chan Event { return v.events }
+
+// EndSeq is the sequence number of the monitor closing this viewer, or 0
+// when the viewer closed itself. It is valid once Events is closed.
+func (v *Viewer) EndSeq() uint64 {
+	v.m.mu.Lock()
+	defer v.m.mu.Unlock()
+	return v.endSeq
+}
 
 // Err says why Events was closed by the monitor, or nil.
 func (v *Viewer) Err() error {
@@ -330,6 +343,8 @@ func (m *Monitor) Close() {
 		for v := range t.viewers {
 			v.closed = true
 			v.err = ErrClosed
+			m.seq++
+			v.endSeq = m.seq
 			close(v.events)
 		}
 		t.viewers = map[*Viewer]struct{}{}
@@ -427,6 +442,8 @@ func (m *Monitor) broadcastLocked(t *topic, ev Event) {
 		default:
 			v.closed = true
 			v.err = ErrSlowViewer
+			m.seq++
+			v.endSeq = m.seq
 			close(v.events)
 			delete(t.viewers, v)
 			m.armIdleLocked(t)
@@ -446,6 +463,7 @@ func (m *Monitor) run(ctx context.Context, t *topic) {
 			return
 		}
 		if reason, refused := refusal(err); refused {
+			reason = m.redact(reason)
 			m.finish(t, Status{State: StateRefused, Reason: reason})
 			return
 		}
@@ -454,7 +472,7 @@ func (m *Monitor) run(ctx context.Context, t *topic) {
 			delay = m.cfg.BackoffMin
 		}
 		attempt++
-		reason := cleanReason(err.Error())
+		reason := m.redact(err.Error())
 		if attempt > m.cfg.MaxTries {
 			m.finish(t, Status{State: StateFailed, Reason: fmt.Sprintf("gave up after %d reconnect tries: %s", m.cfg.MaxTries, reason), Attempt: attempt - 1})
 			return
@@ -523,7 +541,18 @@ func refusal(err error) (string, bool) {
 	if body := strings.TrimSpace(string(se.Frame.Body)); body != "" {
 		reason += ": " + body
 	}
-	return cleanReason(reason), true
+	return reason, true
+}
+
+// redact replaces each Config.Redact string in s, then makes s safe to
+// show, in that order so truncation cannot leave part of a secret.
+func (m *Monitor) redact(s string) string {
+	for _, r := range m.cfg.Redact {
+		if r != "" {
+			s = strings.ReplaceAll(s, r, "[redacted]")
+		}
+	}
+	return cleanReason(s)
 }
 
 // cleanReason makes broker text safe to show: control bytes become spaces, non-ASCII bytes become '?', and
