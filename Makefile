@@ -148,7 +148,7 @@ test-gridappsd: check-go       ## Run cimstomp tests against a running GridAPPS-
 	  echo "Then re-run: make test-gridappsd"; \
 	  exit 1; \
 	fi
-	go test -tags=gridappsd -race -timeout 5m -v ./internal/cimstomp/
+	go test -tags=gridappsd -race -timeout 5m -v ./internal/cimstomp/ ./internal/busmonitor/
 
 # bridge-e2e probes the GridAPPS-D STOMP listener and, if reachable,
 # runs the cmd/bridge binary against it. The same probe pattern as
