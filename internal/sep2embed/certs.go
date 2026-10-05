@@ -107,7 +107,11 @@ const (
 // mint additional device certs trusted by this same dev CA, for local
 // testing, needs to sign against caKeyFile. See certs_test.go and
 // embed_test.go's mintTestDeviceClient, which do exactly that.
-func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, caFile string, err error) {
+//
+// extraHosts are added to the minted server leaf's names beside localhost and
+// 127.0.0.1. They matter only on the mint path: an existing leaf is loaded
+// unchanged (see warnMissingServerHosts).
+func ensureServerIdentity(dir string, mode DeviceCertMode, extraHosts ...string) (certFile, keyFile, caFile string, err error) {
 	caFile = filepath.Join(dir, caCertFileName)
 	caKeyFile := filepath.Join(dir, caKeyFileName)
 	certFile = filepath.Join(dir, serverCertFileName)
@@ -181,7 +185,7 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 
 	serverCertPEM, serverKeyPEM, err := sep2cert.GenerateServerCert(servingCACert, servingCAKey, sep2cert.ServerCertOptions{
 		CommonName: "gridappsd-ieee-2030_5-go embedded server",
-		Hosts:      []string{"localhost", "127.0.0.1"},
+		Hosts:      serverCertHosts(extraHosts),
 	})
 	if err != nil {
 		return "", "", "", fmt.Errorf("mint dev server cert: %w", err)
@@ -205,6 +209,49 @@ func ensureServerIdentity(dir string, mode DeviceCertMode) (certFile, keyFile, c
 	}
 
 	return certFile, keyFile, caFile, nil
+}
+
+// serverCertHosts is the name list of a minted server leaf: the two loopback
+// names always, then each extra name once.
+func serverCertHosts(extra []string) []string {
+	hosts := []string{"localhost", "127.0.0.1"}
+	seen := map[string]struct{}{"localhost": {}, "127.0.0.1": {}}
+	for _, h := range extra {
+		if _, dup := seen[h]; dup {
+			continue
+		}
+		seen[h] = struct{}{}
+		hosts = append(hosts, h)
+	}
+	return hosts
+}
+
+// warnMissingServerHosts logs when the server leaf at certFile does not name
+// every requested host. A leaf already on disk is never re-minted, so a
+// setting added later changes nothing until the directory is moved aside.
+func warnMissingServerHosts(certFile string, hosts []string) {
+	if len(hosts) == 0 {
+		return
+	}
+	pemBytes, err := os.ReadFile(certFile)
+	if err != nil {
+		log.Printf("sep2embed: WARNING: cannot read %q to check the requested server certificate names: %v", certFile, err)
+		return
+	}
+	cert, err := sep2cert.ParseCertificatePEM(pemBytes)
+	if err != nil {
+		log.Printf("sep2embed: WARNING: cannot parse %q to check the requested server certificate names: %v", certFile, err)
+		return
+	}
+	var missing []string
+	for _, h := range hosts {
+		if cert.VerifyHostname(h) != nil {
+			missing = append(missing, h)
+		}
+	}
+	if len(missing) > 0 {
+		log.Printf("sep2embed: WARNING: the existing server certificate %q does not name %v; it is not re-minted. Move the certificate directory aside to mint a new one, or supply a certificate that names them.", certFile, missing)
+	}
 }
 
 // writeFileAtomic writes data to path as a single all-or-nothing

@@ -14,8 +14,8 @@ setup() {
   printf 'ARGS:'
   for a in "$@"; do printf ' [%s]' "$a"; done
   printf '\n'
-  printf 'ENV: sep2=%s admin=%s user=%s certs=%s mode=%s image=%s ip=%s subnet=%s\n' "${BRIDGE_SEP2_PORT-}" \
-    "${BRIDGE_ADMIN_PORT-}" "${BRIDGE_USER-}" "${BRIDGE_CERT_DIR-}" "${BRIDGE_CERT_MODE-}" "${BRIDGE_IMAGE-}" "${BRIDGE_ADMIN_IP-}" "${BRIDGE_ADMIN_SUBNET-}"
+  printf 'ENV: sep2=%s admin=%s user=%s certs=%s mode=%s image=%s ip=%s subnet=%s bind=%s admin_bind=%s\n' "${BRIDGE_SEP2_PORT-}" \
+    "${BRIDGE_ADMIN_PORT-}" "${BRIDGE_USER-}" "${BRIDGE_CERT_DIR-}" "${BRIDGE_CERT_MODE-}" "${BRIDGE_IMAGE-}" "${BRIDGE_ADMIN_IP-}" "${BRIDGE_ADMIN_SUBNET-}" "${BRIDGE_SEP2_BIND_IP-}" "${BRIDGE_ADMIN_BIND_IP-}"
 } >>"$DOCKER_LOG"
 if [ "${1-}" = network ] && [ "${NO_NETWORK:-}" = 1 ]; then exit 1; fi
 if [ "${1-}" = pull ] && [ "${PULL_FAIL:-}" = 1 ]; then exit 1; fi
@@ -38,7 +38,7 @@ STUB
   export BRIDGE_ENV_FILE="$work/env"
   export SEP2_STOMP_PASSWORD="broker-pass"
   export BRIDGE_CERT_DIR="$work/certs"
-  unset SEP2_ADMIN_UI_KEY BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_IMAGE_TAG BRIDGE_USE_PUBLISHED BRIDGE_EXTRA_CA_FILE SS_LISTEN NO_NETWORK PULL_FAIL
+  unset SEP2_ADMIN_UI_KEY SEP2_DEVICE_CERT_MODE BRIDGE_SEP2_BIND_IP BRIDGE_ADMIN_BIND_IP BRIDGE_ADMIN_IP BRIDGE_ADMIN_SUBNET COMPOSE_FILE BRIDGE_COMPOSE_FILE BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_USER BRIDGE_CERT_MODE BRIDGE_IMAGE BRIDGE_IMAGE_TAG BRIDGE_USE_PUBLISHED BRIDGE_EXTRA_CA_FILE SS_LISTEN NO_NETWORK PULL_FAIL
 }
 
 run_script() {
@@ -50,7 +50,7 @@ run_script() {
   [ "$status" -eq 0 ]
   /usr/bin/grep -qxF "ARGS: [build] [-f] [$repo/Dockerfile.bridge] [--build-arg] [VERSION=dev] [-t] [gridappsd-ieee-2030_5-go:dev] [$repo]" "$DOCKER_LOG"
   /usr/bin/grep -qxF "ARGS: [compose] [--env-file] [$work/env] [-f] [$repo/docker-compose.bridge.yml] [up] [-d] [--no-build]" "$DOCKER_LOG"
-  /usr/bin/grep -qF "ENV: sep2=18443 admin=18444 user=1000:1000 certs=$work/certs mode=rw image=gridappsd-ieee-2030_5-go:dev ip=10.213.168.2 subnet=10.213.168.0/24" "$DOCKER_LOG"
+  /usr/bin/grep -qF "ENV: sep2=18443 admin=18444 user=1000:1000 certs=$work/certs mode=rw image=gridappsd-ieee-2030_5-go:dev ip=10.213.168.2 subnet=10.213.168.0/24 bind=127.0.0.1 admin_bind=127.0.0.1" "$DOCKER_LOG"
 }
 
 @test "pull: pulls the published image at latest, with no env file and no other docker call" {
@@ -115,7 +115,7 @@ run_script() {
 }
 
 @test "up: env file values override the defaults, shell values override the file" {
-  printf 'BRIDGE_SEP2_PORT=28443\nBRIDGE_ADMIN_PORT="28444"\nBRIDGE_USER=2000:2000\nBRIDGE_CERT_MODE=ro\n' >>"$work/env"
+  printf 'BRIDGE_SEP2_PORT=28443\nBRIDGE_ADMIN_PORT="28444"\nBRIDGE_USER=2000:2000\nBRIDGE_CERT_MODE=ro\nSEP2_DEVICE_CERT_MODE=preprovisioned\n' >>"$work/env"
   BRIDGE_ADMIN_PORT=29999 run_script up
   [ "$status" -eq 0 ]
   /usr/bin/grep -qF "ENV: sep2=28443 admin=29999 user=2000:2000 certs=$work/certs mode=ro" "$DOCKER_LOG"
@@ -254,12 +254,12 @@ run_script() {
   [[ "$output" == *"usage"* ]]
 }
 
-@test "compose file: loopback-only ports, platform network, no key baked in" {
+@test "compose file: ports publish on the bind settings, platform network, no key baked in" {
   f="$repo/docker-compose.bridge.yml"
   # shellcheck disable=SC2016 # the ${...} is compose syntax matched literally, not a shell expansion
-  /usr/bin/grep -qF '"127.0.0.1:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"' "$f"
+  /usr/bin/grep -qF '"${BRIDGE_SEP2_BIND_IP:?use make docker-up}:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"' "$f"
   # shellcheck disable=SC2016 # same: literal compose syntax
-  /usr/bin/grep -qF '"127.0.0.1:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"' "$f"
+  /usr/bin/grep -qF '"${BRIDGE_ADMIN_BIND_IP:?use make docker-up}:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"' "$f"
   [ "$(/usr/bin/grep -cE '^\s+- "?(0\.0\.0\.0:)?[0-9]+:' "$f")" -eq 0 ]
   /usr/bin/grep -qF 'name: gridappsd-docker_default' "$f"
   # shellcheck disable=SC2016 # literal compose syntax
@@ -500,4 +500,66 @@ make_ca() {
   [[ "$output" == *"BRIDGE_EXTRA_CA_FILE has no PEM certificate"* ]]
   [[ "$output" != *SECRETMARKER* ]]
   [ ! -e "$DOCKER_LOG" ]
+}
+
+@test "bind ips: default to 127.0.0.1 for both ports and reach compose" {
+  run_script up
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qF 'bind=127.0.0.1 admin_bind=127.0.0.1' "$DOCKER_LOG"
+}
+
+@test "bind ips: valid values from the shell and the env file reach compose separately" {
+  BRIDGE_SEP2_BIND_IP=192.168.1.50 run_script up
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qF 'bind=192.168.1.50 admin_bind=127.0.0.1' "$DOCKER_LOG"
+  : >"$DOCKER_LOG"
+  printf 'BRIDGE_ADMIN_BIND_IP=10.0.0.7\n' >>"$work/env"
+  run_script up
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qF 'bind=127.0.0.1 admin_bind=10.0.0.7' "$DOCKER_LOG"
+}
+
+@test "bind ips: invalid values are refused by name before docker is called" {
+  for bad in 999.1.1.1 010.0.0.1 localhost 1.2.3 1.2.3.4.5 ::1; do
+    BRIDGE_SEP2_BIND_IP=$bad run_script up
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"BRIDGE_SEP2_BIND_IP must be an IPv4 address, got: $bad"* ]]
+    BRIDGE_ADMIN_BIND_IP=$bad run_script up
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"BRIDGE_ADMIN_BIND_IP must be an IPv4 address, got: $bad"* ]]
+  done
+  [ ! -e "$DOCKER_LOG" ]
+}
+
+@test "cert mode: a read-only mount with dev-mint is refused, and with preprovisioned is accepted" {
+  BRIDGE_CERT_MODE=ro run_script up
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BRIDGE_CERT_MODE=ro cannot be used with SEP2_DEVICE_CERT_MODE=dev-mint"* ]]
+  [ ! -e "$DOCKER_LOG" ]
+  BRIDGE_CERT_MODE=ro SEP2_DEVICE_CERT_MODE=preprovisioned run_script up
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qF 'mode=ro ' "$DOCKER_LOG"
+}
+
+@test "cert mode: preprovisioned with a writable mount starts with a warning" {
+  SEP2_DEVICE_CERT_MODE=preprovisioned run_script up
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warning: SEP2_DEVICE_CERT_MODE=preprovisioned never writes"* ]]
+  /usr/bin/grep -qF 'mode=rw ' "$DOCKER_LOG"
+  : >"$DOCKER_LOG"
+  BRIDGE_CERT_MODE=ro SEP2_DEVICE_CERT_MODE=preprovisioned run_script up
+  [[ "$output" != *warning* ]]
+}
+
+@test "compose: the admin network lines are unchanged by the bind settings" {
+  f="$repo/docker-compose.bridge.yml"
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qxF '      SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444' "$f"
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qxF '        ipv4_address: ${BRIDGE_ADMIN_IP:?use make docker-up}' "$f"
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qxF '        - subnet: ${BRIDGE_ADMIN_SUBNET:?use make docker-up}' "$f"
+  /usr/bin/grep -qxF '        gw_priority: 100' "$f"
+  /usr/bin/grep -qxF '      SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: "true"' "$f"
+  [ "$(/usr/bin/grep -c 'BRIDGE_ADMIN_IP' "$f")" -eq 2 ]
 }

@@ -94,6 +94,11 @@ type config struct {
 	// out of version control.
 	SEP2ServerCertDir string
 
+	// SEP2ServerCertHosts are extra DNS names or IP addresses named in the
+	// server leaf dev-mint writes, beside localhost and 127.0.0.1. Mint time
+	// only: an existing leaf keeps its names.
+	SEP2ServerCertHosts []string
+
 	// SEP2DeviceCertMode selects how bootstrapRegistry sources each
 	// device's IEEE 2030.5 identity certificate (spec section 6.3.4
 	// LFDI, section 6.3.3 SFDI; see internal/sep2embed.DeviceCertMode).
@@ -436,6 +441,7 @@ func loadConfig(args []string) (config, error) {
 		SEP2ServerAddr:          getenvDefault("SEP2_SERVER_ADDR", defaultSEP2ServerAddr),
 		SEP2ServerCertDir:       getenvDefault("SEP2_SERVER_CERT_DIR", defaultSEP2ServerCertDir),
 		SEP2DeviceCertMode:      getenvDefault("SEP2_DEVICE_CERT_MODE", defaultSEP2DeviceCertMode),
+		SEP2ServerCertHosts:     getenvList("SEP2_SERVER_CERT_HOSTS"),
 		SEP2AdminUIAddr:         getenvDefault("SEP2_ADMIN_UI_ADDR", defaultSEP2AdminUIAddr),
 		SEP2AdminUIAllowedHosts: getenvList("SEP2_ADMIN_UI_ALLOWED_HOSTS"),
 		SEP2AdminUISORLink:      getenvDefault("SEP2_ADMIN_UI_SOR_LINK", ""),
@@ -530,6 +536,8 @@ func loadConfig(args []string) (config, error) {
 	fs.BoolVar(&cfg.AllowPlaintext, "stomp-allow-plaintext", cfg.AllowPlaintext, "dial the GridAPPS-D broker over plain TCP instead of TLS (dev-only; default false)")
 	fs.StringVar(&cfg.SEP2ServerAddr, "sep2-server-addr", cfg.SEP2ServerAddr, "embedded IEEE 2030.5 mTLS listener host:port (defaults to loopback only)")
 	fs.StringVar(&cfg.SEP2ServerCertDir, "sep2-server-cert-dir", cfg.SEP2ServerCertDir, "directory holding (or receiving dev-mint) the embedded server's CA/leaf cert material")
+	serverCertHostsFlag := strings.Join(cfg.SEP2ServerCertHosts, ",")
+	fs.StringVar(&serverCertHostsFlag, "sep2-server-cert-hosts", serverCertHostsFlag, "comma-separated extra DNS names or IPs for the server certificate dev-mint writes, beside localhost and 127.0.0.1 (env: SEP2_SERVER_CERT_HOSTS)")
 	fs.StringVar(&cfg.SEP2DeviceCertMode, "sep2-device-cert-mode", cfg.SEP2DeviceCertMode, `device identity certificate source: "dev-mint" (default) or "preprovisioned"`)
 	fs.BoolVar(&cfg.SEP2EnableCCM, "sep2-enable-ccm", cfg.SEP2EnableCCM,
 		"serve ONLY the mandatory TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 suite (a client unable to offer it is refused, not served over GCM); requires -sep2-ccm-allow-no-observer (default false)")
@@ -645,6 +653,7 @@ func loadConfig(args []string) (config, error) {
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("parse flags: %w", err)
 	}
+	cfg.SEP2ServerCertHosts = splitList(serverCertHostsFlag)
 
 	// -version is a pure query flag: return before resolveCred's env
 	// scrub and before validate's required-field checks run, so passing
@@ -1331,6 +1340,11 @@ func (c config) validate() error {
 	if c.SEP2ServerCertDir == "" {
 		return errors.New("config: SEP2_SERVER_CERT_DIR / -sep2-server-cert-dir is required")
 	}
+	for _, h := range c.SEP2ServerCertHosts {
+		if !validCertHost(h) {
+			return fmt.Errorf("config: SEP2_SERVER_CERT_HOSTS / -sep2-server-cert-hosts entry %q is not an IP address or a host name", h)
+		}
+	}
 	if c.SEP2DeviceCertMode != deviceCertModeDevMintFlag && c.SEP2DeviceCertMode != deviceCertModePreprovisionedFlag {
 		return fmt.Errorf("config: SEP2_DEVICE_CERT_MODE / -sep2-device-cert-mode must be %q or %q, got %q",
 			deviceCertModeDevMintFlag, deviceCertModePreprovisionedFlag, c.SEP2DeviceCertMode)
@@ -1382,6 +1396,47 @@ func getenvBool(key string, fallback bool) (bool, error) {
 	return parsed, nil
 }
 
+// validCertHost reports whether h can go in a certificate SAN as written: an
+// IP literal, or a dot-separated host name of RFC 1123 labels. A wildcard, a
+// port, a scheme or a path is refused rather than minted into a name no
+// client would match.
+func validCertHost(h string) bool {
+	if net.ParseIP(h) != nil {
+		return true
+	}
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	labels := strings.Split(h, ".")
+	// An all-digit last label is a malformed IP such as 999.1.1.1, not a name.
+	if last := labels[len(labels)-1]; strings.Trim(last, "0123456789") == "" {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// splitList splits a comma separated value with the same trimming and
+// empty-entry dropping as getenvList.
+func splitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // getenvList reads a comma separated env var into a string slice,
 // trimming surrounding whitespace from each entry and dropping empty
 // entries (so a trailing comma or repeated commas do not produce a
@@ -1391,20 +1446,5 @@ func getenvBool(key string, fallback bool) (bool, error) {
 // hosts", so there is no meaningful distinction here between nil and
 // empty for this field.
 func getenvList(key string) []string {
-	v := os.Getenv(key)
-	if v == "" {
-		return nil
-	}
-	parts := strings.Split(v, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return splitList(os.Getenv(key))
 }

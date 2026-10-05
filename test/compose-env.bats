@@ -139,7 +139,7 @@ example_names() {
   command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 || skip "docker compose is not available"
   printf 'SEP2_ADMIN_UI_KEY=0123456789abcdef-key\nGRIDAPPSD_USER=gu-value\nGRIDAPPSD_PASSWORD=gp-value\n' >"$BATS_TEST_TMPDIR/env"
   out=$(env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" BRIDGE_IMAGE=i BRIDGE_USER=1:1 BRIDGE_ADMIN_IP=10.0.0.2 \
-    BRIDGE_SEP2_PORT=1 BRIDGE_ADMIN_PORT=2 BRIDGE_CERT_DIR=/c BRIDGE_CERT_MODE=rw BRIDGE_ADMIN_SUBNET=10.0.0.0/24 \
+    BRIDGE_SEP2_BIND_IP=127.0.0.1 BRIDGE_ADMIN_BIND_IP=127.0.0.1 BRIDGE_SEP2_PORT=1 BRIDGE_ADMIN_PORT=2 BRIDGE_CERT_DIR=/c BRIDGE_CERT_MODE=rw BRIDGE_ADMIN_SUBNET=10.0.0.0/24 \
     docker compose --env-file "$BATS_TEST_TMPDIR/env" -f "$compose" config)
   printf '%s\n' "$out" | /usr/bin/grep -qx '      GRIDAPPSD_USER: gu-value'
   printf '%s\n' "$out" | /usr/bin/grep -qx '      GRIDAPPSD_PASSWORD: gp-value'
@@ -206,7 +206,7 @@ example_settings() {
 }
 
 @test ".env.example opens with the host ports and network, then the required credentials, then grid ids" {
-  want="BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_ADMIN_SUBNET BRIDGE_ADMIN_IP SEP2_STOMP_ADDR SEP2_STOMP_ALLOW_PLAINTEXT SEP2_ADMIN_UI_KEY GRIDAPPSD_USER GRIDAPPSD_PASSWORD SEP2_STOMP_USER SEP2_STOMP_PASSWORD SEP2_REGISTRATION_PIN SEP2_REGISTRATION_PIN_FILE SEP2_SIMULATION_ID SEP2_APPLICATION_ID SEP2_FEEDER_MRID"
+  want="BRIDGE_SEP2_PORT BRIDGE_ADMIN_PORT BRIDGE_SEP2_BIND_IP BRIDGE_ADMIN_BIND_IP BRIDGE_ADMIN_SUBNET BRIDGE_ADMIN_IP SEP2_STOMP_ADDR SEP2_STOMP_ALLOW_PLAINTEXT SEP2_ADMIN_UI_KEY GRIDAPPSD_USER GRIDAPPSD_PASSWORD SEP2_STOMP_USER SEP2_STOMP_PASSWORD SEP2_REGISTRATION_PIN SEP2_REGISTRATION_PIN_FILE SEP2_SIMULATION_ID SEP2_APPLICATION_ID SEP2_FEEDER_MRID"
   count=$(wc -w <<<"$want")
   got=$(example_settings "$example" | sed -E 's/^(# )?([A-Z][A-Z0-9_]+)=.*/\2/' | head -n "$count" | tr '\n' ' ')
   [ "$got" = "$want " ] || { echo "got:  $got" >&2; echo "want: $want" >&2; false; }

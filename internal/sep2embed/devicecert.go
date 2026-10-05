@@ -151,7 +151,10 @@ type DeviceIdentity struct {
 // EnsureDeviceIdentities' one-cert-per-device contract would be
 // ambiguous for a duplicate. Both are caller programming errors, not
 // data conditions to silently tolerate.
-func EnsureDeviceIdentities(dir string, mode DeviceCertMode, mrids []string) (map[string]DeviceIdentity, error) {
+//
+// serverHosts are extra names for the server leaf when this call is the one
+// that mints it (dev-mint, empty directory); see ensureServerIdentity.
+func EnsureDeviceIdentities(dir string, mode DeviceCertMode, mrids []string, serverHosts ...string) (map[string]DeviceIdentity, error) {
 	if dir == "" {
 		return nil, errors.New("sep2embed: EnsureDeviceIdentities: dir is required")
 	}
@@ -171,7 +174,7 @@ func EnsureDeviceIdentities(dir string, mode DeviceCertMode, mrids []string) (ma
 		seen[mrid] = struct{}{}
 	}
 
-	caCert, caKey, err := loadDeviceSigningCA(dir, mode)
+	caCert, caKey, err := loadDeviceSigningCA(dir, mode, serverHosts)
 	if err != nil {
 		return nil, err
 	}
@@ -222,9 +225,9 @@ func EnsureDeviceIdentities(dir string, mode DeviceCertMode, mrids []string) (ma
 // pick up material an operator adds later, without a restart. It does
 // NOT make the running server's own identity mutable; that is fixed at
 // startup by New and never re-read (see ensureServerIdentity).
-func loadDeviceSigningCA(dir string, mode DeviceCertMode) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+func loadDeviceSigningCA(dir string, mode DeviceCertMode, serverHosts []string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	if mode == DeviceCertModeDevMint {
-		_, _, caFile, err := ensureServerIdentity(dir, mode)
+		_, _, caFile, err := ensureServerIdentity(dir, mode, serverHosts...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("sep2embed: device identities: server CA: %w", err)
 		}

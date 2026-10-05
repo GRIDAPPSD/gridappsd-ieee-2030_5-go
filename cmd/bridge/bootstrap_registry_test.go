@@ -212,7 +212,7 @@ func TestBootstrapRegistryAnchorsIdentityOnPECNotUnit(t *testing.T) {
 	buf := captureLog(t)
 
 	certDir := t.TempDir()
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestBootstrapRegistryDerivesRealCertBackedIdentities(t *testing.T) {
 	requester := &mockCIMRequester{resp: threeDeviceEnvelope(t)}
 	client := cim.NewClient(requester)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestBootstrapRegistryPreprovisionedMissingCertFailsClosed(t *testing.T) {
 	requester := &mockCIMRequester{resp: threeDeviceEnvelope(t)}
 	client := cim.NewClient(requester)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModePreprovisioned, nil)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModePreprovisioned, nil, nil)
 	if err == nil {
 		t.Fatal("bootstrapRegistry in Preprovisioned mode with no preprovisioned certs: want error, got nil")
 	}
@@ -678,7 +678,7 @@ func TestBootstrapRegistryThreadsMaxQIntoRegistryEntry(t *testing.T) {
 	requester := &mockCIMRequester{resp: b}
 	client := cim.NewClient(requester)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -757,7 +757,7 @@ func TestBootstrapRegistryAddsHouseDevices(t *testing.T) {
 	client := cim.NewClient(requester)
 	certDir := t.TempDir()
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -798,7 +798,7 @@ func TestBootstrapRegistryAddsValidBatteryLegs(t *testing.T) {
 	client := cim.NewClient(requester)
 	certDir := t.TempDir()
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, []string{"LEG-1", "LEG-2"})
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil, []string{"LEG-1", "LEG-2"})
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -830,7 +830,7 @@ func TestBootstrapRegistryRejectsBatteryLegNotOnFeeder(t *testing.T) {
 	client := cim.NewClient(requester)
 	certDir := t.TempDir()
 
-	_, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, []string{"GHOST-LEG"})
+	_, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil, []string{"GHOST-LEG"})
 	if err == nil {
 		t.Fatal("bootstrapRegistry with a battery leg mRID absent from the feeder: want error, got nil")
 	}
@@ -856,7 +856,7 @@ func TestBootstrapRegistryRejectsBatteryLegAlsoHouseLoad(t *testing.T) {
 	client := cim.NewClient(requester)
 	certDir := t.TempDir()
 
-	_, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, []string{"HOUSE-1"})
+	_, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil, []string{"HOUSE-1"})
 	if err == nil {
 		t.Fatal("bootstrapRegistry with a battery leg mRID that is also a house load: want error, got nil")
 	}
@@ -893,7 +893,7 @@ func TestBootstrapRegistryDropCheckComparesPECOnlyOnceEnergyConsumersJoin(t *tes
 	certDir := t.TempDir()
 	buf := captureLog(t)
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, []string{"LEG-1"})
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil, []string{"LEG-1"})
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
@@ -927,7 +927,7 @@ func TestBootstrapRegistryUnchangedWithNoBatteryLegsAndNoHouses(t *testing.T) {
 	client := cim.NewClient(requester)
 	certDir := t.TempDir()
 
-	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil)
+	reg, err := bootstrapRegistry(context.Background(), client, "_DEADBEEF-0000-0000-0000-000000000123", certDir, sep2embed.DeviceCertModeDevMint, nil, nil)
 	if err != nil {
 		t.Fatalf("bootstrapRegistry: %v", err)
 	}
