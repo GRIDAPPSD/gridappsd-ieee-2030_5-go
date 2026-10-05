@@ -536,6 +536,8 @@ func TestViewersPerTopicAreCapped(t *testing.T) {
 	if _, err := m.Watch("/topic/v"); !errors.Is(err, ErrTooManyViewers) {
 		t.Fatalf("viewer %d: %v, want ErrTooManyViewers", MaxViewersPerTopic+1, err)
 	}
+	// The worker dials on its own goroutine; wait for the dial before counting.
+	b.next(t, "/topic/v")
 	if n := b.dials.Load(); n != 1 {
 		t.Fatalf("dials = %d, want 1", n)
 	}
