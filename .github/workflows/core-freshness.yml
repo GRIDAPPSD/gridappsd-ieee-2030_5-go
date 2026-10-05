@@ -53,7 +53,7 @@ permissions:
 jobs:
   staleness-check:
     name: Core pin staleness check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GOPRIVATE: github.com/GRIDAPPSD/*
     steps:
@@ -264,7 +264,7 @@ jobs:
 
   conformance-vs-core-main:
     name: Conformance test against core main
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GOPRIVATE: github.com/GRIDAPPSD/*
     steps:
