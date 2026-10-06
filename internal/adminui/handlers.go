@@ -97,32 +97,6 @@ func (s *Server) handleRegistry(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// discoveredDER is one DER of one served EndDevice. FeederMRID is the
-// bridge's single configured feeder, stamped on every entry; it is not a
-// per-DER value.
-type discoveredDER struct {
-	EndDeviceID string
-	ID          string
-	Href        string
-	FeederMRID  string
-}
-
-// discoveredDERs flattens every served EndDevice's DERs, each with the
-// owning EndDevice's ID, since a DER's ID means nothing without it.
-func (s *Server) discoveredDERs(ctx context.Context) ([]discoveredDER, error) {
-	edevs, err := s.devices.EndDevices(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("reading end devices: %w", err)
-	}
-	var out []discoveredDER
-	for _, edev := range edevs {
-		for _, der := range edev.DERs {
-			out = append(out, discoveredDER{EndDeviceID: edev.ID, ID: der.ID, Href: der.Href, FeederMRID: s.cfg.FeederMRID})
-		}
-	}
-	return out, nil
-}
-
 // servedProgram is one DERProgram with its owning EndDevice's ID.
 type servedProgram struct {
 	EndDeviceID string

@@ -540,8 +540,8 @@ func TestLogCCMObserverDisabledChoiceLogsWhenEnabled(t *testing.T) {
 		"SEP2_ENABLE_CCM",
 		"SEP2_CCM_ALLOW_NO_OBSERVER",
 		"CCM_8",
-		"served-status table",
-		"connected-clients and handshake-attempts tables",
+		"Devices tab Comms column is unaffected",
+		"Connections panel",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("log output %q does not contain %q", got, want)

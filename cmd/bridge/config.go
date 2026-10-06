@@ -141,12 +141,9 @@ type config struct {
 	// removes this flag pair):
 	//   - the loss of the rejected-device record, per-LFDI last-seen, and
 	//     request counts and paths the observer would otherwise carry;
-	//   - the admin UI's served-status table showing every served
-	//     device's status as unknown, not connected or never connected
-	//     (the gridappsd-clients panel's observer-disabled state);
-	//   - the same panel's connected-clients and handshake-attempts
-	//     tables showing no data rather than admitting they cannot tell,
-	//     for the same reason.
+	//   - the admin UI's Connections panel (gridappsd-connections) listing
+	//     no LFDIs seen with no EndDevice and no handshake attempts, and
+	//     saying observation is disabled rather than admitting nothing.
 	//
 	// A refused handshake (a client that cannot offer CCM-8) reaching the
 	// process log (sepTLS.WrapCCMListener) but never the panel is NOT one
@@ -1381,9 +1378,7 @@ func (c config) validate() error {
 			"config: SEP2_ENABLE_CCM / -sep2-enable-ccm is set without SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer: " +
 				"this flag pair is kept as configuration surface pending issue 127 (both settings are scheduled for removal), and setting it drops the connection observer, " +
 				"losing the rejected-device record, per-LFDI last-seen, and request counts and paths; " +
-				"the admin UI panel's served-status table would show every served device's connection status as unknown, not connected or disconnected; " +
-				"its connected-clients table would show no clients rather than admitting it cannot tell; " +
-				"its handshake-attempts table would show no handshakes rather than admitting it cannot tell; " +
+				"the admin UI's Devices tab Comms column is unaffected, since it reads the server's request recorder, but its Connections panel would list no LFDIs and no handshake attempts and would say observation is disabled; " +
 				"and a client unable to offer CCM-8 would be refused with the refusal reaching the process log but never the panel; " +
 				"set SEP2_CCM_ALLOW_NO_OBSERVER / -sep2-ccm-allow-no-observer=true to accept those losses, or leave SEP2_ENABLE_CCM unset")
 	}

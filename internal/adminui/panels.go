@@ -17,10 +17,8 @@ import (
 // slug such as "control" is a server tab or route the registry refuses.
 const (
 	panelHealth      = "gridappsd-health"
-	panelRegistry    = "gridappsd-registry"
-	panelDERs        = "gridappsd-ders"
-	panelServed      = "gridappsd-served"
-	panelClients     = "gridappsd-clients"
+	panelConnections = "gridappsd-connections"
+	panelDERPrograms = "gridappsd-derprograms"
 	panelControlFlow = "gridappsd-controlflow"
 )
 
@@ -32,10 +30,8 @@ func (s *Server) panels() []sep2admin.Panel {
 		view      sep2admin.ViewFunc
 	}{
 		{panelHealth, "Bridge health", s.healthView},
-		{panelRegistry, "Registry", s.registryView},
-		{panelDERs, "Discovered DERs", s.dersView},
-		{panelServed, "Served resources", s.servedView},
-		{panelClients, "Connected clients", s.clientsView},
+		{panelConnections, "Connections", s.connectionsView},
+		{panelDERPrograms, "DER programs", s.derProgramsView},
 		{panelControlFlow, "Control flow", s.controlFlowView},
 		{panelGraphInput, "Graph: device status", s.graphInputView},
 	}
@@ -155,88 +151,6 @@ func (s *Server) publishingGroup() []sep2admin.DefinitionGroup {
 	}}}
 }
 
-func (s *Server) registryView(context.Context) (sep2admin.Descriptor, error) {
-	entries := s.registry.Snapshot()
-	rows := make([]sep2admin.Row, 0, len(entries))
-	for _, e := range entries {
-		// A placeholder LFDI is a stand-in, not a device identity, so the
-		// operator must be able to tell the two apart at a glance.
-		identity := sep2admin.BadgeCell(sep2admin.BadgeOK, "certificate")
-		if e.Placeholder {
-			identity = sep2admin.BadgeCell(sep2admin.BadgeWarn, "placeholder")
-		}
-		rows = append(rows, sep2admin.Row{text(e.MRID), text(e.Name), text(e.LFDI), text(e.SFDI), identity})
-	}
-	return tables(table("Registry map", "No registry entries yet.",
-		[]string{"mRID to LFDI/SFDI identity mapping. Read only."},
-		[]string{"mRID", "Name", "LFDI", "SFDI", "Identity"}, rows)), nil
-}
-
-func (s *Server) dersView(ctx context.Context) (sep2admin.Descriptor, error) {
-	ders, err := s.discoveredDERs(ctx)
-	if err != nil {
-		return sep2admin.Descriptor{}, err
-	}
-	rows := make([]sep2admin.Row, 0, len(ders))
-	for _, d := range ders {
-		rows = append(rows, sep2admin.Row{text(d.EndDeviceID), text(d.ID), text(d.Href), text(d.FeederMRID)})
-	}
-	return tables(table("Discovered DERs",
-		"No DERs discovered (the feeder model had no PowerElectronicsConnection).",
-		[]string{
-			"DER resources discovered from the CIM model, joined to the owning EndDevice. Read only.",
-			"DER type (inverter, solar, battery) is not yet exposed.",
-		},
-		[]string{"EndDevice", "DER ID", "Href", "Feeder mRID"}, rows)), nil
-}
-
-func (s *Server) servedView(ctx context.Context) (sep2admin.Descriptor, error) {
-	edevs, err := s.devices.EndDevices(ctx)
-	if err != nil {
-		return sep2admin.Descriptor{}, fmt.Errorf("reading end devices: %w", err)
-	}
-	programs, err := s.servedDERPrograms(ctx, edevs)
-	if err != nil {
-		return sep2admin.Descriptor{}, err
-	}
-
-	edevRows := make([]sep2admin.Row, 0, len(edevs))
-	for _, e := range edevs {
-		enabled := "no"
-		if e.Enabled {
-			enabled = "yes"
-		}
-		derIDs := make([]string, 0, len(e.DERs))
-		for _, d := range e.DERs {
-			derIDs = append(derIDs, d.ID)
-		}
-		edevRows = append(edevRows, sep2admin.Row{
-			text(e.ID), text(e.LFDI), text(e.SFDI), text(e.Href), text(enabled),
-			number(len(e.DERs)), text(strings.Join(derIDs, ", ")),
-		})
-	}
-
-	programRows := make([]sep2admin.Row, 0, len(programs))
-	for _, p := range programs {
-		defaultControl := text("absent")
-		if p.DefaultDERControlLink != "" {
-			defaultControl = text(p.DefaultDERControlLink)
-		}
-		programRows = append(programRows, sep2admin.Row{
-			text(p.EndDeviceID), text(p.ID), text(p.MRID), text(p.Description),
-			number(p.Primacy), text(p.Href), defaultControl,
-		})
-	}
-
-	return tables(
-		table("EndDevices", "No EndDevices served.",
-			[]string{"EndDevices, DERs, and DERPrograms as served by the embedded server. Read only."},
-			[]string{"ID", "LFDI", "SFDI", "Href", "Enabled", "DERs", "DER IDs"}, edevRows),
-		table("DER programs", "No DERPrograms served.", nil,
-			[]string{"EndDevice", "ID", "MRID", "Description", "Primacy", "Href", "DefaultDERControl"}, programRows),
-	), nil
-}
-
 // simOutputTopicText shows that no simulation id is configured instead of
 // a blank cell, which reads as a fault.
 func simOutputTopicText(topic string) string {
@@ -289,27 +203,94 @@ func jsonText(v any) string {
 	return string(b)
 }
 
-func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) {
+// derProgramsView lists every served DERProgram. It stays its own panel:
+// the server's FSAs tab has no hook for an embedder's panel, so it cannot
+// be folded in from here.
+func (s *Server) derProgramsView(ctx context.Context) (sep2admin.Descriptor, error) {
+	edevs, err := s.devices.EndDevices(ctx)
+	if err != nil {
+		return sep2admin.Descriptor{}, fmt.Errorf("reading end devices: %w", err)
+	}
+	programs, err := s.servedDERPrograms(ctx, edevs)
+	if err != nil {
+		return sep2admin.Descriptor{}, err
+	}
+	rows := make([]sep2admin.Row, 0, len(programs))
+	for _, p := range programs {
+		defaultControl := text("absent")
+		if p.DefaultDERControlLink != "" {
+			defaultControl = text(p.DefaultDERControlLink)
+		}
+		rows = append(rows, sep2admin.Row{
+			text(p.EndDeviceID), text(p.ID), text(p.MRID), text(p.Description),
+			number(p.Primacy), text(p.Href), defaultControl,
+		})
+	}
+	return tables(table("DER programs", "No DERPrograms served.",
+		[]string{"DERPrograms as served by the embedded server. Read only."},
+		[]string{"EndDevice", "ID", "MRID", "Description", "Primacy", "Href", "DefaultDERControl"}, rows)), nil
+}
+
+// connectionsView is what the Devices tab cannot show: LFDIs that made
+// requests but are not a served EndDevice, and every handshake attempt.
+func (s *Server) connectionsView(ctx context.Context) (sep2admin.Descriptor, error) {
 	snap := s.clientSnapshot()
 	disabled := s.cfg.ObservationDisabled
+	return tables(s.strangersSection(ctx, snap.Clients, disabled), handshakesSection(snap.Handshakes, disabled)), nil
+}
 
-	clientRows := make([]sep2admin.Row, 0, len(snap.Clients))
+// strangersSection lists the observed clients whose LFDI is not a served
+// EndDevice. A roster read failure empties only this section: without the
+// roster no client can be called a stranger, so it says so rather than
+// listing every client.
+func (s *Server) strangersSection(ctx context.Context, clients []connobs.ClientSnapshot, disabled bool) tableSpec {
+	const heading = "LFDIs seen with no EndDevice"
+	columns := []string{"LFDI", "Status", "Last seen", "Age", "Requests", "Paths touched"}
+	empty := "Every LFDI seen is a served EndDevice, or none has connected yet."
+	if disabled {
+		empty = "Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show which clients, if any, are connected."
+	}
+	var prose []string
+	edevs, err := s.devices.EndDevices(ctx)
+	if err != nil {
+		log.Printf("adminui: panel %s: reading end devices: %v", panelConnections, err)
+		// Without the roster no client can be called a stranger. The
+		// observer-disabled text, when it applies, stays the empty text.
+		if !disabled {
+			empty = "Served EndDevice roster unavailable."
+		}
+		return table(heading, empty, []string{fmt.Sprintf("Roster read failed: %v", err)}, columns, nil)
+	}
+	served := make(map[string]bool, len(edevs))
+	for _, e := range edevs {
+		served[e.LFDI] = true
+	}
+
+	rows := make([]sep2admin.Row, 0)
 	connectedCount := 0
-	for _, c := range snap.Clients {
+	for _, c := range clients {
+		if served[c.LFDI] {
+			continue
+		}
 		if s.clientConnected(c) {
 			connectedCount++
 		}
-		clientRows = append(clientRows, sep2admin.Row{
+		rows = append(rows, sep2admin.Row{
 			text(c.LFDI), s.clientStatus(c), timeCell(c.LastSeen), ageCell(c.Age), number(c.RequestCount), text(strings.Join(c.Paths, ", ")),
 		})
 	}
-	clientsEmpty := "No clients connected yet."
 	if disabled {
-		clientsEmpty = "Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show which clients, if any, are connected."
+		prose = []string{"The connection observer is off (SEP2_ENABLE_CCM), so connected and idle counts are not available."}
+	} else {
+		prose = []string{fmt.Sprintf("%d connected, %d idle. A client is idle once unseen for %s; idle clients stay listed. Read only.",
+			connectedCount, len(rows)-connectedCount, s.idleAfter)}
 	}
+	return table(heading, empty, prose, columns, rows)
+}
 
-	handshakeRows := make([]sep2admin.Row, 0, len(snap.Handshakes))
-	for _, h := range snap.Handshakes {
+func handshakesSection(attempts []connobs.HandshakeAttempt, disabled bool) tableSpec {
+	rows := make([]sep2admin.Row, 0, len(attempts))
+	for _, h := range attempts {
 		result := sep2admin.BadgeCell(sep2admin.BadgeError, "rejected")
 		if h.Accepted {
 			result = sep2admin.BadgeCell(sep2admin.BadgeOK, "accepted")
@@ -318,26 +299,16 @@ func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) 
 		if h.Known {
 			known = sep2admin.BadgeCell(sep2admin.BadgeOK, "known")
 		}
-		handshakeRows = append(handshakeRows, sep2admin.Row{
+		rows = append(rows, sep2admin.Row{
 			text(h.LFDI), orDash(h.RemoteAddr), result, orDash(h.Reason), known, timeCell(h.At),
 		})
 	}
-	handshakesEmpty := "No handshake attempts recorded yet."
+	empty := "No handshake attempts recorded yet."
 	if disabled {
-		handshakesEmpty = "Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show handshake attempts."
+		empty = "Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show handshake attempts."
 	}
-
-	return tables(
-		table("Connected clients", clientsEmpty,
-			[]string{
-				fmt.Sprintf("%d connected, %d idle. A client is idle once unseen for %s; idle clients stay listed. Read only.",
-					connectedCount, len(snap.Clients)-connectedCount, s.idleAfter),
-			},
-			[]string{"LFDI", "Status", "Last seen", "Age", "Requests", "Paths touched"}, clientRows),
-		s.servedStatusSection(ctx, snap.Clients, disabled),
-		table("Handshake attempts (cert validity)", handshakesEmpty, nil,
-			[]string{"LFDI", "Remote address", "Result", "Reason", "Known", "At"}, handshakeRows),
-	), nil
+	return table("Handshake attempts (cert validity)", empty, nil,
+		[]string{"LFDI", "Remote address", "Result", "Reason", "Known", "At"}, rows)
 }
 
 // clientSnapshot is the connobs snapshot with each client's last-seen time
@@ -381,60 +352,4 @@ func (s *Server) clientStatus(c connobs.ClientSnapshot) sep2admin.Cell {
 // ageCell shows an age in whole seconds, such as "3m12s".
 func ageCell(d time.Duration) sep2admin.Cell {
 	return text(d.Truncate(time.Second).String())
-}
-
-// servedStatusSection cross-references the served EndDevices with the
-// client snapshot by LFDI, so a device that never made a request reads
-// "never connected" and one unseen past the idle threshold reads "idle". With the observer off nothing can show a
-// connection, so every device reads "unknown" instead of a false claim.
-// A roster read failure empties only this section, so the client
-// snapshot still shows.
-func (s *Server) servedStatusSection(ctx context.Context, clients []connobs.ClientSnapshot, disabled bool) tableSpec {
-	const heading = "Served EndDevices: connection status"
-	columns := []string{"EndDevice", "LFDI", "Status", "Last seen", "Age", "Requests"}
-	prose := []string{"Cross references the served roster against the connected-client snapshot by LFDI."}
-	// With no recorder and no observer nothing can show a connection. With
-	// a recorder the status comes from it, as on the Devices tab.
-	unobserved := disabled && s.activity == nil
-	switch {
-	case unobserved:
-		prose = []string{"The connection observer is disabled on this bridge (SEP2_ENABLE_CCM). Status is unknown for every served device, not \"never connected\"."}
-	case disabled:
-		prose = []string{"The connection observer is disabled on this bridge (SEP2_ENABLE_CCM), so status comes from the server's request recorder, as on the Devices tab. \"Never connected\" means no accepted request since start."}
-	}
-
-	edevs, err := s.devices.EndDevices(ctx)
-	if err != nil {
-		log.Printf("adminui: panel %s: reading end devices: %v", panelClients, err)
-		return table(heading, "Served EndDevice roster unavailable.", prose, columns, nil)
-	}
-
-	byLFDI := make(map[string]connobs.ClientSnapshot, len(clients))
-	for _, c := range clients {
-		byLFDI[c.LFDI] = c
-	}
-	rows := make([]sep2admin.Row, 0, len(edevs))
-	for _, e := range edevs {
-		c, seen := byLFDI[e.LFDI]
-		if !seen && s.activity != nil {
-			if last, n, ok := s.activity.Last(e.LFDI); ok {
-				c, seen = connobs.ClientSnapshot{LFDI: e.LFDI, LastSeen: last.UTC(), Age: max(s.now().Sub(last), 0), RequestCount: n}, true
-			}
-		}
-		var status sep2admin.Cell
-		switch {
-		case seen:
-			status = s.clientStatus(c)
-		case unobserved:
-			status = sep2admin.BadgeCell(sep2admin.BadgeNeutral, "unknown")
-		default:
-			status = sep2admin.BadgeCell(sep2admin.BadgeWarn, "never connected")
-		}
-		lastSeen, age, requests := text("-"), text("-"), text("-")
-		if seen {
-			lastSeen, age, requests = timeCell(c.LastSeen), ageCell(c.Age), number(c.RequestCount)
-		}
-		rows = append(rows, sep2admin.Row{text(e.ID), text(e.LFDI), status, lastSeen, age, requests})
-	}
-	return table(heading, "No EndDevices served.", prose, columns, rows)
 }
