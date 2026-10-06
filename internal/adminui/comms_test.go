@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/activity"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
 type devicesPayload struct {
@@ -87,12 +89,14 @@ func TestClientsAndDevicesAgreeOnLastRequest(t *testing.T) {
 	if !cliAt.Truncate(time.Second).Equal(devAt) {
 		t.Errorf("/api/clients lastSeen %s vs devices lastRequest %s, want the same second", c.LastSeen, *p.Devices[0].LastRequest)
 	}
-	_, n, _ := rec.Last(lfdi)
-	if c.RequestCount != n || n != 3 {
-		t.Errorf("requestCount = %d, recorder count = %d, want both 3", c.RequestCount, n)
+	if _, n, _ := rec.Last(lfdi); n != 3 {
+		t.Fatalf("recorder count = %d, want 3", n)
+	}
+	if c.RequestCount != 1 {
+		t.Errorf("requestCount = %d, want connobs's 1: the panel counts every observed request", c.RequestCount)
 	}
 	if !c.Connected || c.AgeSeconds > 5 {
-		t.Errorf("connected=%v ageSeconds=%d, want connected and fresh from the recorder", c.Connected, c.AgeSeconds)
+		t.Errorf("connected=%v ageSeconds=%d, want connected and fresh from the later recorder time", c.Connected, c.AgeSeconds)
 	}
 	if len(c.Paths) != 1 || c.Paths[0] != "/dcap" {
 		t.Errorf("paths = %v, want connobs's [/dcap] kept", c.Paths)
@@ -150,6 +154,82 @@ func TestIdleSettingReachesCommsOfflineAfter(t *testing.T) {
 		s, _ := commsServer(t, tc.cfg, lfdi)
 		if got := devicesData(t, s).After; got != tc.want {
 			t.Errorf("%s: commsOfflineAfterSeconds = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRefusedRequestsKeepClientConnected: connobs counts requests the ACL
+// refuses and the recorder does not, so a device in a refusal loop was seen
+// a second ago by connobs and ten minutes ago by the recorder. /api/clients
+// reflects all observed requests and reads it connected; the Devices tab
+// shows its last accepted request and reads it offline.
+func TestRefusedRequestsKeepClientConnected(t *testing.T) {
+	t.Parallel()
+	const lfdi = "AABBCCDDEEFF00112233445566778899AABBCCDD"
+	accepted := time.Now().Add(-10 * time.Minute)
+	rec := activity.NewWithClock(func() time.Time { return accepted })
+	rec.Record(lfdi)
+	seen := time.Now().Add(-time.Second)
+
+	proto := newFakeProtocol()
+	if err := proto.stores.EndDevices.Create(context.Background(), "1", sep2.EndDevice{SFDI: "111", LFDI: lfdi}); err != nil {
+		t.Fatal(err)
+	}
+	src := testSources()
+	src.Protocol = proto
+	src.Activity = rec
+	src.Clients = &fakeClientObserver{snap: connobs.Snapshot{Clients: []connobs.ClientSnapshot{
+		{LFDI: lfdi, LastSeen: seen, Age: time.Second, RequestCount: 41, Paths: []string{"/edev"}},
+	}}}
+	s := newServer(t, Config{Key: testKey}, src)
+
+	w := doRequest(t, s.Handler(), "GET", "/api/clients", "Bearer "+testKey, "localhost")
+	var got clientsResponse
+	decodeJSON(t, w.Body.Bytes(), &got)
+	c := got.Clients[0]
+	at, err := time.Parse(timeFormat, c.LastSeen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Connected || c.AgeSeconds > 5 || c.RequestCount != 41 || at.Before(seen.Add(-time.Second)) {
+		t.Errorf("client = %+v, want connected, fresh lastSeen, requestCount 41", c)
+	}
+	if len(c.Paths) != 1 || c.Paths[0] != "/edev" {
+		t.Errorf("paths = %v, want [/edev]", c.Paths)
+	}
+
+	p := devicesData(t, s)
+	if len(p.Devices) != 1 || p.Devices[0].Comms != "offline" || p.Devices[0].LastRequest == nil {
+		t.Fatalf("devices = %+v, want offline with the last accepted request", p.Devices)
+	}
+	devAt, _ := time.Parse(time.RFC3339, *p.Devices[0].LastRequest)
+	if devAt.After(time.Now().Add(-9 * time.Minute)) {
+		t.Errorf("Devices lastRequest %s, want the accepted request ten minutes ago", devAt)
+	}
+}
+
+// TestServedStatusUnderCCMReadsTheRecorder: with the connobs observer off
+// the served-status section reads the recorder, so it agrees with the
+// Devices tab instead of saying every device is unknown.
+func TestServedStatusUnderCCMReadsTheRecorder(t *testing.T) {
+	t.Parallel()
+	rec := activity.New()
+	rec.Record("LFDIA")
+	src := testSources()
+	src.Activity = rec
+	src.Devices = &fakeEndDevices{edevs: []sep2embed.EndDeviceSnapshot{
+		{ID: "edev-a", LFDI: "LFDIA"}, {ID: "edev-b", LFDI: "LFDIB"},
+	}}
+	s := newServer(t, Config{Key: testKey, ObservationDisabled: true}, src)
+	served := section(t, getPanel(t, s, panelClients), "Served EndDevices: connection status")
+	if len(served.Body.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(served.Body.Rows))
+	}
+	assertBadge(t, "seen device", served.Body.Rows[0][2], "ok", "connected")
+	assertBadge(t, "unseen device", served.Body.Rows[1][2], "warn", "never connected")
+	for _, p := range served.Prose {
+		if strings.Contains(p, "unknown for every served device") {
+			t.Errorf("prose %q contradicts the Devices tab", p)
 		}
 	}
 }

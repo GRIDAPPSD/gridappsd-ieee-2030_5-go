@@ -298,11 +298,12 @@ func run(ctx context.Context, cfg config) error {
 	// /api/clients endpoint is its only reader.
 	var connHook connobs.Hook
 
-	// commsRecorder is the one record of when each device last made a
-	// request: the protocol router writes it and the admin plane and
-	// /api/clients read it, so the Devices tab and /api/clients cannot
-	// disagree. It sits inside the router, so it also records under CCM,
-	// where connHook is not wired.
+	// commsRecorder records each request the ACL accepted, per device. The
+	// router writes it; the Devices tab reads it alone, so it shows the last
+	// accepted request. /api/clients also counts requests the ACL refused
+	// (connHook) and takes the later of the two last-seen times. The recorder
+	// sits inside the router, so it also records under CCM, where connHook
+	// is not wired.
 	commsRecorder := activity.New()
 
 	logCCMObserverDisabledChoice(cfg)

@@ -340,11 +340,13 @@ func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) 
 	), nil
 }
 
-// clientSnapshot is the connobs snapshot with each client's last-seen
-// time, request count and age taken from the shared recorder when it has
-// that LFDI. connobs still supplies the client list, the paths and the
-// handshake log, because the recorder keeps neither; the recorder counts
-// only requests the ACL let through, so it can trail connobs's count.
+// clientSnapshot is the connobs snapshot with each client's last-seen time
+// moved to the shared recorder's when that is later. connobs sees every
+// authenticated request, including ones the ACL then refuses; the recorder
+// sees only accepted ones, so a device in a refusal loop must stay visible
+// here. The count and paths stay connobs's, since the recorder keeps no
+// paths and its count is accepted requests only. The Devices tab reads the
+// recorder alone, so it shows the last accepted request.
 func (s *Server) clientSnapshot() connobs.Snapshot {
 	snap := s.clients.Snapshot()
 	if s.activity == nil {
@@ -353,9 +355,8 @@ func (s *Server) clientSnapshot() connobs.Snapshot {
 	now := s.now()
 	clients := make([]connobs.ClientSnapshot, len(snap.Clients))
 	for i, c := range snap.Clients {
-		if last, n, ok := s.activity.Last(c.LFDI); ok {
+		if last, _, ok := s.activity.Last(c.LFDI); ok && last.After(c.LastSeen) {
 			c.LastSeen = last.UTC()
-			c.RequestCount = n
 			c.Age = max(now.Sub(last), 0)
 		}
 		clients[i] = c
@@ -392,8 +393,14 @@ func (s *Server) servedStatusSection(ctx context.Context, clients []connobs.Clie
 	const heading = "Served EndDevices: connection status"
 	columns := []string{"EndDevice", "LFDI", "Status", "Last seen", "Age", "Requests"}
 	prose := []string{"Cross references the served roster against the connected-client snapshot by LFDI."}
-	if disabled {
+	// With no recorder and no observer nothing can show a connection. With
+	// a recorder the status comes from it, as on the Devices tab.
+	unobserved := disabled && s.activity == nil
+	switch {
+	case unobserved:
 		prose = []string{"The connection observer is disabled on this bridge (SEP2_ENABLE_CCM). Status is unknown for every served device, not \"never connected\"."}
+	case disabled:
+		prose = []string{"The connection observer is disabled on this bridge (SEP2_ENABLE_CCM), so status comes from the server's request recorder, as on the Devices tab. \"Never connected\" means no accepted request since start."}
 	}
 
 	edevs, err := s.devices.EndDevices(ctx)
@@ -409,11 +416,16 @@ func (s *Server) servedStatusSection(ctx context.Context, clients []connobs.Clie
 	rows := make([]sep2admin.Row, 0, len(edevs))
 	for _, e := range edevs {
 		c, seen := byLFDI[e.LFDI]
+		if !seen && s.activity != nil {
+			if last, n, ok := s.activity.Last(e.LFDI); ok {
+				c, seen = connobs.ClientSnapshot{LFDI: e.LFDI, LastSeen: last.UTC(), Age: max(s.now().Sub(last), 0), RequestCount: n}, true
+			}
+		}
 		var status sep2admin.Cell
 		switch {
 		case seen:
 			status = s.clientStatus(c)
-		case disabled:
+		case unobserved:
 			status = sep2admin.BadgeCell(sep2admin.BadgeNeutral, "unknown")
 		default:
 			status = sep2admin.BadgeCell(sep2admin.BadgeWarn, "never connected")
