@@ -183,7 +183,7 @@ type clientsResponse struct {
 // handleClients reports the connection observer's state: which LFDIs
 // have made requests, and the recent mTLS handshake attempts.
 func (s *Server) handleClients(w http.ResponseWriter, _ *http.Request) {
-	snap := s.clients.Snapshot()
+	snap := s.clientSnapshot()
 
 	clients := make([]clientSnapshotResponse, 0, len(snap.Clients))
 	for _, c := range snap.Clients {

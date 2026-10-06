@@ -126,7 +126,7 @@ routes for scripts.
 | `SEP2_ADMIN_UI_WRITE_TIMEOUT` | `-admin-ui-write-timeout` | `10s` | A Go duration such as `15s` or `1m`. Admin listener: time to write a response. Allowed range: 1s-1h. |
 | `SEP2_ADMIN_UI_IDLE_TIMEOUT` | `-admin-ui-idle-timeout` | `60s` | A Go duration such as `15s` or `1m`. Admin listener: keep-alive idle time. Allowed range: 1s-1h. |
 | `SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT` | `-admin-ui-shutdown-timeout` | `5s` | A Go duration such as `15s` or `1m`. Bound on the admin listener's graceful drain at shutdown. Allowed range: 1s-5m. |
-| `SEP2_ADMIN_UI_CLIENT_IDLE_AFTER` | `-admin-ui-client-idle-after` | `5m` | A Go duration such as `10m` or `1h`. A client not seen for longer than this shows as idle, not connected, in the Connected clients panel and in `/api/clients` (`connected` is false); idle clients stay listed. Allowed range: 30s-24h. |
+| `SEP2_ADMIN_UI_CLIENT_IDLE_AFTER` | `-admin-ui-client-idle-after` | `5m` | A Go duration such as `10m` or `1h`. A client not seen for longer than this shows as idle, not connected, in the Connected clients panel and in `/api/clients` (`connected` is false); idle clients stay listed. It is also the silence after which the Devices tab shows a device's Comms as offline. The two differ on refused requests: the Devices tab counts only requests the server accepted, while `/api/clients` and the Connected clients panel also count requests the ACL refused, so a device stuck in a refusal loop reads connected there and offline on the Devices tab. Allowed range: 30s-24h. |
 
 ## Server admin-plane settings
 
