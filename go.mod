@@ -4,7 +4,7 @@ go 1.26.8
 
 require github.com/go-stomp/stomp/v3 v3.1.5
 
-require github.com/GRIDAPPSD/gridappsd-go v0.1.0
+require github.com/GRIDAPPSD/gridappsd-go v0.3.2
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
