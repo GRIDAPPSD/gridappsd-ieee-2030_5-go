@@ -333,6 +333,9 @@ func TestConnectionsPanelSaysWhenTheRosterIsUnreadable(t *testing.T) {
 	if len(seen.Body.Rows) != 0 || seen.Empty != "Served EndDevice roster unavailable." {
 		t.Errorf("section = %+v, want no rows and the roster-unavailable text", seen)
 	}
+	if len(seen.Prose) == 0 || !strings.Contains(strings.Join(seen.Prose, " "), "store down") {
+		t.Errorf("prose = %q, want the roster read failure reason", seen.Prose)
+	}
 	if got := len(section(t, d, "Handshake attempts (cert validity)").Body.Rows); got != 1 {
 		t.Errorf("handshake rows = %d, want 1", got)
 	}
@@ -486,4 +489,88 @@ type columnsPayload struct {
 		Cells map[string]string `json:"cells"`
 	} `json:"devices"`
 	Error string `json:"error"`
+}
+
+// TestDeviceColumnsSharedLFDIShowsAConflict: two registry entries, or two
+// served EndDevices, sharing one LFDI must never merge or flip. The cells
+// name the conflict and list both ids in sorted order, on every call.
+func TestDeviceColumnsSharedLFDIShowsAConflict(t *testing.T) {
+	t.Parallel()
+
+	src := foldSources(t)
+	src.Registry = &fakeRegistry{entries: []registry.Entry{
+		{MRID: "_B-2", Name: "second", LFDI: lfdiPV},
+		{MRID: "_A-1", Name: "first", LFDI: lfdiPV},
+	}}
+	src.Devices = &fakeEndDevices{edevs: []sep2embed.EndDeviceSnapshot{
+		{ID: "edev-2", LFDI: lfdiPV, DERs: []sep2embed.DERSnapshot{{ID: "der-b"}}},
+		{ID: "edev-1", LFDI: lfdiPV, DERs: []sep2embed.DERSnapshot{{ID: "der-a"}}},
+		{ID: "edev-3", LFDI: lfdiBat},
+		{ID: "edev-4", LFDI: lfdiNew},
+	}}
+	s := newServer(t, Config{Key: testKey}, src)
+	want := map[string]string{
+		"name":     "conflict: 2 registry entries share this LFDI (_A-1, _B-2)",
+		"identity": "conflict: 2 registry entries share this LFDI (_A-1, _B-2)",
+		"ders":     "conflict: 2 EndDevices share this LFDI (edev-1, edev-2)",
+	}
+	for i := 0; i < 20; i++ {
+		for _, d := range devicesColumns(t, s).Devices {
+			if d.LFDI != lfdiPV {
+				continue
+			}
+			for col, w := range want {
+				if d.Cells[col] != w {
+					t.Fatalf("call %d: %s = %q, want %q", i, col, d.Cells[col], w)
+				}
+			}
+		}
+	}
+}
+
+// TestDeviceColumnsUnreturnedLFDIShowsNoDERCount: a device the roster read
+// did not return has an unknown DER count, not a real zero.
+func TestDeviceColumnsUnreturnedLFDIShowsNoDERCount(t *testing.T) {
+	t.Parallel()
+
+	src := foldSources(t)
+	src.Devices = &fakeEndDevices{edevs: []sep2embed.EndDeviceSnapshot{{ID: "edev-1", LFDI: lfdiPV}}}
+	s := newServer(t, Config{Key: testKey}, src)
+	got := map[string]string{}
+	for _, d := range devicesColumns(t, s).Devices {
+		got[d.LFDI] = d.Cells["ders"]
+	}
+	if got[lfdiPV] != "0" || got[lfdiBat] != "-" || got[lfdiNew] != "-" {
+		t.Errorf("ders cells = %v, want 0 for the returned device and - for the others", got)
+	}
+}
+
+// TestConnectionsPanelKeepsTheObserverTextUnderCCMWhenTheRosterFails: the
+// observer-disabled empty text stays, the roster failure is still shown.
+func TestConnectionsPanelKeepsTheObserverTextUnderCCMWhenTheRosterFails(t *testing.T) {
+	t.Parallel()
+
+	src := testSources()
+	src.Devices = &fakeEndDevices{err: errors.New("store down")}
+	s := newServer(t, Config{Key: testKey, ObservationDisabled: true}, src)
+	seen := section(t, getPanel(t, s, "gridappsd-connections"), "LFDIs seen with no EndDevice")
+	if !strings.Contains(seen.Empty, "SEP2_ENABLE_CCM") {
+		t.Errorf("empty = %q, want the observer-disabled text kept", seen.Empty)
+	}
+	if !strings.Contains(strings.Join(seen.Prose, " "), "store down") {
+		t.Errorf("prose = %q, want the roster failure reason", seen.Prose)
+	}
+}
+
+// TestConnectionsPanelNeverCountsZeroWithTheObserverOff: "0 connected, 0
+// idle" would claim a measurement the disabled observer cannot make.
+func TestConnectionsPanelNeverCountsZeroWithTheObserverOff(t *testing.T) {
+	t.Parallel()
+
+	s := newServer(t, Config{Key: testKey, ObservationDisabled: true}, testSources())
+	seen := section(t, getPanel(t, s, "gridappsd-connections"), "LFDIs seen with no EndDevice")
+	joined := strings.Join(seen.Prose, " ")
+	if strings.Contains(joined, "0 connected") || !strings.Contains(joined, "observer") {
+		t.Errorf("prose = %q, want it to say the observer is off and give no counts", seen.Prose)
+	}
 }

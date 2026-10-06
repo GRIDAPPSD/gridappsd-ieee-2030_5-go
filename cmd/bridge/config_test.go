@@ -834,9 +834,8 @@ func TestLoadConfigSEP2EnableCCMRequiresObserverAck(t *testing.T) {
 		"rejected-device record",
 		"per-LFDI last-seen",
 		"request counts and paths",
-		"served-status table would show every served device's connection status as unknown",
-		"connected-clients table would show no clients rather than admitting it cannot tell",
-		"handshake-attempts table would show no handshakes rather than admitting it cannot tell",
+		"Devices tab Comms column is unaffected",
+		"Connections panel would list no LFDIs and no handshake attempts and would say observation is disabled",
 		"refusal reaching the process log but never the panel",
 	} {
 		if !strings.Contains(err.Error(), loss) {

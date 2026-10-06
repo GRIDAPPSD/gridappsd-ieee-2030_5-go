@@ -250,10 +250,16 @@ func (s *Server) strangersSection(ctx context.Context, clients []connobs.ClientS
 	if disabled {
 		empty = "Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show which clients, if any, are connected."
 	}
+	var prose []string
 	edevs, err := s.devices.EndDevices(ctx)
 	if err != nil {
 		log.Printf("adminui: panel %s: reading end devices: %v", panelConnections, err)
-		return table(heading, "Served EndDevice roster unavailable.", nil, columns, nil)
+		// Without the roster no client can be called a stranger. The
+		// observer-disabled text, when it applies, stays the empty text.
+		if !disabled {
+			empty = "Served EndDevice roster unavailable."
+		}
+		return table(heading, empty, []string{fmt.Sprintf("Roster read failed: %v", err)}, columns, nil)
 	}
 	served := make(map[string]bool, len(edevs))
 	for _, e := range edevs {
@@ -273,11 +279,13 @@ func (s *Server) strangersSection(ctx context.Context, clients []connobs.ClientS
 			text(c.LFDI), s.clientStatus(c), timeCell(c.LastSeen), ageCell(c.Age), number(c.RequestCount), text(strings.Join(c.Paths, ", ")),
 		})
 	}
-	return table(heading, empty,
-		[]string{
-			fmt.Sprintf("%d connected, %d idle. A client is idle once unseen for %s; idle clients stay listed. Read only.",
-				connectedCount, len(rows)-connectedCount, s.idleAfter),
-		}, columns, rows)
+	if disabled {
+		prose = []string{"The connection observer is off (SEP2_ENABLE_CCM), so connected and idle counts are not available."}
+	} else {
+		prose = []string{fmt.Sprintf("%d connected, %d idle. A client is idle once unseen for %s; idle clients stay listed. Read only.",
+			connectedCount, len(rows)-connectedCount, s.idleAfter)}
+	}
+	return table(heading, empty, prose, columns, rows)
 }
 
 func handshakesSection(attempts []connobs.HandshakeAttempt, disabled bool) tableSpec {

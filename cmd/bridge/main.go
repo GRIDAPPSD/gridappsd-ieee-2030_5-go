@@ -727,7 +727,7 @@ func logCCMObserverDisabledChoice(cfg config) {
 	if !ccmObservationDisabled(cfg) {
 		return
 	}
-	log.Printf("bridge: SEP2_ENABLE_CCM is set with SEP2_CCM_ALLOW_NO_OBSERVER: serving ONLY TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 (a client unable to offer it is refused, not served over GCM), with the connection observer disabled as explicitly accepted; this flag pair is kept as configuration surface pending issue 127 (both settings are scheduled for removal), and disabling the observer means the admin UI panel's served-status table will show every served device's status as unknown, not connected or disconnected, and its connected-clients and handshake-attempts tables will show no data rather than admit they cannot tell")
+	log.Printf("bridge: SEP2_ENABLE_CCM is set with SEP2_CCM_ALLOW_NO_OBSERVER: serving ONLY TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 (a client unable to offer it is refused, not served over GCM), with the connection observer disabled as explicitly accepted; this flag pair is kept as configuration surface pending issue 127 (both settings are scheduled for removal), and disabling the observer means the admin UI's Devices tab Comms column is unaffected (it reads the server's request recorder), while its Connections panel will list no LFDIs and no handshake attempts and say observation is disabled")
 }
 
 // sep2EmbedConfig projects the bridge's config onto sep2embed.Config.
