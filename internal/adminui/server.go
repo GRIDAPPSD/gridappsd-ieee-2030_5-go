@@ -33,6 +33,8 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/activity"
+
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/controlobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -231,6 +233,13 @@ type Sources struct {
 	// panel.
 	Monitor MonitorSource
 	Sender  *sender.Sender
+
+	// Activity is the recorder the protocol router was given in
+	// assembly.RouterConfig.Activity. It feeds the Devices comms columns
+	// and the last-seen, count and age that /api/clients reports. Nil
+	// leaves the Devices tab at Unknown and /api/clients on the connobs
+	// values.
+	Activity *activity.Recorder
 }
 
 // Server is the admin listener: a bound, not yet serving listener and
@@ -244,6 +253,7 @@ type Server struct {
 	identity IdentitySource
 	stomp    StompSource
 	clients  ClientObserverSource
+	activity *activity.Recorder
 	history  HistorySource
 	monitor  *monitorPanel
 	sender   *senderPanel
@@ -315,6 +325,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		identity:  src.Identity,
 		stomp:     src.Stomp,
 		clients:   src.Clients,
+		activity:  src.Activity,
 		history:   src.History,
 		startedAt: time.Now(),
 		now:       time.Now,
@@ -332,6 +343,11 @@ func New(cfg Config, src Sources) (*Server, error) {
 		AdminKey:     cfg.Key,
 		AllowedHosts: s.allowedHosts(),
 		Notifier:     src.Protocol.Notifier(),
+
+		// One recorder and one threshold for the Devices tab and
+		// /api/clients, so the two never disagree about a device.
+		Activity:          src.Activity,
+		CommsOfflineAfter: idleAfter,
 
 		FlowReservationDeadline: cfg.Settings.FlowReservationDeadline,
 		RetentionGrace:          cfg.Settings.RetentionGrace,

@@ -55,6 +55,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-go/fieldbus"
 	"github.com/GRIDAPPSD/gridappsd-go/gridappsd"
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/activity"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
@@ -297,11 +298,18 @@ func run(ctx context.Context, cfg config) error {
 	// /api/clients endpoint is its only reader.
 	var connHook connobs.Hook
 
+	// commsRecorder is the one record of when each device last made a
+	// request: the protocol router writes it and the admin plane and
+	// /api/clients read it, so the Devices tab and /api/clients cannot
+	// disagree. It sits inside the router, so it also records under CCM,
+	// where connHook is not wired.
+	commsRecorder := activity.New()
+
 	logCCMObserverDisabledChoice(cfg)
 
 	// The embed seeds its EndDevice/DER stores from reg, so it must be
 	// built after bootstrapRegistry above, not before.
-	embed, err := newSEP2Embed(ctx, cfg, reg, policy, &connHook, mode)
+	embed, err := newSEP2EmbedWithActivity(ctx, cfg, reg, policy, &connHook, mode, commsRecorder)
 	if err != nil {
 		return fmt.Errorf("sep2 embed: %w", err)
 	}
@@ -399,6 +407,7 @@ func run(ctx context.Context, cfg config) error {
 		Identity: embed,
 		Stomp:    bus,
 		Clients:  &connHook,
+		Activity: commsRecorder,
 		Protocol: embed,
 		History:  &inputHistory,
 		Monitor:  mon,
@@ -861,7 +870,16 @@ func adminUIConfig(cfg config) adminui.Config {
 // protocol server from the bridge's registry. It does not start
 // serving; the caller starts embed.Run once this returns successfully.
 func newSEP2Embed(ctx context.Context, cfg config, reg *registry.Registry, policy sep2config.SEP2Policy, connHook *connobs.Hook, mode sep2embed.DeviceCertMode) (*sep2embed.Embed, error) {
-	return sep2embed.New(ctx, sep2EmbedConfig(cfg, policy, connHook, mode), reg)
+	return newSEP2EmbedWithActivity(ctx, cfg, reg, policy, connHook, mode, nil)
+}
+
+// newSEP2EmbedWithActivity is newSEP2Embed with the router's comms
+// recorder set. The same recorder must go to adminui.Sources.Activity; nil
+// leaves the router unrecorded.
+func newSEP2EmbedWithActivity(ctx context.Context, cfg config, reg *registry.Registry, policy sep2config.SEP2Policy, connHook *connobs.Hook, mode sep2embed.DeviceCertMode, rec *activity.Recorder) (*sep2embed.Embed, error) {
+	embedCfg := sep2EmbedConfig(cfg, policy, connHook, mode)
+	embedCfg.Router.Activity = rec
+	return sep2embed.New(ctx, embedCfg, reg)
 }
 
 // telemetryPublisherConfig projects the bridge's config onto

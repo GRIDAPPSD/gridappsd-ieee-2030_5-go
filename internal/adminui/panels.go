@@ -290,7 +290,7 @@ func jsonText(v any) string {
 }
 
 func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) {
-	snap := s.clients.Snapshot()
+	snap := s.clientSnapshot()
 	disabled := s.cfg.ObservationDisabled
 
 	clientRows := make([]sep2admin.Row, 0, len(snap.Clients))
@@ -338,6 +338,30 @@ func (s *Server) clientsView(ctx context.Context) (sep2admin.Descriptor, error) 
 		table("Handshake attempts (cert validity)", handshakesEmpty, nil,
 			[]string{"LFDI", "Remote address", "Result", "Reason", "Known", "At"}, handshakeRows),
 	), nil
+}
+
+// clientSnapshot is the connobs snapshot with each client's last-seen
+// time, request count and age taken from the shared recorder when it has
+// that LFDI. connobs still supplies the client list, the paths and the
+// handshake log, because the recorder keeps neither; the recorder counts
+// only requests the ACL let through, so it can trail connobs's count.
+func (s *Server) clientSnapshot() connobs.Snapshot {
+	snap := s.clients.Snapshot()
+	if s.activity == nil {
+		return snap
+	}
+	now := s.now()
+	clients := make([]connobs.ClientSnapshot, len(snap.Clients))
+	for i, c := range snap.Clients {
+		if last, n, ok := s.activity.Last(c.LFDI); ok {
+			c.LastSeen = last.UTC()
+			c.RequestCount = n
+			c.Age = max(now.Sub(last), 0)
+		}
+		clients[i] = c
+	}
+	snap.Clients = clients
+	return snap
 }
 
 // clientConnected reports whether c was seen strictly within the idle
