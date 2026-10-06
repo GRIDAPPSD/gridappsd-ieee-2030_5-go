@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2admin"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2adminplane"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
@@ -362,6 +363,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		ReadOnly:       true,
 		PanelActions:   true,
 		Panels:         s.panels(),
+		DeviceColumns:  []sep2admin.DeviceColumnSource{&deviceColumns{registry: s.registry, devices: s.devices}},
 	})
 	switch {
 	case errors.Is(err, sep2adminplane.ErrNoCredential):

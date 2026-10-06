@@ -187,10 +187,10 @@ func monitorServer(t *testing.T, mon MonitorSource) (*Server, *httptest.Server) 
 	return s, hs
 }
 
-// TestMonitorPanelIsTheEighthTabWithATopicStream: with a monitor the
-// manifest gains the bus monitor after the seven read-only tabs, declaring
+// TestMonitorPanelIsTheSixthTabWithATopicStream: with a monitor the
+// manifest gains the bus monitor after the five read-only tabs, declaring
 // a stream whose parameter admits every character of a topic name.
-func TestMonitorPanelIsTheEighthTabWithATopicStream(t *testing.T) {
+func TestMonitorPanelIsTheSixthTabWithATopicStream(t *testing.T) {
 	t.Parallel()
 	mon, _ := newTestMonitor(t)
 	s, _ := monitorServer(t, mon)
@@ -205,12 +205,12 @@ func TestMonitorPanelIsTheEighthTabWithATopicStream(t *testing.T) {
 		} `json:"stream"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &manifest)
-	if len(manifest) != 8 {
-		t.Fatalf("manifest has %d panels, want 8: %+v", len(manifest), manifest)
+	if len(manifest) != 6 {
+		t.Fatalf("manifest has %d panels, want 6: %+v", len(manifest), manifest)
 	}
-	got := manifest[7]
+	got := manifest[5]
 	if got.ID != panelBusMonitor || got.Label != "Bus monitor" || got.Stream == nil {
-		t.Fatalf("panel 8 = %+v, want %s \"Bus monitor\" with a stream", got, panelBusMonitor)
+		t.Fatalf("panel 6 = %+v, want %s \"Bus monitor\" with a stream", got, panelBusMonitor)
 	}
 	if got.Stream.MaxLen != 207 {
 		t.Errorf("stream maxLen = %d, want 207 (/topic/ plus 200)", got.Stream.MaxLen)
@@ -225,7 +225,7 @@ func TestMonitorPanelIsTheEighthTabWithATopicStream(t *testing.T) {
 			t.Errorf("charset %q admits %q", got.Stream.Charset, c)
 		}
 	}
-	for i := range 7 {
+	for i := range 5 {
 		if manifest[i].Stream != nil {
 			t.Errorf("panel %s declares a stream", manifest[i].ID)
 		}

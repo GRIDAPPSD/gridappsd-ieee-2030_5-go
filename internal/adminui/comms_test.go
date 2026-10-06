@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/activity"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
-	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
 
 type devicesPayload struct {
@@ -205,31 +203,5 @@ func TestRefusedRequestsKeepClientConnected(t *testing.T) {
 	devAt, _ := time.Parse(time.RFC3339, *p.Devices[0].LastRequest)
 	if devAt.After(time.Now().Add(-9 * time.Minute)) {
 		t.Errorf("Devices lastRequest %s, want the accepted request ten minutes ago", devAt)
-	}
-}
-
-// TestServedStatusUnderCCMReadsTheRecorder: with the connobs observer off
-// the served-status section reads the recorder, so it agrees with the
-// Devices tab instead of saying every device is unknown.
-func TestServedStatusUnderCCMReadsTheRecorder(t *testing.T) {
-	t.Parallel()
-	rec := activity.New()
-	rec.Record("LFDIA")
-	src := testSources()
-	src.Activity = rec
-	src.Devices = &fakeEndDevices{edevs: []sep2embed.EndDeviceSnapshot{
-		{ID: "edev-a", LFDI: "LFDIA"}, {ID: "edev-b", LFDI: "LFDIB"},
-	}}
-	s := newServer(t, Config{Key: testKey, ObservationDisabled: true}, src)
-	served := section(t, getPanel(t, s, panelClients), "Served EndDevices: connection status")
-	if len(served.Body.Rows) != 2 {
-		t.Fatalf("rows = %d, want 2", len(served.Body.Rows))
-	}
-	assertBadge(t, "seen device", served.Body.Rows[0][2], "ok", "connected")
-	assertBadge(t, "unseen device", served.Body.Rows[1][2], "warn", "never connected")
-	for _, p := range served.Prose {
-		if strings.Contains(p, "unknown for every served device") {
-			t.Errorf("prose %q contradicts the Devices tab", p)
-		}
 	}
 }

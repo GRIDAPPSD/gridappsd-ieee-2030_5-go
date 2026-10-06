@@ -90,9 +90,10 @@ container's broker address.
 ## Admin UI
 
 The admin listener serves the IEEE 2030.5 server's admin UI (at `/ui/`) and
-admin API, with six bridge tabs after the server's own: bridge health,
-registry, discovered DERs, served resources, connected clients and control
-flow. It is off by default: an unset or blank `SEP2_ADMIN_UI_KEY` disables
+admin API, with bridge tabs after the server's own: bridge health,
+connections, DER programs, control flow and the device-status graph. The
+registry name, identity and discovered DERs are columns on the server's
+Devices tab. It is off by default: an unset or blank `SEP2_ADMIN_UI_KEY` disables
 it entirely (logged at start-up) rather than serving anything
 unauthenticated. A key that is set but shorter than 16 characters stops the
 bridge at start-up with an error naming the rule.
@@ -126,7 +127,7 @@ routes for scripts.
 | `SEP2_ADMIN_UI_WRITE_TIMEOUT` | `-admin-ui-write-timeout` | `10s` | A Go duration such as `15s` or `1m`. Admin listener: time to write a response. Allowed range: 1s-1h. |
 | `SEP2_ADMIN_UI_IDLE_TIMEOUT` | `-admin-ui-idle-timeout` | `60s` | A Go duration such as `15s` or `1m`. Admin listener: keep-alive idle time. Allowed range: 1s-1h. |
 | `SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT` | `-admin-ui-shutdown-timeout` | `5s` | A Go duration such as `15s` or `1m`. Bound on the admin listener's graceful drain at shutdown. Allowed range: 1s-5m. |
-| `SEP2_ADMIN_UI_CLIENT_IDLE_AFTER` | `-admin-ui-client-idle-after` | `5m` | A Go duration such as `10m` or `1h`. A client not seen for longer than this shows as idle, not connected, in the Connected clients panel and in `/api/clients` (`connected` is false); idle clients stay listed. It is also the silence after which the Devices tab shows a device's Comms as offline. The two differ on refused requests: the Devices tab counts only requests the server accepted, while `/api/clients` and the Connected clients panel also count requests the ACL refused, so a device stuck in a refusal loop reads connected there and offline on the Devices tab. Allowed range: 30s-24h. |
+| `SEP2_ADMIN_UI_CLIENT_IDLE_AFTER` | `-admin-ui-client-idle-after` | `5m` | A Go duration such as `10m` or `1h`. A client not seen for longer than this shows as idle, not connected, in the Connections panel and in `/api/clients` (`connected` is false); idle clients stay listed. It is also the silence after which the Devices tab shows a device's Comms as offline. The two differ on refused requests: the Devices tab counts only requests the server accepted, while `/api/clients` and the Connections panel also count requests the ACL refused, so a device stuck in a refusal loop reads connected there and offline on the Devices tab. Allowed range: 30s-24h. |
 
 ## Server admin-plane settings
 

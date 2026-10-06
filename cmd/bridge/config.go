@@ -141,12 +141,9 @@ type config struct {
 	// removes this flag pair):
 	//   - the loss of the rejected-device record, per-LFDI last-seen, and
 	//     request counts and paths the observer would otherwise carry;
-	//   - the admin UI's served-status table showing every served
-	//     device's status as unknown, not connected or never connected
-	//     (the gridappsd-clients panel's observer-disabled state);
-	//   - the same panel's connected-clients and handshake-attempts
-	//     tables showing no data rather than admitting they cannot tell,
-	//     for the same reason.
+	//   - the admin UI's Connections panel (gridappsd-connections) listing
+	//     no LFDIs seen with no EndDevice and no handshake attempts, and
+	//     saying observation is disabled rather than admitting nothing.
 	//
 	// A refused handshake (a client that cannot offer CCM-8) reaching the
 	// process log (sepTLS.WrapCCMListener) but never the panel is NOT one
