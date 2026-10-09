@@ -18,7 +18,8 @@ a 48-character admin UI key, creates the certificate directory, and asks for
 the broker password (Enter accepts the local GridAPPS-D default `manager`),
 host bind addresses, and the SEP2 TLS certificate directory. Enter `~/tls` to
 expand it to the current user's home directory and create it there; this
-directory holds the bridge's protocol certificates, not Caddy's local CA.
+directory holds the bridge's protocol certificates, including the
+`server.pem` and `server-key.pem` pair Caddy uses.
 On Hyper-V and VirtualBox it detects the guest IP from the default route for
 Caddy's host bind address; elsewhere the admin bind defaults to `127.0.0.1`.
 The SEP2 listener defaults to `0.0.0.0`. Override the admin or SEP2 address
@@ -46,7 +47,8 @@ What it does:
   `gridappsd-docker_default` and reaches the broker at `gridappsd:61613`, so
   the platform must be up first.
 - **Ports.** The 2030.5 listener (18443) is published on `0.0.0.0` by
-  default and Caddy serves the admin UI over HTTPS on port 18444. Change the host ports with
+  default and Caddy serves the admin UI over HTTPS on port 18444 using the
+  bridge serving certificate from `BRIDGE_CERT_DIR`. Change the host ports with
   `BRIDGE_SEP2_PORT` and `BRIDGE_ADMIN_PORT`, and the address each is
   published on with `BRIDGE_SEP2_BIND_IP` and `BRIDGE_ADMIN_BIND_IP` (IPv4;
   see "Reaching the bridge from another machine").
@@ -109,13 +111,14 @@ feeder.
 
 ## Reaching the bridge from another machine
 
-The browser admin UI hostname is `server`. If the browser is on Windows and
-the bridge runs in a Hyper-V guest, add `127.0.0.1 server` to the Windows
-hosts file when the Windows portproxy listens on `127.0.0.1`. Configure
+The browser admin UI hostname is `localhost`. If the browser is on Windows and
+the bridge runs in a Hyper-V guest, configure
 `BRIDGE_ADMIN_BIND_IP` to the guest's private-switch IP so Caddy is reachable
 as the portproxy destination; keep the Windows listener on localhost. Trust
-Caddy's local root CA on Windows, then browse to `https://server:18444/ui`.
-The browser does not need to resolve the container name `bridge`.
+`serving-ca.pem` from `BRIDGE_CERT_DIR` in Windows' trusted root store, then
+browse to `https://localhost:18444/ui`. Caddy loads `server.pem` and
+`server-key.pem` from that directory, and the certificate needs the `localhost`
+SAN. The browser does not need to resolve the container name `bridge`.
 
 SEP2 devices are different: they connect to the guest's reachable IP or DNS
 name on port 18443, not the admin hostname or Docker service name. A DNS or

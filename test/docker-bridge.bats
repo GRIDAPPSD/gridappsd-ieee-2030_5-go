@@ -293,7 +293,9 @@ run_script() {
   /usr/bin/grep -qE '^\s+gw_priority: [1-9]' "$f"
   [ "$(/usr/bin/grep -c 'name: gridappsd-docker_default' "$f")" -eq 1 ]
   /usr/bin/grep -qF 'image: caddy:2-alpine' "$f"
-  /usr/bin/grep -qF 'https://server:18444' "$repo/Caddyfile"
+  /usr/bin/grep -qF 'https://localhost:18444' "$repo/Caddyfile"
+  /usr/bin/grep -qF 'tls /etc/sep2/certs/server.pem /etc/sep2/certs/server-key.pem' "$repo/Caddyfile"
+  /usr/bin/grep -qF '${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:ro' "$f"
   /usr/bin/grep -qF 'reverse_proxy bridge:18444' "$repo/Caddyfile"
 }
 

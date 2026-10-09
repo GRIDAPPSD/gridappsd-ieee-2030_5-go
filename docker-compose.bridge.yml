@@ -102,7 +102,7 @@ services:
       # key unless SEP2_ADMIN_UI_INSECURE_NO_KEY is true.
       SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:-}
       SEP2_ADMIN_UI_INSECURE_NO_KEY: ${SEP2_ADMIN_UI_INSECURE_NO_KEY:-false}
-      SEP2_ADMIN_UI_ALLOWED_HOSTS: ${SEP2_ADMIN_UI_ALLOWED_HOSTS:-server}
+      SEP2_ADMIN_UI_ALLOWED_HOSTS: ${SEP2_ADMIN_UI_ALLOWED_HOSTS:-localhost}
       SEP2_ADMIN_UI_SOR_LINK: ${SEP2_ADMIN_UI_SOR_LINK:-}
       SEP2_ADMIN_UI_BUS_PUBLISH_AT_START: ${SEP2_ADMIN_UI_BUS_PUBLISH_AT_START:-false}
       SEP2_ADMIN_UI_READ_HEADER_TIMEOUT: ${SEP2_ADMIN_UI_READ_HEADER_TIMEOUT:-5s}
@@ -143,14 +143,9 @@ services:
       - "${BRIDGE_ADMIN_BIND_IP:?use make docker-up}:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+      - "${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:ro"
     networks:
       admin: {}
-
-volumes:
-  caddy_data:
-  caddy_config:
 
 networks:
   # The platform network carries only the broker link and the 2030.5 listener.
