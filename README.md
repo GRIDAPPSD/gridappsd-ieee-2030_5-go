@@ -69,15 +69,24 @@ To run the bridge as a container on the GridAPPS-D platform network:
 1. **Prerequisites**: GridAPPS-D platform running from
    [gridappsd-docker](https://github.com/GRIDAPPSD/gridappsd-docker), and Docker
    Engine 28 or newer.
-2. **Environment**: Copy `.env.example` to `.env`, then set:
-   - `SEP2_ADMIN_UI_KEY`: 16 or more characters (login password)
-   - `GRIDAPPSD_PASSWORD`: the platform broker password (`SEP2_STOMP_PASSWORD` also works); `GRIDAPPSD_USER` is optional
-   - `SEP2_REGISTRATION_PIN`: optional; the registration PIN your clients expect
+2. **Environment**: Run `make configure`. It creates a mode-`600` `.env`,
+  generates the admin UI key, and asks for the broker password (Enter accepts
+  the local GridAPPS-D default `manager`), SEP2/admin host bind addresses, and
+  the SEP2 TLS certificate directory. Enter `~/tls` to create/use
+  `/home/<user>/tls`; that is where the bridge's protocol certificates are
+  written. Caddy's separate local CA stays in its Docker volume. On Hyper-V and
+  VirtualBox, the guest IP is detected; other hosts keep the admin UI on
+  `127.0.0.1`. Override either bind with `BRIDGE_SEP2_BIND_IP` or
+  `BRIDGE_ADMIN_BIND_IP`. VirtualBox NAT may require a VM port-forward rule.
+  Configure queries the running Blazegraph instance and lets you select a
+  feeder; its mRID is saved as `SEP2_FEEDER_MRID`. The generated config
+  defaults `SEP2_REGISTRATION_PIN` to `123455`; change it to a
+  deployment-specific PIN or leave it empty to disable the fleet-wide PIN.
 3. **Start**: `make docker-up` pulls the published image and starts the container; `make docker-up BRIDGE_USE_PUBLISHED=0` builds the image locally instead.
 4. **Monitor**: `make docker-logs` follows the container log.
 5. **Stop**: `make docker-down` stops and removes the container.
 
-The admin UI listens at `http://127.0.0.1:18444/ui` and shows the bridge's
+The admin UI is served by Caddy at `https://server:18444/ui` and shows the bridge's
 status, DERs, and telemetry. Its Bus monitor tab watches any `/topic/` on the
 broker live, each topic on its own connection under the bridge's credential.
 Its Bus sender tab publishes DER controls to the bridge's application input
@@ -86,6 +95,11 @@ every start.
 
 Only one bridge may run against a broker at a time. If the binary bridge is
 running, stop it before bringing up the container.
+
+For the Windows browser, add `127.0.0.1 server` to the Windows hosts file and
+forward Windows `127.0.0.1:18444` to the guest IP on port `18444`. Trust Caddy's
+local root certificate on Windows. SEP2 devices use the guest's reachable IP
+or DNS name on port `18443`; they do not resolve the Docker-only name `bridge`.
 
 For complete configuration details, see [docs/DOCKER.md](docs/DOCKER.md) and
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
@@ -100,7 +114,7 @@ environment.
 | Setting | Flag | Env var | make run variable | Default | What it controls |
 |---|---|---|---|---|---|
 | Admin UI key (login) | `-admin-ui-key` | `SEP2_ADMIN_UI_KEY` | `ADMIN_UI_KEY_FILE` (path to a file holding the key) | none: no key, no admin UI (`make run` refuses to start) | The admin UI login password and the API Bearer token. At least 16 characters. Running with no key is `make docker-up` only: see [the admin UI section](docs/CONFIGURATION.md#admin-ui). |
-| STOMP user | `-stomp-user` | `SEP2_STOMP_USER` | none | built-in default | Login to the GridAPPS-D broker. |
+| STOMP user | `-stomp-user` | `SEP2_STOMP_USER` | none | `system` in Docker | Login to the GridAPPS-D broker. |
 | STOMP password | `-stomp-password` | `SEP2_STOMP_PASSWORD` | none | built-in default | Login to the GridAPPS-D broker. |
 | 2030.5 address | `-sep2-server-addr` | `SEP2_SERVER_ADDR` | `SEP2_SERVER_ADDR` | `127.0.0.1:8443` (`make run`: `127.0.0.1:18443`) | Where the embedded IEEE 2030.5 mTLS server listens. |
 | Admin UI address | `-admin-ui-addr` | `SEP2_ADMIN_UI_ADDR` | `ADMIN_UI_ADDR` | `127.0.0.1:8444` (`make run`: `127.0.0.1:18444`) | Where the admin UI listens. |

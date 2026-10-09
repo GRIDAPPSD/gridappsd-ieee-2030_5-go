@@ -38,7 +38,7 @@ services:
       # refuses to start without a password under either name.
       SEP2_STOMP_USER: ${SEP2_STOMP_USER:-}
       SEP2_STOMP_PASSWORD: ${SEP2_STOMP_PASSWORD:-}
-      GRIDAPPSD_USER: ${GRIDAPPSD_USER:-}
+      GRIDAPPSD_USER: ${GRIDAPPSD_USER:-system}
       GRIDAPPSD_PASSWORD: ${GRIDAPPSD_PASSWORD:-}
       # The platform broker speaks plaintext STOMP, so the container opts in.
       SEP2_STOMP_ALLOW_PLAINTEXT: ${SEP2_STOMP_ALLOW_PLAINTEXT:-true}
@@ -50,7 +50,7 @@ services:
       SEP2_FEEDER_MRID: ${SEP2_FEEDER_MRID:-_C1C3E687-6FFD-C753-582B-632A27E28507}
       SEP2_BATTERY_LEG_LIST_FILE: ${SEP2_BATTERY_LEG_LIST_FILE:-}
       # Registration PIN: a secret with no default value; empty means unset.
-      SEP2_REGISTRATION_PIN: ${SEP2_REGISTRATION_PIN:-}
+      SEP2_REGISTRATION_PIN: ${SEP2_REGISTRATION_PIN-123455}
       SEP2_REGISTRATION_PIN_FILE: ${SEP2_REGISTRATION_PIN_FILE:-}
       SEP2_PUBLISH_ON_START: ${SEP2_PUBLISH_ON_START:-false}
       SEP2_STOMP_CONNECT_TIMEOUT: ${SEP2_STOMP_CONNECT_TIMEOUT:-15s}
@@ -102,7 +102,7 @@ services:
       # key unless SEP2_ADMIN_UI_INSECURE_NO_KEY is true.
       SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:-}
       SEP2_ADMIN_UI_INSECURE_NO_KEY: ${SEP2_ADMIN_UI_INSECURE_NO_KEY:-false}
-      SEP2_ADMIN_UI_ALLOWED_HOSTS: ${SEP2_ADMIN_UI_ALLOWED_HOSTS:-}
+      SEP2_ADMIN_UI_ALLOWED_HOSTS: ${SEP2_ADMIN_UI_ALLOWED_HOSTS:-server}
       SEP2_ADMIN_UI_SOR_LINK: ${SEP2_ADMIN_UI_SOR_LINK:-}
       SEP2_ADMIN_UI_BUS_PUBLISH_AT_START: ${SEP2_ADMIN_UI_BUS_PUBLISH_AT_START:-false}
       SEP2_ADMIN_UI_READ_HEADER_TIMEOUT: ${SEP2_ADMIN_UI_READ_HEADER_TIMEOUT:-5s}
@@ -130,9 +130,27 @@ services:
         gw_priority: 100
     ports:
       - "${BRIDGE_SEP2_BIND_IP:?use make docker-up}:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"
+    volumes:
+      # Host bind mount persists the bridge's SEP2 CA and server/device certs across container recreation.
+      - "${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:${BRIDGE_CERT_MODE:?use make docker-up}"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - bridge
+    ports:
       - "${BRIDGE_ADMIN_BIND_IP:?use make docker-up}:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"
     volumes:
-      - "${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:${BRIDGE_CERT_MODE:?use make docker-up}"
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      admin: {}
+
+volumes:
+  caddy_data:
+  caddy_config:
 
 networks:
   # The platform network carries only the broker link and the 2030.5 listener.

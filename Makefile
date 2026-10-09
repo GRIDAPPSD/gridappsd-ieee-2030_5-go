@@ -1,4 +1,4 @@
-.PHONY: help check-go build run docker-build docker-pull docker-up docker-down docker-logs test test-shell test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
+.PHONY: help check-go build run configure docker-build docker-pull docker-up docker-down docker-logs test test-shell test-race test-integration test-gridappsd bridge-e2e vet fmt-check coverage
 
 .DEFAULT_GOAL := help
 
@@ -65,6 +65,9 @@ run: build                ## Build and start the bridge (needs SEP2_ADMIN_UI_KEY
 # The docker-* targets drive docker-compose.bridge.yml through
 # scripts/docker-bridge.sh, which refuses a start whose env file, cert dir,
 # platform network or host ports are not ready. Settings: .env.
+configure:                ## Create .env with a generated admin key and local bridge defaults
+	@scripts/configure-docker.sh
+
 docker-build:             ## Build the bridge image
 	@VERSION='$(VERSION)' scripts/docker-bridge.sh build
 
@@ -86,7 +89,7 @@ test: check-go                     ## Run all Go tests
 # test-shell runs the bats suites for `make run`, the docker targets, the image publish path and the Go version check; it needs bats on PATH and
 # is separate from `test` so `test` stays plain `go test ./...`.
 test-shell:               ## Run the bats suites (needs bats)
-	bats test/run.bats test/go-version.bats test/docker-bridge.bats test/compose-env.bats test/docker-publish.bats test/workflow.bats
+	bats test/run.bats test/go-version.bats test/docker-bridge.bats test/configure-docker.bats test/compose-env.bats test/docker-publish.bats test/workflow.bats
 
 test-race: check-go            ## Run all Go tests with the race detector
 	go test -race ./...

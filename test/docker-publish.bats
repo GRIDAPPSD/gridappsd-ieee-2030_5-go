@@ -194,7 +194,7 @@ I=gridappsd/gridappsd-ieee-2030_5
   cfg() {
     env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" "$@" BRIDGE_USER=1:1 BRIDGE_ADMIN_IP=10.0.0.2 \
       BRIDGE_SEP2_BIND_IP=127.0.0.1 BRIDGE_ADMIN_BIND_IP=127.0.0.1 BRIDGE_SEP2_PORT=1 BRIDGE_ADMIN_PORT=2 BRIDGE_CERT_DIR=/c BRIDGE_CERT_MODE=rw BRIDGE_ADMIN_SUBNET=10.0.0.0/24 \
-      docker compose --env-file "$BATS_TEST_TMPDIR/env" -f "$compose" config | /usr/bin/grep -E '^    image:'
+      docker compose --env-file "$BATS_TEST_TMPDIR/env" -f "$compose" config | /usr/bin/awk '/^  bridge:/ { in_bridge=1; next } /^  [[:alnum:]_-]+:/ { in_bridge=0 } in_bridge && /^    image:/ { print; exit }'
   }
   [ "$(cfg)" = '    image: gridappsd/gridappsd-ieee-2030_5:latest' ]
   [ "$(cfg BRIDGE_IMAGE_TAG=v1.2.3)" = '    image: gridappsd/gridappsd-ieee-2030_5:v1.2.3' ]
