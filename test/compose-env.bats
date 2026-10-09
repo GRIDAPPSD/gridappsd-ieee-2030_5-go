@@ -133,8 +133,11 @@ example_names() {
   /usr/bin/grep -qx 'SEP2_REGISTRATION_PIN_FILE=' "$example"
 }
 
-@test "broker login: both names of user and password are optional and empty in compose and the example; address and port are not passed" {
-  for n in GRIDAPPSD_USER GRIDAPPSD_PASSWORD SEP2_STOMP_USER SEP2_STOMP_PASSWORD; do
+@test "broker login defaults GRIDAPPSD_USER to system and keeps overrides optional; passwords stay empty" {
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qxF '      GRIDAPPSD_USER: ${GRIDAPPSD_USER:-system}' "$compose"
+  /usr/bin/grep -qx 'GRIDAPPSD_USER=system' "$example"
+  for n in GRIDAPPSD_PASSWORD SEP2_STOMP_USER SEP2_STOMP_PASSWORD; do
     # shellcheck disable=SC2016 # literal compose syntax
     /usr/bin/grep -qxF "      $n: \${$n:-}" "$compose"
     /usr/bin/grep -qx "$n=" "$example"
@@ -234,6 +237,6 @@ example_settings() {
   # A new setting is allowed; a changed or dropped one is not.
   # The 2030.5 bind default moved from loopback to 0.0.0.0, and the admin
   # hostname is now the Caddy `server` name; these are the intentional changes.
-  lost=$(comm -23 "$BATS_TEST_TMPDIR/before.sorted" "$BATS_TEST_TMPDIR/after.sorted" | /usr/bin/grep -vxF -e '# BRIDGE_SEP2_BIND_IP=127.0.0.1' -e 'SEP2_ADMIN_UI_ALLOWED_HOSTS=' -e 'SEP2_REGISTRATION_PIN=' || true)
+  lost=$(comm -23 "$BATS_TEST_TMPDIR/before.sorted" "$BATS_TEST_TMPDIR/after.sorted" | /usr/bin/grep -vxF -e '# BRIDGE_SEP2_BIND_IP=127.0.0.1' -e 'SEP2_ADMIN_UI_ALLOWED_HOSTS=' -e 'SEP2_REGISTRATION_PIN=' -e 'GRIDAPPSD_USER=' -e '# BRIDGE_CERT_DIR=/absolute/path/to/sep2-certs   (default: ~/.config/gridappsd/2030.5server/sep2-certs)' || true)
   [ -z "$lost" ] || { echo "changed or dropped: $lost" >&2; false; }
 }

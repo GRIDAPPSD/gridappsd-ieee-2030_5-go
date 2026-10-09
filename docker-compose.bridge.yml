@@ -38,7 +38,7 @@ services:
       # refuses to start without a password under either name.
       SEP2_STOMP_USER: ${SEP2_STOMP_USER:-}
       SEP2_STOMP_PASSWORD: ${SEP2_STOMP_PASSWORD:-}
-      GRIDAPPSD_USER: ${GRIDAPPSD_USER:-}
+      GRIDAPPSD_USER: ${GRIDAPPSD_USER:-system}
       GRIDAPPSD_PASSWORD: ${GRIDAPPSD_PASSWORD:-}
       # The platform broker speaks plaintext STOMP, so the container opts in.
       SEP2_STOMP_ALLOW_PLAINTEXT: ${SEP2_STOMP_ALLOW_PLAINTEXT:-true}
@@ -131,6 +131,7 @@ services:
     ports:
       - "${BRIDGE_SEP2_BIND_IP:?use make docker-up}:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"
     volumes:
+      # Host bind mount persists the bridge's SEP2 CA and server/device certs across container recreation.
       - "${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:${BRIDGE_CERT_MODE:?use make docker-up}"
 
   caddy:

@@ -15,15 +15,23 @@ make docker-up
 
 `make configure` creates `.env` without overwriting an existing file, generates
 a 48-character admin UI key, creates the certificate directory, and asks for
-the broker password (Enter accepts the local GridAPPS-D default `manager`).
+the broker password (Enter accepts the local GridAPPS-D default `manager`),
+host bind addresses, and the SEP2 TLS certificate directory. Enter `~/tls` to
+expand it to the current user's home directory and create it there; this
+directory holds the bridge's protocol certificates, not Caddy's local CA.
 On Hyper-V and VirtualBox it detects the guest IP from the default route for
 Caddy's host bind address; elsewhere the admin bind defaults to `127.0.0.1`.
-Override with `BRIDGE_ADMIN_BIND_IP` if needed. With VirtualBox NAT, add a VM
-port-forward rule so the host can reach the guest port; bridged or host-only
-networking may be appropriate otherwise. The generated registration PIN
-defaults to `123455`; replace it for your deployment or set it empty to disable
-the fleet-wide PIN. Treat that PIN as development-only. The generated admin key
-is stored in `.env`; retrieve it with
+The SEP2 listener defaults to `0.0.0.0`. Override the admin or SEP2 address
+with `BRIDGE_ADMIN_BIND_IP` or `BRIDGE_SEP2_BIND_IP`. With VirtualBox NAT, add
+a VM port-forward rule so the host can reach the guest port; bridged or
+host-only networking may be appropriate otherwise. Configure queries the
+running Blazegraph at `BLAZEGRAPH_SPARQL_URL` (default
+`http://127.0.0.1:8889/bigdata/namespace/kb/sparql`) and lets you choose one
+feeder by name; the chosen mRID is saved as `SEP2_FEEDER_MRID`. This requires
+`curl`, `jq`, and the GridAPPS-D platform running. The generated registration
+PIN defaults to `123455`; replace it for your deployment or set it empty to
+disable the fleet-wide PIN. Treat that PIN as development-only. The generated
+admin key is stored in `.env`; retrieve it with
 `grep '^SEP2_ADMIN_UI_KEY=' .env` when signing in.
 
 What it does:
@@ -59,8 +67,9 @@ What it does:
   `BRIDGE_ADMIN_BIND_IP:BRIDGE_ADMIN_PORT` and refuses to start when both the
   key and the setting are present. The broker
   login is read as `GRIDAPPSD_USER` and `GRIDAPPSD_PASSWORD`, the names other
-  GridAPPS-D apps use; `SEP2_STOMP_USER` and `SEP2_STOMP_PASSWORD` override
-  them. The password is required under one of the two names, and `make
+  GridAPPS-D apps use; `GRIDAPPSD_USER` defaults to `system`, and
+  `SEP2_STOMP_USER` / `SEP2_STOMP_PASSWORD` override those values. The password
+  is required under one of the two names, and `make
   docker-up` refuses to start without it. Put comments on
   their own lines: the script refuses a value followed by `# comment` for the
   names it reads itself (`SEP2_ADMIN_UI_KEY`, the two password names and the
