@@ -71,10 +71,12 @@ To run the bridge as a container on the GridAPPS-D platform network:
    Engine 28 or newer.
 2. **Environment**: Run `make configure`. It creates a mode-`600` `.env`,
   generates the admin UI key, and asks for the broker password (Enter accepts
-  the local GridAPPS-D default `manager`). For Hyper-V Windows access, enter
-  the guest's private-switch IP when prompted for the admin bind address;
-  blank keeps the admin UI on guest localhost only. `SEP2_REGISTRATION_PIN`
-  remains optional.
+  the local GridAPPS-D default `manager`). On Hyper-V and VirtualBox, the guest
+  IP is detected; other hosts keep the admin UI on `127.0.0.1`. Override with
+  `BRIDGE_ADMIN_BIND_IP=<address>` if needed. VirtualBox NAT may require a VM
+  port-forward rule. The generated config defaults `SEP2_REGISTRATION_PIN` to
+  `123455`; change it to a deployment-specific PIN or leave it empty to disable
+  the fleet-wide PIN.
 3. **Start**: `make docker-up` pulls the published image and starts the container; `make docker-up BRIDGE_USE_PUBLISHED=0` builds the image locally instead.
 4. **Monitor**: `make docker-logs` follows the container log.
 5. **Stop**: `make docker-down` stops and removes the container.

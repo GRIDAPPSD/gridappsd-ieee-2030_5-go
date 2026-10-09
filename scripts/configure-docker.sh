@@ -24,9 +24,17 @@ broker_password="${broker_password:-manager}"
   die "broker password cannot contain a single quote or whitespace followed by #"
 
 admin_bind_ip="${BRIDGE_ADMIN_BIND_IP:-}"
-if [ -z "$admin_bind_ip" ] && [ -r /dev/tty ]; then
-  printf 'Caddy admin bind IPv4 [127.0.0.1] (Hyper-V: enter the guest private-switch IP): ' >&2
-  IFS= read -r admin_bind_ip </dev/tty || die "could not read admin bind address"
+if [ -z "$admin_bind_ip" ]; then
+  virtualization="$(systemd-detect-virt --vm 2>/dev/null || true)"
+  case "$virtualization" in
+    microsoft | hyperv | oracle | virtualbox)
+      route="$(ip -4 route get 1.1.1.1 2>/dev/null || true)"
+      admin_bind_ip="$(awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }' <<<"$route")"
+      if [ -z "$admin_bind_ip" ]; then
+        echo "configure-docker: warning: could not detect the virtual-machine guest IP; keeping Caddy on localhost. Set BRIDGE_ADMIN_BIND_IP to the guest IP for host forwarding." >&2
+      fi
+      ;;
+  esac
 fi
 admin_bind_ip="${admin_bind_ip:-127.0.0.1}"
 [[ "$admin_bind_ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "admin bind address must be an IPv4 address, got: $admin_bind_ip"
@@ -95,7 +103,7 @@ trap - EXIT
 echo "Created $env_file with mode 600."
 echo "Admin UI key generated; retrieve it with: grep '^SEP2_ADMIN_UI_KEY=' '$env_file'"
 if [ "$admin_bind_ip" = 127.0.0.1 ]; then
-  echo "Admin UI is bound to guest localhost only. For Hyper-V Windows forwarding, rerun with BRIDGE_ADMIN_BIND_IP=<guest-private-IP> or set it in .env."
+  echo "Admin UI is bound to localhost only. Set BRIDGE_ADMIN_BIND_IP to the guest private-switch IP if Windows needs to forward to this guest."
 else
   echo "Caddy is bound to $admin_bind_ip; keep the Windows portproxy listener bound to 127.0.0.1."
 fi

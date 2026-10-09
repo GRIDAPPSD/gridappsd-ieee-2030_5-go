@@ -98,7 +98,7 @@ example_names() {
 
 @test "compose: every non-secret setting is NAME: \${NAME:-default}" {
   for n in $(compose_names); do
-    if in_list "$n" "$SECRETS $PINNED"; then continue; fi
+    if in_list "$n" "$SECRETS $PINNED SEP2_REGISTRATION_PIN"; then continue; fi
     # shellcheck disable=SC2016 # literal compose syntax
     /usr/bin/grep -qE "^      $n: \\\$\\{$n:-.*\\}\$" "$compose" || { echo "no default form: $n" >&2; false; }
   done
@@ -124,12 +124,13 @@ example_names() {
   /usr/bin/grep -qx "$n=false" "$example"
 }
 
-@test "secrets: the registration PIN and its file are optional, empty by default, and set no value in the example" {
-  for n in SEP2_REGISTRATION_PIN SEP2_REGISTRATION_PIN_FILE; do
-    # shellcheck disable=SC2016 # literal compose syntax
-    /usr/bin/grep -qxF "      $n: \${$n:-}" "$compose"
-    /usr/bin/grep -qx "$n=" "$example"
-  done
+@test "registration PIN defaults to the documented dev PIN and can be explicitly disabled" {
+  # shellcheck disable=SC2016 # literal compose syntax; '-' preserves an explicit empty value
+  /usr/bin/grep -qxF '      SEP2_REGISTRATION_PIN: ${SEP2_REGISTRATION_PIN-123455}' "$compose"
+  /usr/bin/grep -qx 'SEP2_REGISTRATION_PIN=123455' "$example"
+  # shellcheck disable=SC2016 # literal compose syntax
+  /usr/bin/grep -qxF '      SEP2_REGISTRATION_PIN_FILE: ${SEP2_REGISTRATION_PIN_FILE:-}' "$compose"
+  /usr/bin/grep -qx 'SEP2_REGISTRATION_PIN_FILE=' "$example"
 }
 
 @test "broker login: both names of user and password are optional and empty in compose and the example; address and port are not passed" {
@@ -158,20 +159,21 @@ example_names() {
 @test ".env.example default equals the compose default for every non-secret setting" {
   compared=0
   for n in $(compose_names); do
-    if in_list "$n" "$SECRETS $PINNED"; then continue; fi
+    if in_list "$n" "$SECRETS $PINNED SEP2_REGISTRATION_PIN"; then continue; fi
     compared=$((compared + 1))
     cdef=$(/usr/bin/grep -E "^      $n: " "$compose" | sed -E "s/^      $n: \\\$\\{$n:-(.*)\\}\$/\\1/")
     edef=$(/usr/bin/grep -E "^$n=" "$example" | sed -E "s/^$n=//")
     [ "$cdef" = "$edef" ] || { echo "$n: compose '$cdef' example '$edef'" >&2; false; }
   done
-  # Every name except the admin key, the four pinned ones and the two not passed was compared.
-  [ "$compared" -eq $(($(bridge_env_names | wc -l) - 7)) ]
+  # Exclude the admin key, the four pinned names, the two not passed and the PIN with its explicit-empty syntax.
+  [ "$compared" -eq $(($(bridge_env_names | wc -l) - 8)) ]
 }
 
 @test "pinned: four names are literals in compose, never overridable, and not settings in .env.example" {
   # The names that are not the NAME: ${NAME:-...} or :? form are exactly PINNED.
   unwrapped=$(for n in $(compose_names); do
     # shellcheck disable=SC2016 # literal compose syntax
+    if [ "$n" = SEP2_REGISTRATION_PIN ]; then continue; fi
     /usr/bin/grep -qE "^      $n: \\\$\\{$n:[-?]" "$compose" || echo "$n"
   done | sort | tr '\n' ' ')
   want=$(tr ' ' '\n' <<<"$PINNED" | sort | tr '\n' ' ')
@@ -232,6 +234,6 @@ example_settings() {
   # A new setting is allowed; a changed or dropped one is not.
   # The 2030.5 bind default moved from loopback to 0.0.0.0, and the admin
   # hostname is now the Caddy `server` name; these are the intentional changes.
-  lost=$(comm -23 "$BATS_TEST_TMPDIR/before.sorted" "$BATS_TEST_TMPDIR/after.sorted" | /usr/bin/grep -vxF -e '# BRIDGE_SEP2_BIND_IP=127.0.0.1' -e 'SEP2_ADMIN_UI_ALLOWED_HOSTS=' || true)
+  lost=$(comm -23 "$BATS_TEST_TMPDIR/before.sorted" "$BATS_TEST_TMPDIR/after.sorted" | /usr/bin/grep -vxF -e '# BRIDGE_SEP2_BIND_IP=127.0.0.1' -e 'SEP2_ADMIN_UI_ALLOWED_HOSTS=' -e 'SEP2_REGISTRATION_PIN=' || true)
   [ -z "$lost" ] || { echo "changed or dropped: $lost" >&2; false; }
 }

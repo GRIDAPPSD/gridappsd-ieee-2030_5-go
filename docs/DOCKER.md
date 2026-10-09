@@ -16,9 +16,14 @@ make docker-up
 `make configure` creates `.env` without overwriting an existing file, generates
 a 48-character admin UI key, creates the certificate directory, and asks for
 the broker password (Enter accepts the local GridAPPS-D default `manager`).
-The admin bind defaults to `127.0.0.1`; enter the guest's private-switch IP at
-the prompt when Windows will reach Caddy through a localhost-only Hyper-V
-portproxy. The generated admin key is stored in `.env`; retrieve it with
+On Hyper-V and VirtualBox it detects the guest IP from the default route for
+Caddy's host bind address; elsewhere the admin bind defaults to `127.0.0.1`.
+Override with `BRIDGE_ADMIN_BIND_IP` if needed. With VirtualBox NAT, add a VM
+port-forward rule so the host can reach the guest port; bridged or host-only
+networking may be appropriate otherwise. The generated registration PIN
+defaults to `123455`; replace it for your deployment or set it empty to disable
+the fleet-wide PIN. Treat that PIN as development-only. The generated admin key
+is stored in `.env`; retrieve it with
 `grep '^SEP2_ADMIN_UI_KEY=' .env` when signing in.
 
 What it does:
@@ -61,9 +66,10 @@ What it does:
   names it reads itself (`SEP2_ADMIN_UI_KEY`, the two password names and the
   `BRIDGE_*` launcher settings); compose strips an inline comment from any
   other value, so it is dropped silently there. The
-  registration PIN is optional: `SEP2_REGISTRATION_PIN` is a secret with no
-  default, and `SEP2_REGISTRATION_PIN_FILE` must name a path inside a mount
-  (such as the certificate directory); leave both empty for none. `.env`
+  registration PIN defaults to the development value `123455` in `.env.example`;
+  replace it with a deployment-specific secret or set it explicitly empty to
+  disable the fleet-wide PIN. `SEP2_REGISTRATION_PIN_FILE` must name a path
+  inside a mount (such as the certificate directory); leave it empty for none. `.env`
   is also read by the dev broker's `docker-compose.yml`, which uses different
   variable names. `BRIDGE_ENV_FILE` points the script at another file. Upgrading: the file was
   `.env.bridge`; rename it to `.env`. Four settings are pinned in the compose
