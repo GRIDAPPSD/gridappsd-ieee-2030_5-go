@@ -230,7 +230,8 @@ example_settings() {
   # Control: the file read is not empty, so an empty diff means a real comparison.
   [ "$(wc -l <"$BATS_TEST_TMPDIR/before.sorted")" -ge 60 ]
   # A new setting is allowed; a changed or dropped one is not.
-  # The 2030.5 bind default moved from loopback to 0.0.0.0 on purpose; the old line is the one allowed change.
-  lost=$(comm -23 "$BATS_TEST_TMPDIR/before.sorted" "$BATS_TEST_TMPDIR/after.sorted" | /usr/bin/grep -vxF '# BRIDGE_SEP2_BIND_IP=127.0.0.1' || true)
+  # The 2030.5 bind default moved from loopback to 0.0.0.0, and the admin
+  # hostname is now the Caddy `server` name; these are the intentional changes.
+  lost=$(comm -23 "$BATS_TEST_TMPDIR/before.sorted" "$BATS_TEST_TMPDIR/after.sorted" | /usr/bin/grep -vxF -e '# BRIDGE_SEP2_BIND_IP=127.0.0.1' -e 'SEP2_ADMIN_UI_ALLOWED_HOSTS=' || true)
   [ -z "$lost" ] || { echo "changed or dropped: $lost" >&2; false; }
 }

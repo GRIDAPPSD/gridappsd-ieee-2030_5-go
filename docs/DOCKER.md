@@ -9,12 +9,17 @@ follows its log, and `make docker-build` builds the image alone.
 One-time setup:
 
 ```bash
-cp .env.example .env && chmod 600 .env
-# set SEP2_ADMIN_UI_KEY (16+ characters, e.g. `openssl rand -hex 24`),
-# or leave it blank and set SEP2_ADMIN_UI_INSECURE_NO_KEY=true (see below)
-# and GRIDAPPSD_PASSWORD (the platform broker password; SEP2_STOMP_PASSWORD also works)
+make configure
 make docker-up
 ```
+
+`make configure` creates `.env` without overwriting an existing file, generates
+a 48-character admin UI key, creates the certificate directory, and asks for
+the broker password (Enter accepts the local GridAPPS-D default `manager`).
+The admin bind defaults to `127.0.0.1`; enter the guest's private-switch IP at
+the prompt when Windows will reach Caddy through a localhost-only Hyper-V
+portproxy. The generated admin key is stored in `.env`; retrieve it with
+`grep '^SEP2_ADMIN_UI_KEY=' .env` when signing in.
 
 What it does:
 
@@ -28,12 +33,13 @@ What it does:
   `gridappsd-docker_default` and reaches the broker at `gridappsd:61613`, so
   the platform must be up first.
 - **Ports.** The 2030.5 listener (18443) is published on `0.0.0.0` by
-  default and the admin UI (18444) on `127.0.0.1` only. Change the host ports with
+  default and Caddy serves the admin UI over HTTPS on port 18444. Change the host ports with
   `BRIDGE_SEP2_PORT` and `BRIDGE_ADMIN_PORT`, and the address each is
   published on with `BRIDGE_SEP2_BIND_IP` and `BRIDGE_ADMIN_BIND_IP` (IPv4;
   see "Reaching the bridge from another machine").
-- **Admin UI isolation.** The admin UI is plain HTTP behind one key, so it
-  is not put on the platform network. The bridge joins a second network of
+- **Admin UI isolation.** The admin UI is plain HTTP behind one key on its
+  private network; Caddy terminates HTTPS and is attached to that network,
+  but not the platform network. The bridge joins a second network of
   its own (`BRIDGE_ADMIN_SUBNET`, default `10.213.168.0/24`, address
   `BRIDGE_ADMIN_IP`, default `10.213.168.2`) and the admin UI binds only
   that address; other platform containers cannot reach it. Change both if
@@ -87,6 +93,21 @@ may run against a broker at a time, because two would register on the same
 feeder.
 
 ## Reaching the bridge from another machine
+
+The browser admin UI hostname is `server`. If the browser is on Windows and
+the bridge runs in a Hyper-V guest, add `127.0.0.1 server` to the Windows
+hosts file when the Windows portproxy listens on `127.0.0.1`. Configure
+`BRIDGE_ADMIN_BIND_IP` to the guest's private-switch IP so Caddy is reachable
+as the portproxy destination; keep the Windows listener on localhost. Trust
+Caddy's local root CA on Windows, then browse to `https://server:18444/ui`.
+The browser does not need to resolve the container name `bridge`.
+
+SEP2 devices are different: they connect to the guest's reachable IP or DNS
+name on port 18443, not the admin hostname or Docker service name. A DNS or
+hosts entry is needed only if devices use a hostname instead of an IP, and
+that name must also be included in `SEP2_SERVER_CERT_HOSTS` before the
+serving certificate is first minted. Give devices the serving CA and their
+own client certificates as described in [CERTIFICATES.md](CERTIFICATES.md).
 
 The 2030.5 port is published on `0.0.0.0` by default, so clients on the
 network can reach it. Docker-published ports bypass the host firewall's

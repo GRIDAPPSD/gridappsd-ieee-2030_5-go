@@ -69,15 +69,17 @@ To run the bridge as a container on the GridAPPS-D platform network:
 1. **Prerequisites**: GridAPPS-D platform running from
    [gridappsd-docker](https://github.com/GRIDAPPSD/gridappsd-docker), and Docker
    Engine 28 or newer.
-2. **Environment**: Copy `.env.example` to `.env`, then set:
-   - `SEP2_ADMIN_UI_KEY`: 16 or more characters (login password)
-   - `GRIDAPPSD_PASSWORD`: the platform broker password (`SEP2_STOMP_PASSWORD` also works); `GRIDAPPSD_USER` is optional
-   - `SEP2_REGISTRATION_PIN`: optional; the registration PIN your clients expect
+2. **Environment**: Run `make configure`. It creates a mode-`600` `.env`,
+  generates the admin UI key, and asks for the broker password (Enter accepts
+  the local GridAPPS-D default `manager`). For Hyper-V Windows access, enter
+  the guest's private-switch IP when prompted for the admin bind address;
+  blank keeps the admin UI on guest localhost only. `SEP2_REGISTRATION_PIN`
+  remains optional.
 3. **Start**: `make docker-up` pulls the published image and starts the container; `make docker-up BRIDGE_USE_PUBLISHED=0` builds the image locally instead.
 4. **Monitor**: `make docker-logs` follows the container log.
 5. **Stop**: `make docker-down` stops and removes the container.
 
-The admin UI listens at `http://127.0.0.1:18444/ui` and shows the bridge's
+The admin UI is served by Caddy at `https://server:18444/ui` and shows the bridge's
 status, DERs, and telemetry. Its Bus monitor tab watches any `/topic/` on the
 broker live, each topic on its own connection under the bridge's credential.
 Its Bus sender tab publishes DER controls to the bridge's application input
@@ -86,6 +88,11 @@ every start.
 
 Only one bridge may run against a broker at a time. If the binary bridge is
 running, stop it before bringing up the container.
+
+For the Windows browser, add `127.0.0.1 server` to the Windows hosts file and
+forward Windows `127.0.0.1:18444` to the guest IP on port `18444`. Trust Caddy's
+local root certificate on Windows. SEP2 devices use the guest's reachable IP
+or DNS name on port `18443`; they do not resolve the Docker-only name `bridge`.
 
 For complete configuration details, see [docs/DOCKER.md](docs/DOCKER.md) and
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
