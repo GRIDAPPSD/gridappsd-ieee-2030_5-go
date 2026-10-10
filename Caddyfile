@@ -1,4 +1,0 @@
-https://server:18444 {
-	tls internal
-	reverse_proxy bridge:18444
-}

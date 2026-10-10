@@ -94,15 +94,15 @@ services:
       # Admin UI
       # Pinned for the container, not overridable from .env or the shell: the
       # admin UI binds only its own network's address, which platform
-      # containers cannot reach, so an override such as 0.0.0.0 would expose it
-      # to them. Non-loopback is allowed because that address is not loopback.
+      # containers cannot reach. The host publication below is separately
+      # restricted by BRIDGE_ADMIN_BIND_IP.
       SEP2_ADMIN_UI_ADDR: ${BRIDGE_ADMIN_IP:?use make docker-up}:18444
       SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK: "true"
       # A blank key disables the UI in the bridge; make docker-up refuses a blank
       # key unless SEP2_ADMIN_UI_INSECURE_NO_KEY is true.
       SEP2_ADMIN_UI_KEY: ${SEP2_ADMIN_UI_KEY:-}
       SEP2_ADMIN_UI_INSECURE_NO_KEY: ${SEP2_ADMIN_UI_INSECURE_NO_KEY:-false}
-      SEP2_ADMIN_UI_ALLOWED_HOSTS: ${SEP2_ADMIN_UI_ALLOWED_HOSTS:-server}
+      SEP2_ADMIN_UI_ALLOWED_HOSTS: ${SEP2_ADMIN_UI_ALLOWED_HOSTS:-localhost}
       SEP2_ADMIN_UI_SOR_LINK: ${SEP2_ADMIN_UI_SOR_LINK:-}
       SEP2_ADMIN_UI_BUS_PUBLISH_AT_START: ${SEP2_ADMIN_UI_BUS_PUBLISH_AT_START:-false}
       SEP2_ADMIN_UI_READ_HEADER_TIMEOUT: ${SEP2_ADMIN_UI_READ_HEADER_TIMEOUT:-5s}
@@ -130,27 +130,10 @@ services:
         gw_priority: 100
     ports:
       - "${BRIDGE_SEP2_BIND_IP:?use make docker-up}:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"
+      - "${BRIDGE_ADMIN_BIND_IP:?use make docker-up}:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"
     volumes:
       # Host bind mount persists the bridge's SEP2 CA and server/device certs across container recreation.
       - "${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:${BRIDGE_CERT_MODE:?use make docker-up}"
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    depends_on:
-      - bridge
-    ports:
-      - "${BRIDGE_ADMIN_BIND_IP:?use make docker-up}:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      admin: {}
-
-volumes:
-  caddy_data:
-  caddy_config:
 
 networks:
   # The platform network carries only the broker link and the 2030.5 listener.
