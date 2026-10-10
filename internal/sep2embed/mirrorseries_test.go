@@ -22,7 +22,7 @@ func rtype(uom, kind, phase uint8, mult int8, flow uint8) *sep2.ReadingType {
 }
 
 // seedMirror stores a mirror whose deviceLFDI is lfdi.
-func seedMirror(t *testing.T, st *assembly.Stores, mup, lfdi string) {
+func seedMirror(t testing.TB, st *assembly.Stores, mup, lfdi string) {
 	t.Helper()
 	m := sep2.MirrorUsagePoint{MRID: mup, DeviceLFDI: lfdi}
 	if err := st.MirrorUsagePoints.Create(context.Background(), mup, m); err != nil {
@@ -31,10 +31,11 @@ func seedMirror(t *testing.T, st *assembly.Stores, mup, lfdi string) {
 }
 
 // postReading stores one reading the way the POST handler stamps it: a
-// 20-digit id, the href built from it, and the receipt time as seconds.
-func postReading(t *testing.T, st *assembly.Stores, mup string, n int64, ts int64, m sep2.MirrorMeterReading) string {
+// 20-digit id that is the receipt time in nanoseconds (n breaks ties within
+// the second), the href built from it, and the receipt time as seconds.
+func postReading(t testing.TB, st *assembly.Stores, mup string, n int64, ts int64, m sep2.MirrorMeterReading) string {
 	t.Helper()
-	id := fmt.Sprintf("%020d", n)
+	id := fmt.Sprintf("%020d", ts*1_000_000_000+n)
 	m.Href = fmt.Sprintf("/mup/%s/mr/%s", mup, id)
 	m.LastUpdateTime = ts
 	if err := st.MirrorMeterReadings.Create(context.Background(), mup, id, m); err != nil {
@@ -72,11 +73,12 @@ func TestSweepRemovesTheOldestBeyondThePerSeriesCap(t *testing.T) {
 	// A different type on the same device is its own series and keeps all of
 	// its readings.
 	v := rtype(29, 0, 0, 0, 0)
+	var vIDs []string
 	for i := int64(6); i <= 7; i++ {
-		postReading(t, st, "m1", i, 1000+i, powerReading("v", "PH_ABC (V)", v, 555))
+		vIDs = append(vIDs, postReading(t, st, "m1", i, 1000+i, powerReading("v", "PH_ABC (V)", v, 555)))
 	}
 
-	removed, err := sweepMirrorReadings(context.Background(), st, time.Unix(1010, 0), time.Hour, 3)
+	removed, err := sweepMirrorReadings(context.Background(), st, nil, time.Unix(1010, 0), time.Hour, 3)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -84,7 +86,7 @@ func TestSweepRemovesTheOldestBeyondThePerSeriesCap(t *testing.T) {
 		t.Errorf("removed = %d, want 2", removed)
 	}
 	got := remainingIDs(t, st, "m1")
-	want := []string{ids[2], ids[3], ids[4], fmt.Sprintf("%020d", 6), fmt.Sprintf("%020d", 7)}
+	want := []string{ids[2], ids[3], ids[4], vIDs[0], vIDs[1]}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("remaining = %v, want %v (the two oldest of the capped series gone)", got, want)
 	}
@@ -99,7 +101,7 @@ func TestSweepRemovesReadingsOlderThanTheAge(t *testing.T) {
 	atCutoff := postReading(t, st, "m1", 3, 400, powerReading("w", "Real Power (W)", w, 3))
 	fresh := postReading(t, st, "m1", 4, 4000, powerReading("w", "Real Power (W)", w, 4))
 
-	removed, err := sweepMirrorReadings(context.Background(), st, time.Unix(4000, 0), 3600*time.Second, 100)
+	removed, err := sweepMirrorReadings(context.Background(), st, nil, time.Unix(4000, 0), 3600*time.Second, 100)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -119,13 +121,13 @@ func TestSweepCapsADeviceAcrossItsMirrors(t *testing.T) {
 	w := rtype(38, 37, 0, 0, 1)
 	postReading(t, st, "m1", 1, 1001, powerReading("w", "Real Power (W)", w, 1))
 	postReading(t, st, "m2", 2, 1002, powerReading("w", "Real Power (W)", w, 2))
-	postReading(t, st, "m1", 3, 1003, powerReading("w", "Real Power (W)", w, 3))
+	third := postReading(t, st, "m1", 3, 1003, powerReading("w", "Real Power (W)", w, 3))
 	postReading(t, st, "m3", 4, 1001, powerReading("w", "Real Power (W)", w, 4))
 
-	if _, err := sweepMirrorReadings(context.Background(), st, time.Unix(1010, 0), time.Hour, 2); err != nil {
+	if _, err := sweepMirrorReadings(context.Background(), st, nil, time.Unix(1010, 0), time.Hour, 2); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if got, want := remainingIDs(t, st, "m1"), []string{fmt.Sprintf("%020d", 3)}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if got, want := remainingIDs(t, st, "m1"), []string{third}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("m1 remaining = %v, want %v", got, want)
 	}
 	if got := remainingIDs(t, st, "m2"); len(got) != 1 {
@@ -136,28 +138,93 @@ func TestSweepCapsADeviceAcrossItsMirrors(t *testing.T) {
 	}
 }
 
+func TestSweepCapDropsTheOldestAcrossMirrorsEvenWhenItIsInALaterMirror(t *testing.T) {
+	st := newStores()
+	seedMirror(t, st, "m1", "LFDI-A")
+	seedMirror(t, st, "m2", "LFDI-A")
+	w := rtype(38, 37, 0, 0, 1)
+	// The oldest reading sits in m2, which sorts after m1.
+	postReading(t, st, "m2", 1, 1001, powerReading("w", "Real Power (W)", w, 1))
+	newer1 := postReading(t, st, "m1", 2, 1002, powerReading("w", "Real Power (W)", w, 2))
+	newer2 := postReading(t, st, "m1", 3, 1003, powerReading("w", "Real Power (W)", w, 3))
+
+	removed, err := sweepMirrorReadings(context.Background(), st, nil, time.Unix(1010, 0), time.Hour, 2)
+	if err != nil || removed != 1 {
+		t.Fatalf("sweep = %d, %v; want 1 removed", removed, err)
+	}
+	if got := remainingIDs(t, st, "m2"); len(got) != 0 {
+		t.Errorf("m2 remaining = %v, want its reading, the oldest of the device, gone", got)
+	}
+	if got, want := remainingIDs(t, st, "m1"), []string{newer1, newer2}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("m1 remaining = %v, want %v", got, want)
+	}
+}
+
 func TestSweepKeepsATypedReadingWhileUntypedOnesSurvive(t *testing.T) {
 	st := newStores()
 	seedMirror(t, st, "m1", "LFDI-A")
 	w := rtype(38, 37, 0, 0, 1)
 	// Only the first post carries the type; later posts reuse the mRID.
 	typed := postReading(t, st, "m1", 1, 1001, powerReading("w", "Real Power (W)", w, 1))
-	postReading(t, st, "m1", 2, 1002, powerReading("w", "", nil, 2))
-	postReading(t, st, "m1", 3, 1003, powerReading("w", "", nil, 3))
+	var untyped []string
+	for i := int64(2); i <= 5; i++ {
+		untyped = append(untyped, postReading(t, st, "m1", i, 1000+i, powerReading("w", "", nil, i)))
+	}
 
-	if _, err := sweepMirrorReadings(context.Background(), st, time.Unix(1010, 0), time.Hour, 2); err != nil {
+	removed, err := sweepMirrorReadings(context.Background(), st, nil, time.Unix(1010, 0), time.Hour, 2)
+	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	got := remainingIDs(t, st, "m1")
-	if len(got) == 0 || got[0] != typed {
-		t.Fatalf("remaining = %v, want the typed reading %s kept so survivors still have a type", got, typed)
+	// Cap 2 of five readings drops the oldest three; the typed one is the
+	// oldest, but the survivors need it, so it stays and only two go.
+	if removed != 2 {
+		t.Errorf("removed = %d, want 2 (the cap ran on the untyped readings)", removed)
 	}
-	res, err := mirrorSeries(context.Background(), st, 0, 0, 0)
+	if got, want := remainingIDs(t, st, "m1"), []string{typed, untyped[2], untyped[3]}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("remaining = %v, want %v: the typed reading kept so survivors still have a type", got, want)
+	}
+	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{})
 	if err != nil {
 		t.Fatalf("series: %v", err)
 	}
 	if len(res.Series) != 1 || res.Series[0].Uom != 38 {
 		t.Errorf("series after sweep = %+v, want one series of uom 38", res.Series)
+	}
+}
+
+func TestSweepRemovesUntypedReadingsPastTheAge(t *testing.T) {
+	st := newStores()
+	seedMirror(t, st, "m1", "LFDI-A")
+	w := rtype(38, 37, 0, 0, 1)
+	typed := postReading(t, st, "m1", 1, 1000, powerReading("w", "Real Power (W)", w, 1))
+	postReading(t, st, "m1", 2, 1001, powerReading("w", "", nil, 2)) // untyped and old
+	fresh1 := postReading(t, st, "m1", 3, 5000, powerReading("w", "", nil, 3))
+	fresh2 := postReading(t, st, "m1", 4, 5001, powerReading("w", "", nil, 4))
+
+	removed, err := sweepMirrorReadings(context.Background(), st, nil, time.Unix(5010, 0), time.Hour, 100)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1: the old untyped reading goes, the old typed one stays for the survivors", removed)
+	}
+	if got, want := remainingIDs(t, st, "m1"), []string{typed, fresh1, fresh2}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("remaining = %v, want %v", got, want)
+	}
+}
+
+func TestSweepRemovesAnOldTypedReadingWhenNothingUntypedSurvives(t *testing.T) {
+	st := newStores()
+	seedMirror(t, st, "m1", "LFDI-A")
+	w := rtype(38, 37, 0, 0, 1)
+	postReading(t, st, "m1", 1, 1000, powerReading("w", "Real Power (W)", w, 1))
+	fresh := postReading(t, st, "m1", 2, 5000, powerReading("w", "Real Power (W)", w, 2))
+
+	if _, err := sweepMirrorReadings(context.Background(), st, nil, time.Unix(5010, 0), time.Hour, 100); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got, want := remainingIDs(t, st, "m1"), []string{fresh}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("remaining = %v, want %v", got, want)
 	}
 }
 
@@ -167,7 +234,7 @@ func TestSweepRefusesANonPositiveBound(t *testing.T) {
 		age time.Duration
 		n   int
 	}{{0, 10}, {time.Hour, 0}, {-time.Hour, 10}} {
-		if _, err := sweepMirrorReadings(context.Background(), st, time.Now(), c.age, c.n); err == nil {
+		if _, err := sweepMirrorReadings(context.Background(), st, nil, time.Now(), c.age, c.n); err == nil {
 			t.Errorf("sweep(age=%v, n=%d) accepted, want a refusal", c.age, c.n)
 		}
 	}
@@ -180,7 +247,7 @@ func TestMirrorSeriesScalesAndStampsWithTheReceiptTime(t *testing.T) {
 	postReading(t, st, "m1", 2, 5030, powerReading("e", "Energy", rtype(72, 12, 0, -3, 0), 12345))
 	postReading(t, st, "m1", 3, 5060, powerReading("p", "Plain", rtype(29, 0, 0, 0, 0), 555))
 
-	res, err := mirrorSeries(context.Background(), st, 0, 0, 0)
+	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{})
 	if err != nil {
 		t.Fatalf("series: %v", err)
 	}
@@ -217,7 +284,7 @@ func TestMirrorSeriesIsNotSplitBySignChanges(t *testing.T) {
 	postReading(t, st, "m1", 2, 6030, powerReading("w", "Real Power (W)", rtype(38, 37, 0, 0, 19), -300))
 	postReading(t, st, "m1", 3, 6060, powerReading("w", "Real Power (W)", rtype(38, 37, 0, 0, 1), 200))
 
-	res, err := mirrorSeries(context.Background(), st, 0, 0, 0)
+	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{})
 	if err != nil {
 		t.Fatalf("series: %v", err)
 	}
@@ -225,8 +292,8 @@ func TestMirrorSeriesIsNotSplitBySignChanges(t *testing.T) {
 		t.Fatalf("series = %d, want 1: a flowDirection change must not split the line", len(res.Series))
 	}
 	got := res.Series[0].Points
-	want := []MirrorPoint{{6000, 300}, {6030, -300}, {6060, 200}}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	want := []MirrorPoint{{Time: 6000, Value: 300}, {Time: 6030, Value: -300}, {Time: 6060, Value: 200}}
+	if fmt.Sprint(bare(got)) != fmt.Sprint(want) {
 		t.Errorf("points = %v, want %v", got, want)
 	}
 }
@@ -238,15 +305,15 @@ func TestMirrorSeriesSinceIsInclusiveAndReportsNothingOlder(t *testing.T) {
 	for i := int64(1); i <= 4; i++ {
 		postReading(t, st, "m1", i, 7000+10*i, powerReading("w", "Real Power (W)", w, i))
 	}
-	res, err := mirrorSeries(context.Background(), st, 7030, 0, 0)
+	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{Since: 7030})
 	if err != nil {
 		t.Fatalf("series: %v", err)
 	}
 	got := res.Series[0].Points
-	if want := []MirrorPoint{{7030, 3}, {7040, 4}}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if want := []MirrorPoint{{Time: 7030, Value: 3}, {Time: 7040, Value: 4}}; fmt.Sprint(bare(got)) != fmt.Sprint(want) {
 		t.Errorf("points since 7030 = %v, want %v", got, want)
 	}
-	res, err = mirrorSeries(context.Background(), st, 7041, 0, 0)
+	res, err = mirrorSeries(context.Background(), st, nil, MirrorQuery{Since: 7041})
 	if err != nil || len(res.Series) != 0 || res.TotalSeries != 0 {
 		t.Errorf("since past every point: %+v, %v; want no series", res, err)
 	}
@@ -263,7 +330,7 @@ func TestMirrorSeriesShowsAnUnregisteredDeviceByItsLFDI(t *testing.T) {
 	postReading(t, st, "m1", 1, 8000, powerReading("w", "Real Power (W)", w, 5))
 	postReading(t, st, "m2", 2, 8000, powerReading("w", "Real Power (W)", w, 6))
 
-	res, err := mirrorSeries(context.Background(), st, 0, 0, 0)
+	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{})
 	if err != nil {
 		t.Fatalf("series: %v", err)
 	}
@@ -291,7 +358,7 @@ func TestMirrorSeriesCapsPointsAndSeriesAndSaysSo(t *testing.T) {
 	postReading(t, st, "m2", 6, 9000, powerReading("w", "Real Power (W)", w, 1))
 	postReading(t, st, "m3", 7, 9000, powerReading("w", "Real Power (W)", w, 1))
 
-	res, err := mirrorSeries(context.Background(), st, 0, 2, 3)
+	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{MaxSeries: 2, MaxPoints: 3})
 	if err != nil {
 		t.Fatalf("series: %v", err)
 	}
@@ -302,7 +369,7 @@ func TestMirrorSeriesCapsPointsAndSeriesAndSaysSo(t *testing.T) {
 	if !s.Truncated || s.Total != 5 {
 		t.Errorf("m1 truncated=%v total=%d, want true and 5", s.Truncated, s.Total)
 	}
-	if want := []MirrorPoint{{9003, 3}, {9004, 4}, {9005, 5}}; fmt.Sprint(s.Points) != fmt.Sprint(want) {
+	if want := []MirrorPoint{{Time: 9003, Value: 3}, {Time: 9004, Value: 4}, {Time: 9005, Value: 5}}; fmt.Sprint(bare(s.Points)) != fmt.Sprint(want) {
 		t.Errorf("m1 points = %v, want the newest three %v", s.Points, want)
 	}
 	if o := res.Series[1]; o.Truncated || o.Total != 1 {
@@ -321,14 +388,14 @@ func TestMirrorSeriesReadsASetAndSkipsAReadingWithNoValue(t *testing.T) {
 	postReading(t, st, "m1", 1, 9500, set)
 	postReading(t, st, "m1", 2, 9510, sep2.MirrorMeterReading{MRID: "w", ReadingType: w, Reading: &sep2.Reading{}})
 
-	res, err := mirrorSeries(context.Background(), st, 0, 0, 0)
+	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{})
 	if err != nil {
 		t.Fatalf("series: %v", err)
 	}
 	if len(res.Series) != 1 {
 		t.Fatalf("series = %d, want 1", len(res.Series))
 	}
-	if want := []MirrorPoint{{9500, 1.5}, {9500, 2.5}}; fmt.Sprint(res.Series[0].Points) != fmt.Sprint(want) {
+	if want := []MirrorPoint{{Time: 9500, Value: 1.5}, {Time: 9500, Value: 2.5}}; fmt.Sprint(bare(res.Series[0].Points)) != fmt.Sprint(want) {
 		t.Errorf("points = %v, want %v (the valueless readings are skipped, not zero)", res.Series[0].Points, want)
 	}
 }
@@ -339,20 +406,20 @@ func TestMirrorSeriesTypesAReadingThatReusesAnMRID(t *testing.T) {
 	postReading(t, st, "m1", 1, 9600, powerReading("w", "Real Power (W)", rtype(38, 37, 0, 1, 1), 5))
 	postReading(t, st, "m1", 2, 9630, powerReading("w", "", nil, 6))
 
-	res, err := mirrorSeries(context.Background(), st, 0, 0, 0)
+	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{})
 	if err != nil {
 		t.Fatalf("series: %v", err)
 	}
 	if len(res.Series) != 1 || res.Series[0].Uom != 38 || res.Series[0].Description != "Real Power (W)" {
 		t.Fatalf("series = %+v, want one uom 38 series named Real Power (W)", res.Series)
 	}
-	if want := []MirrorPoint{{9600, 50}, {9630, 60}}; fmt.Sprint(res.Series[0].Points) != fmt.Sprint(want) {
+	if want := []MirrorPoint{{Time: 9600, Value: 50}, {Time: 9630, Value: 60}}; fmt.Sprint(bare(res.Series[0].Points)) != fmt.Sprint(want) {
 		t.Errorf("points = %v, want %v (the inherited multiplier 1 applies)", res.Series[0].Points, want)
 	}
 }
 
 func TestMirrorSeriesWithNoMirrorStoreIsEmpty(t *testing.T) {
-	res, err := mirrorSeries(context.Background(), &assembly.Stores{}, 0, 0, 0)
+	res, err := mirrorSeries(context.Background(), &assembly.Stores{}, nil, MirrorQuery{})
 	if err != nil || len(res.Series) != 0 || res.Series == nil {
 		t.Errorf("empty stores: %+v, %v; want an empty non-nil series list and no error", res, err)
 	}
@@ -418,3 +485,12 @@ type blockingServer struct{}
 
 func (*blockingServer) Run(ctx context.Context) error { <-ctx.Done(); return nil }
 func (*blockingServer) Addr() string                  { return "127.0.0.1:0" }
+
+// bare returns pts with the ids cleared, for comparing times and values.
+func bare(pts []MirrorPoint) []MirrorPoint {
+	out := make([]MirrorPoint, len(pts))
+	for i, p := range pts {
+		out[i] = MirrorPoint{Time: p.Time, Value: p.Value}
+	}
+	return out
+}

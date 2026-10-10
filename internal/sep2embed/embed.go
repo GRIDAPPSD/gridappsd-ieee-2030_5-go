@@ -348,6 +348,10 @@ type Embed struct {
 	mirrorMaxAge       time.Duration
 	mirrorMaxPerSeries int
 	mirrorInterval     time.Duration
+
+	// mirrorTypes lets MirrorSeries type an untyped reading without listing
+	// its whole mirror. Nil (an Embed built without New) types by listing.
+	mirrorTypes *mirrorTypeCache
 }
 
 // New builds the resource stores, seeds EndDevices and DERs from reg,
@@ -514,7 +518,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		}
 
 		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger(), sweepInterval: cfg.ControlSweepInterval,
-			mirrorMaxAge: cfg.MirrorReadingRetention, mirrorMaxPerSeries: cfg.MirrorReadingMaxPerSeries, mirrorInterval: cfg.MirrorRetentionInterval}, nil
+			mirrorMaxAge: cfg.MirrorReadingRetention, mirrorMaxPerSeries: cfg.MirrorReadingMaxPerSeries, mirrorInterval: cfg.MirrorRetentionInterval, mirrorTypes: newMirrorTypeCache()}, nil
 	}
 
 	// Neither Observer nor EnableCCM: delegate to server-go's sep2srv.New,
@@ -543,7 +547,7 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 	}
 
 	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, policy: policy, ended: newEndedControlLedger(), sweepInterval: cfg.ControlSweepInterval,
-		mirrorMaxAge: cfg.MirrorReadingRetention, mirrorMaxPerSeries: cfg.MirrorReadingMaxPerSeries, mirrorInterval: cfg.MirrorRetentionInterval}, nil
+		mirrorMaxAge: cfg.MirrorReadingRetention, mirrorMaxPerSeries: cfg.MirrorReadingMaxPerSeries, mirrorInterval: cfg.MirrorRetentionInterval, mirrorTypes: newMirrorTypeCache()}, nil
 }
 
 // customListenerTimeouts reports whether cfg asks for a listener timeout

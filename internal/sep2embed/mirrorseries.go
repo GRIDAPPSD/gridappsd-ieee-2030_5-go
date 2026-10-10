@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
@@ -22,8 +23,11 @@ const (
 
 // MirrorPoint is one posted reading: Time is the server's receipt time in
 // Unix seconds (never a client field) and Value is the reading scaled by its
-// power-of-ten multiplier.
+// power-of-ten multiplier. ID names the point stably across polls (the stored
+// reading id and the point's place in it), so a poller that resumes from an
+// inclusive time can drop the points it already has.
 type MirrorPoint struct {
+	ID    string
 	Time  int64
 	Value float64
 }
@@ -52,6 +56,20 @@ type MirrorSeries struct {
 	Points    []MirrorPoint
 	Total     int
 	Truncated bool
+}
+
+// MirrorQuery selects and bounds one MirrorSeries answer. Since is inclusive
+// Unix seconds. Device, when set, keeps only the series of the device with
+// that deviceLFDI (case-insensitive), or of the mirror with that id when the
+// mirror names no device; Uom, when set, keeps only that unit code.
+// MaxSeries and MaxPoints lower the ceilings and cannot raise them; at or
+// below zero they take the ceiling.
+type MirrorQuery struct {
+	Since     int64
+	Device    string
+	Uom       *uint8
+	MaxSeries int
+	MaxPoints int
 }
 
 // MirrorSeriesResult is a bounded answer: Series is cut at maxSeries and
@@ -86,33 +104,39 @@ type mirrorRecord struct {
 	effType *sep2.ReadingType
 }
 
-// MirrorSeries returns the points posted at or after since (Unix seconds),
-// grouped by device and reading type. The query time is inclusive so a poll
-// that resumes from the last time it saw cannot lose a reading stamped in the
-// same second; the caller drops the repeat. A reading with no stored value is
-// skipped rather than reported as zero. At most maxSeries series and
-// maxPoints points per series are returned, newest points kept; a request
-// above MaxMirrorSeries or MaxMirrorPointsSeries, or at or below zero, takes
-// the maximum.
-func (e *Embed) MirrorSeries(ctx context.Context, since int64, maxSeries, maxPoints int) (MirrorSeriesResult, error) {
-	return mirrorSeries(ctx, e.stores, since, maxSeries, maxPoints)
+// MirrorSeries returns the points posted at or after q.Since, grouped by
+// device and reading type. The query time is inclusive so a poll that resumes
+// from the last time it saw cannot lose a reading stamped in the same second;
+// the caller drops the repeat by MirrorPoint.ID. A reading with no stored
+// value is skipped rather than reported as zero. At most q.MaxSeries series
+// and q.MaxPoints points per series are returned, newest points kept.
+//
+// Only the readings from q.Since on are copied out of the store, which relies
+// on the id the server stamps: a fixed-width receipt time in nanoseconds.
+func (e *Embed) MirrorSeries(ctx context.Context, q MirrorQuery) (MirrorSeriesResult, error) {
+	return mirrorSeries(ctx, e.stores, e.mirrorTypes, q)
 }
 
-func mirrorSeries(ctx context.Context, stores *assembly.Stores, since int64, maxSeries, maxPoints int) (MirrorSeriesResult, error) {
+func mirrorSeries(ctx context.Context, stores *assembly.Stores, types *mirrorTypeCache, q MirrorQuery) (MirrorSeriesResult, error) {
+	maxSeries, maxPoints := q.MaxSeries, q.MaxPoints
 	if maxSeries <= 0 || maxSeries > MaxMirrorSeries {
 		maxSeries = MaxMirrorSeries
 	}
 	if maxPoints <= 0 || maxPoints > MaxMirrorPointsSeries {
 		maxPoints = MaxMirrorPointsSeries
 	}
-	recs, err := collectMirrorRecords(ctx, stores)
+	scan, err := collectMirrorRecords(ctx, stores, types, q.Since)
 	if err != nil {
 		return MirrorSeriesResult{}, err
 	}
+	recs := scan.records
 
 	byKey := map[seriesKey]*MirrorSeries{}
 	for _, r := range recs {
-		if r.mmr.LastUpdateTime < since {
+		if q.Device != "" && !strings.EqualFold(r.key.device, q.Device) {
+			continue
+		}
+		if q.Uom != nil && r.key.uom != *q.Uom {
 			continue
 		}
 		pts := readingPoints(r)
@@ -181,7 +205,7 @@ func readingPoints(r mirrorRecord) []MirrorPoint {
 		if rd == nil || rd.Value == nil {
 			return
 		}
-		pts = append(pts, MirrorPoint{Time: r.mmr.LastUpdateTime, Value: scaleReading(*rd.Value, mult)})
+		pts = append(pts, MirrorPoint{ID: fmt.Sprintf("%s/%s.%d", r.mirror, r.id, len(pts)), Time: r.mmr.LastUpdateTime, Value: scaleReading(*rd.Value, mult)})
 	}
 	add(r.mmr.Reading)
 	for i := range r.mmr.MirrorReadingSet {
@@ -202,27 +226,134 @@ func scaleReading(v int64, mult int8) float64 {
 	return float64(v) / math.Pow10(int(-mult))
 }
 
-// collectMirrorRecords reads every stored mirror reading with its mirror's
-// device and its effective reading type. Records are ordered by id, which is
-// a fixed-width receipt time in nanoseconds, so id order is age order; ties
-// across mirrors break on the mirror id.
+// mirrorScan is what one pass over the mirror readings found. records are
+// ordered by id, which is a fixed-width receipt time in nanoseconds, so id
+// order is age order; ties across mirrors break on the mirror id. mirrors
+// holds every mirror seen, with its device and, for a full pass only, how
+// many readings it stores.
+type mirrorScan struct {
+	records []mirrorRecord
+	mirrors map[string]scannedMirror
+}
+
+type scannedMirror struct {
+	device string
+	total  int
+}
+
+// mirrorIDBefore returns the store id just below the first one a reading
+// received at the Unix second since can carry, for ListOptions.After. ok is
+// false when since is so large that no id can reach it.
+func mirrorIDBefore(since int64) (after string, ok bool) {
+	const maxSince = math.MaxInt64 / 1_000_000_000
+	if since > maxSince {
+		return "", false
+	}
+	return fmt.Sprintf("%020d", since*1_000_000_000-1), true
+}
+
+// typeInfo is a reading type and description an mRID carries. typedID is the
+// stored reading that carries it, or empty when it came from the mirror's own
+// inline readings.
+type typeInfo struct {
+	rt      *sep2.ReadingType
+	desc    string
+	typedID string
+}
+
+// mirrorTypeCache remembers, per mirror and mRID, the type that a typed
+// reading established, so a poll that copies only recent readings can type an
+// untyped one without listing the whole mirror again. An entry is trusted
+// only while the reading that carries it is still stored.
+type mirrorTypeCache struct {
+	mu sync.Mutex
+	m  map[string]map[string]typeInfo
+}
+
+func newMirrorTypeCache() *mirrorTypeCache {
+	return &mirrorTypeCache{m: map[string]map[string]typeInfo{}}
+}
+
+func (c *mirrorTypeCache) get(mirror, mrid string) (typeInfo, bool) {
+	if c == nil {
+		return typeInfo{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ti, ok := c.m[mirror][mrid]
+	return ti, ok
+}
+
+func (c *mirrorTypeCache) put(mirror, mrid string, ti typeInfo) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m[mirror] == nil {
+		c.m[mirror] = map[string]typeInfo{}
+	}
+	c.m[mirror][mrid] = ti
+}
+
+func (c *mirrorTypeCache) forget(mirror, mrid string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.m[mirror], mrid)
+}
+
+// retain drops the entries of every mirror not in keep.
+func (c *mirrorTypeCache) retain(keep []string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id := range c.m {
+		if !slices.Contains(keep, id) {
+			delete(c.m, id)
+		}
+	}
+}
+
+// collectMirrorRecords reads the stored mirror readings received at or after
+// since (Unix seconds; at or below zero reads them all) with each mirror's
+// device and each reading's effective reading type.
 //
 // A reading that reuses an mRID may omit its ReadingType and inherits it from
 // any record of that mRID in the same mirror, inline readings included, so a
-// reading's type is its own or the first one its mRID carries. A reading with
-// none is typed uom 0, kind 0, phase 0 and scaled by 1.
-func collectMirrorRecords(ctx context.Context, stores *assembly.Stores) ([]mirrorRecord, error) {
+// reading's type is its own or the first one its mRID carries. With since
+// above zero only recent readings are copied, so that type is looked up in
+// types, checked against the store, and failing that learned by reading the
+// whole mirror once. A reading with none is typed uom 0, kind 0, phase 0 and
+// scaled by 1.
+func collectMirrorRecords(ctx context.Context, stores *assembly.Stores, types *mirrorTypeCache, since int64) (mirrorScan, error) {
+	scan := mirrorScan{mirrors: map[string]scannedMirror{}}
 	if store.IsAbsent(stores.MirrorMeterReadings) || store.IsAbsent(stores.MirrorUsagePoints) {
-		return nil, nil
+		return scan, nil
 	}
 	parents, err := stores.MirrorMeterReadings.Parents(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("sep2embed: mirror readings: list mirrors: %w", err)
+		return mirrorScan{}, fmt.Errorf("sep2embed: mirror readings: list mirrors: %w", err)
 	}
-	var out []mirrorRecord
+	types.retain(parents)
+
+	windowed := since > 0
+	opts := store.ListOptions{Unbounded: true}
+	if windowed {
+		after, ok := mirrorIDBefore(since)
+		if !ok {
+			return scan, nil
+		}
+		opts.After = after
+	}
+
 	for _, mupID := range parents {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return mirrorScan{}, err
 		}
 		var lfdi string
 		var inline []sep2.MirrorMeterReading
@@ -231,45 +362,86 @@ func collectMirrorRecords(ctx context.Context, stores *assembly.Stores) ([]mirro
 			lfdi, inline = mup.DeviceLFDI, mup.MirrorMeterReading
 		case isNotFound(err):
 		default:
-			return nil, fmt.Errorf("sep2embed: mirror readings: read mirror %q: %w", mupID, err)
+			return mirrorScan{}, fmt.Errorf("sep2embed: mirror readings: read mirror %q: %w", mupID, err)
 		}
-		page, err := stores.MirrorMeterReadings.List(ctx, mupID, store.ListOptions{Unbounded: true})
+		page, err := stores.MirrorMeterReadings.List(ctx, mupID, opts)
 		if err != nil {
-			return nil, fmt.Errorf("sep2embed: mirror readings: list readings of %q: %w", mupID, err)
-		}
-
-		types := map[string]*sep2.ReadingType{}
-		descs := map[string]string{}
-		learn := func(m sep2.MirrorMeterReading) {
-			if m.ReadingType == nil {
-				return
-			}
-			if _, ok := types[m.MRID]; !ok {
-				types[m.MRID] = m.ReadingType
-				descs[m.MRID] = m.Description
-			}
-		}
-		for _, m := range inline {
-			learn(m)
-		}
-		for _, m := range page.Items {
-			learn(m)
+			return mirrorScan{}, fmt.Errorf("sep2embed: mirror readings: list readings of %q: %w", mupID, err)
 		}
 
 		device := lfdi
 		if device == "" {
 			device = "mirror:" + mupID
 		}
+		scan.mirrors[mupID] = scannedMirror{device: device, total: len(page.Items)}
+
+		known := map[string]typeInfo{}
+		learn := func(m sep2.MirrorMeterReading, typedID string) {
+			if m.ReadingType == nil {
+				return
+			}
+			if _, ok := known[m.MRID]; !ok {
+				known[m.MRID] = typeInfo{rt: m.ReadingType, desc: m.Description, typedID: typedID}
+			}
+		}
+		learnPage := func(items []sep2.MirrorMeterReading) {
+			for _, m := range items {
+				id, _ := mirrorReadingID(mupID, m.Href)
+				learn(m, id)
+			}
+		}
+		for _, m := range inline {
+			learn(m, "")
+		}
+		learnPage(page.Items)
+
+		if windowed {
+			missing := false
+			for _, m := range page.Items {
+				if m.ReadingType != nil {
+					continue
+				}
+				if _, ok := known[m.MRID]; ok {
+					continue
+				}
+				ti, ok, err := cachedType(ctx, stores, types, mupID, m.MRID)
+				if err != nil {
+					return mirrorScan{}, err
+				}
+				if ok {
+					known[m.MRID] = ti
+					continue
+				}
+				missing = true
+			}
+			if missing {
+				all, err := stores.MirrorMeterReadings.List(ctx, mupID, store.ListOptions{Unbounded: true})
+				if err != nil {
+					return mirrorScan{}, fmt.Errorf("sep2embed: mirror readings: list readings of %q: %w", mupID, err)
+				}
+				learnPage(all.Items)
+			}
+		}
+		for mrid, ti := range known {
+			if ti.typedID != "" {
+				types.put(mupID, mrid, ti)
+			}
+		}
+
 		for _, m := range page.Items {
+			if m.LastUpdateTime < since {
+				continue
+			}
 			id, ok := mirrorReadingID(mupID, m.Href)
 			if !ok {
 				continue
 			}
 			rt, desc := m.ReadingType, m.Description
 			if rt == nil {
-				rt = types[m.MRID]
+				ti := known[m.MRID]
+				rt = ti.rt
 				if desc == "" {
-					desc = descs[m.MRID]
+					desc = ti.desc
 				}
 			}
 			k := seriesKey{device: device, description: desc}
@@ -284,13 +456,32 @@ func collectMirrorRecords(ctx context.Context, stores *assembly.Stores) ([]mirro
 					k.phase = *rt.Phase
 				}
 			}
-			out = append(out, mirrorRecord{mirror: mupID, id: id, lfdi: lfdi, key: k, typed: m.ReadingType != nil, mmr: m, effType: rt})
+			scan.records = append(scan.records, mirrorRecord{mirror: mupID, id: id, lfdi: lfdi, key: k, typed: m.ReadingType != nil, mmr: m, effType: rt})
 		}
 	}
-	slices.SortStableFunc(out, func(a, b mirrorRecord) int {
+	slices.SortStableFunc(scan.records, func(a, b mirrorRecord) int {
 		return cmp.Or(cmp.Compare(a.id, b.id), cmp.Compare(a.mirror, b.mirror))
 	})
-	return out, nil
+	return scan, nil
+}
+
+// cachedType returns the cached type of an mRID after checking that the
+// reading that established it is still stored. A reading that is gone, or no
+// longer typed, drops the entry.
+func cachedType(ctx context.Context, stores *assembly.Stores, types *mirrorTypeCache, mirror, mrid string) (typeInfo, bool, error) {
+	ti, ok := types.get(mirror, mrid)
+	if !ok {
+		return typeInfo{}, false, nil
+	}
+	switch m, err := stores.MirrorMeterReadings.Get(ctx, mirror, ti.typedID); {
+	case err == nil && m.ReadingType != nil && m.MRID == mrid:
+		return ti, true, nil
+	case err == nil || isNotFound(err):
+		types.forget(mirror, mrid)
+		return typeInfo{}, false, nil
+	default:
+		return typeInfo{}, false, fmt.Errorf("sep2embed: mirror readings: read reading %s/%s: %w", mirror, ti.typedID, err)
+	}
 }
 
 // mirrorReadingID returns the store id of a reading stamped
