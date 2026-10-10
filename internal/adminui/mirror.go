@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,21 +22,36 @@ const mirrorRoute = "/apps/soc/api/mirror"
 // Defaults and ceiling for one mirror response. maxMirrorResponsePoints
 // bounds the whole body, not one series, so asking for many series cannot
 // multiply the per-series point limit.
+//
+// The default series count is above the 147 series a 49-device fleet
+// produces, and the default point count is the most that many series can
+// carry inside the response bound.
 const (
-	defaultMirrorSeries     = 100
-	defaultMirrorPoints     = 500
+	defaultMirrorSeries     = 200
+	defaultMirrorPoints     = 250
 	maxMirrorResponsePoints = 50000
+)
+
+// maxMirrorBuilds is how many series builds may run at once. The route takes
+// no credential, so a burst of polls is bounded here rather than left to
+// multiply the cost of one; the rest are refused with mirrorBusy.
+const (
+	maxMirrorBuilds = 4
+	mirrorBusy      = "mirror readings busy, retry shortly"
 )
 
 // MirrorSource is the read surface Server needs from *sep2embed.Embed for
 // the mirror reading series.
 type MirrorSource interface {
-	MirrorSeries(ctx context.Context, since int64, maxSeries, maxPoints int) (sep2embed.MirrorSeriesResult, error)
+	MirrorSeries(ctx context.Context, q sep2embed.MirrorQuery) (sep2embed.MirrorSeriesResult, error)
 }
 
 type mirrorPointResponse struct {
-	T int64   `json:"t"`
-	V float64 `json:"v"`
+	// ID is stable across polls, so a page that resumes from an inclusive
+	// since drops the points whose ID it already holds.
+	ID string  `json:"id"`
+	T  int64   `json:"t"`
+	V  float64 `json:"v"`
 }
 
 type mirrorSeriesResponse struct {
@@ -65,8 +81,10 @@ type mirrorSeriesResponse struct {
 }
 
 type mirrorResponse struct {
-	// Now is the server clock in Unix seconds when the response was built,
-	// so a poller sets its next since without trusting its own clock.
+	// Now is the server clock in Unix seconds read before the series were
+	// built, so a poller sets its next since to it, without trusting its own
+	// clock, and cannot skip a reading stored while the answer was built. The
+	// poll after it repeats the points stamped at Now; drop them by ID.
 	Now             int64                  `json:"now"`
 	Since           int64                  `json:"since"`
 	TotalSeries     int                    `json:"totalSeries"`
@@ -88,10 +106,12 @@ func uomUnit(uom uint8) string {
 	return fmt.Sprintf("uom %d", uom)
 }
 
-// handleMirror answers GET /apps/soc/api/mirror?since=<unix s>&series=<n>&points=<n>.
+// handleMirror answers GET /apps/soc/api/mirror?since=<unix s>&series=<n>&points=<n>&device=<lfdi>&uom=<n>.
 // since is optional and inclusive; series and points lower the defaults and
-// cannot raise the ceilings. A parameter that is not a non-negative integer
-// is a 400, never a silent default.
+// cannot raise the ceilings. device keeps one device's series (its LFDI, or
+// "mirror:<id>" for a mirror with none) and uom one unit code, so a series
+// past the series cap can still be read. A numeric parameter that is not a
+// non-negative integer is a 400, never a silent default.
 func (s *Server) handleMirror(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	since, err := queryInt(q.Get("since"), 0)
@@ -109,6 +129,11 @@ func (s *Server) handleMirror(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "points: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	uom, err := queryInt(q.Get("uom"), -1)
+	if err != nil || uom > math.MaxUint8 {
+		http.Error(w, "uom: must be an integer from 0 to 255", http.StatusBadRequest)
+		return
+	}
 	if maxSeries == 0 {
 		maxSeries = defaultMirrorSeries
 	}
@@ -118,7 +143,25 @@ func (s *Server) handleMirror(w http.ResponseWriter, r *http.Request) {
 	maxSeries = min(maxSeries, sep2embed.MaxMirrorSeries)
 	maxPoints = min(maxPoints, sep2embed.MaxMirrorPointsSeries, max(1, maxMirrorResponsePoints/maxSeries))
 
-	res, err := s.mirror.MirrorSeries(r.Context(), int64(since), maxSeries, maxPoints)
+	query := sep2embed.MirrorQuery{Since: int64(since), Device: q.Get("device"), MaxSeries: maxSeries, MaxPoints: maxPoints}
+	if uom >= 0 {
+		u := uint8(uom)
+		query.Uom = &u
+	}
+
+	select {
+	case s.mirrorBuilds <- struct{}{}:
+		defer func() { <-s.mirrorBuilds }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, mirrorBusy, http.StatusServiceUnavailable)
+		return
+	}
+
+	// Taken before the read: a reading stored while the series are built is
+	// stamped no earlier than this second, so a poll resuming at it finds it.
+	now := s.now().Unix()
+	res, err := s.mirror.MirrorSeries(r.Context(), query)
 	if err != nil {
 		log.Printf("adminui: mirror series: %v", err)
 		http.Error(w, "mirror readings unavailable", http.StatusInternalServerError)
@@ -133,7 +176,7 @@ func (s *Server) handleMirror(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := mirrorResponse{
-		Now:             s.now().Unix(),
+		Now:             now,
 		Since:           int64(since),
 		TotalSeries:     res.TotalSeries,
 		SeriesTruncated: res.SeriesTruncated,
@@ -156,7 +199,7 @@ func (s *Server) handleMirror(w http.ResponseWriter, r *http.Request) {
 			sr.Registered, sr.MRID, sr.Name = true, e.MRID, e.Name
 		}
 		for _, p := range ms.Points {
-			sr.Points = append(sr.Points, mirrorPointResponse{T: p.Time, V: p.Value})
+			sr.Points = append(sr.Points, mirrorPointResponse{ID: p.ID, T: p.Time, V: p.Value})
 		}
 		out.Series = append(out.Series, sr)
 	}

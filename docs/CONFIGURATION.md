@@ -119,9 +119,13 @@ One route takes no credential, by decision: `GET /apps/soc/api/mirror`, the
 posted mirror readings as series per device and reading type. It still checks
 the Host header and allows GET only. Anyone who can reach the admin port can
 read it. Query: `since` (Unix seconds, inclusive), `series` and `points` (they
-lower the limits of 100 series and 500 points, never raise the ceilings of 500
-and 2000, and one response holds at most 50000 points). A response says
-`seriesTruncated` and each series says `truncated` when it was cut.
+lower the limits of 200 series and 250 points, never raise the ceilings of 500
+and 2000, and one response holds at most 50000 points), `device` (one device's
+series, by LFDI or `mirror:<id>`) and `uom` (one unit code). A response says
+`seriesTruncated` and each series says `truncated` when it was cut. `now` is the
+server clock read before the series were built: poll again with `since=now`
+and drop the points whose `id` you already hold. At most four series builds
+run at once; another gets 503 with `Retry-After`.
 
 | Env var | Flag | Default | Notes |
 |---|---|---|---|

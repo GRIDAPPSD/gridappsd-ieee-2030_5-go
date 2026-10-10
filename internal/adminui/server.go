@@ -265,6 +265,9 @@ type Server struct {
 	monitor  *monitorPanel
 	sender   *senderPanel
 
+	// mirrorBuilds holds a slot for each mirror series build in flight.
+	mirrorBuilds chan struct{}
+
 	// idleAfter is Config.ClientIdleAfter with its default applied.
 	idleAfter time.Duration
 
@@ -338,6 +341,8 @@ func New(cfg Config, src Sources) (*Server, error) {
 		startedAt: time.Now(),
 		now:       time.Now,
 		timeouts:  defaultTimeouts.withOverrides(cfg),
+
+		mirrorBuilds: make(chan struct{}, maxMirrorBuilds),
 	}
 	if src.Monitor != nil {
 		s.monitor = newMonitorPanel(src.Monitor, s.startedAt)
