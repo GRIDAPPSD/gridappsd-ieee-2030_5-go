@@ -21,3 +21,4 @@ button:disabled { opacity: 0.5; cursor: default; }
 .trip dt { color: #9aa3ad; }
 .trip dd { margin: 0; }
 .u-legend, .u-legend .u-label, .u-legend .u-value { color: #e6e6e6; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

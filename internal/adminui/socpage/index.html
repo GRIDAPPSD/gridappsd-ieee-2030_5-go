@@ -20,6 +20,7 @@
 <legend>Devices</legend>
 <label>Filter <input id="device-filter" type="search" autocomplete="off"></label>
 <button type="button" id="devices-none">Clear selection</button>
+<p id="devices-status" class="error" role="alert" hidden></p>
 <div id="device-list" class="picklist" role="group" aria-label="Devices"></div>
 </fieldset>
 <fieldset>
@@ -35,15 +36,17 @@
 
 <section aria-labelledby="mirror-h">
 <h2 id="mirror-h">Mirror readings</h2>
-<p id="mirror-status" class="muted" role="status">loading</p>
-<div id="mirror-chart" class="chart"></div>
+<p id="mirror-status" class="muted" aria-live="off">loading</p>
+<div id="mirror-chart" class="chart" role="img" aria-label="Mirror readings chart" aria-describedby="mirror-summary"></div>
+<p id="mirror-summary" class="sr-only"></p>
 <p id="mirror-note" class="note" hidden></p>
 </section>
 
 <section aria-labelledby="output-h">
 <h2 id="output-h">Output topic (DERStatus)</h2>
-<p id="output-status" class="muted" role="status">loading</p>
-<div id="output-chart" class="chart"></div>
+<p id="output-status" class="muted" aria-live="off">loading</p>
+<div id="output-chart" class="chart" role="img" aria-label="Output topic chart" aria-describedby="output-summary"></div>
+<p id="output-summary" class="sr-only"></p>
 </section>
 
 <section aria-labelledby="soc-h">
@@ -63,8 +66,8 @@
 <dt>Posted by the device</dt><dd id="trip-posted">-</dd>
 <dt>Seen on the output topic</dt><dd id="trip-seen">-</dd>
 <dt>Released</dt><dd id="trip-released">-</dd>
-<dt>Verdict</dt><dd id="trip-verdict">-</dd>
-<dt>Note</dt><dd id="trip-note">-</dd>
+<dt>Verdict</dt><dd id="trip-verdict" aria-live="polite">-</dd>
+<dt>Note</dt><dd id="trip-note" aria-live="polite">-</dd>
 </dl>
 </section>
 </main>

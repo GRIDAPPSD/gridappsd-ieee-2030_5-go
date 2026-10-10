@@ -8,6 +8,11 @@
   const POLL_MS = 5000;
   const TRIP_POLL_MS = 2000;
   const MAX_POINTS = 2000;
+  const FETCH_TIMEOUT_MS = 10000;
+  // The server clamps this to its own ceiling, so asking for the ceiling gets
+  // every series a large fleet has.
+  const SERIES_WANTED = 1000;
+  const SUMMARY_LINES = 20;
   const SOC_ATTR = "DERStatus.stateOfChargeStatus";
   const OUTPUT_PREFIX = "DERStatus.";
   const PALETTE = ["#4cc9f0", "#f72585", "#b8de29", "#ffb703", "#9d7bff", "#2ec4b6", "#ff7f50", "#e0e0e0", "#80ed99", "#ff99c8"];
@@ -21,6 +26,34 @@
     if (text !== undefined) e.textContent = text;
     if (className) e.className = className;
     return e;
+  }
+
+  // Writes only when the text changed, so a live region is not re-announced
+  // by a poll that found nothing new.
+  function setText(e, text) {
+    if (e.textContent !== text) e.textContent = text;
+  }
+
+  // Status lines are silent to a screen reader except while they show an error.
+  function setStatus(e, text, isError) {
+    e.setAttribute("aria-live", isError ? "polite" : "off");
+    setText(e, text);
+  }
+
+  // Runs handle(resp) under a deadline that also covers reading the body, so a
+  // request that never answers cannot freeze its poller.
+  async function timedFetch(url, opts, handle) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const resp = await fetch(url, { ...opts, signal: ctrl.signal });
+      return await handle(resp);
+    } catch (err) {
+      if (err && err.name === "AbortError") throw new Error("no answer within " + FETCH_TIMEOUT_MS / 1000 + " s");
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function uomLabel(uom) {
@@ -96,13 +129,30 @@
 
   // ---- charts ----
 
-  function newChart(container) {
-    return { container, u: null, sig: "" };
+  function newChart(container, summary) {
+    return { container, summary, u: null, sig: "" };
+  }
+
+  // The canvas says nothing to a screen reader, so each chart carries a text
+  // summary: the series count and the latest value of the first few lines.
+  function summarize(chart, lines, emptyText) {
+    if (lines.length === 0) {
+      setText(chart.summary, emptyText);
+      return;
+    }
+    const parts = lines.slice(0, SUMMARY_LINES).map((ln) => {
+      const last = ln.pts.length > 0 ? ln.pts[ln.pts.length - 1].v : null;
+      return ln.label + ": " + (last === null ? "no value" : last);
+    });
+    let text = lines.length + " series. Latest values: " + parts.join("; ");
+    if (lines.length > SUMMARY_LINES) text += "; and " + (lines.length - SUMMARY_LINES) + " more.";
+    setText(chart.summary, text);
   }
 
   // lines is [{key, label, scale, pts: [{t, v}]}]. All lines share one
   // timestamp axis, with null where a line has no point, and spanGaps joins them.
   function drawChart(chart, lines, emptyText) {
+    summarize(chart, lines, emptyText);
     if (lines.length === 0) {
       if (chart.u) chart.u.destroy();
       chart.u = null;
@@ -144,8 +194,7 @@
   // ---- mirror series ----
 
   const mirrorStore = new Map(); // key -> {key, deviceKey, name, uom, unit, desc, pts, ids}
-  const mirrorChart = newChart($("mirror-chart"));
-  let mirrorTruncated = false;
+  const mirrorChart = newChart($("mirror-chart"), $("mirror-summary"));
 
   function mirrorKey(s, deviceKey) {
     return [deviceKey, s.uom, s.kind, s.phase, s.description].join("|");
@@ -160,7 +209,6 @@
   function ingestMirror(body) {
     let newDevice = false;
     let newUom = false;
-    mirrorTruncated = Boolean(body.seriesTruncated);
     for (const s of body.series || []) {
       const deviceKey = s.registered ? s.mrid : "lfdi:" + (s.deviceLfdi || "mirror:" + s.mirror);
       const name = s.registered ? (s.name || s.mrid) : "unregistered " + (s.deviceLfdi || s.mirror);
@@ -219,7 +267,7 @@
   // ---- output topic series ----
 
   const outputStore = new Map(); // key -> {key, mrid, attr, name, pts, seen}
-  const outputChart = newChart($("output-chart"));
+  const outputChart = newChart($("output-chart"), $("output-summary"));
 
   function ingestOutput(body) {
     let newDevice = false;
@@ -280,42 +328,70 @@
   // the ingest functions.
   function startPoller(route, statusEl, ingest, describe) {
     let since = 0;
+    let lastOk = "";
     async function tick() {
+      const url = API + route + "?since=" + since + "&series=" + SERIES_WANTED;
       try {
-        const resp = await fetch(API + route + "?since=" + since, { cache: "no-store" });
-        if (resp.status === 503) {
-          // busy: try again next tick
-        } else if (!resp.ok) {
-          statusEl.textContent = route + ": HTTP " + resp.status;
-        } else {
-          const body = await resp.json();
-          ingest(body);
-          if (typeof body.now === "number") since = body.now;
-          statusEl.textContent = describe(body);
-        }
+        await timedFetch(url, { cache: "no-store" }, async (resp) => {
+          if (resp.status === 503) {
+            setStatus(statusEl, (lastOk ? lastOk + ". " : "") + route + ": server busy, retrying", true);
+          } else if (!resp.ok) {
+            setStatus(statusEl, route + ": HTTP " + resp.status, true);
+          } else {
+            const body = await resp.json();
+            ingest(body);
+            if (typeof body.now === "number") since = body.now;
+            lastOk = describe(body);
+            setStatus(statusEl, lastOk, body.seriesTruncated === true);
+          }
+        });
       } catch (err) {
-        statusEl.textContent = route + ": " + err.message;
+        setStatus(statusEl, route + ": " + err.message, true);
       }
       setTimeout(tick, POLL_MS);
     }
     tick();
   }
 
+  // Names what the server cut. It does not say which series it left out, so
+  // the page reports how many are missing and which shown series hold only
+  // their newest points.
   function describeSeries(what) {
     return (body) => {
-      let t = what + ": " + (body.totalSeries || 0) + " series, updated " + new Date().toLocaleTimeString();
-      if (body.seriesTruncated) t += ". The server cut the list of series, so some are missing.";
+      const shown = (body.series || []).length;
+      let t = what + ": " + shown + " of " + (body.totalSeries || 0) + " series, updated " + new Date().toLocaleTimeString();
+      if (body.seriesTruncated) {
+        t += ". The server cut the list of series, so " + Math.max(0, (body.totalSeries || 0) - shown) + " are missing";
+      }
+      const cut = (body.series || []).filter((s) => s.truncated);
+      if (cut.length > 0) {
+        const names = cut.slice(0, 3).map((s) => (s.name || s.mrid || s.deviceLfdi || "series") + (s.attribute ? " " + s.attribute.slice(OUTPUT_PREFIX.length) : ""));
+        t += ". " + cut.length + " series show only their newest points (" + names.join(", ") + (cut.length > 3 ? ", ..." : "") + ")";
+      }
       return t;
     };
   }
 
   // ---- devices and the SoC form ----
 
+  function showDevicesError(text) {
+    const e = $("devices-status");
+    setText(e, text);
+    e.hidden = text === "";
+  }
+
+  let deviceSig = null;
+
   async function loadDevices() {
     try {
-      const resp = await fetch(API + "devices", { cache: "no-store" });
-      if (!resp.ok) return;
-      const list = await resp.json();
+      const list = await timedFetch(API + "devices", { cache: "no-store" }, async (resp) => {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      });
+      showDevicesError("");
+      const sig = list.map((d) => d.mrid + "|" + (d.name || "")).join("\n");
+      if (sig === deviceSig) return;
+      deviceSig = sig;
       const select = $("soc-device");
       const keep = select.value;
       const opts = list.map((d) => {
@@ -336,7 +412,7 @@
       if (added) renderDevicePicker();
       redrawAll();
     } catch (err) {
-      showSoCError("devices: " + err.message);
+      showDevicesError("Device list not loaded: " + err.message + ". Showing the last list.");
     }
   }
 
@@ -357,31 +433,32 @@
     buttons.forEach((b) => { b.disabled = true; });
     showSoCError("");
     try {
-      const resp = await fetch(API + "soc", {
+      await timedFetch(API + "soc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+      }, async (resp) => {
+        let payload = null;
+        let text = "";
+        try {
+          text = await resp.text();
+          payload = JSON.parse(text);
+        } catch (err) {
+          payload = null;
+        }
+        if (!resp.ok) {
+          let msg = "HTTP " + resp.status + ": " + ((payload && payload.error) || text.trim() || resp.statusText);
+          const retry = resp.headers.get("Retry-After");
+          if (retry) msg += " (retry after " + retry + " s)";
+          showSoCError(msg);
+          return;
+        }
+        if (!payload || !payload.id) {
+          showSoCError("unexpected answer from the server");
+          return;
+        }
+        followTrip(payload);
       });
-      let payload = null;
-      let text = "";
-      try {
-        text = await resp.text();
-        payload = JSON.parse(text);
-      } catch (err) {
-        payload = null;
-      }
-      if (!resp.ok) {
-        let msg = "HTTP " + resp.status + ": " + ((payload && payload.error) || text.trim() || resp.statusText);
-        const retry = resp.headers.get("Retry-After");
-        if (retry) msg += " (retry after " + retry + " s)";
-        showSoCError(msg);
-        return;
-      }
-      if (!payload || !payload.id) {
-        showSoCError("unexpected answer from the server");
-        return;
-      }
-      followTrip(payload);
     } catch (err) {
       showSoCError("send failed: " + err.message);
     } finally {
@@ -418,12 +495,12 @@
   let tripToken = 0;
 
   function showTrip(st, extraNote) {
-    $("trip-sent").textContent = clock(st.sentAt) + " (" + st.kind + (st.kind === "send" ? ", " + st.percent + "% for " + st.holdSeconds + " s" : "") + ")";
-    $("trip-posted").textContent = st.postedAt ? clock(st.postedAt) + (st.deviceReportedPercent !== undefined ? ", device reported " + st.deviceReportedPercent + "%" : "") : "waiting";
-    $("trip-seen").textContent = st.seenAt ? clock(st.seenAt) + (st.outputReportedPercent !== undefined ? ", topic carried " + st.outputReportedPercent + "%" : "") : "waiting";
-    $("trip-released").textContent = st.releasedAt ? clock(st.releasedAt) : "waiting";
-    $("trip-verdict").textContent = st.verdict || "-";
-    $("trip-note").textContent = [st.note, extraNote].filter(Boolean).join(" ") || "-";
+    setText($("trip-sent"), clock(st.sentAt) + " (" + st.kind + (st.kind === "send" ? ", " + st.percent + "% for " + st.holdSeconds + " s" : "") + ")");
+    setText($("trip-posted"), st.postedAt ? clock(st.postedAt) + (st.deviceReportedPercent !== undefined ? ", device reported " + st.deviceReportedPercent + "%" : "") : "waiting");
+    setText($("trip-seen"), st.seenAt ? clock(st.seenAt) + (st.outputReportedPercent !== undefined ? ", topic carried " + st.outputReportedPercent + "%" : "") : "waiting");
+    setText($("trip-released"), st.releasedAt ? clock(st.releasedAt) : "waiting");
+    setText($("trip-verdict"), st.verdict || "-");
+    setText($("trip-note"), [st.note, extraNote].filter(Boolean).join(" ") || "-");
   }
 
   function tripDone(st) {
@@ -439,27 +516,32 @@
     showTrip(first);
     if (tripDone(first)) return;
     const deadline = Date.now() + (first.holdSeconds + 300) * 1000;
+    let shown = first;
+    let problem = "";
     async function poll() {
       if (token !== tripToken) return;
-      let st = null;
       try {
-        const resp = await fetch(API + "soc/" + encodeURIComponent(first.id), { cache: "no-store" });
+        const st = await timedFetch(API + "soc/" + encodeURIComponent(first.id), { cache: "no-store" }, async (resp) => {
+          if (resp.status === 404) return "gone";
+          if (!resp.ok) throw new Error("HTTP " + resp.status);
+          return resp.json();
+        });
         if (token !== tripToken) return;
-        if (resp.status === 404) {
-          showTrip(first, "The bridge no longer holds this send.");
+        if (st === "gone") {
+          showTrip(shown, "The bridge no longer holds this send.");
           return;
         }
-        if (resp.ok) st = await resp.json();
-      } catch (err) {
-        st = null;
-      }
-      if (token !== tripToken) return;
-      if (st) {
+        problem = "";
+        shown = st;
         showTrip(st);
         if (tripDone(st)) return;
+      } catch (err) {
+        if (token !== tripToken) return;
+        problem = err.message;
+        showTrip(shown, "Last check failed (" + problem + "), retrying.");
       }
       if (Date.now() > deadline) {
-        $("trip-note").textContent += " Stopped polling.";
+        showTrip(shown, "Stopped polling after the hold plus 5 minutes" + (problem ? "; the last check failed (" + problem + ")" : "") + ".");
         return;
       }
       tripTimer = setTimeout(poll, TRIP_POLL_MS);
