@@ -32,6 +32,9 @@ func (s *Server) buildHandler(plane http.Handler) http.Handler {
 	for _, p := range bridgeJSONRoutes {
 		mux.Handle(p, gated)
 	}
+	if s.soc != nil {
+		s.mountSoC(mux)
+	}
 	mux.Handle("/", withRemote(plane))
 	var h http.Handler = keepStreamsOpen(mux)
 	if s.cfg.InsecureNoKey {

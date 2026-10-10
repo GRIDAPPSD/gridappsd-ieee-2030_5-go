@@ -234,6 +234,9 @@ type Sources struct {
 	// panel.
 	Monitor MonitorSource
 	Sender  *sender.Sender
+	// SoC, when set, mounts the state-of-charge routes and has Run start
+	// the service's follow loop.
+	SoC SoCSource
 
 	// Activity is the recorder the protocol router was given in
 	// assembly.RouterConfig.Activity. It feeds the Devices comms columns
@@ -258,6 +261,9 @@ type Server struct {
 	history  HistorySource
 	monitor  *monitorPanel
 	sender   *senderPanel
+	soc      SoCSource
+	// socLimit bounds the state-of-charge send and clear route.
+	socLimit *tokenBucket
 
 	// idleAfter is Config.ClientIdleAfter with its default applied.
 	idleAfter time.Duration
@@ -328,10 +334,12 @@ func New(cfg Config, src Sources) (*Server, error) {
 		clients:   src.Clients,
 		activity:  src.Activity,
 		history:   src.History,
+		soc:       src.SoC,
 		startedAt: time.Now(),
 		now:       time.Now,
 		timeouts:  defaultTimeouts.withOverrides(cfg),
 	}
+	s.socLimit = newTokenBucket(s.now())
 	if src.Monitor != nil {
 		s.monitor = newMonitorPanel(src.Monitor, s.startedAt)
 	}
@@ -460,6 +468,21 @@ func (s *Server) Run(ctx context.Context) error {
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.Serve(s.ln) }()
+
+	if s.soc != nil {
+		socCtx, stopSoC := context.WithCancel(ctx)
+		socDone := make(chan struct{})
+		go func() {
+			defer close(socDone)
+			if err := s.soc.Run(socCtx); err != nil {
+				log.Printf("adminui: state of charge follow loop ended: %v", err)
+			}
+		}()
+		defer func() {
+			stopSoC()
+			<-socDone
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
