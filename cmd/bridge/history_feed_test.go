@@ -87,9 +87,9 @@ func startHistoryHarnessApp(t *testing.T, history *telemetryhistory.Store, appID
 }
 
 // skipsPerFrame is how many deltas the empty-registry control path
-// counts per socFrame: the control delta. The state-of-charge delta is
-// passed over uncounted.
-const skipsPerFrame = 1
+// counts per socFrame: the control delta and the state-of-charge delta, both
+// refused as attributes the control path does not apply.
+const skipsPerFrame = 2
 
 // register adds mrids to the registry the subscriber consults. The
 // embed was built before this call, so it holds no device for them and

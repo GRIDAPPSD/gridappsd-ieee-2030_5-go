@@ -72,7 +72,6 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sender"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
-	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/socsend"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
@@ -956,25 +955,6 @@ func newBusSender(cfg config, bus sender.Bus, reg *registry.Registry, outcomes s
 	})
 }
 
-// newSoCService builds the state-of-charge sender for the application's
-// input topic and follows the value back on its output topic. It does not
-// read the bus sender's switch. With no application id there is no topic,
-// and no service.
-func newSoCService(cfg config, bus socsend.Bus, reg *registry.Registry, statuses socsend.Statuses, mon *busmonitor.Monitor) (*socsend.Service, error) {
-	if cfg.ApplicationID == "" {
-		log.Printf("bridge: no application id; the state of charge routes are off")
-		return nil, nil
-	}
-	return socsend.New(socsend.Config{
-		Bus:         bus,
-		Devices:     reg,
-		Statuses:    statuses,
-		Watcher:     socsend.MonitorWatcher(mon),
-		InputTopic:  sim.ApplicationInputTopic(cfg.ApplicationID, ""),
-		OutputTopic: sim.ApplicationOutputTopic(cfg.ApplicationID, ""),
-	})
-}
-
 // monitorSTOMPConfig is busConfig for the bus monitor's own connections:
 // the same broker, credential and transport choice. A TLS dial verifies
 // the broker against the system trust store, as gridappsd.Config's does.
@@ -1653,7 +1633,7 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // topic (telemetryPublisherConfig), so they never reach this topic.
 // ApplyControlDelta acts only on "DERControl.DERControlBase."-prefixed
 // attributes, so any other attribute on this topic takes the skip path
-// below, except socsend.Attribute, which is passed over unlogged and uncounted.
+// below.
 //
 // history, when non-nil, receives each applied control's commanded
 // setpoint (see historySink.recordApplied); a malformed frame is never
@@ -1699,11 +1679,6 @@ func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *
 		}
 		outcomes := make([]controlobs.DeltaOutcome, 0, len(payload.ForwardDifferences))
 		for _, delta := range payload.ForwardDifferences {
-			// A state-of-charge send shares this topic and is for the
-			// device side; it is neither a control nor a refusal.
-			if delta.Attribute == socsend.Attribute {
-				continue
-			}
 			outcome, aerr := applyControlDelta(ctx, embed, reg, delta)
 			history.recordApplied(reg, envelope, delta, aerr == nil && outcome == sep2embed.ControlIssued)
 			rec := controlobs.DeltaOutcome{Object: delta.Object, Attribute: delta.Attribute}
