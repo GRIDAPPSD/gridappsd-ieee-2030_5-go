@@ -38,6 +38,9 @@ func (s *Server) buildHandler(plane http.Handler) http.Handler {
 	if s.mirror != nil {
 		mux.Handle(mirrorRoute, s.hostAllowlist(requireGET(http.HandlerFunc(s.handleMirror))))
 	}
+	if s.soc != nil {
+		s.mountSoC(mux)
+	}
 	mux.Handle("/", withRemote(plane))
 	var h http.Handler = keepStreamsOpen(mux)
 	if s.cfg.InsecureNoKey {

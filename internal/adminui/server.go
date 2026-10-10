@@ -239,6 +239,9 @@ type Sources struct {
 	// panel.
 	Monitor MonitorSource
 	Sender  *sender.Sender
+	// SoC, when set, mounts the state-of-charge routes and has Run start
+	// the service's follow loop.
+	SoC SoCSource
 
 	// Activity is the recorder the protocol router was given in
 	// assembly.RouterConfig.Activity. It feeds the Devices comms columns
@@ -264,6 +267,9 @@ type Server struct {
 	mirror   MirrorSource
 	monitor  *monitorPanel
 	sender   *senderPanel
+	soc      SoCSource
+	// socLimit bounds the state-of-charge send and clear route.
+	socLimit *tokenBucket
 
 	// mirrorBuilds holds a slot for each mirror series build in flight.
 	mirrorBuilds chan struct{}
@@ -338,12 +344,14 @@ func New(cfg Config, src Sources) (*Server, error) {
 		activity:  src.Activity,
 		history:   src.History,
 		mirror:    src.Mirror,
+		soc:       src.SoC,
 		startedAt: time.Now(),
 		now:       time.Now,
 		timeouts:  defaultTimeouts.withOverrides(cfg),
 
 		mirrorBuilds: make(chan struct{}, maxMirrorBuilds),
 	}
+	s.socLimit = newTokenBucket(s.now())
 	if src.Monitor != nil {
 		s.monitor = newMonitorPanel(src.Monitor, s.startedAt)
 	}
@@ -472,6 +480,21 @@ func (s *Server) Run(ctx context.Context) error {
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.Serve(s.ln) }()
+
+	if s.soc != nil {
+		socCtx, stopSoC := context.WithCancel(ctx)
+		socDone := make(chan struct{})
+		go func() {
+			defer close(socDone)
+			if err := s.soc.Run(socCtx); err != nil {
+				log.Printf("adminui: state of charge follow loop ended: %v", err)
+			}
+		}()
+		defer func() {
+			stopSoC()
+			<-socDone
+		}()
+	}
 
 	select {
 	case <-ctx.Done():

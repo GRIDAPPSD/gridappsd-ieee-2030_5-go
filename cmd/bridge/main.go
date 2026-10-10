@@ -72,6 +72,7 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sender"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2config"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/socsend"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetrypub"
 )
@@ -398,6 +399,16 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("bus sender: %w", err)
 	}
 
+	socService, err := newSoCService(cfg, bus, reg, embed, mon)
+	if err != nil {
+		return fmt.Errorf("state of charge sender: %w", err)
+	}
+	// A nil *socsend.Service in the interface would read as set.
+	var socSource adminui.SoCSource
+	if socService != nil {
+		socSource = socService
+	}
+
 	var adminUIRun func(context.Context) error
 	defer adminLogFilterFor(cfg)()
 	adminSrv, err := adminui.New(adminUIConfig(cfg), adminui.Sources{
@@ -414,6 +425,7 @@ func run(ctx context.Context, cfg config) error {
 		History:  &inputHistory,
 		Monitor:  mon,
 		Sender:   busSender,
+		SoC:      socSource,
 	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):
@@ -951,6 +963,25 @@ func newBusSender(cfg config, bus sender.Bus, reg *registry.Registry, outcomes s
 		Outcomes:       outcomes,
 		PublishAtStart: cfg.SEP2AdminUIBusPublishAtStart,
 		FlipWait:       senderFlipWait,
+	})
+}
+
+// newSoCService builds the state-of-charge sender for the application's
+// input topic and follows the value back on its output topic. It does not
+// read the bus sender's switch. With no application id there is no topic,
+// and no service.
+func newSoCService(cfg config, bus socsend.Bus, reg *registry.Registry, statuses socsend.Statuses, mon *busmonitor.Monitor) (*socsend.Service, error) {
+	if cfg.ApplicationID == "" {
+		log.Printf("bridge: no application id; the state of charge routes are off")
+		return nil, nil
+	}
+	return socsend.New(socsend.Config{
+		Bus:         bus,
+		Devices:     reg,
+		Statuses:    statuses,
+		Watcher:     socsend.MonitorWatcher(mon),
+		InputTopic:  sim.ApplicationInputTopic(cfg.ApplicationID, ""),
+		OutputTopic: sim.ApplicationOutputTopic(cfg.ApplicationID, ""),
 	})
 }
 
@@ -1632,7 +1663,7 @@ func runSimSide(ctx context.Context, subs sim.SubscribeClient, embed *sep2embed.
 // topic (telemetryPublisherConfig), so they never reach this topic.
 // ApplyControlDelta acts only on "DERControl.DERControlBase."-prefixed
 // attributes, so any other attribute on this topic takes the skip path
-// below.
+// below, except socsend.Attribute, which is passed over unlogged and uncounted.
 //
 // history, when non-nil, receives each applied control's commanded
 // setpoint (see historySink.recordApplied); a malformed frame is never
@@ -1678,6 +1709,11 @@ func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *
 		}
 		outcomes := make([]controlobs.DeltaOutcome, 0, len(payload.ForwardDifferences))
 		for _, delta := range payload.ForwardDifferences {
+			// A state-of-charge send shares this topic and is for the
+			// device side; it is neither a control nor a refusal.
+			if delta.Attribute == socsend.Attribute {
+				continue
+			}
 			outcome, aerr := applyControlDelta(ctx, embed, reg, delta)
 			history.recordApplied(reg, envelope, delta, aerr == nil && outcome == sep2embed.ControlIssued)
 			rec := controlobs.DeltaOutcome{Object: delta.Object, Attribute: delta.Attribute}
@@ -1702,7 +1738,7 @@ func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *
 			}
 			outcomes = append(outcomes, rec)
 		}
-		if hook != nil {
+		if hook != nil && len(outcomes) > 0 {
 			hook.RecordMessage(payload.DifferenceMRID, outcomes)
 		}
 	}
