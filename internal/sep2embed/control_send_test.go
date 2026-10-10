@@ -203,8 +203,9 @@ func TestApplyControlForSupersedesLikeTheBusPath(t *testing.T) {
 	}
 }
 
-// A repeated 0 W send (a Stop sent twice) restates both the requested control
-// and its follow-on; both must still be written so the second duration holds.
+// A second send of the same 0 W setpoint arrives while the first send's
+// follow-on is still pending, so it is not a restatement; both of its controls
+// are written and its own duration holds.
 func TestApplyControlForIssuesARestatedSetpoint(t *testing.T) {
 	t.Parallel()
 
@@ -226,6 +227,33 @@ func TestApplyControlForIssuesARestatedSetpoint(t *testing.T) {
 	}
 	if got := controlByID(t, controls, send.FollowOnID).Interval.Start; got != controlClockUnix+5+900 {
 		t.Errorf("restated follow-on start = %d, want %d", got, controlClockUnix+5+900)
+	}
+}
+
+// A direct send equal to the bus control in force is still issued: the change
+// bound that suppresses a restated bus setpoint does not apply to a send, which
+// carries its own duration.
+func TestApplyControlForIssuesASendEqualToTheControlInForce(t *testing.T) {
+	t.Parallel()
+
+	e, reg, clock, scope := newSendEmbed(t, controlClockUnix)
+	if _, err := e.ApplyControlDeltaOutcome(context.Background(), reg, targetWDelta("mrid-a", 0, 5000)); err != nil {
+		t.Fatalf("bus control: %v", err)
+	}
+	clock.set(controlClockUnix + 10)
+	send, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, 5000), 300)
+	if err != nil {
+		t.Fatalf("send equal to the control in force: %v", err)
+	}
+	controls := storedControls(t, e, scope)
+	if len(controls) != 3 {
+		t.Fatalf("stored controls = %d, want 3 (bus, send, follow-on)", len(controls))
+	}
+	if got := controlByID(t, controls, send.ControlID).Interval.Duration; got != 300 {
+		t.Errorf("sent control duration = %d, want 300", got)
+	}
+	if got := controlByID(t, controls, send.FollowOnID).Interval.Start; got != controlClockUnix+10+300 {
+		t.Errorf("follow-on start = %d, want %d", got, controlClockUnix+10+300)
 	}
 }
 
