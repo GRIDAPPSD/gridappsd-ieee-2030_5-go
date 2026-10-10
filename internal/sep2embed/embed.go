@@ -134,6 +134,15 @@ type Config struct {
 	// fleet-wide. Zero uses DefaultControlSweepInterval.
 	ControlSweepInterval time.Duration
 
+	// MirrorReadingRetention is how long a mirror reading is kept after the
+	// server received it, and MirrorReadingMaxPerSeries is the most readings
+	// kept for one device and reading type; the oldest beyond it go first.
+	// MirrorRetentionInterval is the period of the sweep that applies both.
+	// Zero uses the matching Default constant.
+	MirrorReadingRetention    time.Duration
+	MirrorReadingMaxPerSeries int
+	MirrorRetentionInterval   time.Duration
+
 	// Router carries the scalar time-zone/DST configuration for the /tm
 	// resource, the PEN and the flow reservation deadline. The zero value
 	// (UTC, no DST, server defaults) is a valid configuration.
@@ -333,6 +342,12 @@ type Embed struct {
 	// sweepInterval is the runControlSweep period. Zero (an Embed built
 	// without New) uses DefaultControlSweepInterval.
 	sweepInterval time.Duration
+
+	// mirrorMaxAge, mirrorMaxPerSeries and mirrorInterval are the mirror
+	// reading bounds from Config; zero takes the Default constants.
+	mirrorMaxAge       time.Duration
+	mirrorMaxPerSeries int
+	mirrorInterval     time.Duration
 }
 
 // New builds the resource stores, seeds EndDevices and DERs from reg,
@@ -498,7 +513,8 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 			shutdownTimeout: shutdownTimeout,
 		}
 
-		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger(), sweepInterval: cfg.ControlSweepInterval}, nil
+		return &Embed{srv: srv, notifier: notifier, stores: stores, identity: identity, policy: policy, ended: newEndedControlLedger(), sweepInterval: cfg.ControlSweepInterval,
+			mirrorMaxAge: cfg.MirrorReadingRetention, mirrorMaxPerSeries: cfg.MirrorReadingMaxPerSeries, mirrorInterval: cfg.MirrorRetentionInterval}, nil
 	}
 
 	// Neither Observer nor EnableCCM: delegate to server-go's sep2srv.New,
@@ -526,7 +542,8 @@ func New(ctx context.Context, cfg Config, reg *registry.Registry) (*Embed, error
 		return nil, fmt.Errorf("sep2embed: %w", err)
 	}
 
-	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, policy: policy, ended: newEndedControlLedger(), sweepInterval: cfg.ControlSweepInterval}, nil
+	return &Embed{srv: srv, notifier: notifier, stores: stores, identity: srv.Identity, policy: policy, ended: newEndedControlLedger(), sweepInterval: cfg.ControlSweepInterval,
+		mirrorMaxAge: cfg.MirrorReadingRetention, mirrorMaxPerSeries: cfg.MirrorReadingMaxPerSeries, mirrorInterval: cfg.MirrorRetentionInterval}, nil
 }
 
 // customListenerTimeouts reports whether cfg asks for a listener timeout
@@ -705,6 +722,12 @@ func (e *Embed) Run(ctx context.Context) error {
 		e.runControlSweep(notifyCtx)
 	}()
 
+	mirrorDone := make(chan struct{})
+	go func() {
+		defer close(mirrorDone)
+		e.runMirrorRetention(notifyCtx)
+	}()
+
 	err := e.srv.Run(ctx)
 
 	// Explicit cancel here (not just the deferred one) is what actually
@@ -715,6 +738,7 @@ func (e *Embed) Run(ctx context.Context) error {
 
 	<-notifierDone
 	<-sweepDone
+	<-mirrorDone
 
 	return err
 }
