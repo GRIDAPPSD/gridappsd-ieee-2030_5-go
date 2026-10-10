@@ -152,3 +152,23 @@ func TestSubscriberLogsAndCountsFrameWithNoDifferences(t *testing.T) {
 		t.Errorf("Outcome(empty-1) = %+v found=%v, want a stored message with no deltas", m, ok)
 	}
 }
+
+// A restated delta writes nothing, so it is logged once, naming its object
+// and attribute; the issued delta before it is not logged as restated.
+// Not parallel: it swaps the process-wide log writer.
+func TestSubscriberLogsARestatedDelta(t *testing.T) {
+	logs := captureHistoryLog(t)
+	const mrid = "mrid-outcome-3"
+	var history telemetryhistory.Store
+	bus, hook := startSeededControlHarness(t, mrid, &history)
+
+	bus.deliver(controlMessage(t, "msg-1", frameEpoch, targetW(mrid, 5000)))
+	waitProcessed(t, hook, 1)
+	bus.deliver(controlMessage(t, "msg-2", frameEpoch+60, targetW(mrid, 5000)))
+	waitProcessed(t, hook, 2)
+
+	want := fmt.Sprintf("restated delta object=%q attribute=%q", mrid, controlAttr)
+	if n := strings.Count(logs.String(), want); n != 1 {
+		t.Errorf("restated log lines = %d, want 1; log = %q", n, logs.String())
+	}
+}

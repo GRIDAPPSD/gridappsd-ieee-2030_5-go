@@ -347,7 +347,9 @@ func (l *endedControlLedger) len() int {
 
 // expireDeviceControls removes every DERControl under one device's control
 // store whose maximum Effective Scheduled Period closed at or before nowUnix,
-// recording each into ledger first. It returns how many it removed.
+// recording each into ledger first, and promotes every one that has started
+// (promoteStarted). It returns how many it removed and whether it changed the
+// collection at all.
 //
 // ORDER. The terminal status is stamped, the record is handed to the ledger,
 // and only then is the resource deleted. Deleting first would leave a window
@@ -358,7 +360,7 @@ func (l *endedControlLedger) len() int {
 // memory store returns deep copies from List (each item goes through
 // DERControl.Copy, which copies EventStatus rather than aliasing it), so
 // markEnded here cannot edit a served Event: the value it writes reaches only
-// the retained record, and nothing is written back through Update. That is
+// the retained record, and no ended event is written back through Update. That is
 // deliberate, not incidental. Under 2023 the SHALL that would justify writing
 // status 5 back is itself conditioned on the event "still being present on
 // the server" (Annex B p.169), and at this point it is about not to be.
@@ -369,19 +371,24 @@ func (l *endedControlLedger) len() int {
 //
 // A control whose temporal extent cannot be determined is left in place; see
 // maxEffectiveScheduledEnd for why that direction is the safe one.
-func expireDeviceControls(ctx context.Context, derControls store.ScopedStore[sep2.DERControl], scope string, ledger *endedControlLedger, ed eventEdition, nowUnix int64) (int, error) {
+func expireDeviceControls(ctx context.Context, derControls store.ScopedStore[sep2.DERControl], scope string, ledger *endedControlLedger, ed eventEdition, nowUnix int64) (removed int, changed bool, err error) {
 	// Unbounded for the reason ApplyControlDelta's own read is unbounded: a
 	// page here would hide events from the sweep, and an event that is not
 	// examined is an event that keeps serving a past interval forever.
 	list, err := derControls.List(ctx, scope, store.ListOptions{Unbounded: true})
 	if err != nil {
-		return 0, fmt.Errorf("list controls: %w", err)
+		return 0, false, fmt.Errorf("list controls: %w", err)
 	}
 
-	removed := 0
 	for _, c := range list.Items {
 		end, ok := maxEffectiveScheduledEnd(c)
 		if !ok || nowUnix < end {
+			if promoteStarted(c, nowUnix) {
+				if err := derControls.Update(ctx, scope, derControlID(c.CreationTime, c.MRID), c); err != nil {
+					return removed, changed, fmt.Errorf("promote started control %s: %w", c.MRID, err)
+				}
+				changed = true
+			}
 			continue
 		}
 
@@ -404,12 +411,47 @@ func expireDeviceControls(ctx context.Context, derControls store.ScopedStore[sep
 		// derControlID produced both, and a recomputation cannot drift from
 		// a string the way a parse can.
 		if err := derControls.Delete(ctx, scope, derControlID(c.CreationTime, c.MRID)); err != nil {
-			return removed, fmt.Errorf("remove ended control %s: %w", c.MRID, err)
+			return removed, changed, fmt.Errorf("remove ended control %s: %w", c.MRID, err)
 		}
 		removed++
+		changed = true
 	}
-	return removed, nil
+	return removed, changed, nil
 }
+
+// promoteStarted moves a Scheduled event to Active once its earliest
+// Effective Start Time has passed, stamping that instant, and reports whether
+// it changed anything. sep.xsd:5606 makes this a server duty. A superseded or
+// cancelled event is left as it is: its status says why it will not run.
+func promoteStarted(c sep2.DERControl, nowUnix int64) bool {
+	es := c.EventStatus
+	if es == nil || es.CurrentStatus != sep2.EventStatusScheduled || c.Interval == nil {
+		return false
+	}
+	start := c.Interval.Start
+	if c.RandomizeStart != nil && *c.RandomizeStart < 0 {
+		start += int64(*c.RandomizeStart)
+	}
+	if nowUnix < start {
+		return false
+	}
+	es.CurrentStatus = sep2.EventStatusActive
+	es.DateTime = start
+	return true
+}
+
+// deviceSweepError is one device's failure in a lifecycle sweep, a promotion
+// or a removal alike, so a caller can tell which device it concerns.
+type deviceSweepError struct {
+	edevID string
+	err    error
+}
+
+func (d *deviceSweepError) Error() string {
+	return fmt.Sprintf("sep2embed: expire ended controls (edev %q): %v", d.edevID, d.err)
+}
+
+func (d *deviceSweepError) Unwrap() error { return d.err }
 
 // expireEndedControls sweeps every seeded device, removing controls whose
 // maximum Effective Scheduled Period has closed and purging ledger records
@@ -441,13 +483,13 @@ func expireEndedControls(ctx context.Context, stores *assembly.Stores, notifier 
 		}
 
 		scope := derControlScope(edevID, controlFSAID, controlDERProgramID)
-		n, err := expireDeviceControls(ctx, stores.DERControls, scope, ledger, ed, nowUnix)
+		n, changed, err := expireDeviceControls(ctx, stores.DERControls, scope, ledger, ed, nowUnix)
 		removed += n
 		if err != nil {
-			errs = append(errs, fmt.Errorf("sep2embed: expire ended controls (edev %q): %w", edevID, err))
+			errs = append(errs, &deviceSweepError{edevID: edevID, err: err})
 			continue
 		}
-		if n > 0 && notifier != nil {
+		if changed && notifier != nil {
 			notifier.Notify(ctx, derProgramListHref(edevID, controlFSAID), sep2.NotificationStatusDefault)
 		}
 	}

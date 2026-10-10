@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
@@ -19,6 +20,7 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
 	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/store"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -334,6 +336,12 @@ type Embed struct {
 	identity sep2srv.Identity
 	policy   ControlPolicy
 
+	// controlMu serializes every write to the DERControl collections: the bus
+	// path, ApplyControlFor and the lifecycle sweep. Two writers that read the
+	// same prior list would stamp the same creationTime, which a client cannot
+	// order. The zero value is ready, so an Embed built without New works.
+	controlMu sync.Mutex
+
 	// ended holds the identity of every DERControl this Embed has taken out
 	// of service, for the retention window (see lifecycle.go). It is never
 	// nil on an Embed built by New.
@@ -634,6 +642,9 @@ func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, d
 // ApplyControlDeltaOutcome is ApplyControlDelta that also reports whether
 // the delta issued a control or restated the one in force.
 func (e *Embed) ApplyControlDeltaOutcome(ctx context.Context, reg *registry.Registry, delta ControlDelta) (ControlOutcome, error) {
+	e.controlMu.Lock()
+	defer e.controlMu.Unlock()
+
 	// ONE clock read for the sweep and the write together, for the same
 	// reason ApplyControlDelta reads the clock once for creationTime,
 	// interval.start and EventStatus.dateTime: two reads could land on
@@ -642,10 +653,124 @@ func (e *Embed) ApplyControlDeltaOutcome(ctx context.Context, reg *registry.Regi
 	// interpret. pinnedClockPolicy hands the same instant to both.
 	nowUnix := e.policy.Control.now().UTC().Unix()
 
-	if _, err := e.expireEndedControlsAt(ctx, nowUnix); err != nil {
+	if err := e.sweepBeforeWrite(ctx, reg, delta.Object, nowUnix); err != nil {
 		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 	return ApplyControlDeltaOutcome(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta)
+}
+
+// ErrControlDurationInvalid is returned by ApplyControlFor for a duration
+// outside 1 to maxControlSendSeconds, or one the fleet's negative
+// randomizeDuration could shorten to zero or below: either would serve an
+// event some device ends the instant it starts, or one held for years.
+var ErrControlDurationInvalid = errors.New("sep2embed: control duration is out of range")
+
+// maxControlSendSeconds is the longest window ApplyControlFor issues. It is
+// the upper end of the 60 to 3600 s range the watts control route offers
+// (#245); a longer hold is the fleet default's job, not a send's.
+const maxControlSendSeconds uint32 = 3600
+
+// ControlSend describes the pair of controls ApplyControlFor issued.
+type ControlSend struct {
+	// ControlID and FollowOnID are the store keys of the requested control and
+	// of the 0 W control that takes over when it ends.
+	ControlID, FollowOnID string
+	// Start and End bound the requested control (End exclusive), in Unix
+	// seconds; the follow-on starts at End.
+	Start, End int64
+}
+
+// ApplyControlFor issues one opModTargetW control for the delta's device with
+// the given duration in seconds, plus a 0 W opModTargetW control that starts
+// when it ends and runs for the fleet default duration. Validation and
+// supersession are the bus path's, and the call takes the same lock as
+// ApplyControlDeltaOutcome; ctx is checked once the lock is held, since the
+// wait for it is not interruptible.
+//
+// Both controls are prepared and every refusal is checked before either is
+// written, so a refused send writes nothing. The requested control is written
+// first, so the control it replaces is marked Superseded at the requested
+// start rather than at the follow-on's. The send also cancels any older
+// opModTargetW control still waiting to start that the new pair did not
+// supersede: the newest send states what the device does from now on.
+//
+// A non-zero ControlSend returned with an error means both controls are in
+// service and only that cancellation failed; otherwise an error comes with the
+// zero ControlSend.
+//
+// Only opModTargetW is accepted: the follow-on is a 0 W target, which is not
+// a reversion for any other mode. Unlike the bus path, a send that restates
+// the setpoint in force is still issued, so its own duration is honored.
+func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, delta ControlDelta, durationSeconds uint32) (ControlSend, error) {
+	if delta.Attribute != derControlAttributePrefix+"opModTargetW" {
+		return ControlSend{}, fmt.Errorf("%w: attribute %q (want %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix+"opModTargetW")
+	}
+	if durationSeconds == 0 || durationSeconds > maxControlSendSeconds {
+		return ControlSend{}, fmt.Errorf("%w: %d s, want 1 to %d", ErrControlDurationInvalid, durationSeconds, maxControlSendSeconds)
+	}
+	if rd := int64(e.policy.Control.RandomizeDuration); rd < 0 && int64(durationSeconds)+rd <= 0 {
+		return ControlSend{}, fmt.Errorf("%w: %d s, which randomizeDuration %d can shorten to nothing", ErrControlDurationInvalid, durationSeconds, rd)
+	}
+	// Validated before the lock and before any write, so a refusal leaves the
+	// stores untouched.
+	if err := ValidateControlDelta(reg, delta); err != nil {
+		return ControlSend{}, err
+	}
+
+	e.controlMu.Lock()
+	defer e.controlMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
+	}
+
+	nowUnix := e.policy.Control.now().UTC().Unix()
+	if err := e.sweepBeforeWrite(ctx, reg, delta.Object, nowUnix); err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
+	}
+	policy := pinnedClockPolicy(e.policy, nowUnix)
+
+	endUnix := nowUnix + int64(durationSeconds)
+	followOn := ControlDelta{
+		Object:    delta.Object,
+		Attribute: delta.Attribute,
+		Value:     map[string]any{"multiplier": 0.0, "value": 0.0},
+	}
+	requested, _, priors, err := prepareControl(ctx, e.stores, reg, policy, delta,
+		controlWindow{duration: durationSeconds, skipChangeBound: true, maxLead: maxDirectSendLeadSeconds}, nil)
+	if err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
+	}
+	zero, _, _, err := prepareControl(ctx, e.stores, reg, policy, followOn,
+		controlWindow{start: endUnix, skipChangeBound: true, maxLead: maxDirectSendLeadSeconds}, []sep2.DERControl{requested.control})
+	if err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: follow-on: %w", err)
+	}
+
+	// Nothing below is a refusal; an error is a store failure.
+	if err := commitControl(ctx, e.stores, requested, priors); err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
+	}
+	if e.notifier != nil {
+		defer e.notifier.Notify(ctx, derProgramListHref(requested.edevID, controlFSAID), sep2.NotificationStatusDefault)
+	}
+	// Re-read so the follow-on's supersede pass sees the marks just made.
+	withRequested, err := e.stores.DERControls.List(ctx, requested.scope, store.ListOptions{Unbounded: true})
+	if err == nil {
+		err = commitControl(ctx, e.stores, zero, withRequested.Items)
+	}
+	if err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: control %s is in service until %d but its follow-on was not written: %w", requested.id, endUnix, err)
+	}
+	send := ControlSend{
+		ControlID:  requested.id,
+		FollowOnID: zero.id,
+		Start:      nowUnix,
+		End:        endUnix,
+	}
+	if err := cancelReplacedSchedule(ctx, e.stores, requested, nowUnix); err != nil {
+		return send, fmt.Errorf("sep2embed: control send: controls %s and %s are in service, but an older scheduled control was not cancelled: %w", requested.id, zero.id, err)
+	}
+	return send, nil
 }
 
 // pinnedClockPolicy returns a copy of policy whose control clock reports
@@ -666,6 +791,8 @@ func pinnedClockPolicy(policy ControlPolicy, nowUnix int64) ControlPolicy {
 // disagree under a test that pins one of them, and would be indefensible in
 // production for the same reason.
 func (e *Embed) expireEndedControls(ctx context.Context) (int, error) {
+	e.controlMu.Lock()
+	defer e.controlMu.Unlock()
 	return e.expireEndedControlsAt(ctx, e.policy.Control.now().UTC().Unix())
 }
 
@@ -673,6 +800,43 @@ func (e *Embed) expireEndedControls(ctx context.Context) (int, error) {
 // the caller, for the delta path, which has already read the clock.
 func (e *Embed) expireEndedControlsAt(ctx context.Context, nowUnix int64) (int, error) {
 	return expireEndedControls(ctx, e.stores, e.notifier, e.ended, servedEventEdition, nowUnix)
+}
+
+// sweepBeforeWrite runs the sweep a control write starts with. A sweep
+// failure refuses the write only when it may involve the written device: a
+// failed promotion or removal on another device leaves this device's
+// collection exactly as the sweep found it, so it is logged instead.
+func (e *Embed) sweepBeforeWrite(ctx context.Context, reg *registry.Registry, object string, nowUnix int64) error {
+	_, err := e.expireEndedControlsAt(ctx, nowUnix)
+	if err == nil || reg == nil {
+		return err
+	}
+	entry, ok := reg.Get(object)
+	if !ok {
+		return err
+	}
+	edevID, ok := e.stores.EndDeviceIndexes.IndexFor(entry.MRID)
+	if !ok || !sweepFailedOnlyElsewhere(err, edevID) {
+		return err
+	}
+	log.Printf("sep2embed: control write for edev %q proceeds past a sweep failure on other devices: %v", edevID, err)
+	return nil
+}
+
+// sweepFailedOnlyElsewhere reports whether every failure joined into err is a
+// deviceSweepError for a device other than edevID.
+func sweepFailedOnlyElsewhere(err error, edevID string) bool {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return false
+	}
+	for _, one := range joined.Unwrap() {
+		var dev *deviceSweepError
+		if !errors.As(one, &dev) || dev.edevID == edevID {
+			return false
+		}
+	}
+	return true
 }
 
 // EndedControl resolves the mRID of a DERControl this server has taken out of

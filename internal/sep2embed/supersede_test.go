@@ -519,7 +519,7 @@ func TestNextEventCreationTimeBreaksSameSecondTies(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := nextEventCreationTime(tt.prior, tt.base, tt.wall)
+			got, err := nextEventCreationTime(tt.prior, tt.base, tt.wall, maxCreationTimeLeadSeconds)
 			if tt.wantErr {
 				if !errors.Is(err, ErrControlDeltaRateUnrepresentable) {
 					t.Fatalf("nextEventCreationTime error = %v, want ErrControlDeltaRateUnrepresentable; %s", err, tt.why)

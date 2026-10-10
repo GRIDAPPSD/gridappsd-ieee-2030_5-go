@@ -717,3 +717,41 @@ func TestExpireEndedControlsSweepDoesNotMaterializeAnUntouchedDevicesControlBuck
 		t.Fatalf("HasParent(B) = true after a sweep that never wrote anything for device B; the sweep's read materialized a parent bucket for a device with no issued DERControl, reintroducing the allocation IEEECORE-111 removed")
 	}
 }
+
+// A Scheduled control is served Active once its start passes (sep.xsd:5606),
+// with dateTime the instant it started. Asserted on the served bytes of the
+// follow-on ApplyControlFor schedules, one second before and after its start.
+func TestScheduledControlIsServedActiveOnceItStarts(t *testing.T) {
+	t.Parallel()
+
+	const t0 = controlClockUnix
+	clock := newMovableClock(t0)
+	baseURL, devices, e, reg := newEmbedTestServer(t, func(cfg *Config) {
+		cfg.DERControl.Now = clock.now
+	}, "DERCPROMO1")
+	d := devices[0]
+
+	send, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-DERCPROMO1", 0, -2000), 60)
+	if err != nil {
+		t.Fatalf("ApplyControlFor: %v", err)
+	}
+	href := baseURL + "/edev/" + d.edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc/" + send.FollowOnID
+
+	served := func(at int64) (status, dateTime int64) {
+		t.Helper()
+		clock.set(at)
+		sweep(t, e)
+		code, body := getSEP2(t, d, href)
+		if code != http.StatusOK {
+			t.Fatalf("GET follow-on at t0+%d: status %d\nbody=%s", at-t0, code, body)
+		}
+		return elementInt64(t, body, "currentStatus"), elementInt64(t, body, "dateTime")
+	}
+
+	if s, dt := served(t0 + 59); s != int64(sep2.EventStatusScheduled) || dt != t0 {
+		t.Errorf("follow-on before its start: currentStatus %d dateTime %d, want %d and %d", s, dt, sep2.EventStatusScheduled, t0)
+	}
+	if s, dt := served(t0 + 75); s != int64(sep2.EventStatusActive) || dt != t0+60 {
+		t.Errorf("follow-on after its start: currentStatus %d dateTime %d, want %d and %d", s, dt, sep2.EventStatusActive, t0+60)
+	}
+}
