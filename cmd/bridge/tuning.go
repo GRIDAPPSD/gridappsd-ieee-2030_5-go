@@ -50,6 +50,11 @@ type tuning struct {
 
 	ControlSweepInterval time.Duration
 
+	// MirrorReadingRetention is a duration and MirrorReadingMaxPerSeries a
+	// count: the bounds on stored mirror readings.
+	MirrorReadingRetention    time.Duration
+	MirrorReadingMaxPerSeries int
+
 	NotifyPostTimeout    time.Duration
 	NotifyDialTimeout    time.Duration
 	NotifyResolveTimeout time.Duration
@@ -87,6 +92,9 @@ func defaultTuning() tuning {
 		AdminClientIdleAfter:   adminui.DefaultClientIdleAfter,
 
 		ControlSweepInterval: sep2embed.DefaultControlSweepInterval,
+
+		MirrorReadingRetention:    sep2embed.DefaultMirrorReadingRetention,
+		MirrorReadingMaxPerSeries: sep2embed.DefaultMirrorReadingMaxPerSeries,
 
 		NotifyPostTimeout:    sep2embed.DefaultNotifyPostTimeout,
 		NotifyDialTimeout:    sep2embed.DefaultNotifyDialTimeout,
@@ -152,11 +160,14 @@ func tuningKnobs(t *tuning) []*tuningKnob {
 
 		d("sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", "how often ended DERControls are expired fleet-wide (default 10s)", &t.ControlSweepInterval, s, h),
 
+		d("sep2-mirror-reading-retention", "SEP2_MIRROR_READING_RETENTION", "how long a posted mirror reading is kept after the bridge received it (default 6h)", &t.MirrorReadingRetention, m, 720*h),
+
 		d("sep2-notify-post-timeout", "SEP2_NOTIFY_POST_TIMEOUT", "time one subscription notification POST may take (default 30s)", &t.NotifyPostTimeout, s, 5*m),
 		d("sep2-notify-dial-timeout", "SEP2_NOTIFY_DIAL_TIMEOUT", "connect budget for one notification POST, capped at the POST timeout (default 30s)", &t.NotifyDialTimeout, s, 5*m),
 		d("sep2-notify-resolve-timeout", "SEP2_NOTIFY_RESOLVE_TIMEOUT", "time allowed for the DNS check on a subscription's notificationURI at creation (default 5s)", &t.NotifyResolveTimeout, s, 5*m),
 		d("sep2-ccm-handshake-timeout", "SEP2_CCM_HANDSHAKE_TIMEOUT", "time one inbound TLS handshake may take on the protocol listener (default 10s)", &t.CCMHandshakeTimeout, s, 5*m),
 
+		n("sep2-mirror-reading-max-per-series", "SEP2_MIRROR_READING_MAX_PER_SERIES", "most mirror readings kept for one device and reading type, the oldest removed first (default 1440)", &t.MirrorReadingMaxPerSeries, 10, 2592000),
 		n("sep2-notify-workers", "SEP2_NOTIFY_WORKERS", "subscription notification worker count (default 4)", &t.NotifyWorkers, 1, 1024),
 		n("sep2-notify-queue-size", "SEP2_NOTIFY_QUEUE_SIZE", "subscription notification queue length (default 100)", &t.NotifyQueueSize, 1, 100000),
 	}

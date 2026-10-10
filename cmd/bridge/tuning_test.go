@@ -50,10 +50,12 @@ func tuningCases() []tuningCase {
 		{"admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", 5 * s, "15s", 15 * s, dur(func(t tuning) time.Duration { return t.AdminShutdownTimeout }), false},
 		{"admin-ui-client-idle-after", "SEP2_ADMIN_UI_CLIENT_IDLE_AFTER", 5 * time.Minute, "7m", 7 * time.Minute, dur(func(t tuning) time.Duration { return t.AdminClientIdleAfter }), false},
 		{"sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", 10 * s, "2s", 2 * s, dur(func(t tuning) time.Duration { return t.ControlSweepInterval }), false},
+		{"sep2-mirror-reading-retention", "SEP2_MIRROR_READING_RETENTION", 6 * time.Hour, "2h", 2 * time.Hour, dur(func(t tuning) time.Duration { return t.MirrorReadingRetention }), false},
 		{"sep2-notify-post-timeout", "SEP2_NOTIFY_POST_TIMEOUT", 30 * s, "31s", 31 * s, dur(func(t tuning) time.Duration { return t.NotifyPostTimeout }), false},
 		{"sep2-notify-dial-timeout", "SEP2_NOTIFY_DIAL_TIMEOUT", 30 * s, "32s", 32 * s, dur(func(t tuning) time.Duration { return t.NotifyDialTimeout }), false},
 		{"sep2-notify-resolve-timeout", "SEP2_NOTIFY_RESOLVE_TIMEOUT", 5 * s, "6s", 6 * s, dur(func(t tuning) time.Duration { return t.NotifyResolveTimeout }), false},
 		{"sep2-ccm-handshake-timeout", "SEP2_CCM_HANDSHAKE_TIMEOUT", 10 * s, "11s", 11 * s, dur(func(t tuning) time.Duration { return t.CCMHandshakeTimeout }), false},
+		{"sep2-mirror-reading-max-per-series", "SEP2_MIRROR_READING_MAX_PER_SERIES", 1440, "500", 500, func(c config) any { return c.Tuning.MirrorReadingMaxPerSeries }, true},
 		{"sep2-notify-workers", "SEP2_NOTIFY_WORKERS", 4, "16", 16, func(c config) any { return c.Tuning.NotifyWorkers }, true},
 		{"sep2-notify-queue-size", "SEP2_NOTIFY_QUEUE_SIZE", 100, "500", 500, func(c config) any { return c.Tuning.NotifyQueueSize }, true},
 	}
@@ -186,6 +188,9 @@ func testTuningConfig() config {
 
 		ControlSweepInterval: 51 * time.Second,
 
+		MirrorReadingRetention:    54 * time.Hour,
+		MirrorReadingMaxPerSeries: 55,
+
 		NotifyPostTimeout:    61 * time.Second,
 		NotifyDialTimeout:    62 * time.Second,
 		NotifyResolveTimeout: 63 * time.Second,
@@ -276,6 +281,9 @@ func TestTuningReachesEmbedAndAdminConfig(t *testing.T) {
 	if ec.ControlSweepInterval != 51*time.Second {
 		t.Errorf("embed ControlSweepInterval = %s, want 51s", ec.ControlSweepInterval)
 	}
+	if ec.MirrorReadingRetention != 54*time.Hour || ec.MirrorReadingMaxPerSeries != 55 {
+		t.Errorf("embed mirror bounds = %v/%d, want 54h and 55", ec.MirrorReadingRetention, ec.MirrorReadingMaxPerSeries)
+	}
 	if ec.NotifyWorkers != 52 || ec.NotifyQueueSize != 53 {
 		t.Errorf("embed notify sizing = %d/%d, want 52/53", ec.NotifyWorkers, ec.NotifyQueueSize)
 	}
@@ -322,10 +330,12 @@ var tuningRanges = []struct {
 	{"admin-ui-shutdown-timeout", "SEP2_ADMIN_UI_SHUTDOWN_TIMEOUT", "1s", "5m", "999ms", "301s"},
 	{"admin-ui-client-idle-after", "SEP2_ADMIN_UI_CLIENT_IDLE_AFTER", "30s", "24h", "29s", "1441m"},
 	{"sep2-control-sweep-interval", "SEP2_CONTROL_SWEEP_INTERVAL", "1s", "1h", "999ms", "3601s"},
+	{"sep2-mirror-reading-retention", "SEP2_MIRROR_READING_RETENTION", "1m", "720h", "59s", "721h"},
 	{"sep2-notify-post-timeout", "SEP2_NOTIFY_POST_TIMEOUT", "1s", "5m", "999ms", "301s"},
 	{"sep2-notify-dial-timeout", "SEP2_NOTIFY_DIAL_TIMEOUT", "1s", "5m", "999ms", "301s"},
 	{"sep2-notify-resolve-timeout", "SEP2_NOTIFY_RESOLVE_TIMEOUT", "1s", "5m", "999ms", "301s"},
 	{"sep2-ccm-handshake-timeout", "SEP2_CCM_HANDSHAKE_TIMEOUT", "1s", "5m", "999ms", "301s"},
+	{"sep2-mirror-reading-max-per-series", "SEP2_MIRROR_READING_MAX_PER_SERIES", "10", "2592000", "9", "2592001"},
 	{"sep2-notify-workers", "SEP2_NOTIFY_WORKERS", "1", "1024", "0", "1025"},
 	{"sep2-notify-queue-size", "SEP2_NOTIFY_QUEUE_SIZE", "1", "100000", "0", "100001"},
 }
