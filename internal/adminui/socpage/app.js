@@ -11,21 +11,11 @@
   const MAX_SECONDS = 3600;
   // A control still being served; the page polls while it is one of these.
   const LIVE_STATES = new Set(["scheduled", "active"]);
-  const VERDICT_TEXT = {
-    waiting: "no report yet from the device",
-    moving: "the state of charge is moving the commanded way",
-    reached: "the state of charge reached a limit or the watch percent",
-    not_moving: "no movement seen",
-    wrong_way: "the state of charge moved the other way",
-    stopped: "a stop was sent",
-  };
   const MAX_POINTS = 2000;
   const FETCH_TIMEOUT_MS = 10000;
-  // Series asked of each route. Points per series shrink as the series count
-  // grows (the body is bounded), so these are the defaults: 147 mirror series
-  // of a 49-device fleet fit in 200 with 250 points each, and its 343 output
-  // series fit in 500 with 100 points each.
-  const MIRROR_SERIES_WANTED = 200;
+  // Points per series shrink as the series count grows (the body is
+  // bounded): the 343 output series of a 49-device fleet fit in 500 with 100
+  // points each.
   const OUTPUT_SERIES_WANTED = 500;
   const SUMMARY_LINES = 20;
   const SOC_ATTR = "DERStatus.stateOfChargeStatus";
@@ -71,19 +61,6 @@
     }
   }
 
-  function uomLabel(uom) {
-    switch (uom) {
-      case 29: return "29 V";
-      case 38: return "38 W";
-      case 63: return "63 var";
-      default: return "uom " + uom;
-    }
-  }
-
-  function uomUnit(uom, unitFromServer) {
-    return unitFromServer || uomLabel(uom);
-  }
-
   function clock(iso) {
     if (!iso) return "-";
     const d = new Date(iso);
@@ -93,10 +70,8 @@
   // ---- selection state ----
 
   const knownDevices = new Map(); // key -> {key, name}
-  const knownUoms = new Set([29, 38, 63]);
   const knownAttrs = new Set();
   const selDevices = new Set();
-  const selUoms = new Set([29, 38, 63]);
   const selAttrs = new Set();
   let deviceFilter = "";
   let defaultsPicked = false;
@@ -130,11 +105,6 @@
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((d) => ({ key: d.key, label: d.name }));
     renderPicker($("device-list"), items, selDevices, redrawAll);
-  }
-
-  function renderUomPicker() {
-    const items = [...knownUoms].sort((a, b) => a - b).map((u) => ({ key: u, label: uomLabel(u) }));
-    renderPicker($("uom-list"), items, selUoms, redrawAll);
   }
 
   function renderAttrPicker() {
@@ -206,77 +176,10 @@
     if (chart.u) chart.u.setSize({ width: chart.container.clientWidth || 600, height: 300 });
   }
 
-  // ---- mirror series ----
-
-  const mirrorStore = new Map(); // key -> {key, deviceKey, name, uom, unit, desc, pts, ids}
-  const mirrorChart = newChart($("mirror-chart"), $("mirror-summary"));
-
-  function mirrorKey(s, deviceKey) {
-    return [deviceKey, s.uom, s.kind, s.phase, s.description].join("|");
-  }
-
   function noteDevice(key, name) {
     if (knownDevices.has(key)) return false;
     knownDevices.set(key, { key, name });
     return true;
-  }
-
-  function ingestMirror(body) {
-    let newDevice = false;
-    let newUom = false;
-    for (const s of body.series || []) {
-      const deviceKey = s.registered ? s.mrid : "lfdi:" + (s.deviceLfdi || "mirror:" + s.mirror);
-      const name = s.registered ? (s.name || s.mrid) : "unregistered " + (s.deviceLfdi || s.mirror);
-      if (noteDevice(deviceKey, name)) newDevice = true;
-      if (!knownUoms.has(s.uom)) { knownUoms.add(s.uom); selUoms.add(s.uom); newUom = true; }
-      const key = mirrorKey(s, deviceKey);
-      let st = mirrorStore.get(key);
-      if (!st) {
-        st = { key, deviceKey, name, uom: s.uom, unit: uomUnit(s.uom, s.unit), desc: s.description || "", pts: [], ids: new Set() };
-        mirrorStore.set(key, st);
-      }
-      let unordered = false;
-      for (const p of s.points || []) {
-        if (st.ids.has(p.id)) continue;
-        st.ids.add(p.id);
-        if (st.pts.length > 0 && st.pts[st.pts.length - 1].t > p.t) unordered = true;
-        st.pts.push({ t: p.t, v: p.v, id: p.id });
-      }
-      if (unordered) st.pts.sort((a, b) => a.t - b.t);
-      while (st.pts.length > MAX_POINTS) st.ids.delete(st.pts.shift().id);
-    }
-    if (newDevice) renderDevicePicker();
-    if (newUom) renderUomPicker();
-    drawMirror();
-  }
-
-  function isFlat(pts) {
-    return pts.length >= 2 && pts.every((p) => p.v === pts[0].v);
-  }
-
-  function drawMirror() {
-    const chosen = [...mirrorStore.values()]
-      .filter((st) => selDevices.has(st.deviceKey) && selUoms.has(st.uom))
-      .sort((a, b) => a.key.localeCompare(b.key));
-    const sameType = new Map();
-    for (const st of chosen) sameType.set(st.deviceKey + "|" + st.uom, (sameType.get(st.deviceKey + "|" + st.uom) || 0) + 1);
-    const flat = [];
-    const lines = chosen.map((st) => {
-      const f = isFlat(st.pts);
-      let label = st.name + " " + st.unit;
-      if (st.desc && sameType.get(st.deviceKey + "|" + st.uom) > 1) label += " (" + st.desc + ")";
-      if (f) { label += " [flat]"; flat.push(st.name + " " + st.unit); }
-      return { key: st.key, label, scale: st.unit, pts: st.pts };
-    });
-    drawChart(mirrorChart, lines, "Pick at least one device and one reading type.");
-    const note = $("mirror-note");
-    if (flat.length > 0) {
-      note.textContent = "Flat, never changed across their points: " + flat.join(", ") +
-        ". Values that never change are probably the test agents' fixed placeholder values. That is a guess; nothing on the server knows.";
-      note.hidden = false;
-    } else {
-      note.hidden = true;
-    }
   }
 
   // ---- output topic series ----
@@ -330,7 +233,6 @@
   }
 
   function redrawAll() {
-    drawMirror();
     drawOutput();
   }
 
@@ -583,7 +485,7 @@
     const reports = st.reports || [];
     const last = reports.length > 0 ? reports[reports.length - 1] : null;
     setText($("ctl-soc"), last ? last.v + "% at " + clockSec(last.t) + " (" + (st.reportCount || reports.length) + " reports since the send)" : "no reports since the send");
-    setText($("ctl-verdict"), st.verdict ? st.verdict + (VERDICT_TEXT[st.verdict] ? ": " + VERDICT_TEXT[st.verdict] : "") : "-");
+    setText($("ctl-verdict"), st.verdict || "-");
     let watchText = "not set";
     if (typeof st.watchPercent === "number") {
       watchText = st.watchPercent + "%: " + (typeof st.watchReachedAt === "number" ? "reached at " + clockSec(st.watchReachedAt) : "not reached yet");
@@ -637,7 +539,7 @@
         }
         shown = st;
         const ended = !LIVE_STATES.has(st.controlState) && st.controlState !== "unknown";
-        showControl(st, ended ? "Stopped checking: the control is " + st.controlState + " and will not change." : undefined);
+        showControl(st, ended ? "Stopped checking: the control is " + st.controlState + "." : undefined);
         if (ended) return;
       } catch (err) {
         if (token !== controlToken) return;
@@ -672,17 +574,13 @@
   });
   syncButtons();
   window.addEventListener("resize", () => {
-    resizeChart(mirrorChart);
     resizeChart(outputChart);
     resizeChart(controlChart);
   });
 
-  renderUomPicker();
   renderAttrPicker();
-  mirrorChart.container.textContent = "Pick at least one device and one reading type.";
   outputChart.container.textContent = "Pick at least one device that the output topic has reported on.";
   loadDevices();
   setInterval(loadDevices, 30000);
-  startPoller("mirror", MIRROR_SERIES_WANTED, $("mirror-status"), ingestMirror, describeSeries("mirror"));
   startPoller("output", OUTPUT_SERIES_WANTED, $("output-status"), ingestOutput, describeSeries("output"));
 })();

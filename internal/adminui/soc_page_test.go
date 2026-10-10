@@ -61,7 +61,7 @@ const (
 func pageServer(t *testing.T, h *outputHistory) *Server {
 	t.Helper()
 	src := testSources()
-	src.Mirror = &fakeMirror{}
+	src.Control = newFakeControl()
 	src.History = h
 	src.Registry = &fakeRegistry{entries: []registry.Entry{
 		{MRID: "m-b", Name: "pv-b", LFDI: "BBBB", SFDI: "222222222", Placeholder: true},
@@ -307,7 +307,7 @@ func TestPageRedirectsAndKeepsGates(t *testing.T) {
 	if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "/apps/soc/" {
 		t.Errorf("/apps/soc = %d Location %q, want 307 to /apps/soc/", rec.Code, rec.Header().Get("Location"))
 	}
-	for _, p := range []string{"/apps/soc", "/apps/soc/", "/apps/soc/app.js", "/apps/soc/style.css", "/apps/soc/uplot.min.js", "/apps/soc/uplot.min.css", "/apps/soc/api/devices", "/apps/soc/api/output", "/apps/soc/api/mirror"} {
+	for _, p := range []string{"/apps/soc", "/apps/soc/", "/apps/soc/app.js", "/apps/soc/style.css", "/apps/soc/uplot.min.js", "/apps/soc/uplot.min.css", "/apps/soc/api/devices", "/apps/soc/api/output"} {
 		if rec := doRequest(t, s.Handler(), http.MethodGet, p, "", "evil.example"); rec.Code != http.StatusForbidden {
 			t.Errorf("%s foreign Host = %d, want 403", p, rec.Code)
 		}
@@ -317,17 +317,14 @@ func TestPageRedirectsAndKeepsGates(t *testing.T) {
 	}
 }
 
-func TestMirrorAndControlRoutesCarryTheSecurityHeaders(t *testing.T) {
+func TestControlRoutesCarryTheSecurityHeaders(t *testing.T) {
 	t.Parallel()
 	src := testSources()
 	src.Control = newFakeControl()
-	src.Mirror = &fakeMirror{}
 	s := newServer(t, Config{Key: testKey}, src)
-	for _, p := range []string{"/apps/soc/api/mirror", "/apps/soc/api/control/x"} {
-		rec := doRequest(t, s.Handler(), http.MethodGet, p, "", "localhost")
-		assertSocHeaders(t, rec.Header())
-	}
-	rec := postControl(t, s.Handler(), "application/json", `{"mrid":"_pv-1","watts":800}`, "localhost")
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/control/x", "", "localhost")
+	assertSocHeaders(t, rec.Header())
+	rec = postControl(t, s.Handler(), "application/json", `{"mrid":"_pv-1","watts":800}`, "localhost")
 	assertSocHeaders(t, rec.Header())
 }
 
@@ -346,13 +343,13 @@ func TestOtherAppsPathsStillReachThePlane(t *testing.T) {
 	}
 }
 
-func TestPageAbsentWithoutMirrorOrControl(t *testing.T) {
+func TestPageAbsentWithoutControl(t *testing.T) {
 	t.Parallel()
 	src := testSources()
 	s := newServer(t, Config{Key: testKey}, src)
 	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/", "", "localhost")
 	if rec.Header().Get("Content-Security-Policy") == socPageCSP || strings.Contains(rec.Body.String(), "loading") {
-		t.Errorf("page served with no mirror or control source: %d", rec.Code)
+		t.Errorf("page served with no control source: %d", rec.Code)
 	}
 }
 
@@ -581,4 +578,34 @@ func TestRefusedRepliesCarryTheSecurityHeaders(t *testing.T) {
 		t.Fatalf("POST = %d, want 405", notAllowed.Code)
 	}
 	assertSocHeaders(t, notAllowed.Header())
+}
+
+// The mirror readings route was removed with the chart that read it: with
+// every page source set, the path is no longer served by the page, and it
+// falls through to the plane's login response.
+func TestMirrorRouteIsGone(t *testing.T) {
+	t.Parallel()
+	s := pageServer(t, &outputHistory{})
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/mirror", "", "localhost")
+	if rec.Code == http.StatusOK || rec.Header().Get("Content-Security-Policy") == socPageCSP {
+		t.Errorf("/apps/soc/api/mirror = %d, still answered by the page", rec.Code)
+	}
+}
+
+// The page carries no mirror chart, picker or request, and none of the
+// explanatory sentences removed with them.
+func TestPageHasNoMirrorChartAndNoCommentary(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"index.html", "app.js", "style.css"} {
+		b, err := fs.ReadFile(socpage.Files, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		low := strings.ToLower(string(b))
+		for _, banned := range []string{"mirror", "reading types", "that is a guess", "placeholder values", "never stops the control", "moving the commanded way", "no movement seen"} {
+			if strings.Contains(low, banned) {
+				t.Errorf("%s still carries %q", name, banned)
+			}
+		}
+	}
 }

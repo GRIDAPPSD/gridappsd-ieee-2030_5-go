@@ -1,18 +1,21 @@
 package adminui
 
 import (
+	"fmt"
 	"io/fs"
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui/socpage"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
-// Routes of the SoC and readings page. Like the mirror and SoC routes they
+// Routes of the SoC and readings page. Like the control routes they
 // take no credential by decision and keep the Host allowlist. Every pattern
 // is exact, so the plane keeps any other path under /apps.
 const (
@@ -34,7 +37,7 @@ const socPageCSP = "default-src 'self'; script-src 'self'; style-src 'self'; " +
 	"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
 // Defaults and ceilings for one output response, with the same meaning as
-// the mirror's: maxOutputResponsePoints bounds the whole body. A 49-device
+// those of any series route: maxOutputResponsePoints bounds the whole body. A 49-device
 // fleet reports 7 DERStatus attributes each, 343 series; the default holds
 // them and the points default is what that many series can carry inside the
 // body bound. The history store below holds twice the fleet's series.
@@ -145,7 +148,7 @@ type outputSeriesResponse struct {
 }
 
 type outputResponse struct {
-	// Now is read before the snapshot, with the mirror route's cursor rule:
+	// Now is read before the snapshot, with this cursor rule:
 	// poll again with since=now and drop the points stamped at now that you
 	// already hold.
 	Now             int64 `json:"now"`
@@ -235,4 +238,48 @@ func pointsSince(samples []telemetryhistory.Sample, since int64) []outputPointRe
 		pts = append(pts, outputPointResponse{T: sm.At, V: sm.Value})
 	}
 	return pts
+}
+
+// seriesLimits is the default and ceiling of one series response. Points are
+// capped per series and, through maxResponsePoints, across the whole body.
+type seriesLimits struct {
+	defSeries, defPoints       int
+	maxSeries, maxSeriesPoints int
+	maxResponsePoints          int
+}
+
+// queryWindow reads since, series and points. A zero series or points means
+// the default, and the ceilings apply after, so a request cannot raise them. A
+// bad number is an error naming the parameter.
+func queryWindow(q url.Values, l seriesLimits) (since, series, points int, err error) {
+	if since, err = queryInt(q.Get("since"), 0); err != nil {
+		return 0, 0, 0, fmt.Errorf("since: %w", err)
+	}
+	if series, err = queryInt(q.Get("series"), l.defSeries); err != nil {
+		return 0, 0, 0, fmt.Errorf("series: %w", err)
+	}
+	if points, err = queryInt(q.Get("points"), l.defPoints); err != nil {
+		return 0, 0, 0, fmt.Errorf("points: %w", err)
+	}
+	if series == 0 {
+		series = l.defSeries
+	}
+	if points == 0 {
+		points = l.defPoints
+	}
+	series = min(series, l.maxSeries)
+	points = min(points, l.maxSeriesPoints, max(1, l.maxResponsePoints/series))
+	return since, series, points, nil
+}
+
+// queryInt parses an optional non-negative integer query value.
+func queryInt(raw string, def int) (int, error) {
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("must be a non-negative integer, got %q", raw)
+	}
+	return v, nil
 }

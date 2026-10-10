@@ -32,18 +32,12 @@ func (s *Server) buildHandler(plane http.Handler) http.Handler {
 	for _, p := range bridgeJSONRoutes {
 		mux.Handle(p, gated)
 	}
-	// The mirror series route takes no Bearer, by decision, and keeps the
-	// Host and GET gates. Its pattern is exact, so the plane keeps every
-	// other path under /apps.
-	if s.mirror != nil {
-		mux.Handle(mirrorRoute, s.socGetGate(http.HandlerFunc(s.handleMirror)))
-	}
 	if s.control != nil {
 		s.mountControl(mux)
 	}
 	// The page and the devices and output routes it reads exist whenever
-	// the page has something to show: a mirror source or the control route.
-	if s.mirror != nil || s.control != nil {
+	// the control route does.
+	if s.control != nil {
 		s.mountSoCPage(mux)
 	}
 	mux.Handle("/", withRemote(plane))

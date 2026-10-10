@@ -24,22 +24,10 @@
 <div id="device-list" class="picklist" role="group" aria-label="Devices"></div>
 </fieldset>
 <fieldset>
-<legend>Mirror reading types</legend>
-<div id="uom-list" class="picklist" role="group" aria-label="Mirror reading types"></div>
-</fieldset>
-<fieldset>
 <legend>Output topic values</legend>
 <div id="attr-list" class="picklist" role="group" aria-label="Output topic values"></div>
 </fieldset>
 </div>
-</section>
-
-<section aria-labelledby="mirror-h">
-<h2 id="mirror-h">Mirror readings</h2>
-<p id="mirror-status" class="muted" aria-live="off">loading</p>
-<div id="mirror-chart" class="chart" role="img" aria-label="Mirror readings chart" aria-describedby="mirror-summary"></div>
-<p id="mirror-summary" class="sr-only"></p>
-<p id="mirror-note" class="note" hidden></p>
 </section>
 
 <section aria-labelledby="output-h">
@@ -64,7 +52,6 @@
 <button type="submit" id="soc-send">Send</button>
 <button type="button" id="soc-stop" disabled>Stop</button>
 </form>
-<p class="muted">The watch percent only marks the time a report crossed it. It never stops the control.</p>
 <p id="soc-error" class="error" role="alert" hidden></p>
 <h3>Control</h3>
 <p id="ctl-warning" class="warn" role="alert" hidden></p>
