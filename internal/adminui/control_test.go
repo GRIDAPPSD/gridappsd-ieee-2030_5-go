@@ -49,6 +49,7 @@ type fakeControl struct {
 	snapCalls int
 	responses []sep2embed.ResponseSnapshot
 	respErr   error
+	ended     *sep2embed.EndedControl
 	askedFor  []string
 	since     []int64
 }
@@ -108,6 +109,15 @@ func (f *fakeControl) ResponsesFor(_ context.Context, subject string, since int6
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeControl) EndedControl(mrid string) (sep2embed.EndedControl, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ended == nil || f.ended.MRID != mrid {
+		return sep2embed.EndedControl{}, false
+	}
+	return *f.ended, true
 }
 
 func (f *fakeControl) callCount() int {
@@ -1073,6 +1083,125 @@ func TestControlStatusStopsJudgingWhenTheSendIsNoLongerInForce(t *testing.T) {
 			h.ctl.snap = nil
 			if st := h.status(t, sent.ID, ""); st.ControlState != "gone" || st.Verdict != verdictMoving {
 				t.Errorf("after the control left the store: state %q verdict %q, want gone and moving", st.ControlState, st.Verdict)
+			}
+		})
+	}
+}
+
+// reversalReports is a discharge that falls to t0+70 and turns round after
+// a newer control takes over at t0+80.
+func reversalReports() []telemetryhistory.Sample {
+	return samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48,
+		float64(t0+100), 49, float64(t0+130), 50)
+}
+
+// The stop time comes from the retained record when the control left the
+// store before any status read saw it stop, so the verdict does not depend
+// on when the page polled.
+func TestControlStatusDatesAStopFromTheEndedRecord(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.reports("_bat-1", reversalReports()...)
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+	h.ctl.snap = nil
+	h.ctl.ended = &sep2embed.EndedControl{MRID: "ctl-mrid-1", CurrentStatus: sep2.EventStatusSuperseded, DateTime: t0 + 80}
+	h.clk.advance(140 * time.Second)
+
+	st := h.status(t, sent.ID, "")
+
+	if st.ControlState != "gone" || st.Verdict != verdictMoving || st.ReportCount != 4 {
+		t.Errorf("state %q verdict %q with %d reports, want gone, moving, 4", st.ControlState, st.Verdict, st.ReportCount)
+	}
+}
+
+// A control that ran to its end is not a stop: its retained record holds a
+// completed status and the whole window is judged.
+func TestControlStatusIgnoresAnEndedRecordOfACompletedControl(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.reports("_bat-1", reversalReports()...)
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000,"durationSeconds":300}`)
+	h.ctl.snap = nil
+	h.ctl.ended = &sep2embed.EndedControl{MRID: "ctl-mrid-1", CurrentStatus: sep2.EventStatusComplete, DateTime: t0 + 80}
+	h.clk.advance(140 * time.Second)
+
+	if st := h.status(t, sent.ID, ""); st.Verdict != verdictWrongWay {
+		t.Errorf("verdict %q, want wrong_way over the whole window", st.Verdict)
+	}
+}
+
+// A stop at or after the send's end does not widen the judged window past it.
+func TestControlStatusNeverJudgesPastTheEndOnALateStop(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.reports("_bat-1", samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+55), 48,
+		float64(t0+100), 49, float64(t0+130), 50)...)
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000,"durationSeconds":60}`)
+	h.ctl.snap.CurrentStatus = sep2.EventStatusSuperseded
+	h.ctl.snap.DateTime = t0 + 160
+	h.clk.advance(200 * time.Second)
+
+	if st := h.status(t, sent.ID, ""); st.Verdict != verdictMoving {
+		t.Errorf("verdict %q, want moving judged only to the end at t0+60", st.Verdict)
+	}
+}
+
+// A newer control with no dateTime is dated by the read that saw it.
+func TestControlStatusDatesAStopWithNoDateTimeByTheRead(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.reports("_bat-1", reversalReports()...)
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+	h.clk.advance(75 * time.Second)
+	h.ctl.snap.CurrentStatus = sep2.EventStatusSuperseded
+	h.ctl.snap.DateTime = 0
+
+	if st := h.status(t, sent.ID, ""); st.Verdict != verdictMoving {
+		t.Errorf("verdict %q, want moving judged to the read at t0+75", st.Verdict)
+	}
+}
+
+// The first stop time is kept: a later read of the same control with another
+// dateTime does not move it.
+func TestControlStatusKeepsTheFirstStopTime(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.reports("_bat-1", reversalReports()...)
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+	h.ctl.snap.CurrentStatus = sep2.EventStatusSuperseded
+	h.ctl.snap.DateTime = t0 + 80
+	h.clk.advance(140 * time.Second)
+	h.status(t, sent.ID, "")
+
+	h.ctl.snap.DateTime = t0 + 200
+	if st := h.status(t, sent.ID, ""); st.Verdict != verdictMoving || st.ReportCount != 4 {
+		t.Errorf("verdict %q with %d reports, want moving with 4 (stop kept at t0+80)", st.Verdict, st.ReportCount)
+	}
+}
+
+// The not_moving window is counted to the stop. A long send superseded early
+// stays waiting however late it is read; one stopped after the window filled
+// reads not_moving.
+func TestControlStatusCountsNotMovingToTheStop(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		stopAt int64
+		want   string
+	}{
+		{"stopped at +10, window unfilled", t0 + 10, verdictWaiting},
+		{"stopped at +250, window filled", t0 + 250, verdictNotMoving},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newCtlHarness(t, Config{})
+			sent := h.send(t, `{"mrid":"_bat-1","watts":2000,"durationSeconds":3600}`)
+			h.ctl.snap.CurrentStatus = sep2.EventStatusSuperseded
+			h.ctl.snap.DateTime = tc.stopAt
+			h.clk.advance(400 * time.Second)
+
+			if st := h.status(t, sent.ID, ""); st.Verdict != tc.want {
+				t.Errorf("verdict %q, want %q", st.Verdict, tc.want)
 			}
 		})
 	}

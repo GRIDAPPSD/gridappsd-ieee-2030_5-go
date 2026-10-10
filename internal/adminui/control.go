@@ -115,6 +115,9 @@ type ControlSource interface {
 	ApplyControlFor(ctx context.Context, delta sep2embed.ControlDelta, durationSeconds uint32) (sep2embed.ControlSend, error)
 	ControlSnapshot(ctx context.Context, deviceMRID, controlID string) (sep2embed.DERControlSnapshot, bool, error)
 	ResponsesFor(ctx context.Context, subject string, since int64) ([]sep2embed.ResponseSnapshot, error)
+	// EndedControl returns the record kept for a control after it left the
+	// store, so a stop that no status read saw is still dated.
+	EndedControl(mrid string) (sep2embed.EndedControl, bool)
 }
 
 // controlRequest is the POST body. Watts and DurationSeconds are pointers so
@@ -412,6 +415,15 @@ func (s *Server) handleControlStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+// learnStop keeps the first time the send was seen no longer in force. A
+// source without a dateTime falls back to the read time.
+func (s *Server) learnStop(rec controlRecord, at, now int64) int64 {
+	if at <= 0 {
+		at = now
+	}
+	return s.controls.learnStoppedAt(rec.id, at)
+}
+
 func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *float64) (controlStatusResponse, error) {
 	now := s.now().Unix()
 	state := "gone"
@@ -426,12 +438,13 @@ func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *fl
 			s.controls.learnMRID(rec.id, snap.MRID)
 		}
 		if stoppedStatus(snap.CurrentStatus) {
-			// A snapshot without a dateTime falls back to the read time.
-			at := snap.DateTime
-			if at <= 0 {
-				at = now
-			}
-			rec.stoppedAt = s.controls.learnStoppedAt(rec.id, at)
+			rec.stoppedAt = s.learnStop(rec, snap.DateTime, now)
+		}
+	} else if rec.controlMRID != "" && rec.stoppedAt == 0 {
+		// The control left the store before any read saw it stop: the
+		// retained record still holds its terminal status and time.
+		if ended, ok := s.control.EndedControl(rec.controlMRID); ok && stoppedStatus(ended.CurrentStatus) {
+			rec.stoppedAt = s.learnStop(rec, ended.DateTime, now)
 		}
 	}
 
@@ -463,12 +476,14 @@ func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *fl
 	_, reports := splitReports(samples, rec.start)
 	from := judgedFrom(rec.start, receivedAt)
 	baseline, inControl := splitReports(samples, from)
-	judgedEnd := rec.end
+	judgedEnd, clock := rec.end, now
 	if rec.stoppedAt > 0 && rec.stoppedAt < judgedEnd {
-		judgedEnd = rec.stoppedAt
+		// The not_moving window is counted to the stop, not to the read, so
+		// a send superseded early stays waiting until its window has filled.
+		judgedEnd, clock = rec.stoppedAt, min(now, rec.stoppedAt)
 	}
 	inControl = reportsThrough(inControl, judgedEnd)
-	judged := judge(rec.watts, int64(rec.seconds), from, now, baseline, inControl, watch)
+	judged := judge(rec.watts, int64(rec.seconds), from, clock, baseline, inControl, watch)
 
 	shown := reports
 	if len(shown) > maxStatusReports {
