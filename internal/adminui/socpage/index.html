@@ -10,7 +10,7 @@
 <body>
 <header>
 <h1>SoC and readings</h1>
-<p class="muted">No login: anyone who reaches this port can read every series and send a state of charge to any device.</p>
+<p class="muted">No login: anyone who reaches this port can read every series and send a charge or discharge power to any device.</p>
 </header>
 <main>
 <section id="pickers" aria-labelledby="pickers-h">
@@ -50,25 +50,37 @@
 </section>
 
 <section aria-labelledby="soc-h">
-<h2 id="soc-h">Send a state of charge</h2>
+<h2 id="soc-h">Charge or discharge a device</h2>
 <form id="soc-form" autocomplete="off">
 <label>Device <select id="soc-device" required></select></label>
-<label>Percent (0 to 100) <input id="soc-percent" type="number" min="0" max="100" step="1" required></label>
-<label>Hold in seconds (1 to 3600) <input id="soc-hold" type="number" min="1" max="3600" step="1" value="60" required></label>
+<fieldset>
+<legend>Direction</legend>
+<label><input type="radio" name="soc-dir" value="discharge" checked> Discharge</label>
+<label><input type="radio" name="soc-dir" value="charge"> Charge</label>
+</fieldset>
+<label>Watts (above 0) <input id="soc-watts" type="number" min="1" step="1" required></label>
+<label>Duration in seconds (60 to 3600) <input id="soc-seconds" type="number" min="60" max="3600" step="1" value="300" required></label>
+<label>Watch percent (optional) <input id="soc-watch" type="number" min="0" max="100" step="any"></label>
 <button type="submit" id="soc-send">Send</button>
-<button type="button" id="soc-clear">Clear</button>
+<button type="button" id="soc-stop" disabled>Stop</button>
 </form>
-<p id="soc-band" class="warn" role="alert" hidden>The test agents report a random 60 to 70 percent on their own, so a value in that band proves nothing if it comes back.</p>
+<p class="muted">The watch percent only marks the time a report crossed it. It never stops the control.</p>
 <p id="soc-error" class="error" role="alert" hidden></p>
-<h3>Round trip</h3>
-<dl id="soc-trip" class="trip">
-<dt>Sent</dt><dd id="trip-sent">-</dd>
-<dt>Posted by the device</dt><dd id="trip-posted">-</dd>
-<dt>Seen on the output topic</dt><dd id="trip-seen">-</dd>
-<dt>Released</dt><dd id="trip-released">-</dd>
-<dt>Verdict</dt><dd id="trip-verdict" aria-live="polite">-</dd>
-<dt>Note</dt><dd id="trip-note" aria-live="polite">-</dd>
+<h3>Control</h3>
+<p id="ctl-warning" class="warn" role="alert" hidden></p>
+<p id="ctl-earlier" class="muted" hidden></p>
+<dl id="soc-control" class="ctl">
+<dt>Device</dt><dd id="ctl-device">-</dd>
+<dt>Commanded</dt><dd id="ctl-command">-</dd>
+<dt>Control state</dt><dd id="ctl-state" aria-live="polite">-</dd>
+<dt>Received by the device</dt><dd id="ctl-received">-</dd>
+<dt>Latest state of charge</dt><dd id="ctl-soc">-</dd>
+<dt>Watch percent</dt><dd id="ctl-watch" aria-live="polite">-</dd>
+<dt>Verdict</dt><dd id="ctl-verdict" aria-live="polite">-</dd>
+<dt>Note</dt><dd id="ctl-note" aria-live="polite">-</dd>
 </dl>
+<div id="control-chart" class="chart" role="img" aria-label="State of charge since the send" aria-describedby="control-summary">No state of charge reports since the send yet.</div>
+<p id="control-summary" class="sr-only"></p>
 </section>
 </main>
 <script src="/apps/soc/uplot.min.js"></script>
