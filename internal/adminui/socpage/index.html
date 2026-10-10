@@ -2,11 +2,73 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SoC and readings</title>
+<link rel="stylesheet" href="/apps/soc/uplot.min.css">
 <link rel="stylesheet" href="/apps/soc/style.css">
 </head>
 <body>
-<main id="app">loading</main>
+<header>
+<h1>SoC and readings</h1>
+<p class="muted">No login: anyone who reaches this port can read every series and send a state of charge to any device.</p>
+</header>
+<main>
+<section id="pickers" aria-labelledby="pickers-h">
+<h2 id="pickers-h">Pick</h2>
+<div class="pickrow">
+<fieldset>
+<legend>Devices</legend>
+<label>Filter <input id="device-filter" type="search" autocomplete="off"></label>
+<button type="button" id="devices-none">Clear selection</button>
+<div id="device-list" class="picklist" role="group" aria-label="Devices"></div>
+</fieldset>
+<fieldset>
+<legend>Mirror reading types</legend>
+<div id="uom-list" class="picklist" role="group" aria-label="Mirror reading types"></div>
+</fieldset>
+<fieldset>
+<legend>Output topic values</legend>
+<div id="attr-list" class="picklist" role="group" aria-label="Output topic values"></div>
+</fieldset>
+</div>
+</section>
+
+<section aria-labelledby="mirror-h">
+<h2 id="mirror-h">Mirror readings</h2>
+<p id="mirror-status" class="muted" role="status">loading</p>
+<div id="mirror-chart" class="chart"></div>
+<p id="mirror-note" class="note" hidden></p>
+</section>
+
+<section aria-labelledby="output-h">
+<h2 id="output-h">Output topic (DERStatus)</h2>
+<p id="output-status" class="muted" role="status">loading</p>
+<div id="output-chart" class="chart"></div>
+</section>
+
+<section aria-labelledby="soc-h">
+<h2 id="soc-h">Send a state of charge</h2>
+<form id="soc-form" autocomplete="off">
+<label>Device <select id="soc-device" required></select></label>
+<label>Percent (0 to 100) <input id="soc-percent" type="number" min="0" max="100" step="1" required></label>
+<label>Hold in seconds (1 to 3600) <input id="soc-hold" type="number" min="1" max="3600" step="1" value="60" required></label>
+<button type="submit" id="soc-send">Send</button>
+<button type="button" id="soc-clear">Clear</button>
+</form>
+<p id="soc-band" class="warn" role="alert" hidden>The test agents report a random 60 to 70 percent on their own, so a value in that band proves nothing if it comes back.</p>
+<p id="soc-error" class="error" role="alert" hidden></p>
+<h3>Round trip</h3>
+<dl id="soc-trip" class="trip">
+<dt>Sent</dt><dd id="trip-sent">-</dd>
+<dt>Posted by the device</dt><dd id="trip-posted">-</dd>
+<dt>Seen on the output topic</dt><dd id="trip-seen">-</dd>
+<dt>Released</dt><dd id="trip-released">-</dd>
+<dt>Verdict</dt><dd id="trip-verdict">-</dd>
+<dt>Note</dt><dd id="trip-note">-</dd>
+</dl>
+</section>
+</main>
+<script src="/apps/soc/uplot.min.js"></script>
 <script src="/apps/soc/app.js"></script>
 </body>
 </html>

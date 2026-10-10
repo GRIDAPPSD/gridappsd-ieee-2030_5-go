@@ -16,13 +16,15 @@ import (
 // take no credential by decision and keep the Host allowlist. Every pattern
 // is exact, so the plane keeps any other path under /apps.
 const (
-	socPageRoot    = "/apps/soc"
-	socPageIndex   = "/apps/soc/{$}"
-	socPageScript  = "/apps/soc/app.js"
-	socPageStyle   = "/apps/soc/style.css"
-	devicesRoute   = "/apps/soc/api/devices"
-	outputRoute    = "/apps/soc/api/output"
-	reportedPrefix = "DERStatus."
+	socPageRoot     = "/apps/soc"
+	socPageIndex    = "/apps/soc/{$}"
+	socPageScript   = "/apps/soc/app.js"
+	socPageStyle    = "/apps/soc/style.css"
+	socPageUPlotJS  = "/apps/soc/uplot.min.js"
+	socPageUPlotCSS = "/apps/soc/uplot.min.css"
+	devicesRoute    = "/apps/soc/api/devices"
+	outputRoute     = "/apps/soc/api/output"
+	reportedPrefix  = "DERStatus."
 )
 
 // The page loads only its own files and talks only to its own origin. The
@@ -62,7 +64,8 @@ func (s *Server) socGetGate(next http.Handler) http.Handler {
 	return socHeaders(s.hostAllowlist(requireGET(next)))
 }
 
-// mountSoCPage mounts the page, its two assets and the devices and output
+// mountSoCPage mounts the page, its four assets (the script and style, and
+// the vendored chart library's script and style) and the devices and output
 // routes.
 func (s *Server) mountSoCPage(mux *http.ServeMux) {
 	mux.Handle(devicesRoute, s.socGetGate(http.HandlerFunc(s.handleDevices)))
@@ -70,6 +73,8 @@ func (s *Server) mountSoCPage(mux *http.ServeMux) {
 	mux.Handle(socPageIndex, s.socGetGate(staticFile("index.html", "text/html; charset=utf-8")))
 	mux.Handle(socPageScript, s.socGetGate(staticFile("app.js", "text/javascript; charset=utf-8")))
 	mux.Handle(socPageStyle, s.socGetGate(staticFile("style.css", "text/css; charset=utf-8")))
+	mux.Handle(socPageUPlotJS, s.socGetGate(staticFile("uplot.min.js", "text/javascript; charset=utf-8")))
+	mux.Handle(socPageUPlotCSS, s.socGetGate(staticFile("uplot.min.css", "text/css; charset=utf-8")))
 	mux.Handle(socPageRoot, s.socGetGate(http.RedirectHandler(socPageRoot+"/", http.StatusTemporaryRedirect)))
 }
 

@@ -2,11 +2,14 @@ package adminui
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui/socpage"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
@@ -212,6 +215,8 @@ func TestPageServedWithHeadersAndContentTypes(t *testing.T) {
 		{"/apps/soc/", "text/html; charset=utf-8", "loading"},
 		{"/apps/soc/app.js", "text/javascript; charset=utf-8", "use strict"},
 		{"/apps/soc/style.css", "text/css; charset=utf-8", "font-family"},
+		{"/apps/soc/uplot.min.js", "text/javascript; charset=utf-8", "uPlot"},
+		{"/apps/soc/uplot.min.css", "text/css; charset=utf-8", ".uplot"},
 	}
 	for _, c := range cases {
 		rec := doRequest(t, s.Handler(), http.MethodGet, c.path, "", "localhost")
@@ -236,7 +241,7 @@ func TestPageRedirectsAndKeepsGates(t *testing.T) {
 	if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "/apps/soc/" {
 		t.Errorf("/apps/soc = %d Location %q, want 307 to /apps/soc/", rec.Code, rec.Header().Get("Location"))
 	}
-	for _, p := range []string{"/apps/soc", "/apps/soc/", "/apps/soc/app.js", "/apps/soc/style.css", "/apps/soc/api/devices", "/apps/soc/api/output", "/apps/soc/api/mirror"} {
+	for _, p := range []string{"/apps/soc", "/apps/soc/", "/apps/soc/app.js", "/apps/soc/style.css", "/apps/soc/uplot.min.js", "/apps/soc/uplot.min.css", "/apps/soc/api/devices", "/apps/soc/api/output", "/apps/soc/api/mirror"} {
 		if rec := doRequest(t, s.Handler(), http.MethodGet, p, "", "evil.example"); rec.Code != http.StatusForbidden {
 			t.Errorf("%s foreign Host = %d, want 403", p, rec.Code)
 		}
@@ -282,5 +287,64 @@ func TestPageAbsentWithoutMirrorOrSoC(t *testing.T) {
 	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/", "", "localhost")
 	if rec.Header().Get("Content-Security-Policy") == socPageCSP || strings.Contains(rec.Body.String(), "loading") {
 		t.Errorf("page served with no mirror or SoC source: %d", rec.Code)
+	}
+}
+
+// Every file in socpage is embedded and served at /apps/soc/<name> (index.html
+// at the root), and the page's own references name only mounted paths.
+func TestEveryEmbeddedPageFileIsServedAndIndexUsesOnlyMountedPaths(t *testing.T) {
+	t.Parallel()
+	s := pageServer(t, &outputHistory{})
+	entries, err := fs.ReadDir(socpage.Files, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.Name() == "socpage.go" {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	if len(names) != 5 {
+		t.Fatalf("embedded page files = %v, want index.html, app.js, style.css, uplot.min.js, uplot.min.css", names)
+	}
+	for _, n := range names {
+		want, err := fs.ReadFile(socpage.Files, n)
+		if err != nil || len(want) == 0 {
+			t.Errorf("embedded %s: len %d, err %v", n, len(want), err)
+			continue
+		}
+		path := "/apps/soc/" + n
+		if n == "index.html" {
+			path = "/apps/soc/"
+		}
+		rec := doRequest(t, s.Handler(), http.MethodGet, path, "", "localhost")
+		if rec.Code != http.StatusOK || rec.Body.String() != string(want) {
+			t.Errorf("%s = %d, served %d bytes, embedded %d", path, rec.Code, rec.Body.Len(), len(want))
+		}
+	}
+
+	index, err := fs.ReadFile(socpage.Files, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := regexp.MustCompile(`(?:src|href|action)="([^"]*)"`).FindAllStringSubmatch(string(index), -1)
+	if len(refs) == 0 {
+		t.Fatal("index.html references nothing: the pattern or the page is wrong")
+	}
+	for _, m := range refs {
+		ref := m[1]
+		if !strings.HasPrefix(ref, "/apps/soc/") || strings.Contains(ref, "//") {
+			t.Errorf("index.html references %q, which is not a same-origin page path", ref)
+			continue
+		}
+		rec := doRequest(t, s.Handler(), http.MethodGet, ref, "", "localhost")
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Security-Policy") != socPageCSP {
+			t.Errorf("index.html references %s: status %d, page CSP %q", ref, rec.Code, rec.Header().Get("Content-Security-Policy"))
+		}
+	}
+	if strings.Contains(string(index), "<script>") || strings.Contains(string(index), " style=") {
+		t.Error("index.html carries inline script or style, which the CSP blocks")
 	}
 }
