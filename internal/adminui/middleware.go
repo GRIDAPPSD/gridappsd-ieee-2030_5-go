@@ -36,10 +36,15 @@ func (s *Server) buildHandler(plane http.Handler) http.Handler {
 	// Host and GET gates. Its pattern is exact, so the plane keeps every
 	// other path under /apps.
 	if s.mirror != nil {
-		mux.Handle(mirrorRoute, s.hostAllowlist(requireGET(http.HandlerFunc(s.handleMirror))))
+		mux.Handle(mirrorRoute, s.socGetGate(http.HandlerFunc(s.handleMirror)))
 	}
 	if s.soc != nil {
 		s.mountSoC(mux)
+	}
+	// The page and the devices and output routes it reads exist whenever
+	// the page has something to show: a mirror source or the SoC service.
+	if s.mirror != nil || s.soc != nil {
+		s.mountSoCPage(mux)
 	}
 	mux.Handle("/", withRemote(plane))
 	var h http.Handler = keepStreamsOpen(mux)

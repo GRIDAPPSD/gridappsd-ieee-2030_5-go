@@ -83,8 +83,8 @@ type errorResponse struct {
 }
 
 func (s *Server) mountSoC(mux *http.ServeMux) {
-	mux.Handle(socSendPattern, s.hostAllowlist(withRemote(http.HandlerFunc(s.handleSoCSend))))
-	mux.Handle(socStatusPattern, s.hostAllowlist(http.HandlerFunc(s.handleSoCStatus)))
+	mux.Handle(socSendPattern, socHeaders(s.hostAllowlist(withRemote(http.HandlerFunc(s.handleSoCSend)))))
+	mux.Handle(socStatusPattern, socHeaders(s.hostAllowlist(http.HandlerFunc(s.handleSoCStatus))))
 }
 
 func (s *Server) handleSoCSend(w http.ResponseWriter, r *http.Request) {

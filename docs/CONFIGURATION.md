@@ -129,6 +129,8 @@ run at once; another gets 503 with `Retry-After`.
 
 Two further routes take no credential, by decision, and only the Host allowlist applies: anyone who can reach the admin address can send a state of charge to any registered device. `POST /apps/soc/api/soc` takes JSON (`Content-Type: application/json`) of `{"mrid":"...","percent":0-100,"holdSeconds":1-3600}` (hold defaults to 60) or `{"mrid":"...","clear":true}`, publishes it on the application input topic, and ignores `SEP2_ADMIN_UI_BUS_PUBLISH_AT_START`. `GET /apps/soc/api/soc/{id}` returns the send's stages (sent, posted by the device, seen on the output topic, released), each with a time, and a verdict of `matched`, `not seen` or `mismatch`. Sends and clears share a rate limit (a burst of 10, then one per second, all callers together; a 429 beyond it), and each accepted one is logged with the caller's address.
 
+The SoC and readings page is at `/apps/soc/` on the admin address (`/apps/soc` redirects there). It has no login, by decision: anyone who can reach the admin address can open it, read the series and send a state of charge. Only the Host allowlist applies, and its files are embedded in the binary. It reads `GET /apps/soc/api/devices` (mrid, name and lfdi of each registered device, by name) and `GET /apps/soc/api/output` (the DERStatus series the bridge published, same `since`, `series`, `points` and `now` rules as the mirror route, plus `device` by mRID). The page exists whenever the mirror readings or the SoC routes do.
+
 | Env var | Flag | Default | Notes |
 |---|---|---|---|
 | `SEP2_ADMIN_UI_ADDR` | `-admin-ui-addr` | `127.0.0.1:8444` | Admin UI listener bind address. Loopback only unless `SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK` is also set. |
