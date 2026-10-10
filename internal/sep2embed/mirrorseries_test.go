@@ -322,6 +322,20 @@ func TestMirrorSeriesSinceIsInclusiveAndReportsNothingOlder(t *testing.T) {
 	}
 }
 
+func TestMirrorSeriesSinceIncludesAReadingAtTheExactSecondBoundary(t *testing.T) {
+	st := newStores()
+	seedMirror(t, st, "m1", "LFDI-A")
+	w := rtype(38, 37, 0, 0, 1)
+	postReading(t, st, "m1", 0, 7030, powerReading("w", "Real Power (W)", w, 3))
+	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{Since: 7030})
+	if err != nil || len(res.Series) != 1 {
+		t.Fatalf("series = %+v, %v; want one", res.Series, err)
+	}
+	if want := []MirrorPoint{{Time: 7030, Value: 3}}; fmt.Sprint(bare(res.Series[0].Points)) != fmt.Sprint(want) {
+		t.Errorf("points = %v, want %v: the id 7030*1e9 is the first one in range", res.Series[0].Points, want)
+	}
+}
+
 func TestMirrorSeriesShowsAnUnregisteredDeviceByItsLFDI(t *testing.T) {
 	st := newStores()
 	seedMirror(t, st, "m1", "UNREGISTERED-LFDI")

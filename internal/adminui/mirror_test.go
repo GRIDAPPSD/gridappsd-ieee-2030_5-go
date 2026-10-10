@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -337,5 +338,33 @@ func TestMirrorRouteRefusesWhenTooManyBuildsAreRunning(t *testing.T) {
 	}
 	if rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/mirror", "", "localhost"); rec.Code != http.StatusOK {
 		t.Errorf("after the builds finished = %d, want 200: slots must be released", rec.Code)
+	}
+}
+
+// Both the mirror series route and the SoC routes are mounted when both
+// sources are set, and the plane keeps every other path.
+func TestMirrorAndSoCRoutesAreMountedTogether(t *testing.T) {
+	t.Parallel()
+	m := &fakeMirror{}
+	soc := newFakeSoC()
+	src := testSources()
+	src.Mirror = m
+	src.SoC = soc
+	s := newServer(t, Config{Key: testKey}, src)
+	s.now = func() time.Time { return time.Unix(1_700_000_500, 0) }
+
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/mirror?since=1700000000", "", "localhost")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mirror GET = %d, want 200; %s", rec.Code, rec.Body)
+	}
+	if m.last.since != 1_700_000_000 {
+		t.Errorf("mirror source got since=%d, want 1700000000", m.last.since)
+	}
+	rec = postSoC(t, s.Handler(), "application/json", `{"mrid":"_pv-1","percent":80}`, "localhost")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("SoC send = %d, want 200; %s", rec.Code, rec.Body)
+	}
+	if want := []socCall{{"send", "_pv-1", 80, 60 * time.Second}}; !slices.Equal(soc.calls, want) {
+		t.Errorf("SoC calls = %+v, want %+v", soc.calls, want)
 	}
 }

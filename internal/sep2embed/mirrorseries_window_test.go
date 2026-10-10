@@ -165,22 +165,40 @@ func TestMirrorSeriesDropsACachedTypeWhoseReadingIsGone(t *testing.T) {
 	}
 }
 
+// onlyParents lists just the chosen mirrors, as a store does once a mirror
+// has gone away.
+type onlyParents struct {
+	store.ScopedStore[sep2.MirrorMeterReading]
+	keep []string
+}
+
+func (o *onlyParents) Parents(context.Context) ([]string, error) { return o.keep, nil }
+
 func TestMirrorSeriesForgetsTheTypesOfAMirrorThatWentAway(t *testing.T) {
 	st := newStores()
 	seedMirror(t, st, "m1", "LFDI-A")
-	typed := postReading(t, st, "m1", 1, 1000, powerReading("w", "Real Power (W)", rtype(38, 37, 0, 0, 1), 1))
+	seedMirror(t, st, "m2", "LFDI-B")
+	w := rtype(38, 37, 0, 0, 1)
+	postReading(t, st, "m1", 1, 1000, powerReading("w", "Real Power (W)", w, 1))
+	postReading(t, st, "m2", 2, 1000, powerReading("w", "Real Power (W)", w, 2))
 	cache := newMirrorTypeCache()
 	if _, err := mirrorSeries(context.Background(), st, cache, MirrorQuery{Since: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cache.get("m1", "w"); !ok {
-		t.Fatal("the type was not cached")
+	for _, id := range []string{"m1", "m2"} {
+		if _, ok := cache.get(id, "w"); !ok {
+			t.Fatalf("the type of %s was not cached", id)
+		}
 	}
-	if err := st.MirrorMeterReadings.Delete(context.Background(), "m1", typed); err != nil {
-		t.Fatal(err)
-	}
+	st.MirrorMeterReadings = &onlyParents{ScopedStore: st.MirrorMeterReadings, keep: []string{"m2"}}
 	if _, err := mirrorSeries(context.Background(), st, cache, MirrorQuery{Since: 1}); err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := cache.get("m1", "w"); ok {
+		t.Error("the cache still holds the type of a mirror that is gone")
+	}
+	if _, ok := cache.get("m2", "w"); !ok {
+		t.Error("the cache lost the type of a mirror that is still there")
 	}
 }
 
@@ -499,5 +517,73 @@ func TestMirrorBoundsAndTypeCacheReachEmbed(t *testing.T) {
 		if e.mirrorTypes == nil {
 			t.Errorf("%s: no mirror type cache", c.name)
 		}
+	}
+}
+
+// A device's bound grows by the readings every one of its mirrors gained,
+// not by the largest gain of one mirror.
+func TestSweepLedgerSumsTheGrowthOfADevicesMirrors(t *testing.T) {
+	st := newStores()
+	w := rtype(38, 37, 0, 0, 1)
+	seedMirror(t, st, "m1", "LFDI-A")
+	seedMirror(t, st, "m2", "LFDI-A")
+	for i := int64(0); i < 10; i++ {
+		postReading(t, st, "m1", i, 9000+i, powerReading("w", "Real Power (W)", w, i))
+		postReading(t, st, "m2", 100+i, 9000+i, powerReading("w", "Real Power (W)", w, i))
+	}
+	led := &sweepLedger{}
+	ctx := context.Background()
+	sweep := func() int {
+		n, err := sweepMirrorReadings(ctx, st, led, time.Unix(9100, 0), time.Hour, 25)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := sweep(); n != 0 {
+		t.Fatalf("first sweep removed %d, want 0 for 20 readings under a cap of 25", n)
+	}
+	for i := int64(10); i < 13; i++ {
+		postReading(t, st, "m1", i, 9000+i, powerReading("w", "Real Power (W)", w, i))
+		postReading(t, st, "m2", 100+i, 9000+i, powerReading("w", "Real Power (W)", w, i))
+	}
+	if n := sweep(); n != 1 {
+		t.Errorf("sweep over 26 readings of one device removed %d, want 1", n)
+	}
+	if got := len(remainingIDs(t, st, "m1")) + len(remainingIDs(t, st, "m2")); got != 25 {
+		t.Errorf("device holds %d readings after the trim, want 25", got)
+	}
+}
+
+// A mirror that appears after a pass is attributed to its own device, so its
+// readings count against that device's cap.
+func TestSweepLedgerCountsANewMirrorAgainstItsDevice(t *testing.T) {
+	st := newStores()
+	w := rtype(38, 37, 0, 0, 1)
+	seedMirror(t, st, "m1", "LFDI-A")
+	for i := int64(0); i < 20; i++ {
+		postReading(t, st, "m1", i, 9000+i, powerReading("w", "Real Power (W)", w, i))
+	}
+	led := &sweepLedger{}
+	ctx := context.Background()
+	sweep := func() int {
+		n, err := sweepMirrorReadings(ctx, st, led, time.Unix(9100, 0), time.Hour, 25)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := sweep(); n != 0 {
+		t.Fatalf("first sweep removed %d, want 0", n)
+	}
+	seedMirror(t, st, "m2", "LFDI-A")
+	for i := int64(0); i < 6; i++ {
+		postReading(t, st, "m2", 100+i, 9020+i, powerReading("w", "Real Power (W)", w, i))
+	}
+	if n := sweep(); n != 1 {
+		t.Errorf("sweep over 26 readings of one device removed %d, want 1", n)
+	}
+	if got := len(remainingIDs(t, st, "m1")) + len(remainingIDs(t, st, "m2")); got != 25 {
+		t.Errorf("device holds %d readings after the trim, want 25", got)
 	}
 }
