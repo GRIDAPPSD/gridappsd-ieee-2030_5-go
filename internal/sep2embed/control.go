@@ -358,8 +358,9 @@ type ControlOutcome int
 const (
 	// ControlIssued means a new DERControl was written.
 	ControlIssued ControlOutcome = iota + 1
-	// ControlRestated means the delta repeated the setpoint already in
-	// force, so nothing was written.
+	// ControlRestated means the delta restated the schedule in force: the
+	// setpoint running now, with nothing pending on its modes to overturn,
+	// so nothing was written.
 	ControlRestated
 )
 
@@ -644,19 +645,27 @@ func cancelReplacedSchedule(ctx context.Context, stores *assembly.Stores, sent p
 	}
 	modes := controlModesOf(sent.control.DERControlBase)
 	for _, c := range list.Items {
-		if c.CreationTime >= sent.control.CreationTime || c.EventStatus == nil ||
-			c.EventStatus.CurrentStatus != sep2.EventStatusScheduled ||
-			c.Interval == nil || c.Interval.Start <= nowUnix ||
-			classifyModes(controlModesOf(c.DERControlBase), modes) != modesIdentical {
+		if c.CreationTime >= sent.control.CreationTime || !pendingSameMode(c, modes, nowUnix) {
 			continue
 		}
 		c.EventStatus.CurrentStatus = sep2.EventStatusCancelled
 		c.EventStatus.DateTime = nowUnix
-		if err := stores.DERControls.Update(ctx, sent.scope, derControlID(c.CreationTime, c.MRID), c); err != nil {
-			return fmt.Errorf("cancel control %s: %w", c.MRID, err)
+		id := derControlID(c.CreationTime, c.MRID)
+		if err := stores.DERControls.Update(ctx, sent.scope, id, c); err != nil {
+			return fmt.Errorf("cancel control %s (start %d): %w", id, c.Interval.Start, err)
 		}
 	}
 	return nil
+}
+
+// pendingSameMode reports whether c is on exactly modes and still Scheduled to
+// start after nowUnix: a control a newer one on those modes cancels. The
+// restatement check asks the same question, so a delta that would cancel
+// something is never treated as a restatement.
+func pendingSameMode(c sep2.DERControl, modes []string, nowUnix int64) bool {
+	return c.EventStatus != nil && c.EventStatus.CurrentStatus == sep2.EventStatusScheduled &&
+		c.Interval != nil && c.Interval.Start > nowUnix &&
+		classifyModes(controlModesOf(c.DERControlBase), modes) == modesIdentical
 }
 
 // nextEventCreationTime returns the creation instant to stamp on a control
@@ -796,6 +805,11 @@ const maxDirectSendLeadSeconds int64 = 6
 //     the client is executing is the one with the largest creationTime (rule
 //     f) p.90). Comparing against an older one would suppress a delta that
 //     reverts to a previous setpoint, which is a genuine change.
+//   - Nothing pending on the same modes. A control still Scheduled to start,
+//     such as a direct send's 0 W follow-on, is part of what is commanded, and
+//     the delta's own cancel pass would overturn it, so the delta is a change
+//     even when its value matches the one running now. pendingSameMode is the
+//     cancel pass's own test, so the two cannot disagree.
 //
 // Equality is decided on the serialized payload (canonicalControlPayload),
 // which is both what the client observes and what the event's own identity is
@@ -807,6 +821,9 @@ func restatesControlInForce(prior []sep2.DERControl, base *sep2.DERControlBase, 
 	var inForce *sep2.DERControl
 	for i := range prior {
 		p := &prior[i]
+		if pendingSameMode(*p, incomingModes, wallUnix) {
+			return false, nil
+		}
 		// The interval test comes first because it is two integer
 		// comparisons, while classifyModes builds a mode set per control.
 		if end, ok := minEffectiveScheduledEnd(*p); !ok || wallUnix >= end {
