@@ -399,6 +399,9 @@
   }
 
   let deviceSig = null;
+  // Kept across polls until the operator picks a device, so a fallback is not
+  // wiped by the next poll that finds the list unchanged.
+  let deviceNote = "";
 
   async function loadDevices() {
     try {
@@ -406,7 +409,7 @@
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         return resp.json();
       });
-      showDevicesError("");
+      showDevicesError(deviceNote);
       const sig = list.map((d) => d.mrid + "|" + (d.name || "")).join("\n");
       if (sig === deviceSig) return;
       deviceSig = sig;
@@ -418,7 +421,13 @@
         return o;
       });
       select.replaceChildren(...opts);
-      if (keep && list.some((d) => d.mrid === keep)) select.value = keep;
+      if (keep && list.some((d) => d.mrid === keep)) {
+        select.value = keep;
+        deviceNote = "";
+      } else if (keep && list.length > 0) {
+        deviceNote = "The device you had selected is no longer in the list; the form now shows " + (list[0].name || list[0].mrid) + ".";
+      }
+      showDevicesError(deviceNote);
       let added = false;
       for (const d of list) {
         if (noteDevice(d.mrid, d.name || d.mrid)) added = true;
@@ -442,10 +451,11 @@
 
   // Sends one control. The watch percent is kept by the page, not the server:
   // it rides on each status request and only marks when a report crossed it.
-  async function postControl(body, watch) {
-    const buttons = [$("soc-send"), $("soc-stop")];
-    buttons.forEach((b) => { b.disabled = true; });
+  async function postControl(body, watch, deviceName) {
+    sending = true;
+    syncButtons();
     showControlError("");
+    let accepted = false;
     try {
       await timedFetch(API + "control", {
         method: "POST",
@@ -471,17 +481,24 @@
           showControlError("unexpected answer from the server");
           return;
         }
-        followControl(payload, watch);
+        accepted = true;
+        followControl(payload, watch, deviceName);
       });
     } catch (err) {
-      showControlError("send failed: " + err.message);
+      if (accepted) {
+        showControlError("The bridge accepted the control, but the page could not show it: " + err.message);
+      } else {
+        clearControlPanel();
+        showControlError("No answer to the send (" + err.message + "). The bridge may have issued the control: check the device's control state in the output chart and its controlState before sending again.");
+      }
     } finally {
-      buttons.forEach((b) => { b.disabled = false; });
+      sending = false;
+      syncButtons();
     }
   }
 
   function parseWhole(raw, lo, hi) {
-    if (raw.trim() === "") return null;
+    if (!/^[0-9]+$/.test(raw.trim())) return null;
     const n = Number(raw);
     return Number.isInteger(n) && n >= lo && n <= hi ? n : null;
   }
@@ -507,13 +524,30 @@
     const watch = parseWatch($("soc-watch").value);
     if (!watch.ok) { showControlError("watch percent must be a number from 0 to 100, or empty"); return; }
     // Discharge is positive and charge negative on the wire.
-    postControl({ mrid, watts: dir.value === "charge" ? -watts : watts, durationSeconds: seconds }, watch.value);
+    const opt = $("soc-device").selectedOptions[0];
+    postControl({ mrid, watts: dir.value === "charge" ? -watts : watts, durationSeconds: seconds }, watch.value, opt ? opt.textContent : mrid);
   }
 
+  // Stop goes to the device of the control being followed, never to whatever
+  // the dropdown shows now.
   function onStop() {
-    const mrid = $("soc-device").value;
-    if (!mrid) { showControlError("pick a device"); return; }
-    postControl({ mrid, stop: true }, null);
+    if (!followed) { showControlError("no control is being followed"); return; }
+    postControl({ mrid: followed.mrid, stop: true }, null, followed.name);
+  }
+
+  function syncButtons() {
+    $("soc-send").disabled = sending;
+    $("soc-stop").disabled = sending || followed === null;
+  }
+
+  function clearControlPanel() {
+    controlToken++;
+    clearTimeout(controlTimer);
+    followed = null;
+    ["ctl-device", "ctl-command", "ctl-state", "ctl-received", "ctl-soc", "ctl-watch", "ctl-verdict", "ctl-note"].forEach((id) => setText($(id), "-"));
+    setText($("ctl-warning"), "");
+    $("ctl-warning").hidden = true;
+    drawChart(controlChart, [], "No state of charge reports since the send yet.");
   }
 
   // ---- control panel ----
@@ -521,6 +555,8 @@
   const controlChart = newChart($("control-chart"), $("control-summary"));
   let controlTimer = null;
   let controlToken = 0;
+  let followed = null;
+  let sending = false;
 
   function clockSec(s) {
     return typeof s === "number" ? new Date(s * 1000).toLocaleTimeString() : "-";
@@ -535,6 +571,7 @@
   }
 
   function showControl(st, extraNote) {
+    setText($("ctl-device"), followed ? followed.name + " (" + followed.mrid + ")" : "-");
     setText($("ctl-command"), describeCommand(st));
     setText($("ctl-state"), st.controlState || "-");
     const statuses = (st.responseStatuses || []).join(", ");
@@ -558,7 +595,9 @@
 
   // The newest send replaces the one being followed. Polling stops when the
   // control ends or is superseded, or a few minutes after its duration.
-  function followControl(first, watch) {
+  function followControl(first, watch, deviceName) {
+    followed = { mrid: first.mrid, name: deviceName || first.mrid };
+    syncButtons();
     controlToken++;
     const token = controlToken;
     clearTimeout(controlTimer);
@@ -572,7 +611,16 @@
         const url = API + "control/" + encodeURIComponent(first.id) + (watch !== null ? "?watch=" + encodeURIComponent(String(watch)) : "");
         const st = await timedFetch(url, { cache: "no-store" }, async (resp) => {
           if (resp.status === 404) return "gone";
-          if (!resp.ok) throw new Error("HTTP " + resp.status);
+          if (!resp.ok) {
+            let detail = "";
+            try {
+              const body = JSON.parse(await resp.text());
+              if (body && typeof body.error === "string") detail = body.error;
+            } catch (e) {
+              detail = "";
+            }
+            throw new Error("HTTP " + resp.status + (detail ? ": " + detail : ""));
+          }
           return resp.json();
         });
         if (token !== controlToken) return;
@@ -581,8 +629,9 @@
           return;
         }
         shown = st;
-        showControl(st);
-        if (!LIVE_STATES.has(st.controlState) && st.controlState !== "unknown") return;
+        const ended = !LIVE_STATES.has(st.controlState) && st.controlState !== "unknown";
+        showControl(st, ended ? "Stopped checking: the control is " + st.controlState + " and will not change." : undefined);
+        if (ended) return;
       } catch (err) {
         if (token !== controlToken) return;
         problem = err.message;
@@ -610,9 +659,15 @@
   });
   $("soc-form").addEventListener("submit", onSend);
   $("soc-stop").addEventListener("click", onStop);
+  $("soc-device").addEventListener("change", () => {
+    deviceNote = "";
+    showDevicesError("");
+  });
+  syncButtons();
   window.addEventListener("resize", () => {
     resizeChart(mirrorChart);
     resizeChart(outputChart);
+    resizeChart(controlChart);
   });
 
   renderUomPicker();

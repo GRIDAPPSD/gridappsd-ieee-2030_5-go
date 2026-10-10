@@ -62,13 +62,14 @@
 <label>Duration in seconds (60 to 3600) <input id="soc-seconds" type="number" min="60" max="3600" step="1" value="300" required></label>
 <label>Watch percent (optional) <input id="soc-watch" type="number" min="0" max="100" step="any"></label>
 <button type="submit" id="soc-send">Send</button>
-<button type="button" id="soc-stop">Stop</button>
+<button type="button" id="soc-stop" disabled>Stop</button>
 </form>
 <p class="muted">The watch percent only marks the time a report crossed it. It never stops the control.</p>
 <p id="soc-error" class="error" role="alert" hidden></p>
 <h3>Control</h3>
 <p id="ctl-warning" class="warn" role="alert" hidden></p>
 <dl id="soc-control" class="ctl">
+<dt>Device</dt><dd id="ctl-device">-</dd>
 <dt>Commanded</dt><dd id="ctl-command">-</dd>
 <dt>Control state</dt><dd id="ctl-state" aria-live="polite">-</dd>
 <dt>Received by the device</dt><dd id="ctl-received">-</dd>
