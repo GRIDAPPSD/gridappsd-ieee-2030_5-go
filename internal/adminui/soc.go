@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"mime"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/socsend"
@@ -22,7 +24,42 @@ const (
 
 	// maxSoCBody bounds a send request; a real one is under 100 bytes.
 	maxSoCBody = 1 << 10
+
+	// socBurst and socRefillEvery bound how fast the unauthenticated send
+	// and clear route can publish to the shared input topic: a burst of
+	// socBurst, then one request per socRefillEvery, for all callers
+	// together.
+	socBurst       = 10
+	socRefillEvery = time.Second
+
+	socRateLimited = "too many state of charge requests; wait a moment and retry"
 )
+
+// tokenBucket is a mutex-guarded token bucket on an injected clock.
+type tokenBucket struct {
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
+}
+
+func newTokenBucket(now time.Time) *tokenBucket {
+	return &tokenBucket{tokens: socBurst, last: now}
+}
+
+// allow takes one token if there is one.
+func (b *tokenBucket) allow(now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if el := now.Sub(b.last); el > 0 {
+		b.tokens = min(float64(socBurst), b.tokens+float64(el)/float64(socRefillEvery))
+		b.last = now
+	}
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
 
 // SoCSource is what the SoC routes need from *socsend.Service.
 type SoCSource interface {
@@ -46,11 +83,16 @@ type errorResponse struct {
 }
 
 func (s *Server) mountSoC(mux *http.ServeMux) {
-	mux.Handle(socSendPattern, s.hostAllowlist(http.HandlerFunc(s.handleSoCSend)))
+	mux.Handle(socSendPattern, s.hostAllowlist(withRemote(http.HandlerFunc(s.handleSoCSend))))
 	mux.Handle(socStatusPattern, s.hostAllowlist(http.HandlerFunc(s.handleSoCStatus)))
 }
 
 func (s *Server) handleSoCSend(w http.ResponseWriter, r *http.Request) {
+	if !s.socLimit.allow(s.now()) {
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{socRateLimited})
+		return
+	}
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
 		writeJSON(w, http.StatusUnsupportedMediaType, errorResponse{"content type must be application/json"})
 		return
@@ -102,6 +144,10 @@ func (s *Server) handleSoCSend(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, errorResponse{msg})
 		return
 	}
+	// The route takes no credential, so this line is the only record of who
+	// published.
+	log.Printf("adminui: state of charge %s accepted from %s: device=%s percent=%d hold=%ds",
+		st.Kind, remoteFrom(r.Context()), st.MRID, st.Percent, st.HoldSeconds)
 	writeJSON(w, http.StatusOK, st)
 }
 

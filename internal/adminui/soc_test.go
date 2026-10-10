@@ -1,11 +1,14 @@
 package adminui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -330,5 +333,150 @@ func TestRunStartsAndStopsTheSoCFollowLoop(t *testing.T) {
 	case <-f.stopped:
 	default:
 		t.Errorf("Run returned before the follow loop stopped")
+	}
+}
+
+func postSoCFrom(t *testing.T, h http.Handler, remote, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/apps/soc/api/soc", strings.NewReader(body))
+	req.RemoteAddr = remote
+	req.Host = "localhost"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// Not parallel: it swaps the process-wide log writer.
+func TestSoCAcceptedSendAndClearAreLoggedWithTheCaller(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	s := socServer(t, Config{}, newFakeSoC())
+
+	send := postSoCFrom(t, s.Handler(), "203.0.113.9:51234", `{"mrid":"_pv-1","percent":80,"holdSeconds":90}`)
+	clr := postSoCFrom(t, s.Handler(), "198.51.100.7:40000", `{"mrid":"_pv-2","clear":true}`)
+	refused := postSoCFrom(t, s.Handler(), "192.0.2.1:1", `{"mrid":"_pv-3"}`)
+
+	if send.Code != http.StatusOK || clr.Code != http.StatusOK || refused.Code != http.StatusBadRequest {
+		t.Fatalf("statuses %d %d %d, want 200 200 400", send.Code, clr.Code, refused.Code)
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if strings.Contains(l, "state of charge") {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 2 {
+		t.Fatalf("%d state of charge log lines, want 2 (one per accepted request): %q", len(lines), lines)
+	}
+	for i, want := range [][]string{
+		{"send accepted", "203.0.113.9:51234", "device=_pv-1", "percent=80", "hold=90s"},
+		{"clear accepted", "198.51.100.7:40000", "device=_pv-2", "percent=0", "hold=0s"},
+	} {
+		for _, w := range want {
+			if !strings.Contains(lines[i], w) {
+				t.Errorf("line %d %q lacks %q", i, lines[i], w)
+			}
+		}
+	}
+	if strings.Contains(buf.String(), "192.0.2.1") {
+		t.Errorf("a refused request was logged as accepted: %s", buf.String())
+	}
+}
+
+type stepClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *stepClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *stepClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+func limitedServer(t *testing.T) (*Server, *fakeSoC, *stepClock) {
+	t.Helper()
+	f := newFakeSoC()
+	s := socServer(t, Config{}, f)
+	clk := &stepClock{t: time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)}
+	s.now = clk.now
+	s.socLimit = newTokenBucket(clk.now())
+	return s, f, clk
+}
+
+func TestSoCSendAndClearShareARateLimit(t *testing.T) {
+	t.Parallel()
+	s, f, clk := limitedServer(t)
+
+	for i := 0; i < socBurst; i++ {
+		body := `{"mrid":"_pv-1","percent":80}`
+		if i%2 == 1 {
+			body = `{"mrid":"_pv-1","clear":true}`
+		}
+		if rec := postSoCFrom(t, s.Handler(), "203.0.113.9:1", body); rec.Code != http.StatusOK {
+			t.Fatalf("request %d: status %d, want 200 inside the burst", i, rec.Code)
+		}
+	}
+	over := postSoCFrom(t, s.Handler(), "203.0.113.9:1", `{"mrid":"_pv-1","percent":80}`)
+	overClear := postSoCFrom(t, s.Handler(), "203.0.113.10:1", `{"mrid":"_pv-1","clear":true}`)
+
+	for name, rec := range map[string]*httptest.ResponseRecorder{"send": over, "clear": overClear} {
+		if rec.Code != http.StatusTooManyRequests {
+			t.Errorf("%s past the burst: status %d, want 429", name, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), socRateLimited) || rec.Header().Get("Retry-After") != "1" {
+			t.Errorf("%s past the burst: body %s Retry-After %q", name, rec.Body, rec.Header().Get("Retry-After"))
+		}
+	}
+	if f.callCount() != socBurst {
+		t.Errorf("service called %d times, want %d: a limited request must not publish", f.callCount(), socBurst)
+	}
+
+	clk.advance(socRefillEvery)
+	if rec := postSoCFrom(t, s.Handler(), "203.0.113.9:1", `{"mrid":"_pv-1","percent":80}`); rec.Code != http.StatusOK {
+		t.Errorf("after one refill interval: status %d, want 200", rec.Code)
+	}
+	if rec := postSoCFrom(t, s.Handler(), "203.0.113.9:1", `{"mrid":"_pv-1","percent":80}`); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("a second request in the same interval: status %d, want 429", rec.Code)
+	}
+}
+
+func TestSoCRateLimitNeverBanksMoreThanTheBurst(t *testing.T) {
+	t.Parallel()
+	s, _, clk := limitedServer(t)
+	clk.advance(24 * time.Hour)
+
+	ok := 0
+	for i := 0; i < socBurst+5; i++ {
+		if postSoCFrom(t, s.Handler(), "203.0.113.9:1", `{"mrid":"_pv-1","percent":80}`).Code == http.StatusOK {
+			ok++
+		}
+	}
+
+	if ok != socBurst {
+		t.Errorf("%d requests passed after a long idle, want exactly the burst of %d", ok, socBurst)
+	}
+}
+
+func TestSoCStatusReadsAreNotRateLimited(t *testing.T) {
+	t.Parallel()
+	s, f, _ := limitedServer(t)
+	f.status["id-1"] = socsend.Status{ID: "id-1"}
+	for i := 0; i < socBurst+5; i++ {
+		postSoCFrom(t, s.Handler(), "203.0.113.9:1", `{"mrid":"_pv-1","percent":80}`)
+	}
+
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/soc/id-1", "", "localhost")
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status read after the send limit was hit: %d, want 200", rec.Code)
 	}
 }

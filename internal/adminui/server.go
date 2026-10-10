@@ -262,6 +262,8 @@ type Server struct {
 	monitor  *monitorPanel
 	sender   *senderPanel
 	soc      SoCSource
+	// socLimit bounds the state-of-charge send and clear route.
+	socLimit *tokenBucket
 
 	// idleAfter is Config.ClientIdleAfter with its default applied.
 	idleAfter time.Duration
@@ -337,6 +339,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		now:       time.Now,
 		timeouts:  defaultTimeouts.withOverrides(cfg),
 	}
+	s.socLimit = newTokenBucket(s.now())
 	if src.Monitor != nil {
 		s.monitor = newMonitorPanel(src.Monitor, s.startedAt)
 	}
