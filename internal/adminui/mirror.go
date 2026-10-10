@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -114,19 +115,9 @@ func uomUnit(uom uint8) string {
 // non-negative integer is a 400, never a silent default.
 func (s *Server) handleMirror(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	since, err := queryInt(q.Get("since"), 0)
+	since, maxSeries, maxPoints, err := queryWindow(q, mirrorLimits)
 	if err != nil {
-		http.Error(w, "since: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	maxSeries, err := queryInt(q.Get("series"), defaultMirrorSeries)
-	if err != nil {
-		http.Error(w, "series: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	maxPoints, err := queryInt(q.Get("points"), defaultMirrorPoints)
-	if err != nil {
-		http.Error(w, "points: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	uom, err := queryInt(q.Get("uom"), -1)
@@ -134,14 +125,6 @@ func (s *Server) handleMirror(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "uom: must be an integer from 0 to 255", http.StatusBadRequest)
 		return
 	}
-	if maxSeries == 0 {
-		maxSeries = defaultMirrorSeries
-	}
-	if maxPoints == 0 {
-		maxPoints = defaultMirrorPoints
-	}
-	maxSeries = min(maxSeries, sep2embed.MaxMirrorSeries)
-	maxPoints = min(maxPoints, sep2embed.MaxMirrorPointsSeries, max(1, maxMirrorResponsePoints/maxSeries))
 
 	query := sep2embed.MirrorQuery{Since: int64(since), Device: q.Get("device"), MaxSeries: maxSeries, MaxPoints: maxPoints}
 	if uom >= 0 {
@@ -205,6 +188,44 @@ func (s *Server) handleMirror(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, out)
+}
+
+// seriesLimits is the default and ceiling of one series response. Points are
+// capped per series and, through maxResponsePoints, across the whole body.
+type seriesLimits struct {
+	defSeries, defPoints       int
+	maxSeries, maxSeriesPoints int
+	maxResponsePoints          int
+}
+
+var mirrorLimits = seriesLimits{
+	defSeries: defaultMirrorSeries, defPoints: defaultMirrorPoints,
+	maxSeries: sep2embed.MaxMirrorSeries, maxSeriesPoints: sep2embed.MaxMirrorPointsSeries,
+	maxResponsePoints: maxMirrorResponsePoints,
+}
+
+// queryWindow reads since, series and points. A zero series or points means
+// the default, and the ceilings apply after, so a request cannot raise them. A
+// bad number is an error naming the parameter.
+func queryWindow(q url.Values, l seriesLimits) (since, series, points int, err error) {
+	if since, err = queryInt(q.Get("since"), 0); err != nil {
+		return 0, 0, 0, fmt.Errorf("since: %w", err)
+	}
+	if series, err = queryInt(q.Get("series"), l.defSeries); err != nil {
+		return 0, 0, 0, fmt.Errorf("series: %w", err)
+	}
+	if points, err = queryInt(q.Get("points"), l.defPoints); err != nil {
+		return 0, 0, 0, fmt.Errorf("points: %w", err)
+	}
+	if series == 0 {
+		series = l.defSeries
+	}
+	if points == 0 {
+		points = l.defPoints
+	}
+	series = min(series, l.maxSeries)
+	points = min(points, l.maxSeriesPoints, max(1, l.maxResponsePoints/series))
+	return since, series, points, nil
 }
 
 // queryInt parses an optional non-negative integer query value.

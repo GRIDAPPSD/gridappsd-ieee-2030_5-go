@@ -2,8 +2,11 @@ package adminui
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
+	"math"
 	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -50,17 +53,17 @@ func pageServer(t *testing.T, h *outputHistory) *Server {
 	return s
 }
 
-func TestDevicesListsNameMridLfdiSortedAndNothingElse(t *testing.T) {
+func TestDevicesListsNameAndMridSortedAndNothingElse(t *testing.T) {
 	t.Parallel()
 	s := pageServer(t, &outputHistory{})
 	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/devices", "", "localhost")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != `[{"mrid":"m-a","name":"bat-a","lfdi":"AAAA"},{"mrid":"m-b","name":"pv-b","lfdi":"BBBB"}]`+"\n" {
+	if got := rec.Body.String(); got != `[{"mrid":"m-a","name":"bat-a"},{"mrid":"m-b","name":"pv-b"}]`+"\n" {
 		t.Errorf("body = %s", got)
 	}
-	for _, banned := range []string{"sfdi", "111111111", "222222222", "placeholder"} {
+	for _, banned := range []string{"lfdi", "AAAA", "BBBB", "sfdi", "111111111", "222222222", "placeholder"} {
 		if strings.Contains(rec.Body.String(), banned) {
 			t.Errorf("body carries %q: %s", banned, rec.Body.String())
 		}
@@ -69,6 +72,22 @@ func TestDevicesListsNameMridLfdiSortedAndNothingElse(t *testing.T) {
 		t.Errorf("Cache-Control = %q", cc)
 	}
 	assertSocHeaders(t, rec.Header())
+}
+
+func TestDevicesSortByNameThenMrid(t *testing.T) {
+	t.Parallel()
+	s := pageServer(t, &outputHistory{})
+	s.registry = &fakeRegistry{entries: []registry.Entry{
+		{MRID: "m-1", Name: "zeta"},
+		{MRID: "m-3", Name: "alpha"},
+		{MRID: "m-2", Name: "alpha"},
+		{MRID: "m-4", Name: "mid"},
+	}}
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/devices", "", "localhost")
+	want := `[{"mrid":"m-2","name":"alpha"},{"mrid":"m-3","name":"alpha"},{"mrid":"m-4","name":"mid"},{"mrid":"m-1","name":"zeta"}]` + "\n"
+	if rec.Body.String() != want {
+		t.Errorf("body = %s, want %s", rec.Body.String(), want)
+	}
 }
 
 func TestDevicesEmptyRegistryIsAnEmptyArray(t *testing.T) {
@@ -347,4 +366,172 @@ func TestEveryEmbeddedPageFileIsServedAndIndexUsesOnlyMountedPaths(t *testing.T)
 	if strings.Contains(string(index), "<script>") || strings.Contains(string(index), " style=") {
 		t.Error("index.html carries inline script or style, which the CSP blocks")
 	}
+}
+
+func getOutput(t *testing.T, s *Server, query string) (outputResponse, *httptest.ResponseRecorder) {
+	t.Helper()
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/output"+query, "", "localhost")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("output%s = %d, body %s", query, rec.Code, rec.Body.String())
+	}
+	var got outputResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	return got, rec
+}
+
+func nSamples(n int) []telemetryhistory.Sample {
+	out := make([]telemetryhistory.Sample, n)
+	for i := range out {
+		out[i] = telemetryhistory.Sample{At: 1_700_000_000 + int64(i), Value: float64(i)}
+	}
+	return out
+}
+
+func TestOutputDefaultHoldsA49DeviceFleet(t *testing.T) {
+	t.Parallel()
+	const devices, attrs = 49, 7
+	var series []telemetryhistory.SeriesSnapshot
+	for d := range devices {
+		for a := range attrs {
+			series = append(series, histSeries(fmt.Sprintf("m-%02d", d), fmt.Sprintf("DERStatus.attr%d", a), nSamples(3)...))
+		}
+	}
+	s := pageServer(t, &outputHistory{series: series})
+	got, _ := getOutput(t, s, "")
+	if got.TotalSeries != devices*attrs || got.SeriesTruncated || len(got.Series) != devices*attrs {
+		t.Fatalf("total %d truncated %v kept %d, want all %d", got.TotalSeries, got.SeriesTruncated, len(got.Series), devices*attrs)
+	}
+	seen := map[string]int{}
+	for _, sr := range got.Series {
+		seen[sr.MRID]++
+	}
+	if seen["m-48"] != attrs {
+		t.Errorf("last device m-48 has %d series, want %d", seen["m-48"], attrs)
+	}
+	if defaultOutputSeries*defaultOutputPoints > maxOutputResponsePoints {
+		t.Errorf("default %d x %d exceeds the %d-point body bound", defaultOutputSeries, defaultOutputPoints, maxOutputResponsePoints)
+	}
+}
+
+func TestOutputBuildSlotIsReleasedAfterEachRequest(t *testing.T) {
+	t.Parallel()
+	s := pageServer(t, &outputHistory{})
+	for i := range 3 * maxOutputBuilds {
+		if rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/output", "", "localhost"); rec.Code != http.StatusOK {
+			t.Fatalf("request %d = %d, want 200", i, rec.Code)
+		}
+	}
+	if n := len(s.outputBuilds); n != 0 {
+		t.Errorf("%d build slots still held", n)
+	}
+}
+
+func TestOutputCeilings(t *testing.T) {
+	t.Parallel()
+	t.Run("series ceiling", func(t *testing.T) {
+		t.Parallel()
+		var series []telemetryhistory.SeriesSnapshot
+		for i := range maxOutputSeries + 5 {
+			series = append(series, histSeries(fmt.Sprintf("m-%04d", i), attrSoC, nSamples(1)...))
+		}
+		s := pageServer(t, &outputHistory{series: series})
+		got, _ := getOutput(t, s, fmt.Sprintf("?series=%d", maxOutputSeries+1))
+		if len(got.Series) != maxOutputSeries || got.TotalSeries != maxOutputSeries+5 || !got.SeriesTruncated {
+			t.Errorf("kept %d of %d truncated %v, want %d of %d", len(got.Series), got.TotalSeries, got.SeriesTruncated, maxOutputSeries, maxOutputSeries+5)
+		}
+	})
+	t.Run("points per series ceiling", func(t *testing.T) {
+		t.Parallel()
+		s := pageServer(t, &outputHistory{series: []telemetryhistory.SeriesSnapshot{histSeries("m-a", attrSoC, nSamples(maxOutputPointsSeries+100)...)}})
+		got, _ := getOutput(t, s, fmt.Sprintf("?series=1&points=%d", maxOutputPointsSeries+1))
+		sr := got.Series[0]
+		if len(sr.Points) != maxOutputPointsSeries || sr.Total != maxOutputPointsSeries+100 || !sr.Truncated {
+			t.Errorf("served %d of %d truncated %v, want %d of %d", len(sr.Points), sr.Total, sr.Truncated, maxOutputPointsSeries, maxOutputPointsSeries+100)
+		}
+	})
+	t.Run("response points ceiling", func(t *testing.T) {
+		t.Parallel()
+		per := maxOutputResponsePoints/maxOutputSeries + 10
+		var series []telemetryhistory.SeriesSnapshot
+		for i := range maxOutputSeries {
+			series = append(series, histSeries(fmt.Sprintf("m-%04d", i), attrSoC, nSamples(per)...))
+		}
+		s := pageServer(t, &outputHistory{series: series})
+		got, _ := getOutput(t, s, fmt.Sprintf("?series=%d&points=%d", maxOutputSeries, maxOutputPointsSeries))
+		served := 0
+		for _, sr := range got.Series {
+			served += len(sr.Points)
+		}
+		if served > maxOutputResponsePoints || len(got.Series[0].Points) != maxOutputResponsePoints/maxOutputSeries {
+			t.Errorf("served %d points, %d per series; want at most %d, %d per series", served, len(got.Series[0].Points), maxOutputResponsePoints, maxOutputResponsePoints/maxOutputSeries)
+		}
+	})
+}
+
+func TestOutputExactPointsIsNotTruncatedAndZeroMeansDefault(t *testing.T) {
+	t.Parallel()
+	s := pageServer(t, &outputHistory{series: []telemetryhistory.SeriesSnapshot{histSeries("m-a", attrSoC, nSamples(3)...)}})
+	got, _ := getOutput(t, s, "?points=3")
+	if sr := got.Series[0]; sr.Truncated || len(sr.Points) != 3 || sr.Total != 3 {
+		t.Errorf("series = %+v, want 3 of 3 untruncated", sr)
+	}
+	got, _ = getOutput(t, s, "?series=0&points=0")
+	if len(got.Series) != 1 || len(got.Series[0].Points) != 3 {
+		t.Errorf("series=0 points=0 = %+v, want the default window", got.Series)
+	}
+}
+
+func TestOutputDropsNonFiniteValuesAndKeepsReportedPrefixDot(t *testing.T) {
+	t.Parallel()
+	h := &outputHistory{series: []telemetryhistory.SeriesSnapshot{
+		histSeries("m-a", attrSoC,
+			telemetryhistory.Sample{At: 1_700_000_001, Value: math.NaN()},
+			telemetryhistory.Sample{At: 1_700_000_002, Value: 7},
+			telemetryhistory.Sample{At: 1_700_000_003, Value: math.Inf(1)},
+			telemetryhistory.Sample{At: 1_700_000_004, Value: math.Inf(-1)}),
+		histSeries("m-a", "DERStatusX.stateOfChargeStatus", nSamples(1)...),
+	}}
+	s := pageServer(t, h)
+	got, _ := getOutput(t, s, "")
+	if len(got.Series) != 1 || got.Series[0].Attribute != attrSoC || got.Series[0].Total != 1 || len(got.Series[0].Points) != 1 || got.Series[0].Points[0] != (outputPointResponse{T: 1_700_000_002, V: 7}) {
+		t.Errorf("series = %+v, want only the finite point of the DERStatus. series", got.Series)
+	}
+}
+
+func TestOutputEmptySeriesIsAnEmptyArray(t *testing.T) {
+	t.Parallel()
+	s := pageServer(t, &outputHistory{})
+	_, rec := getOutput(t, s, "")
+	if !strings.Contains(rec.Body.String(), `"series":[]`) {
+		t.Errorf("body = %s, want series as []", rec.Body.String())
+	}
+}
+
+func TestPageServedWithSoCOnly(t *testing.T) {
+	t.Parallel()
+	src := testSources()
+	src.SoC = newFakeSoC()
+	s := newServer(t, Config{Key: testKey}, src)
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/", "", "localhost")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "loading") {
+		t.Errorf("/apps/soc/ with SoC only = %d", rec.Code)
+	}
+	assertSocHeaders(t, rec.Header())
+}
+
+func TestRefusedRepliesCarryTheSecurityHeaders(t *testing.T) {
+	t.Parallel()
+	s := pageServer(t, &outputHistory{})
+	forbidden := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/output", "", "evil.example")
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("foreign Host = %d, want 403", forbidden.Code)
+	}
+	assertSocHeaders(t, forbidden.Header())
+	notAllowed := doRequest(t, s.Handler(), http.MethodPost, "/apps/soc/api/output", "", "localhost")
+	if notAllowed.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST = %d, want 405", notAllowed.Code)
+	}
+	assertSocHeaders(t, notAllowed.Header())
 }

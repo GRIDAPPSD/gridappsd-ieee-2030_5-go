@@ -34,17 +34,26 @@ const socPageCSP = "default-src 'self'; script-src 'self'; style-src 'self'; " +
 	"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
 // Defaults and ceilings for one output response, with the same meaning as
-// the mirror's: maxOutputResponsePoints bounds the whole body.
+// the mirror's: maxOutputResponsePoints bounds the whole body. A 49-device
+// fleet reports 7 DERStatus attributes each, 343 series; the default holds
+// them with margin and the points default is what that many series can carry
+// inside the body bound.
 const (
-	defaultOutputSeries     = 200
-	defaultOutputPoints     = 250
-	maxOutputSeries         = 500
+	defaultOutputSeries     = 500
+	defaultOutputPoints     = 100
+	maxOutputSeries         = 1000
 	maxOutputPointsSeries   = 2000
 	maxOutputResponsePoints = 50000
 
 	maxOutputBuilds = 4
 	outputBusy      = "output readings busy, retry shortly"
 )
+
+var outputLimits = seriesLimits{
+	defSeries: defaultOutputSeries, defPoints: defaultOutputPoints,
+	maxSeries: maxOutputSeries, maxSeriesPoints: maxOutputPointsSeries,
+	maxResponsePoints: maxOutputResponsePoints,
+}
 
 // socHeaders sets the page's security headers before next runs, so error
 // responses carry them too.
@@ -90,6 +99,7 @@ func staticFile(name, contentType string) http.Handler {
 		}
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Cache-Control", "no-store")
+		// The status is sent; a failed write is the client leaving.
 		_, _ = w.Write(b)
 	})
 }
@@ -97,17 +107,16 @@ func staticFile(name, contentType string) http.Handler {
 type deviceResponse struct {
 	MRID string `json:"mrid"`
 	Name string `json:"name"`
-	LFDI string `json:"lfdi"`
 }
 
 // handleDevices answers GET /apps/soc/api/devices with the registered
-// devices by name. Only the three fields the page needs are served; the
-// SFDI and the placeholder flag stay behind the Bearer-gated registry route.
+// devices by name. Only the two fields the page needs are served; the
+// LFDI, SFDI and the placeholder flag stay behind the Bearer-gated registry route.
 func (s *Server) handleDevices(w http.ResponseWriter, _ *http.Request) {
 	entries := s.registry.Snapshot()
 	out := make([]deviceResponse, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, deviceResponse{MRID: e.MRID, Name: e.Name, LFDI: e.LFDI})
+		out = append(out, deviceResponse{MRID: e.MRID, Name: e.Name})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
@@ -152,29 +161,11 @@ type outputResponse struct {
 // the same store. A series with no point at or after since is left out.
 func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	since, err := queryInt(q.Get("since"), 0)
+	since, maxSeries, maxPoints, err := queryWindow(q, outputLimits)
 	if err != nil {
-		http.Error(w, "since: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	maxSeries, err := queryInt(q.Get("series"), defaultOutputSeries)
-	if err != nil {
-		http.Error(w, "series: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	maxPoints, err := queryInt(q.Get("points"), defaultOutputPoints)
-	if err != nil {
-		http.Error(w, "points: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if maxSeries == 0 {
-		maxSeries = defaultOutputSeries
-	}
-	if maxPoints == 0 {
-		maxPoints = defaultOutputPoints
-	}
-	maxSeries = min(maxSeries, maxOutputSeries)
-	maxPoints = min(maxPoints, maxOutputPointsSeries, max(1, maxOutputResponsePoints/maxSeries))
 	device := q.Get("device")
 
 	select {
