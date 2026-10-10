@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,15 +33,25 @@ const (
 	DefaultHold = 60 * time.Second
 	MinHold     = time.Second
 	MaxHold     = time.Hour
-	// MaxLedger is how many sends are kept, oldest dropped first.
+	// MaxLedger is how many sends are kept. Past it, the oldest finished
+	// send is dropped; a send still awaiting its verdict is never dropped.
 	MaxLedger = 64
 	// VerifyGrace is how long after the hold ends a send may still be
 	// matched before its verdict is final.
 	VerifyGrace = 60 * time.Second
 	// DefaultPollInterval is how often Run looks for the value coming back.
 	DefaultPollInterval = 2 * time.Second
+	// FeedRetryMin and FeedRetryMax bound the wait before the output feed is
+	// reopened after the monitor reports it refused, failed or closed.
+	FeedRetryMin = 2 * time.Second
+	FeedRetryMax = time.Minute
 
 	contentTypeJSON = "application/json"
+
+	feedDownNote         = "the output topic feed is unavailable and is being reopened, so a value on it may not be seen"
+	feedReconnectingNote = "the output topic feed is reconnecting, so a value on it may not be seen"
+	storeNote            = "the device status store could not be read, so the device stage was not checked"
+	baseNote             = "the device's value before the send could not be read, so its post cannot be told from the earlier value"
 )
 
 // Kinds of ledger entry.
@@ -149,11 +160,31 @@ type Status struct {
 	Note           string   `json:"note,omitempty"`
 }
 
+// derKey names one DER of one end device inside a status snapshot.
+type derKey struct{ edev, der string }
+
+// point is a stored state of charge: the value in hundredths of a percent
+// and the dateTime the device stamped on it.
+type point struct {
+	value    uint16
+	dateTime int64
+}
+
 type record struct {
 	Status
 	hold      time.Duration
 	deadline  time.Time
 	cutFrames bool
+	// base is what the device had stored when the send was made. A stored
+	// value counts as the device's reply only if it differs from base or
+	// carries a newer dateTime. baseUnknown is set when the store could not
+	// be read at send, so nothing can be told apart from the earlier value.
+	base        map[derKey]point
+	baseUnknown bool
+	// storeErr is set when the store could not be read during the window.
+	storeErr bool
+	// feedNote is the output feed's trouble as of the last refresh.
+	feedNote string
 	// done is set by the settle that ends the follow: the deadline passed,
 	// or the send matched and was released.
 	done bool
@@ -167,6 +198,12 @@ type Service struct {
 	// refreshMu serializes refresh and owns feed.
 	refreshMu sync.Mutex
 	feed      Feed
+	// feedNote, backoff and reopenAt describe the output feed's trouble: a
+	// terminal status or a failed Watch closes the feed and holds off the
+	// next open, doubling the wait up to FeedRetryMax.
+	feedNote string
+	backoff  time.Duration
+	reopenAt time.Time
 
 	mu     sync.Mutex
 	ledger []*record
@@ -213,6 +250,11 @@ func (s *Service) publish(ctx context.Context, kind, mrid string, percent int, h
 		return Status{}, ErrUnknownDevice
 	}
 	now := s.cfg.Now()
+	var base map[derKey]point
+	baseUnknown := false
+	if kind == KindSend {
+		base, baseUnknown = s.readBaseline(ctx, mrid)
+	}
 	msg, err := diff.NewBuilder("").Message(now.UTC().Unix())
 	if err != nil {
 		s.cfg.Logf("socsend: build message: %v", err)
@@ -240,19 +282,68 @@ func (s *Service) publish(ctx context.Context, kind, mrid string, percent int, h
 			Percent: percent, HoldSeconds: int(hold / time.Second),
 			SentAt: now, Verdict: VerdictPending,
 		},
-		hold:     hold,
-		deadline: now.Add(hold + VerifyGrace),
+		hold:        hold,
+		deadline:    now.Add(hold + VerifyGrace),
+		base:        base,
+		baseUnknown: baseUnknown,
 	}
 	if kind == KindClear {
 		rec.Verdict = VerdictNone
 	}
 	s.mu.Lock()
 	s.ledger = append(s.ledger, rec)
-	if over := len(s.ledger) - MaxLedger; over > 0 {
-		s.ledger = append([]*record(nil), s.ledger[over:]...)
-	}
+	s.trimLedgerLocked()
 	s.mu.Unlock()
 	return rec.Status, nil
+}
+
+// trimLedgerLocked drops the oldest finished entries until the ledger is
+// within MaxLedger. A send whose verdict is still pending is kept even if
+// that leaves the ledger over the limit: the callers' rate limit bounds how
+// many can be pending, and a flushed pending send reads as "no such send".
+func (s *Service) trimLedgerLocked() {
+	for len(s.ledger) > MaxLedger {
+		drop := -1
+		for i, r := range s.ledger {
+			if !active(r) {
+				drop = i
+				break
+			}
+		}
+		if drop < 0 {
+			return
+		}
+		s.ledger = append(s.ledger[:drop:drop], s.ledger[drop+1:]...)
+	}
+}
+
+// readBaseline records what the device has stored for mrid before the send.
+func (s *Service) readBaseline(ctx context.Context, mrid string) (map[derKey]point, bool) {
+	snaps, err := s.cfg.Statuses.DERStatusSnapshots(ctx)
+	if err != nil {
+		s.cfg.Logf("socsend: read device status before send: %v", err)
+		return nil, true
+	}
+	base := map[derKey]point{}
+	for _, sn := range snaps {
+		if sn.MRID != mrid || sn.Status.StateOfChargeStatus == nil {
+			continue
+		}
+		soc := sn.Status.StateOfChargeStatus
+		base[derKey{sn.EDevID, sn.DERID}] = point{soc.Value, soc.DateTime}
+	}
+	return base, false
+}
+
+// fresh reports whether sn is a post made after the send: its value or its
+// dateTime moved from the baseline. A DER the baseline never saw is fresh.
+func (r *record) fresh(sn sep2embed.DERStatusSnapshot) bool {
+	b, ok := r.base[derKey{sn.EDevID, sn.DERID}]
+	if !ok {
+		return true
+	}
+	soc := sn.Status.StateOfChargeStatus
+	return soc.Value != b.value || soc.DateTime > b.dateTime
 }
 
 // Status returns the send with the given id after looking for its value
@@ -326,6 +417,7 @@ func (s *Service) refresh(ctx context.Context) {
 			s.feed.Close()
 			s.feed = nil
 		}
+		s.feedNote, s.backoff, s.reopenAt = "", 0, time.Time{}
 		return
 	}
 
@@ -333,7 +425,7 @@ func (s *Service) refresh(ctx context.Context) {
 	if serr != nil {
 		s.cfg.Logf("socsend: read device status: %v", serr)
 	}
-	sights := s.drainFeed()
+	sights := s.drainFeed(now)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -341,8 +433,13 @@ func (s *Service) refresh(ctx context.Context) {
 		if !active(r) {
 			continue
 		}
-		if serr == nil && now.Before(r.deadline) {
-			observeDevice(r, snaps, now)
+		r.feedNote = s.feedNote
+		if now.Before(r.deadline) {
+			if serr != nil {
+				r.storeErr = true
+			} else {
+				observeDevice(r, snaps, now)
+			}
 		}
 		for _, sg := range sights {
 			observeOutput(r, sg)
@@ -352,16 +449,21 @@ func (s *Service) refresh(ctx context.Context) {
 }
 
 // drainFeed returns the frames that arrived on the output topic since the
-// last call, opening the feed first if it is not open.
-func (s *Service) drainFeed() []sighting {
+// last call, opening the feed first if it is not open and its retry wait
+// has passed.
+func (s *Service) drainFeed(now time.Time) []sighting {
 	if s.cfg.Watcher == nil || s.cfg.OutputTopic == "" {
 		return nil
 	}
 	var out []sighting
 	if s.feed == nil {
+		if now.Before(s.reopenAt) {
+			return nil
+		}
 		f, err := s.cfg.Watcher.Watch(s.cfg.OutputTopic)
 		if err != nil {
 			s.cfg.Logf("socsend: watch %s: %v", s.cfg.OutputTopic, err)
+			s.feedDown(now)
 			return nil
 		}
 		s.feed = f
@@ -379,13 +481,49 @@ func (s *Service) drainFeed() []sighting {
 				s.feed = nil
 				return out
 			}
-			if ev.Kind == busmonitor.EventMessage {
+			switch ev.Kind {
+			case busmonitor.EventMessage:
 				out = append(out, parseFrame(ev.Message))
+			case busmonitor.EventStatus:
+				if s.onFeedStatus(ev.Status, now) {
+					return out
+				}
 			}
 		default:
 			return out
 		}
 	}
+}
+
+// onFeedStatus logs one connection state change of the output topic and
+// keeps the note sends carry. It reports true when it closed the feed.
+func (s *Service) onFeedStatus(st busmonitor.Status, now time.Time) bool {
+	s.cfg.Logf("socsend: output topic %s is %s: %s", s.cfg.OutputTopic, st.State, st.Reason)
+	switch st.State {
+	case busmonitor.StateLive:
+		s.feedNote, s.backoff = "", 0
+	case busmonitor.StateRefused, busmonitor.StateFailed, busmonitor.StateClosed:
+		s.feed.Close()
+		s.feed = nil
+		s.feedDown(now)
+		return true
+	default:
+		s.feedNote = feedReconnectingNote
+	}
+	return false
+}
+
+// feedDown notes that the output feed is unavailable and holds off the next
+// open, doubling the wait each time up to FeedRetryMax.
+func (s *Service) feedDown(now time.Time) {
+	s.feedNote = feedDownNote
+	switch {
+	case s.backoff == 0:
+		s.backoff = FeedRetryMin
+	case s.backoff < FeedRetryMax:
+		s.backoff = min(2*s.backoff, FeedRetryMax)
+	}
+	s.reopenAt = now.Add(s.backoff)
 }
 
 func parseFrame(m busmonitor.Message) sighting {
@@ -425,29 +563,35 @@ func parseFrame(m busmonitor.Message) sighting {
 
 func observeDevice(r *record, snaps []sep2embed.DERStatusSnapshot, now time.Time) {
 	var equal bool
-	var other *float64
+	var otherAny, otherFresh *float64
 	for _, sn := range snaps {
 		if sn.MRID != r.MRID || sn.Status.StateOfChargeStatus == nil {
 			continue
 		}
 		v := sn.Status.StateOfChargeStatus.Value
 		if int(v) == r.Percent*100 {
-			equal = true
+			// The value the device held before the send is not its reply.
+			if r.fresh(sn) {
+				equal = true
+			}
 			continue
 		}
 		p := float64(v) / 100
-		other = &p
+		otherAny = &p
+		if r.fresh(sn) {
+			otherFresh = &p
+		}
 	}
 	if r.PostedAt == nil {
 		if equal {
 			r.PostedAt = &now
 		} else {
-			r.DeviceReported = other
+			r.DeviceReported = otherFresh
 		}
 		return
 	}
 	// Released: the held value has gone and the device reports another.
-	if !equal && other != nil && r.ReleasedAt == nil && !now.Before(r.SentAt.Add(r.hold)) {
+	if !equal && otherAny != nil && r.ReleasedAt == nil && !now.Before(r.SentAt.Add(r.hold)) {
 		r.ReleasedAt = &now
 	}
 }
@@ -494,7 +638,6 @@ func (s *Service) settle(r *record, now time.Time) {
 	switch {
 	case r.PostedAt != nil && r.SeenAt != nil:
 		r.Verdict = VerdictMatched
-		r.Note = ""
 		r.done = r.ReleasedAt != nil || expired
 	case !expired:
 		r.Verdict = VerdictPending
@@ -502,8 +645,28 @@ func (s *Service) settle(r *record, now time.Time) {
 		r.Verdict = VerdictMismatch
 	default:
 		r.Verdict = VerdictNotSeen
+	}
+	r.Note = r.notes()
+}
+
+// notes joins what the reader needs to know about how far the verdict can be
+// trusted: the feed's trouble while it can still matter, and for a verdict
+// of not seen the stage that could not be checked.
+func (r *record) notes() string {
+	var parts []string
+	if r.Verdict != VerdictMatched && r.feedNote != "" {
+		parts = append(parts, r.feedNote)
+	}
+	if r.baseUnknown && r.PostedAt != nil {
+		parts = append(parts, baseNote)
+	}
+	if r.Verdict == VerdictNotSeen {
+		if r.storeErr && r.PostedAt == nil {
+			parts = append(parts, storeNote)
+		}
 		if r.cutFrames && r.SeenAt == nil {
-			r.Note = fmt.Sprintf("output frames larger than %d bytes are cut by the bus monitor, so a device late in a frame may not be seen", busmonitor.MaxBodyBytes)
+			parts = append(parts, fmt.Sprintf("output frames larger than %d bytes are cut by the bus monitor, so a device late in a frame may not be seen", busmonitor.MaxBodyBytes))
 		}
 	}
+	return strings.Join(parts, "; ")
 }

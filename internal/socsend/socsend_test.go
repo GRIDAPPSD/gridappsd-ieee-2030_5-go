@@ -52,18 +52,24 @@ func (b *fakeBus) count() int {
 }
 
 type fakeStatuses struct {
-	mu      sync.Mutex
-	percent map[string]uint16
-	err     error
+	mu       sync.Mutex
+	percent  map[string]uint16
+	dateTime map[string]int64
+	posts    int64
+	err      error
 }
 
+// set stores hundredths for mrid as a device post: every call stamps a newer
+// dateTime, so setting the value a device already holds is a re-post. A
+// value that is not set again is not posted again.
 func (f *fakeStatuses) set(mrid string, hundredths uint16) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.percent == nil {
-		f.percent = map[string]uint16{}
+		f.percent, f.dateTime = map[string]uint16{}, map[string]int64{}
 	}
-	f.percent[mrid] = hundredths
+	f.posts++
+	f.percent[mrid], f.dateTime[mrid] = hundredths, f.posts
 }
 
 func (f *fakeStatuses) DERStatusSnapshots(context.Context) ([]sep2embed.DERStatusSnapshot, error) {
@@ -75,7 +81,7 @@ func (f *fakeStatuses) DERStatusSnapshots(context.Context) ([]sep2embed.DERStatu
 	var out []sep2embed.DERStatusSnapshot
 	for m, v := range f.percent {
 		out = append(out, sep2embed.DERStatusSnapshot{MRID: m, EDevID: "e", DERID: "1",
-			Status: sep2.DERStatus{StateOfChargeStatus: &sep2.StateOfChargeStatusType{Value: v}}})
+			Status: sep2.DERStatus{StateOfChargeStatus: &sep2.StateOfChargeStatusType{Value: v, DateTime: f.dateTime[m]}}})
 	}
 	return out, nil
 }
@@ -336,8 +342,8 @@ func TestRoundTripMatchedWithTimesAndRelease(t *testing.T) {
 	if !ok || got.PostedAt != nil || got.Verdict != VerdictPending {
 		t.Fatalf("before the device posts: %+v ok=%v", got, ok)
 	}
-	if got.DeviceReported == nil || *got.DeviceReported != 65 {
-		t.Errorf("deviceReportedPercent = %v, want 65", got.DeviceReported)
+	if got.DeviceReported != nil {
+		t.Errorf("deviceReportedPercent = %v, want none: 65 was the value before the send", *got.DeviceReported)
 	}
 
 	// The device posts the value; the output topic has not carried it.
@@ -418,15 +424,16 @@ func TestVerdictMismatchWhenStagesDisagree(t *testing.T) {
 		outputPct float64
 	}{
 		{"device posted the value, output carried another", 8000, 70},
-		{"output carried the value, device reports another", 6500, 80},
+		{"output carried the value, device posted another", 7000, 80},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := newRig(t)
 			ctx := context.Background()
-			r.stat.set(testMRID, tc.devicePct)
+			r.stat.set(testMRID, 6500)
 			st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
 			r.clk.advance(2 * time.Second)
+			r.stat.set(testMRID, tc.devicePct)
 			r.svc.Status(ctx, st.ID) // opens the feed
 			r.deliver(outputFrame(r.clk.now(), testMRID, tc.outputPct))
 			r.clk.advance(time.Minute + VerifyGrace)
@@ -444,8 +451,9 @@ func TestOutputFrameCutAtTheMonitorLimitIsStillRead(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx := context.Background()
-	r.stat.set(testMRID, 8000)
+	r.stat.set(testMRID, 6500)
 	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.stat.set(testMRID, 8000)
 	r.svc.Status(ctx, st.ID)
 
 	full := outputFrame(r.clk.now(), testMRID, 80)
@@ -464,8 +472,9 @@ func TestCutFrameWithoutTheDeviceExplainsNotSeen(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx := context.Background()
-	r.stat.set(testMRID, 8000)
+	r.stat.set(testMRID, 6500)
 	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.stat.set(testMRID, 8000)
 	r.svc.Status(ctx, st.ID)
 	cut := `{"input":{"message":{"forward_differences":[{"object":"_other","attribute":"DERStatus.stateOfChargeStatus","value":1},{"object":"_ot`
 	r.deliver(busmonitor.Message{Received: r.clk.now(), Body: []byte(cut), Truncated: true})
@@ -482,8 +491,9 @@ func TestBacklogAtOpenIsReadAndEarlierFramesAreNot(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx := context.Background()
-	r.stat.set(testMRID, 8000)
+	r.stat.set(testMRID, 6500)
 	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.stat.set(testMRID, 8000)
 	r.clk.advance(time.Second)
 	r.watch.next = &fakeFeed{events: make(chan busmonitor.Event, 4), backlog: []busmonitor.Message{
 		outputFrame(st.SentAt.Add(-time.Minute), testMRID, 80),
@@ -501,8 +511,9 @@ func TestFeedClosedByTheMonitorIsReopened(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx := context.Background()
-	r.stat.set(testMRID, 8000)
+	r.stat.set(testMRID, 6500)
 	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.stat.set(testMRID, 8000)
 	r.svc.Status(ctx, st.ID)
 	close(r.watch.last().events)
 	r.svc.Status(ctx, st.ID)
@@ -534,15 +545,15 @@ func TestFeedIsClosedWhenNothingIsPending(t *testing.T) {
 	}
 }
 
-func TestLedgerKeepsTheNewestSixtyFour(t *testing.T) {
+func TestLedgerKeepsTheNewestSixtyFourFinishedEntries(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx := context.Background()
 	var ids []string
 	for i := 0; i < MaxLedger+6; i++ {
-		st, err := r.svc.Send(ctx, testMRID, i%101, time.Minute)
+		st, err := r.svc.Clear(ctx, testMRID)
 		if err != nil {
-			t.Fatalf("Send %d: %v", i, err)
+			t.Fatalf("Clear %d: %v", i, err)
 		}
 		ids = append(ids, st.ID)
 	}
@@ -550,8 +561,60 @@ func TestLedgerKeepsTheNewestSixtyFour(t *testing.T) {
 	for i, id := range ids {
 		_, ok := r.svc.Status(ctx, id)
 		if want := i >= 6; ok != want {
-			t.Errorf("send %d: found=%v, want %v", i, ok, want)
+			t.Errorf("clear %d: found=%v, want %v", i, ok, want)
 		}
+	}
+}
+
+func TestLedgerNeverEvictsASendStillAwaitingItsVerdict(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	first, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	var clears []string
+	for i := 0; i < MaxLedger+6; i++ {
+		st, _ := r.svc.Clear(ctx, testMRID)
+		clears = append(clears, st.ID)
+	}
+
+	if got, ok := r.svc.Status(ctx, first.ID); !ok || got.Verdict != VerdictPending {
+		t.Fatalf("the pending send was evicted by later entries: found=%v %+v", ok, got)
+	}
+	// The pending send takes one place; the oldest finished entries make room.
+	for i, id := range clears {
+		_, ok := r.svc.Status(ctx, id)
+		if want := i >= 7; ok != want {
+			t.Errorf("clear %d: found=%v, want %v", i, ok, want)
+		}
+	}
+
+	var sends []string
+	for i := 0; i < MaxLedger+6; i++ {
+		st, _ := r.svc.Send(ctx, otherDevice, i%101, time.Minute)
+		sends = append(sends, st.ID)
+	}
+	for i, id := range sends {
+		if _, ok := r.svc.Status(ctx, id); !ok {
+			t.Errorf("pending send %d was evicted", i)
+		}
+	}
+}
+
+func TestSendFinishedByItsVerdictBecomesEvictable(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	first, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.clk.advance(time.Minute + VerifyGrace)
+	if got, _ := r.svc.Status(ctx, first.ID); got.Verdict != VerdictNotSeen {
+		t.Fatalf("verdict %q, want not seen", got.Verdict)
+	}
+	for i := 0; i < MaxLedger; i++ {
+		r.svc.Clear(ctx, testMRID)
+	}
+
+	if _, ok := r.svc.Status(ctx, first.ID); ok {
+		t.Errorf("a send with its final verdict was kept past the ledger limit")
 	}
 }
 
@@ -621,4 +684,350 @@ func TestNewRequiresItsDependencies(t *testing.T) {
 	if _, err := New(Config{Bus: &fakeBus{}, Devices: registry.New(), Statuses: &fakeStatuses{}}); err == nil {
 		t.Errorf("New accepted a config with no input topic")
 	}
+}
+
+func TestDeviceAlreadyAtTheSentValueIsNotAPost(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.set(testMRID, 8000)
+	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.clk.advance(time.Second)
+	r.svc.Status(ctx, st.ID)
+	r.deliver(outputFrame(r.clk.now(), testMRID, 80))
+
+	got, _ := r.svc.Status(ctx, st.ID)
+	if got.PostedAt != nil || got.Verdict != VerdictPending {
+		t.Fatalf("a value held before the send was taken as the post: %+v", got)
+	}
+	r.clk.advance(time.Minute + VerifyGrace)
+	got, _ = r.svc.Status(ctx, st.ID)
+	if got.PostedAt != nil || got.SeenAt == nil || got.Verdict != VerdictNotSeen {
+		t.Errorf("final: %+v, want seen on the output, never posted, and not seen", got)
+	}
+}
+
+func TestSameValuePostedAgainWithANewerDateTimeIsAPost(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.set(testMRID, 8000)
+	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.clk.advance(time.Second)
+	r.stat.set(testMRID, 8000)
+
+	got, _ := r.svc.Status(ctx, st.ID)
+
+	if got.PostedAt == nil || !got.PostedAt.Equal(r.clk.now()) {
+		t.Errorf("postedAt = %v, want %s for a re-post of the same value", got.PostedAt, r.clk.now())
+	}
+}
+
+func TestValueHeldBeforeTheSendNeverCountsAsMismatch(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.set(testMRID, 3000)
+	st, _ := r.svc.Send(ctx, testMRID, 50, time.Minute)
+	r.clk.advance(time.Second)
+	r.svc.Status(ctx, st.ID)
+	r.deliver(outputFrame(r.clk.now(), testMRID, 50))
+	r.clk.advance(time.Minute + VerifyGrace)
+
+	got, _ := r.svc.Status(ctx, st.ID)
+
+	if got.Verdict != VerdictNotSeen || got.DeviceReported != nil {
+		t.Errorf("verdict %q deviceReported %v, want not seen and no reported value: 30 was there before the send", got.Verdict, got.DeviceReported)
+	}
+}
+
+func TestDeviceThatPostsAnotherValueAfterTheSendIsReported(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.set(testMRID, 3000)
+	st, _ := r.svc.Send(ctx, testMRID, 50, time.Minute)
+	r.clk.advance(time.Second)
+	r.stat.set(testMRID, 3000) // the same value, posted again, is still not 50
+
+	got, _ := r.svc.Status(ctx, st.ID)
+
+	if got.DeviceReported == nil || *got.DeviceReported != 30 {
+		t.Errorf("deviceReported = %v, want 30 for a post after the send", got.DeviceReported)
+	}
+}
+
+func TestBaselineUnreadableAtSendIsNotedOnceTheDevicePosts(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.err = errors.New("store down")
+	st, err := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	if err != nil {
+		t.Fatalf("Send with an unreadable store: %v", err)
+	}
+	r.stat.err = nil
+	r.stat.set(testMRID, 8000)
+
+	got, _ := r.svc.Status(ctx, st.ID)
+
+	if got.PostedAt == nil || !strings.Contains(got.Note, "before the send") {
+		t.Errorf("postedAt %v note %q, want a post and a note that the earlier value was not read", got.PostedAt, got.Note)
+	}
+}
+
+func TestStoreUnreadableForTheWholeWindowIsNoted(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.set(testMRID, 6500)
+	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.stat.err = errors.New("store down password=" + brokerLeak)
+	r.clk.advance(2 * time.Second)
+	r.svc.Status(ctx, st.ID)
+	r.deliver(outputFrame(r.clk.now(), testMRID, 80))
+	r.clk.advance(time.Minute + VerifyGrace)
+
+	got, _ := r.svc.Status(ctx, st.ID)
+
+	if got.Verdict != VerdictNotSeen || !strings.Contains(got.Note, "status store could not be read") {
+		t.Errorf("verdict %q note %q, want not seen with the store note", got.Verdict, got.Note)
+	}
+	if strings.Contains(got.Note, brokerLeak) {
+		t.Errorf("note %q carries the store error text", got.Note)
+	}
+}
+
+func TestNoteIsEmptyWhenNothingWentWrong(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.set(testMRID, 6500)
+	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.clk.advance(time.Minute + VerifyGrace)
+
+	got, _ := r.svc.Status(ctx, st.ID)
+
+	if got.Verdict != VerdictNotSeen || got.Note != "" {
+		t.Errorf("verdict %q note %q, want not seen with no note", got.Verdict, got.Note)
+	}
+}
+
+func TestCutFrameNoteIsOmittedOnceTheValueWasSeen(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.set(testMRID, 6500)
+	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.svc.Status(ctx, st.ID)
+	r.deliver(outputFrame(r.clk.now(), testMRID, 80))
+	cut := `{"input":{"message":{"forward_differences":[{"object":"_other","attribute":"DERStatus.stateOfChargeStatus","value":1},{"object":"_ot`
+	r.deliver(busmonitor.Message{Received: r.clk.now(), Body: []byte(cut), Truncated: true})
+	r.clk.advance(time.Minute + VerifyGrace)
+
+	got, _ := r.svc.Status(ctx, st.ID)
+
+	if got.Verdict != VerdictNotSeen || got.SeenAt == nil || got.Note != "" {
+		t.Errorf("verdict %q seenAt %v note %q, want not seen (never posted), seen, and no cut-frame note", got.Verdict, got.SeenAt, got.Note)
+	}
+}
+
+// matchedSend returns a send of 80 held for a minute that the device has
+// posted and the output topic has carried, at the clock's current time.
+func matchedSend(t *testing.T, r *rig) Status {
+	t.Helper()
+	ctx := context.Background()
+	r.stat.set(testMRID, 6500)
+	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.clk.advance(time.Second)
+	r.stat.set(testMRID, 8000)
+	r.svc.Status(ctx, st.ID)
+	r.deliver(outputFrame(r.clk.now(), testMRID, 80))
+	got, _ := r.svc.Status(ctx, st.ID)
+	if got.Verdict != VerdictMatched {
+		t.Fatalf("setup: verdict %q, want matched: %+v", got.Verdict, got)
+	}
+	return st
+}
+
+func TestReleaseWaitsForTheHoldToEndExactly(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	st := matchedSend(t, r)
+	holdEnd := st.SentAt.Add(time.Minute)
+
+	r.clk.advance(30 * time.Second)
+	r.stat.set(testMRID, 7000)
+	if got, _ := r.svc.Status(ctx, st.ID); got.ReleasedAt != nil {
+		t.Fatalf("released at %v during the hold: %+v", got.ReleasedAt, got)
+	}
+
+	r.clk.advance(holdEnd.Add(-time.Nanosecond).Sub(r.clk.now()))
+	if got, _ := r.svc.Status(ctx, st.ID); got.ReleasedAt != nil {
+		t.Fatalf("released a nanosecond before the hold ended: %+v", got)
+	}
+
+	r.clk.advance(time.Nanosecond)
+	got, _ := r.svc.Status(ctx, st.ID)
+	if got.ReleasedAt == nil || !got.ReleasedAt.Equal(holdEnd) {
+		t.Errorf("releasedAt = %v, want the instant the hold ended, %s", got.ReleasedAt, holdEnd)
+	}
+}
+
+func TestPostAfterTheDeadlineIsNotCountedEvenIfTheFrameCameInTime(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.set(testMRID, 6500)
+	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.svc.Status(ctx, st.ID)
+	r.deliver(outputFrame(r.clk.now(), testMRID, 80))
+	r.clk.advance(time.Minute + VerifyGrace)
+	r.stat.set(testMRID, 8000)
+
+	got, _ := r.svc.Status(ctx, st.ID)
+
+	if got.PostedAt != nil || got.Verdict != VerdictNotSeen {
+		t.Errorf("a post after the deadline counted: %+v", got)
+	}
+}
+
+func TestOutputFrameAtTheDeadlineIsTooLateAndOneBeforeIsNot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		offset  time.Duration
+		seen    bool
+		verdict string
+	}{
+		{"at the deadline", 0, false, VerdictNotSeen},
+		{"a nanosecond before", -time.Nanosecond, true, VerdictMatched},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			ctx := context.Background()
+			r.stat.set(testMRID, 6500)
+			st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+			r.clk.advance(time.Second)
+			r.stat.set(testMRID, 8000)
+			r.svc.Status(ctx, st.ID)
+			deadline := st.SentAt.Add(time.Minute + VerifyGrace)
+			r.deliver(outputFrame(deadline.Add(tc.offset), testMRID, 80))
+			r.clk.advance(deadline.Sub(r.clk.now()))
+
+			got, _ := r.svc.Status(ctx, st.ID)
+
+			if (got.SeenAt != nil) != tc.seen || got.Verdict != tc.verdict {
+				t.Errorf("seenAt %v verdict %q, want seen=%v verdict %q", got.SeenAt, got.Verdict, tc.seen, tc.verdict)
+			}
+		})
+	}
+}
+
+func failedStatus() busmonitor.Event {
+	return busmonitor.Event{Kind: busmonitor.EventStatus, Status: busmonitor.Status{State: busmonitor.StateFailed, Reason: "dial failed"}}
+}
+
+func countLogs(r *rig, sub string) int {
+	n := 0
+	for _, l := range r.logs {
+		if strings.Contains(l, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestFailedOutputFeedIsLoggedNotedAndReopenedWithBackoff(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	r.stat.set(testMRID, 6500)
+	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+	r.svc.Status(ctx, st.ID)
+	first := r.watch.last()
+	first.events <- failedStatus()
+
+	got, _ := r.svc.Status(ctx, st.ID)
+
+	if !first.closed {
+		t.Errorf("the failed feed was left open")
+	}
+	if got.Verdict != VerdictPending || !strings.Contains(got.Note, "output topic feed") {
+		t.Errorf("verdict %q note %q, want pending with a feed note", got.Verdict, got.Note)
+	}
+	if n := countLogs(r, "is failed"); n != 1 {
+		t.Errorf("failure logged %d times, want once: %v", n, r.logs)
+	}
+
+	// No reopen inside the wait; one at 2 s.
+	r.clk.advance(time.Second)
+	r.svc.Status(ctx, st.ID)
+	if len(r.watch.feeds) != 1 {
+		t.Fatalf("feed reopened after 1 s, want a 2 s wait: %d feeds", len(r.watch.feeds))
+	}
+	r.clk.advance(time.Second)
+	r.svc.Status(ctx, st.ID)
+	if len(r.watch.feeds) != 2 {
+		t.Fatalf("feeds = %d after the 2 s wait, want 2", len(r.watch.feeds))
+	}
+	if n := countLogs(r, "is failed"); n != 1 {
+		t.Errorf("polling logged the failure again: %d lines", n)
+	}
+
+	// A second failure doubles the wait.
+	r.watch.last().events <- failedStatus()
+	r.svc.Status(ctx, st.ID)
+	r.clk.advance(3 * time.Second)
+	r.svc.Status(ctx, st.ID)
+	if len(r.watch.feeds) != 2 {
+		t.Fatalf("feed reopened after 3 s of a 4 s wait: %d feeds", len(r.watch.feeds))
+	}
+	r.clk.advance(time.Second)
+	r.svc.Status(ctx, st.ID)
+	if len(r.watch.feeds) != 3 {
+		t.Fatalf("feeds = %d after the 4 s wait, want 3", len(r.watch.feeds))
+	}
+
+	// Live again: the note goes and the frame is read.
+	r.watch.last().events <- busmonitor.Event{Kind: busmonitor.EventStatus, Status: busmonitor.Status{State: busmonitor.StateLive}}
+	r.deliver(outputFrame(r.clk.now(), testMRID, 80))
+	got, _ = r.svc.Status(ctx, st.ID)
+	if got.Note != "" || got.SeenAt == nil {
+		t.Errorf("note %q seenAt %v after the feed went live, want no note and the frame seen", got.Note, got.SeenAt)
+	}
+}
+
+func TestFailedWatchBacksOffInsteadOfRetryingEveryPoll(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	w := &failingWatcher{}
+	r.svc.cfg.Watcher = w
+	st, _ := r.svc.Send(ctx, testMRID, 80, time.Minute)
+
+	for i := 0; i < 3; i++ {
+		r.svc.Status(ctx, st.ID)
+	}
+	if w.calls != 1 {
+		t.Errorf("Watch called %d times in 3 polls inside the wait, want 1", w.calls)
+	}
+	got, _ := r.svc.Status(ctx, st.ID)
+	if !strings.Contains(got.Note, "output topic feed") {
+		t.Errorf("note %q, want the feed note after a failed Watch", got.Note)
+	}
+	r.clk.advance(2 * time.Second)
+	r.svc.Status(ctx, st.ID)
+	if w.calls != 2 {
+		t.Errorf("Watch called %d times after the wait, want 2", w.calls)
+	}
+}
+
+type failingWatcher struct{ calls int }
+
+func (w *failingWatcher) Watch(string) (Feed, error) {
+	w.calls++
+	return nil, errors.New("monitor closed")
 }
