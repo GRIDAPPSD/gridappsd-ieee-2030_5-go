@@ -80,6 +80,8 @@ container's broker address.
 | `SEP2_SERVER_IDLE_TIMEOUT` | `-sep2-server-idle-timeout` | `120s` | A Go duration such as `15s` or `1m`. Protocol listener: keep-alive idle time. Allowed range: 1s-1h. |
 | `SEP2_SERVER_SHUTDOWN_TIMEOUT` | `-sep2-server-shutdown-timeout` | `5s` | A Go duration such as `15s` or `1m`. Bound on the protocol listener's graceful drain at shutdown. Allowed range: 1s-5m. |
 | `SEP2_CONTROL_SWEEP_INTERVAL` | `-sep2-control-sweep-interval` | `10s` | A Go duration such as `15s` or `1m`. How often ended DERControls are expired fleet-wide. A longer value lets a client that connects late be served an ended event for longer; it stays a sampling rate, not an event length. Allowed range: 1s-1h. |
+| `SEP2_MIRROR_READING_RETENTION` | `-sep2-mirror-reading-retention` | `6h` | A Go duration such as `2h` or `90m`. How long a mirror reading a client POSTed is kept, counted from the bridge's receipt time. Older readings are removed by a sweep every minute. Allowed range: 1m-720h. |
+| `SEP2_MIRROR_READING_MAX_PER_SERIES` | `-sep2-mirror-reading-max-per-series` | `1440` | An integer. The most readings kept for one device and reading type (uom, kind, phase and description, not flow direction); the oldest beyond it are removed first. Allowed range: 10-2592000. |
 | `SEP2_NOTIFY_POST_TIMEOUT` | `-sep2-notify-post-timeout` | `30s` | A Go duration such as `15s` or `1m`. Time one subscription notification POST may take. Allowed range: 1s-5m. |
 | `SEP2_NOTIFY_DIAL_TIMEOUT` | `-sep2-notify-dial-timeout` | `30s` | A Go duration such as `15s` or `1m`. Connect budget for one notification POST. The server caps it at `SEP2_NOTIFY_POST_TIMEOUT`, so a value above that has no effect. Allowed range: 1s-5m. |
 | `SEP2_NOTIFY_RESOLVE_TIMEOUT` | `-sep2-notify-resolve-timeout` | `5s` | A Go duration such as `15s` or `1m`. Time allowed for the DNS check on a subscription's `notificationURI` when it is created. Allowed range: 1s-5m. |
@@ -112,6 +114,14 @@ form. The plane is read-only: no admin write route is mounted (the bridge
 seeds and writes the stores itself), so a write button in the server's UI
 gets 404 or 405. `/api/health`, `/api/clients` and `/api/registry` stay as Bearer-only JSON
 routes for scripts.
+
+One route takes no credential, by decision: `GET /apps/soc/api/mirror`, the
+posted mirror readings as series per device and reading type. It still checks
+the Host header and allows GET only. Anyone who can reach the admin port can
+read it. Query: `since` (Unix seconds, inclusive), `series` and `points` (they
+lower the limits of 100 series and 500 points, never raise the ceilings of 500
+and 2000, and one response holds at most 50000 points). A response says
+`seriesTruncated` and each series says `truncated` when it was cut.
 
 | Env var | Flag | Default | Notes |
 |---|---|---|---|

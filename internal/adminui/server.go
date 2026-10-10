@@ -230,6 +230,11 @@ type Sources struct {
 	// History holds the device status samples, read by the graph panel.
 	History HistorySource
 
+	// Mirror, when set, serves the posted mirror readings as series at
+	// /apps/soc/api/mirror. That route takes no credential by decision;
+	// leaving Mirror nil leaves it unmounted.
+	Mirror MirrorSource
+
 	// Monitor and Sender are the optional fields: each, when set, adds its
 	// panel.
 	Monitor MonitorSource
@@ -256,6 +261,7 @@ type Server struct {
 	clients  ClientObserverSource
 	activity *activity.Recorder
 	history  HistorySource
+	mirror   MirrorSource
 	monitor  *monitorPanel
 	sender   *senderPanel
 
@@ -328,6 +334,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		clients:   src.Clients,
 		activity:  src.Activity,
 		history:   src.History,
+		mirror:    src.Mirror,
 		startedAt: time.Now(),
 		now:       time.Now,
 		timeouts:  defaultTimeouts.withOverrides(cfg),
