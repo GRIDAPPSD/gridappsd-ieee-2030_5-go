@@ -38,12 +38,12 @@ func (s *Server) buildHandler(plane http.Handler) http.Handler {
 	if s.mirror != nil {
 		mux.Handle(mirrorRoute, s.socGetGate(http.HandlerFunc(s.handleMirror)))
 	}
-	if s.soc != nil {
-		s.mountSoC(mux)
+	if s.control != nil {
+		s.mountControl(mux)
 	}
 	// The page and the devices and output routes it reads exist whenever
-	// the page has something to show: a mirror source or the SoC service.
-	if s.mirror != nil || s.soc != nil {
+	// the page has something to show: a mirror source or the control route.
+	if s.mirror != nil || s.control != nil {
 		s.mountSoCPage(mux)
 	}
 	mux.Handle("/", withRemote(plane))

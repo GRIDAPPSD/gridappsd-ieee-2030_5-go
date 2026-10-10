@@ -1,9 +1,12 @@
 package sep2embed
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"math"
+	"os"
 	"reflect"
 	"sort"
 	"strconv"
@@ -909,12 +912,20 @@ func TestRestatementNeedsAStartedUncancelledControl(t *testing.T) {
 
 var errInjected = errors.New("injected store failure")
 
-// faultyDERControls fails the Update or Delete calls its predicates select and
-// passes everything else to the wrapped store.
+// faultyDERControls fails the Create, Update or Delete calls its predicates
+// select and passes everything else to the wrapped store.
 type faultyDERControls struct {
 	store.ScopedStore[sep2.DERControl]
+	failCreate func(scope string, c sep2.DERControl) bool
 	failUpdate func(scope string, c sep2.DERControl) bool
 	failDelete func(scope string) bool
+}
+
+func (f faultyDERControls) Create(ctx context.Context, scope, id string, c sep2.DERControl) error {
+	if f.failCreate != nil && f.failCreate(scope, c) {
+		return errInjected
+	}
+	return f.ScopedStore.Create(ctx, scope, id, c)
 }
 
 func (f faultyDERControls) Update(ctx context.Context, scope, id string, c sep2.DERControl) error {
@@ -968,6 +979,40 @@ func TestApplyControlForReportsTheSendWhenOnlyTheCancelFails(t *testing.T) {
 	assertEventStatus(t, "later control", controlByID(t, controls, later.ControlID), wantStatus{sep2.EventStatusActive, t0 + 100})
 	assertEventStatus(t, "later follow-on", controlByID(t, controls, later.FollowOnID), wantStatus{sep2.EventStatusScheduled, t0 + 100})
 	assertEventStatus(t, "uncancelled follow-on", controlByID(t, controls, first.FollowOnID), wantStatus{sep2.EventStatusScheduled, t0})
+}
+
+// When the follow-on write fails the requested control is already in service,
+// so the caller gets the ControlSend naming it, with no follow-on, and an
+// error it can tell apart from a refusal.
+func TestApplyControlForReportsTheControlWhenTheFollowOnFails(t *testing.T) {
+	t.Parallel()
+
+	const t0 = controlClockUnix
+	e, reg, _, scope := newSendEmbed(t, t0)
+	e.stores.DERControls = faultyDERControls{
+		ScopedStore: e.stores.DERControls,
+		failCreate: func(_ string, c sep2.DERControl) bool {
+			return c.DERControlBase != nil && c.DERControlBase.OpModTargetW != nil && c.DERControlBase.OpModTargetW.Value == 0
+		},
+	}
+
+	send, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, -2000), 600)
+	if !errors.Is(err, errInjected) || !errors.Is(err, ErrControlFollowOnNotWritten) {
+		t.Fatalf("error = %v, want the injected failure and ErrControlFollowOnNotWritten", err)
+	}
+	if send.ControlID == "" || send.FollowOnID != "" || send.Start != t0 || send.End != t0+600 {
+		t.Fatalf("ControlSend = %+v, want the control id, no follow-on, start t0 and end t0+600", send)
+	}
+
+	controls := storedControls(t, e, scope)
+	if len(controls) != 1 {
+		t.Fatalf("stored controls = %d, want only the requested control", len(controls))
+	}
+	got := controlByID(t, controls, send.ControlID)
+	if w := targetW(t, &got); w != -2000 {
+		t.Errorf("stored control = %d W, want -2000", w)
+	}
+	assertEventStatus(t, "requested control", got, wantStatus{sep2.EventStatusActive, t0})
 }
 
 // A sweep failure on device A, in a promotion or a removal, must not refuse a
@@ -1108,5 +1153,31 @@ func TestSendAndPromoteOnlySweepNotifyTheDevice(t *testing.T) {
 	}
 	if got := drain(); len(got) != 0 {
 		t.Errorf("notifications after a sweep that changed nothing = %v, want none", got)
+	}
+}
+
+// A follow-on failure returns before the cleanup of older scheduled controls,
+// and the log says the cleanup was skipped. Not parallel: it swaps the
+// process-wide log writer.
+func TestApplyControlForLogsTheCleanupSkippedByAFailedFollowOn(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	const t0 = controlClockUnix
+	e, reg, _, _ := newSendEmbed(t, t0)
+	e.stores.DERControls = faultyDERControls{
+		ScopedStore: e.stores.DERControls,
+		failCreate: func(_ string, c sep2.DERControl) bool {
+			return c.DERControlBase != nil && c.DERControlBase.OpModTargetW != nil && c.DERControlBase.OpModTargetW.Value == 0
+		},
+	}
+
+	send, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, -2000), 600)
+
+	if !errors.Is(err, ErrControlFollowOnNotWritten) {
+		t.Fatalf("error = %v, want ErrControlFollowOnNotWritten", err)
+	}
+	if want := "control " + send.ControlID + ": follow-on not written, so the cancel of older scheduled controls was skipped"; !strings.Contains(buf.String(), want) {
+		t.Errorf("log = %q, want it to contain %q", buf.String(), want)
 	}
 }

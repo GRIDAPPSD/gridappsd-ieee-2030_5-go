@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,9 +21,23 @@ import (
 
 // outputHistory is a HistorySource over fixed series.
 type outputHistory struct {
+	mu        sync.Mutex
 	series    []telemetryhistory.SeriesSnapshot
 	evictions uint64
 	during    func()
+	asked     []telemetryhistory.SeriesKey
+}
+
+func (f *outputHistory) Series(key telemetryhistory.SeriesKey) ([]telemetryhistory.Sample, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, key)
+	for _, ss := range f.series {
+		if ss.Key == key {
+			return slices.Clone(ss.Samples), true
+		}
+	}
+	return nil, false
 }
 
 func (f *outputHistory) Evictions() uint64 { return f.evictions }
@@ -301,17 +317,17 @@ func TestPageRedirectsAndKeepsGates(t *testing.T) {
 	}
 }
 
-func TestMirrorAndSoCRoutesCarryTheSecurityHeaders(t *testing.T) {
+func TestMirrorAndControlRoutesCarryTheSecurityHeaders(t *testing.T) {
 	t.Parallel()
 	src := testSources()
-	src.SoC = newFakeSoC()
+	src.Control = newFakeControl()
 	src.Mirror = &fakeMirror{}
 	s := newServer(t, Config{Key: testKey}, src)
-	for _, p := range []string{"/apps/soc/api/mirror", "/apps/soc/api/soc/x"} {
+	for _, p := range []string{"/apps/soc/api/mirror", "/apps/soc/api/control/x"} {
 		rec := doRequest(t, s.Handler(), http.MethodGet, p, "", "localhost")
 		assertSocHeaders(t, rec.Header())
 	}
-	rec := postSoC(t, s.Handler(), "application/json", `{"mrid":"_pv-1","percent":80}`, "localhost")
+	rec := postControl(t, s.Handler(), "application/json", `{"mrid":"_pv-1","watts":800}`, "localhost")
 	assertSocHeaders(t, rec.Header())
 }
 
@@ -330,13 +346,13 @@ func TestOtherAppsPathsStillReachThePlane(t *testing.T) {
 	}
 }
 
-func TestPageAbsentWithoutMirrorOrSoC(t *testing.T) {
+func TestPageAbsentWithoutMirrorOrControl(t *testing.T) {
 	t.Parallel()
 	src := testSources()
 	s := newServer(t, Config{Key: testKey}, src)
 	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/", "", "localhost")
 	if rec.Header().Get("Content-Security-Policy") == socPageCSP || strings.Contains(rec.Body.String(), "loading") {
-		t.Errorf("page served with no mirror or SoC source: %d", rec.Code)
+		t.Errorf("page served with no mirror or control source: %d", rec.Code)
 	}
 }
 
@@ -540,14 +556,14 @@ func TestOutputEmptySeriesIsAnEmptyArray(t *testing.T) {
 	}
 }
 
-func TestPageServedWithSoCOnly(t *testing.T) {
+func TestPageServedWithControlOnly(t *testing.T) {
 	t.Parallel()
 	src := testSources()
-	src.SoC = newFakeSoC()
+	src.Control = newFakeControl()
 	s := newServer(t, Config{Key: testKey}, src)
 	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/", "", "localhost")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "loading") {
-		t.Errorf("/apps/soc/ with SoC only = %d", rec.Code)
+		t.Errorf("/apps/soc/ with the control source only = %d", rec.Code)
 	}
 	assertSocHeaders(t, rec.Header())
 }

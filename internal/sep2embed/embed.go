@@ -670,10 +670,16 @@ var ErrControlDurationInvalid = errors.New("sep2embed: control duration is out o
 // (#245); a longer hold is the fleet default's job, not a send's.
 const maxControlSendSeconds uint32 = 3600
 
+// ErrControlFollowOnNotWritten is returned by ApplyControlFor when the
+// requested control is in service but the 0 W control meant to follow it was
+// not written, so nothing stops the device at the requested end.
+var ErrControlFollowOnNotWritten = errors.New("sep2embed: control follow-on was not written")
+
 // ControlSend describes the pair of controls ApplyControlFor issued.
 type ControlSend struct {
 	// ControlID and FollowOnID are the store keys of the requested control and
-	// of the 0 W control that takes over when it ends.
+	// of the 0 W control that takes over when it ends. FollowOnID is empty
+	// when the follow-on was not written.
 	ControlID, FollowOnID string
 	// Start and End bound the requested control (End exclusive), in Unix
 	// seconds; the follow-on starts at End.
@@ -694,9 +700,10 @@ type ControlSend struct {
 // opModTargetW control still waiting to start that the new pair did not
 // supersede: the newest send states what the device does from now on.
 //
-// A non-zero ControlSend returned with an error means both controls are in
-// service and only that cancellation failed; otherwise an error comes with the
-// zero ControlSend.
+// A ControlSend with a ControlID returned with an error means the requested
+// control is in service: with ErrControlFollowOnNotWritten its follow-on was
+// not written, otherwise both are in service and only that cancellation
+// failed. Any other error comes with the zero ControlSend.
 //
 // Only opModTargetW is accepted: the follow-on is a 0 W target, which is not
 // a reversion for any other mode. Unlike the bus path, a send that restates
@@ -758,15 +765,12 @@ func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, del
 	if err == nil {
 		err = commitControl(ctx, e.stores, zero, withRequested.Items)
 	}
+	send := ControlSend{ControlID: requested.id, Start: nowUnix, End: endUnix}
 	if err != nil {
-		return ControlSend{}, fmt.Errorf("sep2embed: control send: control %s is in service until %d but its follow-on was not written: %w", requested.id, endUnix, err)
+		log.Printf("sep2embed: control %s: follow-on not written, so the cancel of older scheduled controls was skipped", requested.id)
+		return send, fmt.Errorf("%w: control %s is in service until %d: %w", ErrControlFollowOnNotWritten, requested.id, endUnix, err)
 	}
-	send := ControlSend{
-		ControlID:  requested.id,
-		FollowOnID: zero.id,
-		Start:      nowUnix,
-		End:        endUnix,
-	}
+	send.FollowOnID = zero.id
 	if err := cancelReplacedSchedule(ctx, e.stores, requested, nowUnix); err != nil {
 		return send, fmt.Errorf("sep2embed: control send: controls %s and %s are in service, but an older scheduled control was not cancelled: %w", requested.id, zero.id, err)
 	}
