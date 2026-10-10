@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 	"time"
@@ -420,10 +421,18 @@ type controlWindow struct {
 type preparedControl struct {
 	edevID, scope, id string
 	control           sep2.DERControl
+	// issuedAt is the wall-clock instant the control was prepared at.
+	issuedAt int64
 }
 
 // issueControl prepares and writes one control. It returns the control it
 // wrote, or the zero value with ControlRestated.
+//
+// Like a direct send, the control cancels older same-mode controls still
+// waiting to start that it did not supersede: the newest command states what
+// the device does from now on. A failure to cancel is logged rather than
+// returned, because the control is already in service and the bus path does
+// not retry.
 func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, policy ControlPolicy, delta ControlDelta, window controlWindow) (ControlOutcome, sep2.DERControl, error) {
 	p, outcome, priors, err := prepareControl(ctx, stores, reg, policy, delta, window, nil)
 	if err != nil || outcome == ControlRestated {
@@ -431,6 +440,9 @@ func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresu
 	}
 	if err := commitControl(ctx, stores, p, priors); err != nil {
 		return 0, sep2.DERControl{}, err
+	}
+	if err := cancelReplacedSchedule(ctx, stores, p, p.issuedAt); err != nil {
+		log.Printf("sep2embed: control delta: control %s is in service, but an older scheduled control was not cancelled: %v", p.id, err)
 	}
 	if notifier != nil {
 		notifier.Notify(ctx, derProgramListHref(p.edevID, controlFSAID), sep2.NotificationStatusDefault)
@@ -592,7 +604,7 @@ func prepareControl(ctx context.Context, stores *assembly.Stores, reg *registry.
 	control.RandomizeDuration = &randomizeDuration
 	control.DERControlBase = &base
 
-	return preparedControl{edevID: edevID, scope: scope, id: controlID, control: control}, ControlIssued, stored, nil
+	return preparedControl{edevID: edevID, scope: scope, id: controlID, control: control, issuedAt: wallUnix}, ControlIssued, stored, nil
 }
 
 // commitControl writes a prepared control and marks the priors it supersedes.
@@ -615,6 +627,34 @@ func commitControl(ctx context.Context, stores *assembly.Stores, p preparedContr
 	}
 	if err := supersedePriorControls(ctx, stores.DERControls, p.scope, priors, p.control); err != nil {
 		return fmt.Errorf("sep2embed: control delta: %w", err)
+	}
+	return nil
+}
+
+// cancelReplacedSchedule marks Cancelled, at nowUnix, every control on sent's
+// modes that is older than sent and still Scheduled to start. Those are
+// follow-ons of an earlier direct send that sent did not supersede; left
+// Scheduled they would override a newer command later, or drive the device
+// into a later gap. Cancelling is a status edit,
+// which 2018 rule c) p.90 permits, and value 2 is defined in every edition.
+func cancelReplacedSchedule(ctx context.Context, stores *assembly.Stores, sent preparedControl, nowUnix int64) error {
+	list, err := stores.DERControls.List(ctx, sent.scope, store.ListOptions{Unbounded: true})
+	if err != nil {
+		return fmt.Errorf("list controls to cancel: %w", err)
+	}
+	modes := controlModesOf(sent.control.DERControlBase)
+	for _, c := range list.Items {
+		if c.CreationTime >= sent.control.CreationTime || c.EventStatus == nil ||
+			c.EventStatus.CurrentStatus != sep2.EventStatusScheduled ||
+			c.Interval == nil || c.Interval.Start <= nowUnix ||
+			classifyModes(controlModesOf(c.DERControlBase), modes) != modesIdentical {
+			continue
+		}
+		c.EventStatus.CurrentStatus = sep2.EventStatusCancelled
+		c.EventStatus.DateTime = nowUnix
+		if err := stores.DERControls.Update(ctx, sent.scope, derControlID(c.CreationTime, c.MRID), c); err != nil {
+			return fmt.Errorf("cancel control %s: %w", c.MRID, err)
+		}
 	}
 	return nil
 }
@@ -748,6 +788,10 @@ const maxDirectSendLeadSeconds int64 = 6
 //     downward is already off the event while one that did not is still on it,
 //     and suppressing on the strength of the slowest device would leave the
 //     fastest uncommanded.
+//   - Started, and not cancelled. A Scheduled control is not yet running on
+//     any device, so a delta restating its value is a command for now. The
+//     start is the latest any device could take (latestEffectiveStart), for the
+//     same reason the end is the earliest.
 //   - The newest of them. With several same-mode controls resident, the one
 //     the client is executing is the one with the largest creationTime (rule
 //     f) p.90). Comparing against an older one would suppress a delta that
@@ -766,6 +810,9 @@ func restatesControlInForce(prior []sep2.DERControl, base *sep2.DERControlBase, 
 		// The interval test comes first because it is two integer
 		// comparisons, while classifyModes builds a mode set per control.
 		if end, ok := minEffectiveScheduledEnd(*p); !ok || wallUnix >= end {
+			continue
+		}
+		if wallUnix < latestEffectiveStart(*p) || eventCancelled(p.EventStatus) {
 			continue
 		}
 		if classifyModes(controlModesOf(p.DERControlBase), incomingModes) != modesIdentical {
@@ -793,6 +840,21 @@ func restatesControlInForce(prior []sep2.DERControl, base *sep2.DERControlBase, 
 		return false, err
 	}
 	return bytes.Equal(incoming, existing), nil
+}
+
+// latestEffectiveStart is the instant by which every device has started c: its
+// interval start plus any positive randomizeStart. c must carry an interval.
+func latestEffectiveStart(c sep2.DERControl) int64 {
+	start := c.Interval.Start
+	if c.RandomizeStart != nil && *c.RandomizeStart > 0 {
+		start += int64(*c.RandomizeStart)
+	}
+	return start
+}
+
+// eventCancelled reports whether es says the event will not run.
+func eventCancelled(es *sep2.EventStatus) bool {
+	return es != nil && (es.CurrentStatus == sep2.EventStatusCancelled || es.CurrentStatus == eventStatusCancelledWithRandomization)
 }
 
 // supersedePriorControls marks every already-issued control that the newly

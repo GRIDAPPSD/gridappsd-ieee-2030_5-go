@@ -440,6 +440,19 @@ func promoteStarted(c sep2.DERControl, nowUnix int64) bool {
 	return true
 }
 
+// deviceSweepError is one device's failure in a lifecycle sweep, a promotion
+// or a removal alike, so a caller can tell which device it concerns.
+type deviceSweepError struct {
+	edevID string
+	err    error
+}
+
+func (d *deviceSweepError) Error() string {
+	return fmt.Sprintf("sep2embed: expire ended controls (edev %q): %v", d.edevID, d.err)
+}
+
+func (d *deviceSweepError) Unwrap() error { return d.err }
+
 // expireEndedControls sweeps every seeded device, removing controls whose
 // maximum Effective Scheduled Period has closed and purging ledger records
 // whose retention window has closed. It returns how many controls it removed.
@@ -473,7 +486,7 @@ func expireEndedControls(ctx context.Context, stores *assembly.Stores, notifier 
 		n, changed, err := expireDeviceControls(ctx, stores.DERControls, scope, ledger, ed, nowUnix)
 		removed += n
 		if err != nil {
-			errs = append(errs, fmt.Errorf("sep2embed: expire ended controls (edev %q): %w", edevID, err))
+			errs = append(errs, &deviceSweepError{edevID: edevID, err: err})
 			continue
 		}
 		if changed && notifier != nil {

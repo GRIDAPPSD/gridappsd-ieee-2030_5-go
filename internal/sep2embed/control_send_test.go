@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/store"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cim/diff"
@@ -472,42 +473,74 @@ func TestApplyControlForRefusalWritesNeitherControl(t *testing.T) {
 }
 
 // Direct sends bypass the change bound, so they are held to their own share of
-// the creationTime lead and the bus path keeps the rest. Six repeated 0 W
-// sends in one second must not cost a bus delta in that second its issue.
+// the creationTime lead and the bus path keeps the rest. Direct sends repeated
+// in one second until refused must leave a stated number of bus deltas their
+// issue, then the bound refuses the next. The counts are literals so a change
+// to either budget fails here: 4 is the guarantee, reached when the last
+// direct pair ends exactly at its budget, and 5 when it ends one short.
 func TestDirectSendsLeaveTheBusPathItsReservedLead(t *testing.T) {
 	t.Parallel()
 
 	const now = controlClockUnix
-	e, reg, _, scope := newSendEmbed(t, now)
-	refused := 0
-	for i := 0; i < 6; i++ {
-		if _, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, 0), 60); err != nil {
-			if !errors.Is(err, ErrControlDeltaRateUnrepresentable) {
-				t.Fatalf("direct send %d error = %v, want ErrControlDeltaRateUnrepresentable", i+1, err)
-			}
-			refused++
-		}
+	cases := []struct {
+		name       string
+		busFirst   bool
+		busIssued  int
+		directSent int
+	}{
+		{"direct pairs end at the direct budget", true, 4, 3},
+		{"direct pairs end one short of it", false, 5, 3},
 	}
-	if refused == 0 {
-		t.Fatal("six direct sends in one second were all issued; the direct budget was not applied")
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	reserve := int(maxCreationTimeLeadSeconds - maxDirectSendLeadSeconds)
-	for i := 0; i < reserve; i++ {
-		w := float64(3000 + 100*i)
-		out, err := e.ApplyControlDeltaOutcome(context.Background(), reg, targetWDelta("mrid-a", 0, w))
-		if err != nil || out != ControlIssued {
-			t.Fatalf("bus delta %d of %d after the direct sends = (%v, %v), want issued", i+1, reserve, out, err)
-		}
-	}
-	controls := storedControls(t, e, scope)
-	newest := controls[len(controls)-1]
-	if got := targetW(t, &newest); got != 3000+100*(reserve-1) {
-		t.Errorf("newest control = %d W, want the last bus delta's %d W", got, 3000+100*(reserve-1))
-	}
-	assertEventStatus(t, "last bus control", newest, wantStatus{sep2.EventStatusActive, now})
-	if got := targetW(t, effectiveAt(controls, now)); got != 3000+100*(reserve-1) {
-		t.Errorf("effective W = %d, want the last bus delta's %d W", got, 3000+100*(reserve-1))
+			e, reg, _, scope := newSendEmbed(t, now)
+			if tc.busFirst {
+				if _, err := e.ApplyControlDeltaOutcome(context.Background(), reg, targetWDelta("mrid-a", 0, 100)); err != nil {
+					t.Fatalf("first bus delta: %v", err)
+				}
+			}
+			sent := 0
+			for i := 0; i < 8; i++ {
+				_, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, 0), 60)
+				if err == nil {
+					sent++
+					continue
+				}
+				if !errors.Is(err, ErrControlDeltaRateUnrepresentable) {
+					t.Fatalf("direct send %d error = %v, want ErrControlDeltaRateUnrepresentable", i+1, err)
+				}
+			}
+			if sent != tc.directSent {
+				t.Fatalf("direct sends issued = %d, want %d", sent, tc.directSent)
+			}
+
+			for i := 0; i < tc.busIssued; i++ {
+				w := float64(3000 + 100*i)
+				out, err := e.ApplyControlDeltaOutcome(context.Background(), reg, targetWDelta("mrid-a", 0, w))
+				if err != nil || out != ControlIssued {
+					t.Fatalf("bus delta %d of %d after the direct sends = (%v, %v), want issued", i+1, tc.busIssued, out, err)
+				}
+			}
+			last := 3000 + 100*(tc.busIssued-1)
+			if _, err := e.ApplyControlDeltaOutcome(context.Background(), reg, targetWDelta("mrid-a", 0, 9000)); !errors.Is(err, ErrControlDeltaRateUnrepresentable) {
+				t.Fatalf("bus delta %d error = %v, want ErrControlDeltaRateUnrepresentable", tc.busIssued+1, err)
+			}
+
+			controls := storedControls(t, e, scope)
+			newest := controls[len(controls)-1]
+			if got := targetW(t, &newest); got != last {
+				t.Errorf("newest control = %d W, want the last bus delta's %d W", got, last)
+			}
+			if newest.CreationTime != now+maxCreationTimeLeadSeconds {
+				t.Errorf("newest creationTime = t0+%d, want t0+%d", newest.CreationTime-now, maxCreationTimeLeadSeconds)
+			}
+			assertEventStatus(t, "last bus control", newest, wantStatus{sep2.EventStatusActive, now})
+			if got := targetW(t, effectiveAt(controls, now)); got != last {
+				t.Errorf("effective W = %d, want the last bus delta's %d W", got, last)
+			}
+		})
 	}
 }
 
@@ -723,4 +756,329 @@ func TestSweepPromotesEveryStartedScheduledControl(t *testing.T) {
 		"superseded early": untouched(sep2.EventStatusSuperseded),
 		"cancelled early":  untouched(sep2.EventStatusCancelled),
 	})
+}
+
+// busDuringSend is a direct send followed by a bus delta on the same device,
+// and what must then run and be served.
+type busDuringSend struct {
+	name              string
+	sendW             float64
+	sendDur           uint32
+	busAt             int64 // seconds after the send
+	busW              float64
+	want              map[int64]int // seconds after the send -> watts
+	send, follow, bus wantStatus
+}
+
+// A bus delta during a direct send is a new command: it takes effect at once
+// and no control of the send runs after it.
+func TestBusDeltaDuringADirectSendTakesEffectAtOnce(t *testing.T) {
+	t.Parallel()
+
+	const t0 = controlClockUnix
+	cases := []busDuringSend{
+		{
+			// The 0 W bus delta matches the send's Scheduled follow-on, which
+			// has not started, so it restates nothing in force.
+			name: "stop during a short send", sendW: 5000, sendDur: 300, busAt: 10, busW: 0,
+			want:   map[int64]int{10: 0, 200: 0, 299: 0, 300: 0, 1809: 0, 1810: noControl},
+			send:   wantStatus{sep2.EventStatusSuperseded, t0 + 10},
+			follow: wantStatus{sep2.EventStatusSuperseded, t0 + 10},
+			bus:    wantStatus{sep2.EventStatusActive, t0 + 10},
+		},
+		{
+			// The bus control ends before the follow-on would start, so the
+			// follow-on is cancelled rather than left to drive 0 W later.
+			name: "bus delta ends before the follow-on starts", sendW: -2000, sendDur: 3600, busAt: 10, busW: 3000,
+			want:   map[int64]int{10: 3000, 1809: 3000, 1810: noControl, 3599: noControl, 3600: noControl, 5399: noControl},
+			send:   wantStatus{sep2.EventStatusSuperseded, t0 + 10},
+			follow: wantStatus{sep2.EventStatusCancelled, t0 + 10},
+			bus:    wantStatus{sep2.EventStatusActive, t0 + 10},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, reg, clock, scope := newSendEmbed(t, t0)
+			send, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, tc.sendW), tc.sendDur)
+			if err != nil {
+				t.Fatalf("ApplyControlFor: %v", err)
+			}
+			clock.set(t0 + tc.busAt)
+			out, err := e.ApplyControlDeltaOutcome(context.Background(), reg, targetWDelta("mrid-a", 0, tc.busW))
+			if err != nil {
+				t.Fatalf("bus delta: %v", err)
+			}
+			if out != ControlIssued {
+				t.Fatalf("bus delta outcome = %v, want ControlIssued", out)
+			}
+
+			controls := storedControls(t, e, scope)
+			if len(controls) != 3 {
+				t.Fatalf("stored controls = %d, want 3", len(controls))
+			}
+			bus := controls[2]
+			if targetW(t, &bus) != int(tc.busW) {
+				t.Fatalf("newest control = %d W, want the bus delta's %v W", targetW(t, &bus), tc.busW)
+			}
+			for at, want := range tc.want {
+				if got := targetW(t, effectiveAt(controls, t0+at)); got != want {
+					t.Errorf("effective W at t0+%d = %d, want %d", at, got, want)
+				}
+			}
+			assertEventStatus(t, "sent control", controlByID(t, controls, send.ControlID), tc.send)
+			assertEventStatus(t, "follow-on", controlByID(t, controls, send.FollowOnID), tc.follow)
+			assertEventStatus(t, "bus control", bus, tc.bus)
+		})
+	}
+}
+
+// The change bound compares only against a control every device is running:
+// started even with the largest randomizeStart, and not cancelled.
+func TestRestatementNeedsAStartedUncancelledControl(t *testing.T) {
+	t.Parallel()
+
+	const t0 = controlClockUnix
+	late := sep2.OneHourRange(20)
+	stored := func(status uint8) sep2.DERControl {
+		c := sep2.DERControl{}
+		c.MRID = strings.Repeat("a", 32)
+		c.CreationTime = t0
+		c.Interval = &sep2.DateTimeInterval{Start: t0 + 100, Duration: 600}
+		c.RandomizeStart = &late
+		c.EventStatus = &sep2.EventStatus{CurrentStatus: status, DateTime: t0}
+		c.DERControlBase = &sep2.DERControlBase{OpModTargetW: &sep2.ActivePower{Value: 0}}
+		return c
+	}
+	cases := []struct {
+		name   string
+		status uint8
+		at     int64
+		want   bool
+	}{
+		{"before the nominal start", sep2.EventStatusScheduled, t0 + 99, false},
+		{"started on some devices only", sep2.EventStatusActive, t0 + 119, false},
+		{"started on every device", sep2.EventStatusActive, t0 + 120, true},
+		{"cancelled", sep2.EventStatusCancelled, t0 + 200, false},
+		{"cancelled with randomization", eventStatusCancelledWithRandomization, t0 + 200, false},
+		{"superseded is left to creationTime", sep2.EventStatusSuperseded, t0 + 200, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			base := sep2.DERControlBase{OpModTargetW: &sep2.ActivePower{Value: 0}}
+			got, err := restatesControlInForce([]sep2.DERControl{stored(tc.status)}, &base, tc.at)
+			if err != nil {
+				t.Fatalf("restatesControlInForce: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("restatement = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+var errInjected = errors.New("injected store failure")
+
+// faultyDERControls fails the Update or Delete calls its predicates select and
+// passes everything else to the wrapped store.
+type faultyDERControls struct {
+	store.ScopedStore[sep2.DERControl]
+	failUpdate func(scope string, c sep2.DERControl) bool
+	failDelete func(scope string) bool
+}
+
+func (f faultyDERControls) Update(ctx context.Context, scope, id string, c sep2.DERControl) error {
+	if f.failUpdate != nil && f.failUpdate(scope, c) {
+		return errInjected
+	}
+	return f.ScopedStore.Update(ctx, scope, id, c)
+}
+
+func (f faultyDERControls) Delete(ctx context.Context, scope, id string) error {
+	if f.failDelete != nil && f.failDelete(scope) {
+		return errInjected
+	}
+	return f.ScopedStore.Delete(ctx, scope, id)
+}
+
+// When only the cancellation of an older follow-on fails, both new controls
+// are in service, so the caller gets the ControlSend naming them with the
+// error, and the store shows exactly that.
+func TestApplyControlForReportsTheSendWhenOnlyTheCancelFails(t *testing.T) {
+	t.Parallel()
+
+	const t0 = controlClockUnix
+	e, reg, clock, scope := newSendEmbed(t, t0)
+	first, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, -2000), 3600)
+	if err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	e.stores.DERControls = faultyDERControls{
+		ScopedStore: e.stores.DERControls,
+		failUpdate: func(_ string, c sep2.DERControl) bool {
+			return c.EventStatus != nil && c.EventStatus.CurrentStatus == sep2.EventStatusCancelled
+		},
+	}
+	clock.set(t0 + 100)
+	later, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, 1500), 60)
+	if !errors.Is(err, errInjected) {
+		t.Fatalf("error = %v, want the injected failure", err)
+	}
+	if !strings.Contains(err.Error(), "in service") {
+		t.Errorf("error %q does not say the controls are in service", err)
+	}
+	if later.ControlID == "" || later.FollowOnID == "" || later.Start != t0+100 || later.End != t0+160 {
+		t.Fatalf("ControlSend = %+v, want both ids, start t0+100 and end t0+160", later)
+	}
+
+	controls := storedControls(t, e, scope)
+	if len(controls) != 4 {
+		t.Fatalf("stored controls = %d, want 4", len(controls))
+	}
+	assertEventStatus(t, "later control", controlByID(t, controls, later.ControlID), wantStatus{sep2.EventStatusActive, t0 + 100})
+	assertEventStatus(t, "later follow-on", controlByID(t, controls, later.FollowOnID), wantStatus{sep2.EventStatusScheduled, t0 + 100})
+	assertEventStatus(t, "uncancelled follow-on", controlByID(t, controls, first.FollowOnID), wantStatus{sep2.EventStatusScheduled, t0})
+}
+
+// A sweep failure on device A, in a promotion or a removal, must not refuse a
+// write for device B; a write for device A itself is still refused.
+func TestSweepFailureOnOneDeviceRefusesOnlyItsOwnWrites(t *testing.T) {
+	t.Parallel()
+
+	const t0 = controlClockUnix
+	writers := map[string]func(e *Embed, reg *registry.Registry, mrid string) error{
+		"bus delta": func(e *Embed, reg *registry.Registry, mrid string) error {
+			_, err := e.ApplyControlDeltaOutcome(context.Background(), reg, targetWDelta(mrid, 0, 700))
+			return err
+		},
+		"direct send": func(e *Embed, reg *registry.Registry, mrid string) error {
+			_, err := e.ApplyControlFor(context.Background(), reg, targetWDelta(mrid, 0, 700), 60)
+			return err
+		},
+	}
+	for _, failing := range []string{"promotion", "removal"} {
+		for name, write := range writers {
+			t.Run(failing+"/"+name, func(t *testing.T) {
+				t.Parallel()
+
+				e, reg, clock, scopeA := newSendEmbed(t, t0)
+				scopeB := derControlScope(urlIndexFor(t, e.stores, "mrid-b"), controlFSAID, controlDERProgramID)
+				// At t0+70 the sweep removes A's ended control and promotes its
+				// started follow-on.
+				if _, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, -2000), 60); err != nil {
+					t.Fatalf("send to device a: %v", err)
+				}
+				faulty := faultyDERControls{ScopedStore: e.stores.DERControls}
+				if failing == "promotion" {
+					faulty.failUpdate = func(scope string, _ sep2.DERControl) bool { return scope == scopeA }
+				} else {
+					faulty.failDelete = func(scope string) bool { return scope == scopeA }
+				}
+				e.stores.DERControls = faulty
+				clock.set(t0 + 70)
+
+				if err := write(e, reg, "mrid-b"); err != nil {
+					t.Fatalf("write to device b refused: %v", err)
+				}
+				controlsB := storedControls(t, e, scopeB)
+				if len(controlsB) == 0 {
+					t.Fatal("device b holds no control after its write")
+				}
+				newest := controlsB[0]
+				if got := targetW(t, &newest); got != 700 {
+					t.Errorf("device b control = %d W, want 700", got)
+				}
+				assertEventStatus(t, "device b control", newest, wantStatus{sep2.EventStatusActive, t0 + 70})
+
+				before := storedControls(t, e, scopeA)
+				if err := write(e, reg, "mrid-a"); !errors.Is(err, errInjected) {
+					t.Fatalf("write to device a error = %v, want the injected sweep failure", err)
+				}
+				for _, c := range storedControls(t, e, scopeA) {
+					if targetW(t, &c) == 700 {
+						t.Errorf("device a holds the refused 700 W control (%d before)", len(before))
+					}
+				}
+			})
+		}
+	}
+}
+
+// recordNotifications returns a notifier with a subscription on each device's
+// DERProgramList, and the hrefs Notify was called for, in order. The manager
+// is never started, so nothing is delivered; its subscriber check runs inside
+// Notify and records the call.
+func recordNotifications(t *testing.T, e *Embed, mrids ...string) func() []string {
+	t.Helper()
+	notifier := coresub.NewManager(e.stores.Subscriptions, 1, 64)
+	var mu sync.Mutex
+	var got []string
+	notifier.SetSubscriberCheck(func(_ context.Context, sub sep2.Subscription) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, sub.SubscribedResource)
+		return nil
+	})
+	for i, mrid := range mrids {
+		edev := urlIndexFor(t, e.stores, mrid)
+		if err := e.stores.Subscriptions.Create(context.Background(), "sub-"+strconv.Itoa(i), sep2.Subscription{
+			SubscribableResource: sep2.SubscribableResource{Resource: sep2.Resource{Href: "/edev/" + edev + "/sub/1"}},
+			SubscribedResource:   derProgramListHref(edev, controlFSAID),
+			NotificationURI:      "http://127.0.0.1:9/notify",
+		}); err != nil {
+			t.Fatalf("seed subscription for %s: %v", mrid, err)
+		}
+	}
+	e.notifier = notifier
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := got
+		got = nil
+		return out
+	}
+}
+
+// A direct send notifies its device's DERProgramList once, and a sweep that
+// only promotes a started follow-on, removing nothing, notifies it too.
+func TestSendAndPromoteOnlySweepNotifyTheDevice(t *testing.T) {
+	t.Parallel()
+
+	const t0 = controlClockUnix
+	e, reg, clock, scope := newSendEmbed(t, t0)
+	// Positive randomization keeps the ended control in service past the
+	// follow-on's start, so the sweep below promotes without removing.
+	e.policy.Control.RandomizeDuration = 120
+	drain := recordNotifications(t, e, "mrid-a", "mrid-b")
+	wantA := []string{derProgramListHref(urlIndexFor(t, e.stores, "mrid-a"), controlFSAID)}
+
+	send, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, -2000), 60)
+	if err != nil {
+		t.Fatalf("ApplyControlFor: %v", err)
+	}
+	if got := drain(); !reflect.DeepEqual(got, wantA) {
+		t.Errorf("notifications after the send = %v, want %v", got, wantA)
+	}
+
+	clock.set(t0 + 70)
+	removed, err := e.expireEndedControls(context.Background())
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("sweep removed %d controls, want 0 (promotion only)", removed)
+	}
+	assertEventStatus(t, "follow-on", controlByID(t, storedControls(t, e, scope), send.FollowOnID), wantStatus{sep2.EventStatusActive, t0 + 60})
+	if got := drain(); !reflect.DeepEqual(got, wantA) {
+		t.Errorf("notifications after the promote-only sweep = %v, want %v", got, wantA)
+	}
+
+	if _, err := e.expireEndedControls(context.Background()); err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if got := drain(); len(got) != 0 {
+		t.Errorf("notifications after a sweep that changed nothing = %v, want none", got)
+	}
 }

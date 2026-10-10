@@ -653,7 +653,7 @@ func (e *Embed) ApplyControlDeltaOutcome(ctx context.Context, reg *registry.Regi
 	// interpret. pinnedClockPolicy hands the same instant to both.
 	nowUnix := e.policy.Control.now().UTC().Unix()
 
-	if _, err := e.expireEndedControlsAt(ctx, nowUnix); err != nil {
+	if err := e.sweepBeforeWrite(ctx, reg, delta.Object, nowUnix); err != nil {
 		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 	return ApplyControlDeltaOutcome(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta)
@@ -694,6 +694,10 @@ type ControlSend struct {
 // opModTargetW control still waiting to start that the new pair did not
 // supersede: the newest send states what the device does from now on.
 //
+// A non-zero ControlSend returned with an error means both controls are in
+// service and only that cancellation failed; otherwise an error comes with the
+// zero ControlSend.
+//
 // Only opModTargetW is accepted: the follow-on is a 0 W target, which is not
 // a reversion for any other mode. Unlike the bus path, a send that restates
 // the setpoint in force is still issued, so its own duration is honored.
@@ -720,7 +724,7 @@ func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, del
 	}
 
 	nowUnix := e.policy.Control.now().UTC().Unix()
-	if _, err := e.expireEndedControlsAt(ctx, nowUnix); err != nil {
+	if err := e.sweepBeforeWrite(ctx, reg, delta.Object, nowUnix); err != nil {
 		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
 	}
 	policy := pinnedClockPolicy(e.policy, nowUnix)
@@ -757,42 +761,16 @@ func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, del
 	if err != nil {
 		return ControlSend{}, fmt.Errorf("sep2embed: control send: control %s is in service until %d but its follow-on was not written: %w", requested.id, endUnix, err)
 	}
-	if err := cancelReplacedSchedule(ctx, e.stores, requested, nowUnix); err != nil {
-		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
-	}
-	return ControlSend{
+	send := ControlSend{
 		ControlID:  requested.id,
 		FollowOnID: zero.id,
 		Start:      nowUnix,
 		End:        endUnix,
-	}, nil
-}
-
-// cancelReplacedSchedule marks Cancelled, at nowUnix, every control on sent's
-// modes that is older than sent and still Scheduled to start. Those are an
-// earlier send's follow-ons the new pair does not overlap; left Scheduled
-// they would drive the device into a later gap. Cancelling is a status edit,
-// which 2018 rule c) p.90 permits, and value 2 is defined in every edition.
-func cancelReplacedSchedule(ctx context.Context, stores *assembly.Stores, sent preparedControl, nowUnix int64) error {
-	list, err := stores.DERControls.List(ctx, sent.scope, store.ListOptions{Unbounded: true})
-	if err != nil {
-		return fmt.Errorf("list controls to cancel: %w", err)
 	}
-	modes := controlModesOf(sent.control.DERControlBase)
-	for _, c := range list.Items {
-		if c.CreationTime >= sent.control.CreationTime || c.EventStatus == nil ||
-			c.EventStatus.CurrentStatus != sep2.EventStatusScheduled ||
-			c.Interval == nil || c.Interval.Start <= nowUnix ||
-			classifyModes(controlModesOf(c.DERControlBase), modes) != modesIdentical {
-			continue
-		}
-		c.EventStatus.CurrentStatus = sep2.EventStatusCancelled
-		c.EventStatus.DateTime = nowUnix
-		if err := stores.DERControls.Update(ctx, sent.scope, derControlID(c.CreationTime, c.MRID), c); err != nil {
-			return fmt.Errorf("cancel control %s: %w", c.MRID, err)
-		}
+	if err := cancelReplacedSchedule(ctx, e.stores, requested, nowUnix); err != nil {
+		return send, fmt.Errorf("sep2embed: control send: controls %s and %s are in service, but an older scheduled control was not cancelled: %w", requested.id, zero.id, err)
 	}
-	return nil
+	return send, nil
 }
 
 // pinnedClockPolicy returns a copy of policy whose control clock reports
@@ -822,6 +800,43 @@ func (e *Embed) expireEndedControls(ctx context.Context) (int, error) {
 // the caller, for the delta path, which has already read the clock.
 func (e *Embed) expireEndedControlsAt(ctx context.Context, nowUnix int64) (int, error) {
 	return expireEndedControls(ctx, e.stores, e.notifier, e.ended, servedEventEdition, nowUnix)
+}
+
+// sweepBeforeWrite runs the sweep a control write starts with. A sweep
+// failure refuses the write only when it may involve the written device: a
+// failed promotion or removal on another device leaves this device's
+// collection exactly as the sweep found it, so it is logged instead.
+func (e *Embed) sweepBeforeWrite(ctx context.Context, reg *registry.Registry, object string, nowUnix int64) error {
+	_, err := e.expireEndedControlsAt(ctx, nowUnix)
+	if err == nil || reg == nil {
+		return err
+	}
+	entry, ok := reg.Get(object)
+	if !ok {
+		return err
+	}
+	edevID, ok := e.stores.EndDeviceIndexes.IndexFor(entry.MRID)
+	if !ok || !sweepFailedOnlyElsewhere(err, edevID) {
+		return err
+	}
+	log.Printf("sep2embed: control write for edev %q proceeds past a sweep failure on other devices: %v", edevID, err)
+	return nil
+}
+
+// sweepFailedOnlyElsewhere reports whether every failure joined into err is a
+// deviceSweepError for a device other than edevID.
+func sweepFailedOnlyElsewhere(err error, edevID string) bool {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return false
+	}
+	for _, one := range joined.Unwrap() {
+		var dev *deviceSweepError
+		if !errors.As(one, &dev) || dev.edevID == edevID {
+			return false
+		}
+	}
+	return true
 }
 
 // EndedControl resolves the mRID of a DERControl this server has taken out of
