@@ -6,7 +6,19 @@
 (function () {
   const API = "/apps/soc/api/";
   const POLL_MS = 5000;
-  const TRIP_POLL_MS = 2000;
+  const CONTROL_POLL_MS = 3000;
+  const MIN_SECONDS = 60;
+  const MAX_SECONDS = 3600;
+  // A control still being served; the page polls while it is one of these.
+  const LIVE_STATES = new Set(["scheduled", "active"]);
+  const VERDICT_TEXT = {
+    waiting: "no report yet from the device",
+    moving: "the state of charge is moving the commanded way",
+    reached: "the state of charge reached a limit or the watch percent",
+    not_moving: "no movement seen",
+    wrong_way: "the state of charge moved the other way",
+    stopped: "a stop was sent",
+  };
   const MAX_POINTS = 2000;
   const FETCH_TIMEOUT_MS = 10000;
   // Series asked of each route. Points per series shrink as the series count
@@ -422,24 +434,20 @@
     }
   }
 
-  function showSoCError(text) {
+  function showControlError(text) {
     const e = $("soc-error");
     e.textContent = text;
     e.hidden = text === "";
   }
 
-  function updateBand() {
-    const raw = $("soc-percent").value;
-    const n = Number(raw);
-    $("soc-band").hidden = !(raw !== "" && Number.isFinite(n) && n >= 60 && n <= 70);
-  }
-
-  async function postSoC(body) {
-    const buttons = [$("soc-send"), $("soc-clear")];
+  // Sends one control. The watch percent is kept by the page, not the server:
+  // it rides on each status request and only marks when a report crossed it.
+  async function postControl(body, watch) {
+    const buttons = [$("soc-send"), $("soc-stop")];
     buttons.forEach((b) => { b.disabled = true; });
-    showSoCError("");
+    showControlError("");
     try {
-      await timedFetch(API + "soc", {
+      await timedFetch(API + "control", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -456,17 +464,17 @@
           let msg = "HTTP " + resp.status + ": " + ((payload && payload.error) || text.trim() || resp.statusText);
           const retry = resp.headers.get("Retry-After");
           if (retry) msg += " (retry after " + retry + " s)";
-          showSoCError(msg);
+          showControlError(msg);
           return;
         }
         if (!payload || !payload.id) {
-          showSoCError("unexpected answer from the server");
+          showControlError("unexpected answer from the server");
           return;
         }
-        followTrip(payload);
+        followControl(payload, watch);
       });
     } catch (err) {
-      showSoCError("send failed: " + err.message);
+      showControlError("send failed: " + err.message);
     } finally {
       buttons.forEach((b) => { b.disabled = false; });
     }
@@ -478,81 +486,115 @@
     return Number.isInteger(n) && n >= lo && n <= hi ? n : null;
   }
 
+  // An empty watch box means no watch; anything else must be a percent.
+  function parseWatch(raw) {
+    if (raw.trim() === "") return { ok: true, value: null };
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= 100) return { ok: true, value: n };
+    return { ok: false, value: null };
+  }
+
   function onSend(ev) {
     ev.preventDefault();
     const mrid = $("soc-device").value;
-    if (!mrid) { showSoCError("pick a device"); return; }
-    const percent = parseWhole($("soc-percent").value, 0, 100);
-    if (percent === null) { showSoCError("percent must be a whole number from 0 to 100"); return; }
-    const hold = parseWhole($("soc-hold").value, 1, 3600);
-    if (hold === null) { showSoCError("hold must be a whole number of seconds from 1 to 3600"); return; }
-    postSoC({ mrid, percent, holdSeconds: hold });
+    if (!mrid) { showControlError("pick a device"); return; }
+    const dir = document.querySelector('input[name="soc-dir"]:checked');
+    if (!dir) { showControlError("pick Discharge or Charge"); return; }
+    const watts = parseWhole($("soc-watts").value, 1, Number.MAX_SAFE_INTEGER);
+    if (watts === null) { showControlError("watts must be a whole number above 0; use Stop for 0 W"); return; }
+    const seconds = parseWhole($("soc-seconds").value, MIN_SECONDS, MAX_SECONDS);
+    if (seconds === null) { showControlError("duration must be a whole number of seconds from " + MIN_SECONDS + " to " + MAX_SECONDS); return; }
+    const watch = parseWatch($("soc-watch").value);
+    if (!watch.ok) { showControlError("watch percent must be a number from 0 to 100, or empty"); return; }
+    // Discharge is positive and charge negative on the wire.
+    postControl({ mrid, watts: dir.value === "charge" ? -watts : watts, durationSeconds: seconds }, watch.value);
   }
 
-  function onClear() {
+  function onStop() {
     const mrid = $("soc-device").value;
-    if (!mrid) { showSoCError("pick a device"); return; }
-    postSoC({ mrid, clear: true });
+    if (!mrid) { showControlError("pick a device"); return; }
+    postControl({ mrid, stop: true }, null);
   }
 
-  // ---- round trip panel ----
+  // ---- control panel ----
 
-  let tripTimer = null;
-  let tripToken = 0;
+  const controlChart = newChart($("control-chart"), $("control-summary"));
+  let controlTimer = null;
+  let controlToken = 0;
 
-  function showTrip(st, extraNote) {
-    setText($("trip-sent"), clock(st.sentAt) + " (" + st.kind + (st.kind === "send" ? ", " + st.percent + "% for " + st.holdSeconds + " s" : "") + ")");
-    setText($("trip-posted"), st.postedAt ? clock(st.postedAt) + (st.deviceReportedPercent !== undefined ? ", device reported " + st.deviceReportedPercent + "%" : "") : "waiting");
-    setText($("trip-seen"), st.seenAt ? clock(st.seenAt) + (st.outputReportedPercent !== undefined ? ", topic carried " + st.outputReportedPercent + "%" : "") : "waiting");
-    setText($("trip-released"), st.releasedAt ? clock(st.releasedAt) : "waiting");
-    setText($("trip-verdict"), st.verdict || "-");
-    setText($("trip-note"), [st.note, extraNote].filter(Boolean).join(" ") || "-");
+  function clockSec(s) {
+    return typeof s === "number" ? new Date(s * 1000).toLocaleTimeString() : "-";
   }
 
-  function tripDone(st) {
-    return st.verdict !== "pending" && (st.kind === "clear" || Boolean(st.releasedAt) || st.verdict !== "matched");
+  function describeCommand(st) {
+    let what;
+    if (st.stop || st.watts === 0) what = "0 W (stop)";
+    else if (st.watts > 0) what = "Discharge " + st.watts + " W";
+    else what = "Charge " + (-st.watts) + " W";
+    return what + " for " + st.durationSeconds + " s, from " + clockSec(st.startedAt) + " to " + clockSec(st.endsAt);
   }
 
-  // The newest send replaces the one being followed. Polling stops at a final
-  // state, or a few minutes after the hold ends.
-  function followTrip(first) {
-    tripToken++;
-    const token = tripToken;
-    clearTimeout(tripTimer);
-    showTrip(first);
-    if (tripDone(first)) return;
-    const deadline = Date.now() + (first.holdSeconds + 300) * 1000;
+  function showControl(st, extraNote) {
+    setText($("ctl-command"), describeCommand(st));
+    setText($("ctl-state"), st.controlState || "-");
+    const statuses = (st.responseStatuses || []).join(", ");
+    setText($("ctl-received"), st.received ? "yes" + (statuses ? " (status " + statuses + ")" : "") : "not yet");
+    const reports = st.reports || [];
+    const last = reports.length > 0 ? reports[reports.length - 1] : null;
+    setText($("ctl-soc"), last ? last.v + "% at " + clockSec(last.t) + " (" + (st.reportCount || reports.length) + " reports since the send)" : "no reports since the send");
+    setText($("ctl-verdict"), st.verdict ? st.verdict + (VERDICT_TEXT[st.verdict] ? ": " + VERDICT_TEXT[st.verdict] : "") : "-");
+    let watchText = "not set";
+    if (typeof st.watchPercent === "number") {
+      watchText = st.watchPercent + "%: " + (typeof st.watchReachedAt === "number" ? "reached at " + clockSec(st.watchReachedAt) : "not reached yet");
+    }
+    setText($("ctl-watch"), watchText);
+    setText($("ctl-note"), extraNote || "-");
+    const warn = $("ctl-warning");
+    setText(warn, st.warning || "");
+    warn.hidden = !st.warning;
+    drawChart(controlChart, reports.length === 0 ? [] : [{ key: "control|" + st.id, label: "State of charge", scale: "percent", pts: reports }],
+      "No state of charge reports since the send yet.");
+  }
+
+  // The newest send replaces the one being followed. Polling stops when the
+  // control ends or is superseded, or a few minutes after its duration.
+  function followControl(first, watch) {
+    controlToken++;
+    const token = controlToken;
+    clearTimeout(controlTimer);
+    showControl(first);
+    const deadline = Date.now() + (first.durationSeconds + 300) * 1000;
     let shown = first;
-    let problem = "";
     async function poll() {
-      if (token !== tripToken) return;
+      if (token !== controlToken) return;
+      let problem = "";
       try {
-        const st = await timedFetch(API + "soc/" + encodeURIComponent(first.id), { cache: "no-store" }, async (resp) => {
+        const url = API + "control/" + encodeURIComponent(first.id) + (watch !== null ? "?watch=" + encodeURIComponent(String(watch)) : "");
+        const st = await timedFetch(url, { cache: "no-store" }, async (resp) => {
           if (resp.status === 404) return "gone";
           if (!resp.ok) throw new Error("HTTP " + resp.status);
           return resp.json();
         });
-        if (token !== tripToken) return;
+        if (token !== controlToken) return;
         if (st === "gone") {
-          showTrip(shown, "The bridge no longer holds this send.");
+          showControl({ ...shown, controlState: "gone" }, "The bridge no longer holds this control.");
           return;
         }
-        problem = "";
         shown = st;
-        showTrip(st);
-        if (tripDone(st)) return;
+        showControl(st);
+        if (!LIVE_STATES.has(st.controlState) && st.controlState !== "unknown") return;
       } catch (err) {
-        if (token !== tripToken) return;
+        if (token !== controlToken) return;
         problem = err.message;
-        showTrip(shown, "Last check failed (" + problem + "), retrying.");
+        showControl(shown, "Last check failed (" + problem + "), retrying.");
       }
       if (Date.now() > deadline) {
-        showTrip(shown, "Stopped polling after the hold plus 5 minutes" + (problem ? "; the last check failed (" + problem + ")" : "") + ".");
+        showControl(shown, "Stopped polling after the duration plus 5 minutes" + (problem ? "; the last check failed (" + problem + ")" : "") + ".");
         return;
       }
-      tripTimer = setTimeout(poll, TRIP_POLL_MS);
+      controlTimer = setTimeout(poll, CONTROL_POLL_MS);
     }
-    tripTimer = setTimeout(poll, TRIP_POLL_MS);
+    poll();
   }
 
   // ---- start ----
@@ -567,8 +609,7 @@
     redrawAll();
   });
   $("soc-form").addEventListener("submit", onSend);
-  $("soc-clear").addEventListener("click", onClear);
-  $("soc-percent").addEventListener("input", updateBand);
+  $("soc-stop").addEventListener("click", onStop);
   window.addEventListener("resize", () => {
     resizeChart(mirrorChart);
     resizeChart(outputChart);

@@ -14,11 +14,12 @@ fieldset { border: 1px solid #3a414a; min-width: 14rem; }
 .picklist label { white-space: nowrap; }
 .chart { min-height: 300px; width: 100%; }
 #soc-form { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
+#soc-form fieldset { min-width: 0; display: flex; gap: 0.75rem; }
 #soc-form input, #soc-form select { background: #1d2229; color: inherit; border: 1px solid #3a414a; padding: 0.25rem; }
 button { background: #2a323c; color: inherit; border: 1px solid #4a5460; padding: 0.3rem 0.8rem; cursor: pointer; }
 button:disabled { opacity: 0.5; cursor: default; }
-.trip { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; }
-.trip dt { color: #9aa3ad; }
-.trip dd { margin: 0; }
+.ctl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; }
+.ctl dt { color: #9aa3ad; }
+.ctl dd { margin: 0; }
 .u-legend, .u-legend .u-label, .u-legend .u-value { color: #e6e6e6; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
