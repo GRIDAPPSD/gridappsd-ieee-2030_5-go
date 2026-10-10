@@ -82,7 +82,7 @@ func (e *Embed) ResponsesFor(ctx context.Context, subject string, since int64) (
 // time order while the nanosecond count has 19 digits (2001 to 2286). Outside
 // that range it returns "", which reads from the first key.
 func responseKeyBefore(since int64) string {
-	const minSince, maxSince = 1_000_000_000, math.MaxInt64 / 1_000_000_000
+	const minSince, maxSince = 1_000_000_001, math.MaxInt64 / 1_000_000_000
 	if since < minSince || since > maxSince {
 		return ""
 	}

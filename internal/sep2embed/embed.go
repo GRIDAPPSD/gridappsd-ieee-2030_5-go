@@ -767,6 +767,7 @@ func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, del
 	}
 	send := ControlSend{ControlID: requested.id, Start: nowUnix, End: endUnix}
 	if err != nil {
+		log.Printf("sep2embed: control %s: follow-on not written, so the cancel of older scheduled controls was skipped", requested.id)
 		return send, fmt.Errorf("%w: control %s is in service until %d: %w", ErrControlFollowOnNotWritten, requested.id, endUnix, err)
 	}
 	send.FollowOnID = zero.id
