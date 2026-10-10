@@ -113,6 +113,8 @@ seeds and writes the stores itself), so a write button in the server's UI
 gets 404 or 405. `/api/health`, `/api/clients` and `/api/registry` stay as Bearer-only JSON
 routes for scripts.
 
+Two further routes take no credential, by decision, and only the Host allowlist applies: anyone who can reach the admin address can send a state of charge to any registered device. `POST /apps/soc/api/soc` takes JSON (`Content-Type: application/json`) of `{"mrid":"...","percent":0-100,"holdSeconds":1-3600}` (hold defaults to 60) or `{"mrid":"...","clear":true}`, publishes it on the application input topic, and ignores `SEP2_ADMIN_UI_BUS_PUBLISH_AT_START`. `GET /apps/soc/api/soc/{id}` returns the send's stages (sent, posted by the device, seen on the output topic, released), each with a time, and a verdict of `matched`, `not seen` or `mismatch`.
+
 | Env var | Flag | Default | Notes |
 |---|---|---|---|
 | `SEP2_ADMIN_UI_ADDR` | `-admin-ui-addr` | `127.0.0.1:8444` | Admin UI listener bind address. Loopback only unless `SEP2_ADMIN_UI_ALLOW_NON_LOOPBACK` is also set. |
