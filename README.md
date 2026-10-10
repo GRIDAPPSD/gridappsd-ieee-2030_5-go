@@ -74,10 +74,9 @@ To run the bridge as a container on the GridAPPS-D platform network:
   the local GridAPPS-D default `manager`), SEP2/admin host bind addresses, and
   the SEP2 TLS certificate directory. Enter `~/tls` to create/use
   `/home/<user>/tls`; that is where the bridge's protocol certificates are
-  written. Caddy reads `server.pem` and `server-key.pem` from the same
-  directory. On Hyper-V and
-  VirtualBox, the guest IP is detected; other hosts keep the admin UI on
-  `127.0.0.1`. Override either bind with `BRIDGE_SEP2_BIND_IP` or
+  written. On Hyper-V and VirtualBox, the guest IP is detected for the admin
+  bind; other hosts keep the admin UI on `127.0.0.1`. Override either bind
+  with `BRIDGE_SEP2_BIND_IP` or
   `BRIDGE_ADMIN_BIND_IP`. VirtualBox NAT may require a VM port-forward rule.
   Configure queries the running Blazegraph instance and lets you select a
   feeder; its mRID is saved as `SEP2_FEEDER_MRID`. The generated config
@@ -87,7 +86,7 @@ To run the bridge as a container on the GridAPPS-D platform network:
 4. **Monitor**: `make docker-logs` follows the container log.
 5. **Stop**: `make docker-down` stops and removes the container.
 
-The admin UI is served by Caddy at `https://localhost:18444/ui` and shows the bridge's
+The admin UI is served directly over HTTP at `http://localhost:18444/ui` and shows the bridge's
 status, DERs, and telemetry. Its Bus monitor tab watches any `/topic/` on the
 broker live, each topic on its own connection under the bridge's credential.
 Its Bus sender tab publishes DER controls to the bridge's application input
@@ -98,9 +97,11 @@ Only one bridge may run against a broker at a time. If the binary bridge is
 running, stop it before bringing up the container.
 
 For the Windows browser, forward Windows `127.0.0.1:18444` to the guest IP on
-port `18444`. Trust `serving-ca.pem` from `BRIDGE_CERT_DIR` on Windows; Caddy
-uses the bridge's `server.pem` and `server-key.pem` for HTTPS. SEP2 devices use the guest's reachable IP
-or DNS name on port `18443`; they do not resolve the Docker-only name `bridge`.
+port `18444`; the browser URL remains `http://localhost:18444/ui`. The admin
+key is sent over plain HTTP, so keep the guest bind on its private interface
+and the Windows portproxy listener on localhost. SEP2 devices use the guest's
+reachable IP or DNS name on port `18443`; they do not resolve the Docker-only
+name `bridge`.
 
 For complete configuration details, see [docs/DOCKER.md](docs/DOCKER.md) and
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).

@@ -254,13 +254,15 @@ run_script() {
   [[ "$output" == *"usage"* ]]
 }
 
-@test "compose file: bridge protocol and Caddy admin ports publish on the bind settings, no key baked in" {
+@test "compose file: bridge protocol and HTTP admin ports publish on their bind settings, no key baked in" {
   f="$repo/docker-compose.bridge.yml"
   # shellcheck disable=SC2016 # the ${...} is compose syntax matched literally, not a shell expansion
   /usr/bin/grep -qF '"${BRIDGE_SEP2_BIND_IP:?use make docker-up}:${BRIDGE_SEP2_PORT:?use make docker-up}:18443"' "$f"
-  # shellcheck disable=SC2016 # Caddy, not the plaintext admin listener, publishes the admin port
+  # shellcheck disable=SC2016 # the admin listener is directly published over HTTP
   /usr/bin/grep -qF '"${BRIDGE_ADMIN_BIND_IP:?use make docker-up}:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"' "$f"
   [ "$(/usr/bin/grep -cF '"${BRIDGE_ADMIN_BIND_IP:?use make docker-up}:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"' "$f")" -eq 1 ]
+  [ "$(/usr/bin/grep -cE '^  caddy:' "$f")" -eq 0 ]
+  [ ! -e "$repo/Caddyfile" ]
   [ "$(/usr/bin/grep -cE '^\s+- "?(0\.0\.0\.0:)?[0-9]+:' "$f")" -eq 0 ]
   /usr/bin/grep -qF 'name: gridappsd-docker_default' "$f"
   # shellcheck disable=SC2016 # literal compose syntax
@@ -281,7 +283,7 @@ run_script() {
   [ "$(/usr/bin/grep -c '^COPY \. ' "$repo/Dockerfile.bridge")" -eq 0 ]
 }
 
-@test "compose: admin UI stays on its private network and Caddy proxies it" {
+@test "compose: admin UI stays on its private network and publishes directly over HTTP" {
   f="$repo/docker-compose.bridge.yml"
   [ "$(/usr/bin/grep -c '0\.0\.0\.0:18444' "$f")" -eq 0 ]
   # shellcheck disable=SC2016 # literal compose syntax
@@ -292,11 +294,8 @@ run_script() {
   /usr/bin/grep -qF 'subnet: ${BRIDGE_ADMIN_SUBNET:?use make docker-up}' "$f"
   /usr/bin/grep -qE '^\s+gw_priority: [1-9]' "$f"
   [ "$(/usr/bin/grep -c 'name: gridappsd-docker_default' "$f")" -eq 1 ]
-  /usr/bin/grep -qF 'image: caddy:2-alpine' "$f"
-  /usr/bin/grep -qF 'https://localhost:18444' "$repo/Caddyfile"
-  /usr/bin/grep -qF 'tls /etc/sep2/certs/server.pem /etc/sep2/certs/server-key.pem' "$repo/Caddyfile"
-  /usr/bin/grep -qF '${BRIDGE_CERT_DIR:?use make docker-up}:/etc/sep2/certs:ro' "$f"
-  /usr/bin/grep -qF 'reverse_proxy bridge:18444' "$repo/Caddyfile"
+  /usr/bin/grep -qF '"${BRIDGE_ADMIN_BIND_IP:?use make docker-up}:${BRIDGE_ADMIN_PORT:?use make docker-up}:18444"' "$f"
+  [ "$(/usr/bin/grep -cE '^  caddy:' "$f")" -eq 0 ]
 }
 
 @test "compose: read-only root, tmpfs /tmp, no capabilities, no-new-privileges, cert mount stays writable by variable" {
