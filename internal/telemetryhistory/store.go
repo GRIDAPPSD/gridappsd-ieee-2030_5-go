@@ -11,8 +11,8 @@
 // mutex, Snapshot returning defensive copies).
 //
 // The memory ceiling is fixed in bytes, not in wall-clock duration:
-// MaxSeries * SamplesPerSeries * unsafe.Sizeof(Sample{}) = 256 * 1440 *
-// 16 bytes = 5.9 MiB, hard, regardless of how fast samples arrive. A
+// MaxSeries * SamplesPerSeries * unsafe.Sizeof(Sample{}) = 800 * 1440 *
+// 16 bytes = 17.6 MiB, hard, regardless of how fast samples arrive. A
 // faster publish rate buys resolution within the fixed window, never
 // more memory. TestSampleIsSixteenBytes pins Sample's size so an edit to
 // that struct cannot silently change this ceiling without a test
@@ -55,7 +55,10 @@ const (
 	// least-recently-appended existing series to make room, so a
 	// larger-than-expected feeder degrades by dropping its stalest
 	// series rather than by growing without bound.
-	MaxSeries = 256
+	//
+	// 800 is twice the 392 series of a 49-device fleet (7 reported
+	// attributes and one setpoint each).
+	MaxSeries = 800
 
 	// SamplesPerSeries bounds the number of samples retained per series.
 	// Each series' ring is preallocated at this capacity on first use

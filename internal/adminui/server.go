@@ -188,6 +188,7 @@ type ControlFlowSource interface {
 // *telemetryhistory.Store for the graph panels.
 type HistorySource interface {
 	Snapshot() []telemetryhistory.SeriesSnapshot
+	Evictions() uint64
 }
 
 // IdentitySource is the read surface Server needs from *sep2embed.Embed
@@ -273,6 +274,8 @@ type Server struct {
 
 	// mirrorBuilds holds a slot for each mirror series build in flight.
 	mirrorBuilds chan struct{}
+	// outputBuilds is the same gate for the output series route.
+	outputBuilds chan struct{}
 
 	// idleAfter is Config.ClientIdleAfter with its default applied.
 	idleAfter time.Duration
@@ -350,6 +353,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		timeouts:  defaultTimeouts.withOverrides(cfg),
 
 		mirrorBuilds: make(chan struct{}, maxMirrorBuilds),
+		outputBuilds: make(chan struct{}, maxOutputBuilds),
 	}
 	s.socLimit = newTokenBucket(s.now())
 	if src.Monitor != nil {
