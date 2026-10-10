@@ -123,9 +123,22 @@ func (h *historyHarness) waitDeltas(t *testing.T, n int) {
 // delta for mrid, which this harness's empty registry skips.
 func socFrame(t *testing.T, mrid string, hundredths uint16, epoch int64) []byte {
 	t.Helper()
-	diffs, err := telemetrypub.MapDERStatusToDifferences(mrid, sep2.DERStatus{
+	return statusAndControlFrame(t, mrid, sep2.DERStatus{
 		StateOfChargeStatus: &sep2.StateOfChargeStatusType{Value: hundredths},
-	})
+	}, epoch)
+}
+
+// echoedStatusFrame is socFrame with a reading time in place of the state
+// of charge: a status delta the subscriber does not pass over, so it
+// reaches the control path and the history decision for it.
+func echoedStatusFrame(t *testing.T, mrid string, epoch int64) []byte {
+	t.Helper()
+	return statusAndControlFrame(t, mrid, sep2.DERStatus{ReadingTime: epoch}, epoch)
+}
+
+func statusAndControlFrame(t *testing.T, mrid string, status sep2.DERStatus, epoch int64) []byte {
+	t.Helper()
+	diffs, err := telemetrypub.MapDERStatusToDifferences(mrid, status)
 	if err != nil {
 		t.Fatalf("MapDERStatusToDifferences: %v", err)
 	}
@@ -344,8 +357,11 @@ func TestEchoedStatusFrameAddsNothingToHistory(t *testing.T) {
 	h := startHistoryHarness(t, &store)
 	h.register(t, "M")
 
-	h.bus.deliver(socFrame(t, "M", 6500, frameEpoch))
-	h.waitFrames(t, 1)
+	h.bus.deliver(echoedStatusFrame(t, "M", frameEpoch))
+	// Both the echoed status delta and the control delta reach the control
+	// path and are refused; waiting for two proves the status delta was
+	// not passed over before the history decision.
+	h.waitDeltas(t, 2)
 
 	if snap := store.Snapshot(); len(snap) != 0 {
 		t.Errorf("history after an echoed status frame = %+v, want empty", snap)
