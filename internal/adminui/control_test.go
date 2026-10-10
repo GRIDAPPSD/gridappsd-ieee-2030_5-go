@@ -628,6 +628,10 @@ func TestControlStatusVerdicts(t *testing.T) {
 			samples(float64(t0-30), 50, float64(t0+40), 50, float64(t0+70), 50), 221 * time.Second, "", verdictNotMoving, 2},
 		{"no report at all for 180 s after the pickup is not moving", `{"mrid":"_bat-1","watts":2000}`,
 			nil, (controlPickupSeconds + notMovingSeconds) * time.Second, "", verdictNotMoving, 0},
+		{"one second short of the pickup and 180 s with no report is still waiting", `{"mrid":"_bat-1","watts":2000,"durationSeconds":3600}`,
+			nil, (controlPickupSeconds+notMovingSeconds)*time.Second - time.Second, "", verdictWaiting, 0},
+		{"a report exactly at the end of the control is judged", `{"mrid":"_bat-1","watts":2000,"durationSeconds":60}`,
+			samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+60), 48), 70 * time.Second, "", verdictMoving, 2},
 		{"flat inside the window is still waiting", `{"mrid":"_bat-1","watts":2000}`,
 			samples(float64(t0-30), 50, float64(t0+40), 50), 130 * time.Second, "", verdictWaiting, 1},
 		{"a 60 s control gives up 60 s after its first report, not 180", `{"mrid":"_bat-1","watts":2000,"durationSeconds":60}`,
@@ -887,6 +891,7 @@ func TestJudgeRows(t *testing.T) {
 		{"with no baseline the first report is judged against the watch", 1000, 300, t0 + 100, nil, []outputPointResponse{pt(t0+10, 44)}, f(45), verdictReached, func() *int64 { v := t0 + 10; return &v }()},
 		{"the window is counted from the first report", 1000, 3600, t0 + 250, f(50), []outputPointResponse{pt(t0+100, 50)}, nil, verdictWaiting, nil},
 		{"the window ends 180 s after the first report", 1000, 3600, t0 + 280, f(50), []outputPointResponse{pt(t0+100, 50)}, nil, verdictNotMoving, nil},
+		{"a watch crossed again after dipping back is marked at the second crossing", 1000, 300, t0 + 100, f(44), []outputPointResponse{pt(t0+10, 46), pt(t0+40, 44)}, f(45), verdictReached, func() *int64 { v := t0 + 40; return &v }()},
 		{"zero watts has no direction", 0, 300, t0 + 999, f(50), []outputPointResponse{pt(t0+10, 10)}, nil, verdictStopped, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1026,5 +1031,122 @@ func TestControlSendLogsASnapshotFailure(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "control snapshot") || !strings.Contains(buf.String(), "store blip") {
 		t.Errorf("log = %q, want the send-time snapshot failure", buf.String())
+	}
+}
+
+// A newer control that supersedes or cancels a send ends the window its
+// reports are judged in, so what the device does for the newer control
+// cannot rewrite the older send's verdict, here or after the control leaves
+// the store.
+func TestControlStatusStopsJudgingWhenTheSendIsNoLongerInForce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status uint8
+	}{
+		{"superseded", sep2.EventStatusSuperseded},
+		{"cancelled", sep2.EventStatusCancelled},
+		{"cancelled with randomization", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newCtlHarness(t, Config{})
+			h.reports("_bat-1", samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48)...)
+			sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+			h.clk.advance(75 * time.Second)
+			if st := h.status(t, sent.ID, ""); st.Verdict != verdictMoving {
+				t.Fatalf("before the newer control: verdict %q, want moving", st.Verdict)
+			}
+
+			// A charge send takes over at t0+80 and the device turns round.
+			h.ctl.snap.CurrentStatus = tc.status
+			h.ctl.snap.DateTime = t0 + 80
+			h.reports("_bat-1", samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48,
+				float64(t0+100), 49, float64(t0+130), 50)...)
+			h.clk.advance(60 * time.Second)
+
+			st := h.status(t, sent.ID, "")
+			if st.Verdict != verdictMoving || st.ReportCount != 4 {
+				t.Errorf("after the newer control: verdict %q with %d reports, want moving with 4", st.Verdict, st.ReportCount)
+			}
+
+			h.ctl.snap = nil
+			if st := h.status(t, sent.ID, ""); st.ControlState != "gone" || st.Verdict != verdictMoving {
+				t.Errorf("after the control left the store: state %q verdict %q, want gone and moving", st.ControlState, st.Verdict)
+			}
+		})
+	}
+}
+
+// A device moving the commanded way and later turning is revised to wrong
+// way while the send is still in force: the latest two steps decide.
+func TestControlStatusMovingLaterTurnsWrongWayWhileInForce(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.reports("_bat-1", samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48)...)
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+	h.clk.advance(75 * time.Second)
+	if st := h.status(t, sent.ID, ""); st.Verdict != verdictMoving {
+		t.Fatalf("first read: verdict %q, want moving", st.Verdict)
+	}
+
+	h.reports("_bat-1", samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48,
+		float64(t0+100), 49, float64(t0+130), 50)...)
+	h.clk.advance(60 * time.Second)
+
+	if st := h.status(t, sent.ID, ""); st.Verdict != verdictWrongWay || st.ControlState != "active" {
+		t.Errorf("verdict %q state %q, want wrong_way while active", st.Verdict, st.ControlState)
+	}
+}
+
+// Judging starts from the device's first Received response, not a later one.
+func TestControlStatusJudgesFromTheEarliestReceivedResponse(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.reports("_bat-1", samples(float64(t0-30), 50, float64(t0+10), 49, float64(t0+20), 48)...)
+	h.ctl.responses = []sep2embed.ResponseSnapshot{
+		{Subject: "ctl-mrid-1", Status: sep2.ResponseStatusEventReceived, CreatedDateTime: t0 + 5},
+		{Subject: "ctl-mrid-1", Status: sep2.ResponseStatusEventReceived, CreatedDateTime: t0 + 50},
+	}
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+	h.clk.advance(25 * time.Second)
+
+	if st := h.status(t, sent.ID, ""); st.Verdict != verdictMoving {
+		t.Errorf("verdict %q, want moving judged from t0+5", st.Verdict)
+	}
+}
+
+// A Received response dated before the send does not widen the judged
+// window back past the start: a report before it stays a baseline.
+func TestControlStatusNeverJudgesFromBeforeTheStart(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	// A discharge: the report at 0 before the start would read as reached
+	// if it were judged.
+	h.reports("_bat-1", samples(float64(t0-150), 10, float64(t0-50), 0, float64(t0+10), 5)...)
+	h.ctl.responses = []sep2embed.ResponseSnapshot{
+		{Subject: "ctl-mrid-1", Status: sep2.ResponseStatusEventReceived, CreatedDateTime: t0 - 100},
+	}
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+	h.clk.advance(20 * time.Second)
+
+	if st := h.status(t, sent.ID, ""); st.Verdict != verdictWaiting {
+		t.Errorf("verdict %q, want waiting", st.Verdict)
+	}
+}
+
+// When the status read fails on a send that carries a warning, the fallback
+// body still carries it.
+func TestControlSendStatusFallbackKeepsTheWarning(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.ctl.err = fmt.Errorf("%w: %w", sep2embed.ErrControlFollowOnNotWritten, errors.New("store down"))
+	h.ctl.partial, h.ctl.noFollow = true, true
+	h.ctl.respErr = errors.New("responses unavailable")
+
+	st := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+
+	if st.ControlState != "unknown" || st.Warning != controlNoStopWarning {
+		t.Errorf("state %q warning %q, want unknown with the no-stop warning", st.ControlState, st.Warning)
 	}
 }
