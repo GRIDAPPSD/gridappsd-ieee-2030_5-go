@@ -19,9 +19,12 @@ import (
 
 // outputHistory is a HistorySource over fixed series.
 type outputHistory struct {
-	series []telemetryhistory.SeriesSnapshot
-	during func()
+	series    []telemetryhistory.SeriesSnapshot
+	evictions uint64
+	during    func()
 }
+
+func (f *outputHistory) Evictions() uint64 { return f.evictions }
 
 func (f *outputHistory) Snapshot() []telemetryhistory.SeriesSnapshot {
 	if f.during != nil {
@@ -187,6 +190,31 @@ func TestOutputCapsSayWhatTheyCut(t *testing.T) {
 	}
 }
 
+func TestOutputBadNumberNamesTheParameter(t *testing.T) {
+	t.Parallel()
+	s := pageServer(t, &outputHistory{})
+	for _, name := range []string{"since", "series", "points"} {
+		rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/api/output?"+name+"=x", "", "localhost")
+		if rec.Code != http.StatusBadRequest || !strings.HasPrefix(rec.Body.String(), name+":") {
+			t.Errorf("%s=x = %d body %q, want 400 naming %s", name, rec.Code, rec.Body.String(), name)
+		}
+	}
+}
+
+func TestOutputReportsStoreEvictions(t *testing.T) {
+	t.Parallel()
+	for _, want := range []uint64{0, 6604} {
+		s := pageServer(t, &outputHistory{evictions: want})
+		got, rec := getOutput(t, s, "")
+		if got.Evictions != want {
+			t.Errorf("evictions = %d, want %d", got.Evictions, want)
+		}
+		if raw := fmt.Sprintf(`"evictions":%d`, want); !strings.Contains(rec.Body.String(), raw) {
+			t.Errorf("body lacks %s: %s", raw, rec.Body.String())
+		}
+	}
+}
+
 func TestOutputRejectsBadNumbers(t *testing.T) {
 	t.Parallel()
 	s := pageServer(t, &outputHistory{})
@@ -250,6 +278,9 @@ func TestPageServedWithHeadersAndContentTypes(t *testing.T) {
 			t.Errorf("%s body lacks %q: %s", c.path, c.contains, rec.Body.String())
 		}
 		assertSocHeaders(t, rec.Header())
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("%s Cache-Control = %q, want no-store", c.path, cc)
+		}
 	}
 }
 

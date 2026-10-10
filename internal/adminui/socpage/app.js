@@ -9,9 +9,12 @@
   const TRIP_POLL_MS = 2000;
   const MAX_POINTS = 2000;
   const FETCH_TIMEOUT_MS = 10000;
-  // The server clamps this to its own ceiling, so asking for the ceiling gets
-  // every series a large fleet has.
-  const SERIES_WANTED = 1000;
+  // Series asked of each route. Points per series shrink as the series count
+  // grows (the body is bounded), so these are the defaults: 147 mirror series
+  // of a 49-device fleet fit in 200 with 250 points each, and its 343 output
+  // series fit in 500 with 100 points each.
+  const MIRROR_SERIES_WANTED = 200;
+  const OUTPUT_SERIES_WANTED = 500;
   const SUMMARY_LINES = 20;
   const SOC_ATTR = "DERStatus.stateOfChargeStatus";
   const OUTPUT_PREFIX = "DERStatus.";
@@ -326,11 +329,11 @@
   // skipped quietly; any other failure is shown. The cursor is the server's
   // own clock from the last answer, and the repeats it brings are dropped by
   // the ingest functions.
-  function startPoller(route, statusEl, ingest, describe) {
+  function startPoller(route, seriesWanted, statusEl, ingest, describe) {
     let since = 0;
     let lastOk = "";
     async function tick() {
-      const url = API + route + "?since=" + since + "&series=" + SERIES_WANTED;
+      const url = API + route + "?since=" + since + "&series=" + seriesWanted;
       try {
         await timedFetch(url, { cache: "no-store" }, async (resp) => {
           if (resp.status === 503) {
@@ -362,6 +365,9 @@
       let t = what + ": " + shown + " of " + (body.totalSeries || 0) + " series, updated " + new Date().toLocaleTimeString();
       if (body.seriesTruncated) {
         t += ". The server cut the list of series, so " + Math.max(0, (body.totalSeries || 0) - shown) + " are missing";
+      }
+      if (body.evictions > 0) {
+        t += ". History is being dropped: the server has evicted " + body.evictions + " series";
       }
       const cut = (body.series || []).filter((s) => s.truncated);
       if (cut.length > 0) {
@@ -574,6 +580,6 @@
   outputChart.container.textContent = "Pick at least one device that the output topic has reported on.";
   loadDevices();
   setInterval(loadDevices, 30000);
-  startPoller("mirror", $("mirror-status"), ingestMirror, describeSeries("mirror"));
-  startPoller("output", $("output-status"), ingestOutput, describeSeries("output"));
+  startPoller("mirror", MIRROR_SERIES_WANTED, $("mirror-status"), ingestMirror, describeSeries("mirror"));
+  startPoller("output", OUTPUT_SERIES_WANTED, $("output-status"), ingestOutput, describeSeries("output"));
 })();

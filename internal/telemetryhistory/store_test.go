@@ -302,3 +302,40 @@ func TestStore_CountsEvictions(t *testing.T) {
 		t.Errorf("Evictions = %d, want 3", got)
 	}
 }
+
+// TestStore_HoldsA49DeviceFleetWithoutEvicting appends the shape of a
+// 49-device fleet (7 reported attributes and one setpoint per device) for
+// 20 rounds and asserts every series is kept with every sample.
+func TestStore_HoldsA49DeviceFleetWithoutEvicting(t *testing.T) {
+	t.Parallel()
+	const devices, rounds = 49, 20
+	attrs := []string{
+		"DERStatus.a0", "DERStatus.a1", "DERStatus.a2", "DERStatus.a3",
+		"DERStatus.a4", "DERStatus.a5", "DERStatus.a6", "DERControl.DERControlBase.opModTargetW",
+	}
+	s := &Store{}
+	for r := 0; r < rounds; r++ {
+		for d := 0; d < devices; d++ {
+			for _, a := range attrs {
+				if err := s.Append(SeriesKey{Object: fmt.Sprintf("m-%02d", d), Attribute: a}, Sample{At: 1700000000 + int64(r), Value: float64(r)}); err != nil {
+					t.Fatalf("Append: %v", err)
+				}
+			}
+		}
+	}
+	snap := s.Snapshot()
+	if len(snap) != devices*len(attrs) {
+		t.Fatalf("held %d series, want %d", len(snap), devices*len(attrs))
+	}
+	for _, ss := range snap {
+		if len(ss.Samples) != rounds {
+			t.Fatalf("%v holds %d samples, want %d", ss.Key, len(ss.Samples), rounds)
+		}
+	}
+	if got := s.Evictions(); got != 0 {
+		t.Errorf("Evictions = %d, want 0", got)
+	}
+	if devices*len(attrs)*2 > MaxSeries {
+		t.Errorf("MaxSeries %d leaves under 2x margin over %d series", MaxSeries, devices*len(attrs))
+	}
+}

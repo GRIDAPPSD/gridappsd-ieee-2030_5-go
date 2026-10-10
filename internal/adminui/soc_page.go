@@ -36,8 +36,8 @@ const socPageCSP = "default-src 'self'; script-src 'self'; style-src 'self'; " +
 // Defaults and ceilings for one output response, with the same meaning as
 // the mirror's: maxOutputResponsePoints bounds the whole body. A 49-device
 // fleet reports 7 DERStatus attributes each, 343 series; the default holds
-// them with margin and the points default is what that many series can carry
-// inside the body bound.
+// them and the points default is what that many series can carry inside the
+// body bound. The history store below holds twice the fleet's series.
 const (
 	defaultOutputSeries     = 500
 	defaultOutputPoints     = 100
@@ -148,11 +148,14 @@ type outputResponse struct {
 	// Now is read before the snapshot, with the mirror route's cursor rule:
 	// poll again with since=now and drop the points stamped at now that you
 	// already hold.
-	Now             int64                  `json:"now"`
-	Since           int64                  `json:"since"`
-	TotalSeries     int                    `json:"totalSeries"`
-	SeriesTruncated bool                   `json:"seriesTruncated"`
-	Series          []outputSeriesResponse `json:"series"`
+	Now             int64 `json:"now"`
+	Since           int64 `json:"since"`
+	TotalSeries     int   `json:"totalSeries"`
+	SeriesTruncated bool  `json:"seriesTruncated"`
+	// Evictions counts the series the history store has dropped to stay
+	// under its cap; non-zero means the page is missing history.
+	Evictions uint64                 `json:"evictions"`
+	Series    []outputSeriesResponse `json:"series"`
 }
 
 // handleOutput answers GET /apps/soc/api/output?since=<unix s>&device=<mrid>&series=<n>&points=<n>.
@@ -179,13 +182,14 @@ func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
 
 	now := s.now().Unix()
 	snap := s.history.Snapshot()
+	evictions := s.history.Evictions()
 
 	names := map[string]string{}
 	for _, e := range s.registry.Snapshot() {
 		names[e.MRID] = e.Name
 	}
 
-	out := outputResponse{Now: now, Since: int64(since), Series: []outputSeriesResponse{}}
+	out := outputResponse{Now: now, Since: int64(since), Evictions: evictions, Series: []outputSeriesResponse{}}
 	for _, ss := range snap {
 		if !strings.HasPrefix(ss.Key.Attribute, reportedPrefix) {
 			continue

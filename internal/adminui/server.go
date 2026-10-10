@@ -188,6 +188,7 @@ type ControlFlowSource interface {
 // *telemetryhistory.Store for the graph panels.
 type HistorySource interface {
 	Snapshot() []telemetryhistory.SeriesSnapshot
+	Evictions() uint64
 }
 
 // IdentitySource is the read surface Server needs from *sep2embed.Embed
