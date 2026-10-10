@@ -423,7 +423,6 @@
       select.replaceChildren(...opts);
       if (keep && list.some((d) => d.mrid === keep)) {
         select.value = keep;
-        deviceNote = "";
       } else if (keep && list.length > 0) {
         deviceNote = "The device you had selected is no longer in the list; the form now shows " + (list[0].name || list[0].mrid) + ".";
       }
@@ -488,8 +487,14 @@
       if (accepted) {
         showControlError("The bridge accepted the control, but the page could not show it: " + err.message);
       } else {
-        clearControlPanel();
-        showControlError("No answer to the send (" + err.message + "). The bridge may have issued the control: check the device's control state in the output chart and its controlState before sending again.");
+        // The panel and Stop stay on the last control known to be issued: a
+        // missing answer must never remove the operator's way to stop it.
+        if (body.stop) {
+          showControlError("No answer to the Stop (" + err.message + "). Whether it was applied is unknown; Stop is still enabled, press it again to retry.");
+        } else {
+          const kept = followed ? " The panel and Stop still follow the earlier control on " + followed.name + "." : "";
+          showControlError("No answer to the send (" + err.message + "). Whether the bridge issued this control is unknown: check the device's control state in the output chart before sending again." + kept);
+        }
       }
     } finally {
       sending = false;
@@ -540,16 +545,6 @@
     $("soc-stop").disabled = sending || followed === null;
   }
 
-  function clearControlPanel() {
-    controlToken++;
-    clearTimeout(controlTimer);
-    followed = null;
-    ["ctl-device", "ctl-command", "ctl-state", "ctl-received", "ctl-soc", "ctl-watch", "ctl-verdict", "ctl-note"].forEach((id) => setText($(id), "-"));
-    setText($("ctl-warning"), "");
-    $("ctl-warning").hidden = true;
-    drawChart(controlChart, [], "No state of charge reports since the send yet.");
-  }
-
   // ---- control panel ----
 
   const controlChart = newChart($("control-chart"), $("control-summary"));
@@ -557,6 +552,15 @@
   let controlToken = 0;
   let followed = null;
   let sending = false;
+  // Devices whose earlier control the page no longer follows; that control may
+  // still be running.
+  const unfollowed = new Map();
+
+  function showUnfollowed() {
+    const e = $("ctl-earlier");
+    setText(e, unfollowed.size === 0 ? "" : "No longer followed here (the control may still be running): " + [...unfollowed.values()].join(", ") + ".");
+    e.hidden = unfollowed.size === 0;
+  }
 
   function clockSec(s) {
     return typeof s === "number" ? new Date(s * 1000).toLocaleTimeString() : "-";
@@ -596,7 +600,10 @@
   // The newest send replaces the one being followed. Polling stops when the
   // control ends or is superseded, or a few minutes after its duration.
   function followControl(first, watch, deviceName) {
+    if (followed && followed.mrid !== first.mrid) unfollowed.set(followed.mrid, followed.name);
     followed = { mrid: first.mrid, name: deviceName || first.mrid };
+    unfollowed.delete(followed.mrid);
+    showUnfollowed();
     syncButtons();
     controlToken++;
     const token = controlToken;
