@@ -1726,6 +1726,10 @@ func runControlSubscriber(ctx context.Context, subs sim.SubscribeClient, embed *
 					hook.Skipped()
 				}
 			case outcome == sep2embed.ControlRestated:
+				// The one outcome that writes nothing, so it is logged as
+				// well as counted.
+				log.Printf("control subscriber: restated delta object=%q attribute=%q: the schedule in force already commands it, nothing written",
+					delta.Object, delta.Attribute)
 				rec.Result = controlobs.ResultRestated
 				if hook != nil {
 					hook.Restated()
