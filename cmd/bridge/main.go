@@ -399,16 +399,6 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("bus sender: %w", err)
 	}
 
-	socService, err := newSoCService(cfg, bus, reg, embed, mon)
-	if err != nil {
-		return fmt.Errorf("state of charge sender: %w", err)
-	}
-	// A nil *socsend.Service in the interface would read as set.
-	var socSource adminui.SoCSource
-	if socService != nil {
-		socSource = socService
-	}
-
 	var adminUIRun func(context.Context) error
 	defer adminLogFilterFor(cfg)()
 	adminSrv, err := adminui.New(adminUIConfig(cfg), adminui.Sources{
@@ -425,7 +415,7 @@ func run(ctx context.Context, cfg config) error {
 		History:  &inputHistory,
 		Monitor:  mon,
 		Sender:   busSender,
-		SoC:      socSource,
+		Control:  embedControl{embed: embed, reg: reg},
 	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):

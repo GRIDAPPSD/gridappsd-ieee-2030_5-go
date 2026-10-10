@@ -341,15 +341,15 @@ func TestMirrorRouteRefusesWhenTooManyBuildsAreRunning(t *testing.T) {
 	}
 }
 
-// Both the mirror series route and the SoC routes are mounted when both
-// sources are set, and the plane keeps every other path.
-func TestMirrorAndSoCRoutesAreMountedTogether(t *testing.T) {
+// Both the mirror series route and the watts control routes are mounted when
+// both sources are set, and the plane keeps every other path.
+func TestMirrorAndControlRoutesAreMountedTogether(t *testing.T) {
 	t.Parallel()
 	m := &fakeMirror{}
-	soc := newFakeSoC()
+	ctl := newFakeControl()
 	src := testSources()
 	src.Mirror = m
-	src.SoC = soc
+	src.Control = ctl
 	s := newServer(t, Config{Key: testKey}, src)
 	s.now = func() time.Time { return time.Unix(1_700_000_500, 0) }
 
@@ -360,11 +360,11 @@ func TestMirrorAndSoCRoutesAreMountedTogether(t *testing.T) {
 	if m.last.since != 1_700_000_000 {
 		t.Errorf("mirror source got since=%d, want 1700000000", m.last.since)
 	}
-	rec = postSoC(t, s.Handler(), "application/json", `{"mrid":"_pv-1","percent":80}`, "localhost")
+	rec = postControl(t, s.Handler(), "application/json", `{"mrid":"_pv-1","watts":800}`, "localhost")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("SoC send = %d, want 200; %s", rec.Code, rec.Body)
+		t.Fatalf("control send = %d, want 200; %s", rec.Code, rec.Body)
 	}
-	if want := []socCall{{"send", "_pv-1", 80, 60 * time.Second}}; !slices.Equal(soc.calls, want) {
-		t.Errorf("SoC calls = %+v, want %+v", soc.calls, want)
+	if want := []controlCall{{"_pv-1", 800, 300}}; !slices.Equal(ctl.calls, want) {
+		t.Errorf("control calls = %+v, want %+v", ctl.calls, want)
 	}
 }
