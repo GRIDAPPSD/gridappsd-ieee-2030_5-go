@@ -138,6 +138,9 @@ type controlRecord struct {
 	start, end  int64
 	controlID   string
 	controlMRID string
+	// stoppedAt is when the served control stopped being in force before its
+	// end (superseded or cancelled), 0 while none has been seen.
+	stoppedAt int64
 	// warning is shown with every status of the send.
 	warning string
 }
@@ -184,6 +187,22 @@ func (l *controlLedger) learnMRID(id, mrid string) {
 	if r, ok := l.byID[id]; ok && r.controlMRID == "" {
 		r.controlMRID = mrid
 	}
+}
+
+// learnStoppedAt remembers the first time a control was seen no longer in
+// force, because the control leaves the store after it ends and nothing
+// then says when it stopped. It returns the time kept.
+func (l *controlLedger) learnStoppedAt(id string, at int64) int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.byID[id]
+	if !ok {
+		return at
+	}
+	if r.stoppedAt == 0 {
+		r.stoppedAt = at
+	}
+	return r.stoppedAt
 }
 
 func newControlID() (string, error) {
@@ -406,6 +425,14 @@ func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *fl
 			rec.controlMRID = snap.MRID
 			s.controls.learnMRID(rec.id, snap.MRID)
 		}
+		if stoppedStatus(snap.CurrentStatus) {
+			// A snapshot without a dateTime falls back to the read time.
+			at := snap.DateTime
+			if at <= 0 {
+				at = now
+			}
+			rec.stoppedAt = s.controls.learnStoppedAt(rec.id, at)
+		}
 	}
 
 	statuses := []int{}
@@ -436,7 +463,11 @@ func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *fl
 	_, reports := splitReports(samples, rec.start)
 	from := judgedFrom(rec.start, receivedAt)
 	baseline, inControl := splitReports(samples, from)
-	inControl = reportsThrough(inControl, rec.end)
+	judgedEnd := rec.end
+	if rec.stoppedAt > 0 && rec.stoppedAt < judgedEnd {
+		judgedEnd = rec.stoppedAt
+	}
+	inControl = reportsThrough(inControl, judgedEnd)
 	judged := judge(rec.watts, int64(rec.seconds), from, now, baseline, inControl, watch)
 
 	shown := reports
@@ -452,6 +483,17 @@ func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *fl
 		Warning: rec.warning,
 	}
 	return out, nil
+}
+
+// stoppedStatus reports whether an EventStatus.currentStatus means the
+// control is no longer in force: cancelled, cancelled with randomization, or
+// superseded by a newer control.
+func stoppedStatus(status uint8) bool {
+	switch status {
+	case sep2.EventStatusCancelled, eventStatusCancelledRandomized, sep2.EventStatusSuperseded:
+		return true
+	}
+	return false
 }
 
 // controlStateName names an EventStatus.currentStatus.
@@ -482,8 +524,8 @@ func judgedFrom(start, receivedAt int64) int64 {
 	return start + controlPickupSeconds
 }
 
-// reportsThrough drops the reports after end, when the follow-on has taken
-// over; reports are oldest first.
+// reportsThrough drops the reports after end, when the follow-on or a newer
+// control has taken over; reports are oldest first.
 func reportsThrough(reports []outputPointResponse, end int64) []outputPointResponse {
 	for i, p := range reports {
 		if p.T > end {
