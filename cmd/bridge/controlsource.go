@@ -22,6 +22,6 @@ func (c embedControl) ControlSnapshot(ctx context.Context, deviceMRID, controlID
 	return c.embed.ControlSnapshot(ctx, deviceMRID, controlID)
 }
 
-func (c embedControl) ResponsesFor(ctx context.Context, subject string) ([]sep2embed.ResponseSnapshot, error) {
-	return c.embed.ResponsesFor(ctx, subject)
+func (c embedControl) ResponsesFor(ctx context.Context, subject string, since int64) ([]sep2embed.ResponseSnapshot, error) {
+	return c.embed.ResponsesFor(ctx, subject, since)
 }

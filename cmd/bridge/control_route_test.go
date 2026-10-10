@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/flow_reservation"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
@@ -96,10 +99,21 @@ func TestWattsControlRouteIssuesARealControlAndReportsItsState(t *testing.T) {
 		t.Fatalf("active control = %+v, want opModTargetW -1500", active)
 	}
 
-	// A Response the device posted for that event is reported as received.
+	// A Response the device posted for that event, through the protocol
+	// listener's own POST handler and so under its own key, is reported as
+	// received.
 	received := sep2.ResponseStatusEventReceived
-	if err := emb.Stores().Responses.Create(ctx, "1", "r1", sep2.Response{Subject: active.MRID, Status: &received, EndDeviceLFDI: lfdi}); err != nil {
-		t.Fatalf("Responses.Create: %v", err)
+	rspBody, err := xml.Marshal(&sep2.DERControlResponse{Response: sep2.Response{Subject: active.MRID, Status: &received, EndDeviceLFDI: lfdi}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := func(*http.Request, string) (bool, string, error) { return true, lfdi, nil }
+	rspMux := http.NewServeMux()
+	rspMux.HandleFunc("POST /rsps/{rspsId}/rsp", flow_reservation.HandlePostResponse(emb.Stores().Responses, allow))
+	prec := httptest.NewRecorder()
+	rspMux.ServeHTTP(prec, httptest.NewRequest(http.MethodPost, "/rsps/1/rsp", bytes.NewReader(rspBody)))
+	if prec.Code != http.StatusCreated {
+		t.Fatalf("POST response = %d: %s", prec.Code, prec.Body)
 	}
 	get := httptest.NewRequest(http.MethodGet, "/apps/soc/api/control/"+sent.ID, nil)
 	get.RemoteAddr, get.Host = "127.0.0.1:40000", "localhost"

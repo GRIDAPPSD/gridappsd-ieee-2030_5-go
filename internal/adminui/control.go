@@ -100,7 +100,7 @@ func (b *tokenBucket) allow(now time.Time) bool {
 type ControlSource interface {
 	ApplyControlFor(ctx context.Context, delta sep2embed.ControlDelta, durationSeconds uint32) (sep2embed.ControlSend, error)
 	ControlSnapshot(ctx context.Context, deviceMRID, controlID string) (sep2embed.DERControlSnapshot, bool, error)
-	ResponsesFor(ctx context.Context, subject string) ([]sep2embed.ResponseSnapshot, error)
+	ResponsesFor(ctx context.Context, subject string, since int64) ([]sep2embed.ResponseSnapshot, error)
 }
 
 // controlRequest is the POST body. Watts and DurationSeconds are pointers so
@@ -388,7 +388,7 @@ func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *fl
 	statuses := []int{}
 	received := false
 	if rec.controlMRID != "" {
-		resps, err := s.control.ResponsesFor(ctx, rec.controlMRID)
+		resps, err := s.control.ResponsesFor(ctx, rec.controlMRID, rec.start)
 		if err != nil {
 			return controlStatusResponse{}, err
 		}

@@ -79,7 +79,7 @@ func (f *fakeControl) ControlSnapshot(_ context.Context, _, controlID string) (s
 	return *f.snap, true, nil
 }
 
-func (f *fakeControl) ResponsesFor(_ context.Context, subject string) ([]sep2embed.ResponseSnapshot, error) {
+func (f *fakeControl) ResponsesFor(_ context.Context, subject string, _ int64) ([]sep2embed.ResponseSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.askedFor = append(f.askedFor, subject)
