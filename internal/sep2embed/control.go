@@ -387,20 +387,45 @@ func resolveControlDelta(reg *registry.Registry, delta ControlDelta) (registry.E
 // ApplyControlDeltaOutcome is ApplyControlDelta that also reports whether the
 // delta issued a control or restated the one in force.
 func ApplyControlDeltaOutcome(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, policy ControlPolicy, delta ControlDelta) (ControlOutcome, error) {
+	outcome, _, err := issueControl(ctx, stores, notifier, reg, policy, delta, controlWindow{})
+	return outcome, err
+}
+
+// controlWindow overrides the temporal placement issueControl would take from
+// policy and the wall clock. The zero value is the bus path: fleet duration,
+// start now, change bound applied.
+type controlWindow struct {
+	// duration is the interval duration in seconds; zero takes
+	// policy.Control.Duration.
+	duration uint32
+	// start is the interval start; zero takes the wall clock. A start after
+	// the wall clock issues a Scheduled event.
+	start int64
+	// skipChangeBound issues the control even when it restates the setpoint in
+	// force. A caller that names its own window is asking for that window, so
+	// suppressing it would drop the requested duration.
+	skipChangeBound bool
+}
+
+// issueControl is the one writer of an issued DERControl, shared by the bus
+// path and the direct path so their validation and supersede rules cannot
+// drift. It returns the control it wrote, or the zero value with
+// ControlRestated.
+func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, policy ControlPolicy, delta ControlDelta, window controlWindow) (ControlOutcome, sep2.DERControl, error) {
 	// Checked before anything is resolved or written, so a misconfigured
 	// bridge cannot create a DERProgram or a DefaultDERControl as a side
 	// effect of a delta it is going to refuse.
 	if policy.Control.Duration == 0 {
-		return 0, fmt.Errorf("%w: set -sep2-control-duration to at least 1 second", ErrDERControlDurationUnset)
+		return 0, sep2.DERControl{}, fmt.Errorf("%w: set -sep2-control-duration to at least 1 second", ErrDERControlDurationUnset)
 	}
 	if !sep2config.RandomizeDurationInRange(policy.Control.RandomizeDuration) {
-		return 0, fmt.Errorf("%w: policy.Control.RandomizeDuration %d, bound is -%d to %d seconds",
+		return 0, sep2.DERControl{}, fmt.Errorf("%w: policy.Control.RandomizeDuration %d, bound is -%d to %d seconds",
 			ErrDERControlRandomizeDurationOutOfRange, policy.Control.RandomizeDuration, sep2config.MaxRandomizeSeconds, sep2config.MaxRandomizeSeconds)
 	}
 
 	entry, base, err := resolveControlDelta(reg, delta)
 	if err != nil {
-		return 0, err
+		return 0, sep2.DERControl{}, err
 	}
 
 	// IndexFor, not Allocate: this path must never mint an index. An mRID
@@ -410,7 +435,7 @@ func ApplyControlDeltaOutcome(ctx context.Context, stores *assembly.Stores, noti
 	// clean failure into a dangling control.
 	edevID, ok := stores.EndDeviceIndexes.IndexFor(entry.MRID)
 	if !ok {
-		return 0, fmt.Errorf("%w: mrid=%q has no seeded URL index", ErrUnknownControlDevice, entry.MRID)
+		return 0, sep2.DERControl{}, fmt.Errorf("%w: mrid=%q has no seeded URL index", ErrUnknownControlDevice, entry.MRID)
 	}
 
 	// Defense in depth: the registry and stores.EndDevices are seeded
@@ -418,12 +443,12 @@ func ApplyControlDeltaOutcome(ctx context.Context, stores *assembly.Stores, noti
 	// were ever to drift, fail closed rather than write a DERControl
 	// with no corresponding seeded device.
 	if _, err := stores.EndDevices.Get(ctx, edevID); err != nil {
-		return 0, fmt.Errorf("%w: edev %q (mrid=%q) not seeded: %v",
+		return 0, sep2.DERControl{}, fmt.Errorf("%w: edev %q (mrid=%q) not seeded: %v",
 			ErrUnknownControlDevice, edevID, entry.MRID, err)
 	}
 
 	if err := ensureDERProgram(ctx, stores, edevID, entry.LFDI, controlFSAID, controlDERProgramID, policy); err != nil {
-		return 0, fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
+		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
 	}
 
 	scope := derControlScope(edevID, controlFSAID, controlDERProgramID)
@@ -445,7 +470,7 @@ func ApplyControlDeltaOutcome(ctx context.Context, stores *assembly.Stores, noti
 	// an event that is not examined is an event that is left Active.
 	priorList, err := stores.DERControls.List(ctx, scope, store.ListOptions{Unbounded: true})
 	if err != nil {
-		return 0, fmt.Errorf("sep2embed: control delta: list existing controls: %w", err)
+		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: list existing controls: %w", err)
 	}
 
 	// ONE clock read for the whole event. interval.start and
@@ -461,22 +486,25 @@ func ApplyControlDeltaOutcome(ctx context.Context, stores *assembly.Stores, noti
 	// comparison and leaves the served collection byte-identical: the event
 	// the client already holds keeps its own mRID, its own window and its own
 	// response cycle, which is the whole point of not re-issuing it.
-	restatement, err := restatesControlInForce(priorList.Items, &base, wallUnix)
-	if err != nil {
-		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
+	restatement := false
+	if !window.skipChangeBound {
+		restatement, err = restatesControlInForce(priorList.Items, &base, wallUnix)
+		if err != nil {
+			return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: %w", err)
+		}
 	}
 	if restatement {
-		return ControlRestated, nil
+		return ControlRestated, sep2.DERControl{}, nil
 	}
 
 	creationTime, err := nextEventCreationTime(priorList.Items, base, wallUnix)
 	if err != nil {
-		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
+		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 
 	mrid, err := deriveEventMRID(mridKindDERControl, entry.LFDI, creationTime, &base)
 	if err != nil {
-		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
+		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 	controlID := derControlID(creationTime, mrid)
 
@@ -499,11 +527,19 @@ func ApplyControlDeltaOutcome(ctx context.Context, stores *assembly.Stores, noti
 	// also what makes the Active below correct by construction rather than by
 	// luck (sep.xsd:5603). duration is operator policy, because the
 	// GridAPPS-D delta contract carries no window of its own.
-	control.Interval = &sep2.DateTimeInterval{
-		Start:    wallUnix,
-		Duration: policy.Control.Duration,
+	startUnix := wallUnix
+	if window.start != 0 {
+		startUnix = window.start
 	}
-	control.EventStatus = newEventStatus(servedEventEdition, control.Interval.Start, wallUnix)
+	duration := policy.Control.Duration
+	if window.duration != 0 {
+		duration = window.duration
+	}
+	control.Interval = &sep2.DateTimeInterval{
+		Start:    startUnix,
+		Duration: duration,
+	}
+	control.EventStatus = newEventStatus(servedEventEdition, startUnix, wallUnix)
 	// Served explicitly, including at 0. The value is addressable rather
 	// than inlined because the field is a pointer whose nil means "element
 	// absent"; a pointer to 0 still reaches the wire as
@@ -529,18 +565,18 @@ func ApplyControlDeltaOutcome(ctx context.Context, stores *assembly.Stores, noti
 	// this id IS this event, already published; there is nothing to write and
 	// nothing to change.
 	if err := stores.DERControls.Create(ctx, scope, controlID, control); err != nil && !errors.Is(err, store.ErrAlreadyExists) {
-		return 0, fmt.Errorf("sep2embed: control delta: write control: %w", err)
+		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: write control: %w", err)
 	}
 
 	if err := supersedePriorControls(ctx, stores.DERControls, scope, priorList.Items, control); err != nil {
-		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
+		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 
 	if notifier != nil {
 		notifier.Notify(ctx, derProgramListHref(edevID, controlFSAID), sep2.NotificationStatusDefault)
 	}
 
-	return ControlIssued, nil
+	return ControlIssued, control, nil
 }
 
 // nextEventCreationTime returns the creation instant to stamp on a control

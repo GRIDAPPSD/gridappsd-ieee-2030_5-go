@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
@@ -334,6 +335,12 @@ type Embed struct {
 	identity sep2srv.Identity
 	policy   ControlPolicy
 
+	// controlMu serializes every write to the DERControl collections: the bus
+	// path, ApplyControlFor and the lifecycle sweep. Two writers that read the
+	// same prior list would stamp the same creationTime, which a client cannot
+	// order. The zero value is ready, so an Embed built without New works.
+	controlMu sync.Mutex
+
 	// ended holds the identity of every DERControl this Embed has taken out
 	// of service, for the retention window (see lifecycle.go). It is never
 	// nil on an Embed built by New.
@@ -634,6 +641,9 @@ func (e *Embed) ApplyControlDelta(ctx context.Context, reg *registry.Registry, d
 // ApplyControlDeltaOutcome is ApplyControlDelta that also reports whether
 // the delta issued a control or restated the one in force.
 func (e *Embed) ApplyControlDeltaOutcome(ctx context.Context, reg *registry.Registry, delta ControlDelta) (ControlOutcome, error) {
+	e.controlMu.Lock()
+	defer e.controlMu.Unlock()
+
 	// ONE clock read for the sweep and the write together, for the same
 	// reason ApplyControlDelta reads the clock once for creationTime,
 	// interval.start and EventStatus.dateTime: two reads could land on
@@ -646,6 +656,78 @@ func (e *Embed) ApplyControlDeltaOutcome(ctx context.Context, reg *registry.Regi
 		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 	return ApplyControlDeltaOutcome(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta)
+}
+
+// ErrControlDurationInvalid is returned by ApplyControlFor for a zero
+// duration, which would serve an event that ends the instant it starts.
+var ErrControlDurationInvalid = errors.New("sep2embed: control duration must be at least 1 second")
+
+// ControlSend describes the pair of controls ApplyControlFor issued.
+type ControlSend struct {
+	// ControlID and FollowOnID are the store keys of the requested control and
+	// of the 0 W control that takes over when it ends.
+	ControlID, FollowOnID string
+	// Start and End bound the requested control (End exclusive), in Unix
+	// seconds; the follow-on starts at End.
+	Start, End int64
+}
+
+// ApplyControlFor issues one opModTargetW control for the delta's device with
+// the given duration in seconds, plus a 0 W opModTargetW control that starts
+// when it ends and runs for the fleet default duration. Validation and
+// supersession are the bus path's, and the call takes the same lock as
+// ApplyControlDeltaOutcome.
+//
+// The follow-on is written first. A failure after it leaves only a scheduled
+// 0 W control, while the reverse order could leave a device holding the
+// requested target indefinitely. A later send that overlaps the requested
+// window supersedes both controls, because each is older and overlaps it.
+//
+// Only opModTargetW is accepted: the follow-on is a 0 W target, which is not
+// a reversion for any other mode. Unlike the bus path, a send that restates
+// the setpoint in force is still issued, so its own duration is honored.
+func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, delta ControlDelta, durationSeconds uint32) (ControlSend, error) {
+	if delta.Attribute != derControlAttributePrefix+"opModTargetW" {
+		return ControlSend{}, fmt.Errorf("%w: attribute %q (want %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix+"opModTargetW")
+	}
+	if durationSeconds == 0 {
+		return ControlSend{}, ErrControlDurationInvalid
+	}
+	// Validated before the lock and before any write, so a refusal leaves the
+	// stores untouched.
+	if err := ValidateControlDelta(reg, delta); err != nil {
+		return ControlSend{}, err
+	}
+
+	e.controlMu.Lock()
+	defer e.controlMu.Unlock()
+
+	nowUnix := e.policy.Control.now().UTC().Unix()
+	if _, err := e.expireEndedControlsAt(ctx, nowUnix); err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
+	}
+	policy := pinnedClockPolicy(e.policy, nowUnix)
+
+	endUnix := nowUnix + int64(durationSeconds)
+	followOn := ControlDelta{
+		Object:    delta.Object,
+		Attribute: delta.Attribute,
+		Value:     map[string]any{"multiplier": 0.0, "value": 0.0},
+	}
+	_, zero, err := issueControl(ctx, e.stores, e.notifier, reg, policy, followOn, controlWindow{start: endUnix, skipChangeBound: true})
+	if err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: follow-on: %w", err)
+	}
+	_, requested, err := issueControl(ctx, e.stores, e.notifier, reg, policy, delta, controlWindow{duration: durationSeconds, skipChangeBound: true})
+	if err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
+	}
+	return ControlSend{
+		ControlID:  derControlID(requested.CreationTime, requested.MRID),
+		FollowOnID: derControlID(zero.CreationTime, zero.MRID),
+		Start:      nowUnix,
+		End:        endUnix,
+	}, nil
 }
 
 // pinnedClockPolicy returns a copy of policy whose control clock reports
@@ -666,6 +748,8 @@ func pinnedClockPolicy(policy ControlPolicy, nowUnix int64) ControlPolicy {
 // disagree under a test that pins one of them, and would be indefensible in
 // production for the same reason.
 func (e *Embed) expireEndedControls(ctx context.Context) (int, error) {
+	e.controlMu.Lock()
+	defer e.controlMu.Unlock()
 	return e.expireEndedControlsAt(ctx, e.policy.Control.now().UTC().Unix())
 }
 
