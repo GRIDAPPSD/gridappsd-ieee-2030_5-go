@@ -20,6 +20,7 @@ import (
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/assembly"
 	coresub "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/subscription"
+	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/store"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/connobs"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
@@ -658,9 +659,16 @@ func (e *Embed) ApplyControlDeltaOutcome(ctx context.Context, reg *registry.Regi
 	return ApplyControlDeltaOutcome(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta)
 }
 
-// ErrControlDurationInvalid is returned by ApplyControlFor for a zero
-// duration, which would serve an event that ends the instant it starts.
-var ErrControlDurationInvalid = errors.New("sep2embed: control duration must be at least 1 second")
+// ErrControlDurationInvalid is returned by ApplyControlFor for a duration
+// outside 1 to maxControlSendSeconds, or one the fleet's negative
+// randomizeDuration could shorten to zero or below: either would serve an
+// event some device ends the instant it starts, or one held for years.
+var ErrControlDurationInvalid = errors.New("sep2embed: control duration is out of range")
+
+// maxControlSendSeconds is the longest window ApplyControlFor issues. It is
+// the upper end of the 60 to 3600 s range the watts control route offers
+// (#245); a longer hold is the fleet default's job, not a send's.
+const maxControlSendSeconds uint32 = 3600
 
 // ControlSend describes the pair of controls ApplyControlFor issued.
 type ControlSend struct {
@@ -676,12 +684,15 @@ type ControlSend struct {
 // the given duration in seconds, plus a 0 W opModTargetW control that starts
 // when it ends and runs for the fleet default duration. Validation and
 // supersession are the bus path's, and the call takes the same lock as
-// ApplyControlDeltaOutcome.
+// ApplyControlDeltaOutcome; ctx is checked once the lock is held, since the
+// wait for it is not interruptible.
 //
-// The follow-on is written first. A failure after it leaves only a scheduled
-// 0 W control, while the reverse order could leave a device holding the
-// requested target indefinitely. A later send that overlaps the requested
-// window supersedes both controls, because each is older and overlaps it.
+// Both controls are prepared and every refusal is checked before either is
+// written, so a refused send writes nothing. The requested control is written
+// first, so the control it replaces is marked Superseded at the requested
+// start rather than at the follow-on's. The send also cancels any older
+// opModTargetW control still waiting to start that the new pair did not
+// supersede: the newest send states what the device does from now on.
 //
 // Only opModTargetW is accepted: the follow-on is a 0 W target, which is not
 // a reversion for any other mode. Unlike the bus path, a send that restates
@@ -690,8 +701,11 @@ func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, del
 	if delta.Attribute != derControlAttributePrefix+"opModTargetW" {
 		return ControlSend{}, fmt.Errorf("%w: attribute %q (want %q)", ErrUnsupportedControlAttribute, delta.Attribute, derControlAttributePrefix+"opModTargetW")
 	}
-	if durationSeconds == 0 {
-		return ControlSend{}, ErrControlDurationInvalid
+	if durationSeconds == 0 || durationSeconds > maxControlSendSeconds {
+		return ControlSend{}, fmt.Errorf("%w: %d s, want 1 to %d", ErrControlDurationInvalid, durationSeconds, maxControlSendSeconds)
+	}
+	if rd := int64(e.policy.Control.RandomizeDuration); rd < 0 && int64(durationSeconds)+rd <= 0 {
+		return ControlSend{}, fmt.Errorf("%w: %d s, which randomizeDuration %d can shorten to nothing", ErrControlDurationInvalid, durationSeconds, rd)
 	}
 	// Validated before the lock and before any write, so a refusal leaves the
 	// stores untouched.
@@ -701,6 +715,9 @@ func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, del
 
 	e.controlMu.Lock()
 	defer e.controlMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
+	}
 
 	nowUnix := e.policy.Control.now().UTC().Unix()
 	if _, err := e.expireEndedControlsAt(ctx, nowUnix); err != nil {
@@ -714,20 +731,68 @@ func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, del
 		Attribute: delta.Attribute,
 		Value:     map[string]any{"multiplier": 0.0, "value": 0.0},
 	}
-	_, zero, err := issueControl(ctx, e.stores, e.notifier, reg, policy, followOn, controlWindow{start: endUnix, skipChangeBound: true})
-	if err != nil {
-		return ControlSend{}, fmt.Errorf("sep2embed: control send: follow-on: %w", err)
-	}
-	_, requested, err := issueControl(ctx, e.stores, e.notifier, reg, policy, delta, controlWindow{duration: durationSeconds, skipChangeBound: true})
+	requested, _, priors, err := prepareControl(ctx, e.stores, reg, policy, delta,
+		controlWindow{duration: durationSeconds, skipChangeBound: true, maxLead: maxDirectSendLeadSeconds}, nil)
 	if err != nil {
 		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
 	}
+	zero, _, _, err := prepareControl(ctx, e.stores, reg, policy, followOn,
+		controlWindow{start: endUnix, skipChangeBound: true, maxLead: maxDirectSendLeadSeconds}, []sep2.DERControl{requested.control})
+	if err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: follow-on: %w", err)
+	}
+
+	// Nothing below is a refusal; an error is a store failure.
+	if err := commitControl(ctx, e.stores, requested, priors); err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
+	}
+	if e.notifier != nil {
+		defer e.notifier.Notify(ctx, derProgramListHref(requested.edevID, controlFSAID), sep2.NotificationStatusDefault)
+	}
+	// Re-read so the follow-on's supersede pass sees the marks just made.
+	withRequested, err := e.stores.DERControls.List(ctx, requested.scope, store.ListOptions{Unbounded: true})
+	if err == nil {
+		err = commitControl(ctx, e.stores, zero, withRequested.Items)
+	}
+	if err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: control %s is in service until %d but its follow-on was not written: %w", requested.id, endUnix, err)
+	}
+	if err := cancelReplacedSchedule(ctx, e.stores, requested, nowUnix); err != nil {
+		return ControlSend{}, fmt.Errorf("sep2embed: control send: %w", err)
+	}
 	return ControlSend{
-		ControlID:  derControlID(requested.CreationTime, requested.MRID),
-		FollowOnID: derControlID(zero.CreationTime, zero.MRID),
+		ControlID:  requested.id,
+		FollowOnID: zero.id,
 		Start:      nowUnix,
 		End:        endUnix,
 	}, nil
+}
+
+// cancelReplacedSchedule marks Cancelled, at nowUnix, every control on sent's
+// modes that is older than sent and still Scheduled to start. Those are an
+// earlier send's follow-ons the new pair does not overlap; left Scheduled
+// they would drive the device into a later gap. Cancelling is a status edit,
+// which 2018 rule c) p.90 permits, and value 2 is defined in every edition.
+func cancelReplacedSchedule(ctx context.Context, stores *assembly.Stores, sent preparedControl, nowUnix int64) error {
+	list, err := stores.DERControls.List(ctx, sent.scope, store.ListOptions{Unbounded: true})
+	if err != nil {
+		return fmt.Errorf("list controls to cancel: %w", err)
+	}
+	modes := controlModesOf(sent.control.DERControlBase)
+	for _, c := range list.Items {
+		if c.CreationTime >= sent.control.CreationTime || c.EventStatus == nil ||
+			c.EventStatus.CurrentStatus != sep2.EventStatusScheduled ||
+			c.Interval == nil || c.Interval.Start <= nowUnix ||
+			classifyModes(controlModesOf(c.DERControlBase), modes) != modesIdentical {
+			continue
+		}
+		c.EventStatus.CurrentStatus = sep2.EventStatusCancelled
+		c.EventStatus.DateTime = nowUnix
+		if err := stores.DERControls.Update(ctx, sent.scope, derControlID(c.CreationTime, c.MRID), c); err != nil {
+			return fmt.Errorf("cancel control %s: %w", c.MRID, err)
+		}
+	}
+	return nil
 }
 
 // pinnedClockPolicy returns a copy of policy whose control clock reports

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -114,6 +115,10 @@ var ErrDERControlRandomizeDurationOutOfRange = errors.New("sep2embed: RandomizeD
 // CHANGED setpoint per second per control mode is not a rate this protocol can
 // express. See maxCreationTimeLeadSeconds.
 var ErrControlDeltaRateUnrepresentable = errors.New("sep2embed: control delta rate exceeds the one-second event ordering IEEE 2030.5 can represent")
+
+// ErrControlValueInvalid is returned for a control value its mode cannot
+// carry: out of range for the element, fractional, or of the wrong shape.
+var ErrControlValueInvalid = errors.New("sep2embed: control value invalid")
 
 // DERProgramSeed carries the operator-configurable fields of the DERProgram
 // this package seeds and lazily creates. It mirrors
@@ -405,27 +410,55 @@ type controlWindow struct {
 	// force. A caller that names its own window is asking for that window, so
 	// suppressing it would drop the requested duration.
 	skipChangeBound bool
+	// maxLead caps how far creationTime may run ahead of the wall clock; zero
+	// takes maxCreationTimeLeadSeconds.
+	maxLead int64
 }
 
-// issueControl is the one writer of an issued DERControl, shared by the bus
-// path and the direct path so their validation and supersede rules cannot
-// drift. It returns the control it wrote, or the zero value with
-// ControlRestated.
+// preparedControl is a control built and checked against every refusal, not
+// yet written.
+type preparedControl struct {
+	edevID, scope, id string
+	control           sep2.DERControl
+}
+
+// issueControl prepares and writes one control. It returns the control it
+// wrote, or the zero value with ControlRestated.
 func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresub.Manager, reg *registry.Registry, policy ControlPolicy, delta ControlDelta, window controlWindow) (ControlOutcome, sep2.DERControl, error) {
+	p, outcome, priors, err := prepareControl(ctx, stores, reg, policy, delta, window, nil)
+	if err != nil || outcome == ControlRestated {
+		return outcome, sep2.DERControl{}, err
+	}
+	if err := commitControl(ctx, stores, p, priors); err != nil {
+		return 0, sep2.DERControl{}, err
+	}
+	if notifier != nil {
+		notifier.Notify(ctx, derProgramListHref(p.edevID, controlFSAID), sep2.NotificationStatusDefault)
+	}
+	return ControlIssued, p.control, nil
+}
+
+// prepareControl builds the control a delta issues and runs every refusal on
+// it, writing nothing but the DERProgram the control hangs under. It is shared
+// by the bus path and the direct path so their validation and supersede rules
+// cannot drift. pending holds controls the caller has prepared in the same
+// call but not yet written, so a second control is ordered after the first.
+// It also returns the stored controls it read.
+func prepareControl(ctx context.Context, stores *assembly.Stores, reg *registry.Registry, policy ControlPolicy, delta ControlDelta, window controlWindow, pending []sep2.DERControl) (preparedControl, ControlOutcome, []sep2.DERControl, error) {
 	// Checked before anything is resolved or written, so a misconfigured
 	// bridge cannot create a DERProgram or a DefaultDERControl as a side
 	// effect of a delta it is going to refuse.
 	if policy.Control.Duration == 0 {
-		return 0, sep2.DERControl{}, fmt.Errorf("%w: set -sep2-control-duration to at least 1 second", ErrDERControlDurationUnset)
+		return preparedControl{}, 0, nil, fmt.Errorf("%w: set -sep2-control-duration to at least 1 second", ErrDERControlDurationUnset)
 	}
 	if !sep2config.RandomizeDurationInRange(policy.Control.RandomizeDuration) {
-		return 0, sep2.DERControl{}, fmt.Errorf("%w: policy.Control.RandomizeDuration %d, bound is -%d to %d seconds",
+		return preparedControl{}, 0, nil, fmt.Errorf("%w: policy.Control.RandomizeDuration %d, bound is -%d to %d seconds",
 			ErrDERControlRandomizeDurationOutOfRange, policy.Control.RandomizeDuration, sep2config.MaxRandomizeSeconds, sep2config.MaxRandomizeSeconds)
 	}
 
 	entry, base, err := resolveControlDelta(reg, delta)
 	if err != nil {
-		return 0, sep2.DERControl{}, err
+		return preparedControl{}, 0, nil, err
 	}
 
 	// IndexFor, not Allocate: this path must never mint an index. An mRID
@@ -435,7 +468,7 @@ func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresu
 	// clean failure into a dangling control.
 	edevID, ok := stores.EndDeviceIndexes.IndexFor(entry.MRID)
 	if !ok {
-		return 0, sep2.DERControl{}, fmt.Errorf("%w: mrid=%q has no seeded URL index", ErrUnknownControlDevice, entry.MRID)
+		return preparedControl{}, 0, nil, fmt.Errorf("%w: mrid=%q has no seeded URL index", ErrUnknownControlDevice, entry.MRID)
 	}
 
 	// Defense in depth: the registry and stores.EndDevices are seeded
@@ -443,12 +476,12 @@ func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresu
 	// were ever to drift, fail closed rather than write a DERControl
 	// with no corresponding seeded device.
 	if _, err := stores.EndDevices.Get(ctx, edevID); err != nil {
-		return 0, sep2.DERControl{}, fmt.Errorf("%w: edev %q (mrid=%q) not seeded: %v",
+		return preparedControl{}, 0, nil, fmt.Errorf("%w: edev %q (mrid=%q) not seeded: %v",
 			ErrUnknownControlDevice, edevID, entry.MRID, err)
 	}
 
 	if err := ensureDERProgram(ctx, stores, edevID, entry.LFDI, controlFSAID, controlDERProgramID, policy); err != nil {
-		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
+		return preparedControl{}, 0, nil, fmt.Errorf("sep2embed: control delta: ensure der program: %w", err)
 	}
 
 	scope := derControlScope(edevID, controlFSAID, controlDERProgramID)
@@ -470,8 +503,10 @@ func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresu
 	// an event that is not examined is an event that is left Active.
 	priorList, err := stores.DERControls.List(ctx, scope, store.ListOptions{Unbounded: true})
 	if err != nil {
-		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: list existing controls: %w", err)
+		return preparedControl{}, 0, nil, fmt.Errorf("sep2embed: control delta: list existing controls: %w", err)
 	}
+	stored := priorList.Items
+	known := append(slices.Clip(stored), pending...)
 
 	// ONE clock read for the whole event. interval.start and
 	// EventStatus.dateTime are both this instant, and reading the clock twice
@@ -488,23 +523,27 @@ func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresu
 	// response cycle, which is the whole point of not re-issuing it.
 	restatement := false
 	if !window.skipChangeBound {
-		restatement, err = restatesControlInForce(priorList.Items, &base, wallUnix)
+		restatement, err = restatesControlInForce(known, &base, wallUnix)
 		if err != nil {
-			return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: %w", err)
+			return preparedControl{}, 0, nil, fmt.Errorf("sep2embed: control delta: %w", err)
 		}
 	}
 	if restatement {
-		return ControlRestated, sep2.DERControl{}, nil
+		return preparedControl{}, ControlRestated, nil, nil
 	}
 
-	creationTime, err := nextEventCreationTime(priorList.Items, base, wallUnix)
+	maxLead := maxCreationTimeLeadSeconds
+	if window.maxLead != 0 {
+		maxLead = window.maxLead
+	}
+	creationTime, err := nextEventCreationTime(known, base, wallUnix, maxLead)
 	if err != nil {
-		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: %w", err)
+		return preparedControl{}, 0, nil, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 
 	mrid, err := deriveEventMRID(mridKindDERControl, entry.LFDI, creationTime, &base)
 	if err != nil {
-		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: %w", err)
+		return preparedControl{}, 0, nil, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
 	controlID := derControlID(creationTime, mrid)
 
@@ -553,6 +592,13 @@ func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresu
 	control.RandomizeDuration = &randomizeDuration
 	control.DERControlBase = &base
 
+	return preparedControl{edevID: edevID, scope: scope, id: controlID, control: control}, ControlIssued, stored, nil
+}
+
+// commitControl writes a prepared control and marks the priors it supersedes.
+// priors must be read before the write, so the control cannot classify
+// against itself.
+func commitControl(ctx context.Context, stores *assembly.Stores, p preparedControl, priors []sep2.DERControl) error {
 	// Create BEFORE marking predecessors, and in that order deliberately. If
 	// the create fails after the marks were applied, the device would be left
 	// with every control superseded and no replacement: a fail-open on the
@@ -564,19 +610,13 @@ func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresu
 	// of the event's content and creation instant, so an existing entry under
 	// this id IS this event, already published; there is nothing to write and
 	// nothing to change.
-	if err := stores.DERControls.Create(ctx, scope, controlID, control); err != nil && !errors.Is(err, store.ErrAlreadyExists) {
-		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: write control: %w", err)
+	if err := stores.DERControls.Create(ctx, p.scope, p.id, p.control); err != nil && !errors.Is(err, store.ErrAlreadyExists) {
+		return fmt.Errorf("sep2embed: control delta: write control: %w", err)
 	}
-
-	if err := supersedePriorControls(ctx, stores.DERControls, scope, priorList.Items, control); err != nil {
-		return 0, sep2.DERControl{}, fmt.Errorf("sep2embed: control delta: %w", err)
+	if err := supersedePriorControls(ctx, stores.DERControls, p.scope, priors, p.control); err != nil {
+		return fmt.Errorf("sep2embed: control delta: %w", err)
 	}
-
-	if notifier != nil {
-		notifier.Notify(ctx, derProgramListHref(edevID, controlFSAID), sep2.NotificationStatusDefault)
-	}
-
-	return ControlIssued, control, nil
+	return nil
 }
 
 // nextEventCreationTime returns the creation instant to stamp on a control
@@ -618,7 +658,7 @@ func issueControl(ctx context.Context, stores *assembly.Stores, notifier *coresu
 // lead never decays; with it, the lead decays on its own as soon as the delta
 // rate falls back under one per second, because the wall clock catches up and
 // this function returns it unmodified again.
-func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wallUnix int64) (int64, error) {
+func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wallUnix, maxLead int64) (int64, error) {
 	incomingModes := controlModesOf(&base)
 	next := wallUnix
 	for _, p := range prior {
@@ -630,9 +670,9 @@ func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wa
 		}
 		next = p.CreationTime + 1
 	}
-	if lead := next - wallUnix; lead > maxCreationTimeLeadSeconds {
+	if lead := next - wallUnix; lead > maxLead {
 		return 0, fmt.Errorf("%w: stamping a control newer than every overlapping same-mode control already issued would put creationTime %ds ahead of the wall clock, over the %ds bound",
-			ErrControlDeltaRateUnrepresentable, lead, maxCreationTimeLeadSeconds)
+			ErrControlDeltaRateUnrepresentable, lead, maxLead)
 	}
 	return next, nil
 }
@@ -670,9 +710,17 @@ func nextEventCreationTime(prior []sep2.DERControl, base sep2.DERControlBase, wa
 // sustained demand for sub-second event ordering, which IEEE 2030.5 has no way
 // to express: TimeType is whole seconds (sep.xsd:6382).
 //
-// The change bound sits in front of this one, so only a delta that
-// actually CHANGES the commanded value can consume any of this budget.
+// On the bus path the change bound sits in front of this one, so only a
+// delta that actually CHANGES the commanded value consumes this budget. A
+// direct send bypasses the change bound and is held to
+// maxDirectSendLeadSeconds, which keeps the rest for the bus.
 const maxCreationTimeLeadSeconds int64 = 10
+
+// maxDirectSendLeadSeconds is the creationTime lead Embed.ApplyControlFor may
+// consume. Without it repeated sends, two controls each, could spend the whole
+// budget and get a real bus delta refused, which the bus path does not retry;
+// with it the bus always keeps the remaining 4 changed deltas per wall second.
+const maxDirectSendLeadSeconds int64 = 6
 
 // restatesControlInForce reports whether base is a byte-for-byte restatement
 // of the control this device is already running for base's own control modes.
@@ -975,25 +1023,25 @@ func applyDERControlBaseField(base *sep2.DERControlBase, field string, value any
 	case "opModTargetW":
 		ap, err := decodeActivePower(value)
 		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
+			return fmt.Errorf("%w: %s: %w", ErrControlValueInvalid, field, err)
 		}
 		base.OpModTargetW = flipActivePowerSign(ap, activeSignFlip)
 	case "opModTargetVar":
 		rp, err := decodeReactivePower(value)
 		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
+			return fmt.Errorf("%w: %s: %w", ErrControlValueInvalid, field, err)
 		}
 		base.OpModTargetVar = flipReactivePowerSign(rp, reactiveSignFlip)
 	case "opModConnect":
 		b, err := decodeBool(value)
 		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
+			return fmt.Errorf("%w: %s: %w", ErrControlValueInvalid, field, err)
 		}
 		base.OpModConnect = b
 	case "opModEnergize":
 		b, err := decodeBool(value)
 		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
+			return fmt.Errorf("%w: %s: %w", ErrControlValueInvalid, field, err)
 		}
 		base.OpModEnergize = b
 	default:
