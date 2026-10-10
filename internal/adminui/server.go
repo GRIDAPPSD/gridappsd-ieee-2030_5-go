@@ -232,11 +232,6 @@ type Sources struct {
 	// History holds the device status samples, read by the graph panel.
 	History HistorySource
 
-	// Mirror, when set, serves the posted mirror readings as series at
-	// /apps/soc/api/mirror. That route takes no credential by decision;
-	// leaving Mirror nil leaves it unmounted.
-	Mirror MirrorSource
-
 	// Monitor and Sender are the optional fields: each, when set, adds its
 	// panel.
 	Monitor MonitorSource
@@ -265,7 +260,6 @@ type Server struct {
 	clients  ClientObserverSource
 	activity *activity.Recorder
 	history  HistorySource
-	mirror   MirrorSource
 	monitor  *monitorPanel
 	sender   *senderPanel
 	control  ControlSource
@@ -274,9 +268,7 @@ type Server struct {
 	// controls remembers the sends the status route answers for.
 	controls *controlLedger
 
-	// mirrorBuilds holds a slot for each mirror series build in flight.
-	mirrorBuilds chan struct{}
-	// outputBuilds is the same gate for the output series route.
+	// outputBuilds holds a slot for each output series build in flight.
 	outputBuilds chan struct{}
 
 	// idleAfter is Config.ClientIdleAfter with its default applied.
@@ -348,14 +340,12 @@ func New(cfg Config, src Sources) (*Server, error) {
 		clients:   src.Clients,
 		activity:  src.Activity,
 		history:   src.History,
-		mirror:    src.Mirror,
 		control:   src.Control,
 		controls:  newControlLedger(),
 		startedAt: time.Now(),
 		now:       time.Now,
 		timeouts:  defaultTimeouts.withOverrides(cfg),
 
-		mirrorBuilds: make(chan struct{}, maxMirrorBuilds),
 		outputBuilds: make(chan struct{}, maxOutputBuilds),
 	}
 	s.controlLimit = newTokenBucket(s.now())

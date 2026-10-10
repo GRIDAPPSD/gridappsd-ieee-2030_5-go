@@ -4,7 +4,6 @@ h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
 h2 { font-size: 1.1rem; margin: 1.25rem 0 0.25rem; }
 h3 { font-size: 1rem; margin: 1rem 0 0.25rem; }
 .muted { color: #9aa3ad; margin: 0.25rem 0; }
-.note { color: #d8c070; margin: 0.25rem 0; }
 .warn { color: #f0b040; border: 1px solid #f0b040; padding: 0.4rem; }
 .error { color: #ff8080; border: 1px solid #ff8080; padding: 0.4rem; }
 [hidden] { display: none; }

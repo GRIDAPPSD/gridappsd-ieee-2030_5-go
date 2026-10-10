@@ -410,7 +410,6 @@ func run(ctx context.Context, cfg config) error {
 		Clients:  &connHook,
 		Activity: commsRecorder,
 		Protocol: embed,
-		Mirror:   embed,
 		History:  &inputHistory,
 		Monitor:  mon,
 		Sender:   busSender,
