@@ -1,9 +1,12 @@
 package sep2embed
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"math"
+	"os"
 	"reflect"
 	"sort"
 	"strconv"
@@ -1150,5 +1153,31 @@ func TestSendAndPromoteOnlySweepNotifyTheDevice(t *testing.T) {
 	}
 	if got := drain(); len(got) != 0 {
 		t.Errorf("notifications after a sweep that changed nothing = %v, want none", got)
+	}
+}
+
+// A follow-on failure returns before the cleanup of older scheduled controls,
+// and the log says the cleanup was skipped. Not parallel: it swaps the
+// process-wide log writer.
+func TestApplyControlForLogsTheCleanupSkippedByAFailedFollowOn(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	const t0 = controlClockUnix
+	e, reg, _, _ := newSendEmbed(t, t0)
+	e.stores.DERControls = faultyDERControls{
+		ScopedStore: e.stores.DERControls,
+		failCreate: func(_ string, c sep2.DERControl) bool {
+			return c.DERControlBase != nil && c.DERControlBase.OpModTargetW != nil && c.DERControlBase.OpModTargetW.Value == 0
+		},
+	}
+
+	send, err := e.ApplyControlFor(context.Background(), reg, targetWDelta("mrid-a", 0, -2000), 600)
+
+	if !errors.Is(err, ErrControlFollowOnNotWritten) {
+		t.Fatalf("error = %v, want ErrControlFollowOnNotWritten", err)
+	}
+	if want := "control " + send.ControlID + ": follow-on not written, so the cancel of older scheduled controls was skipped"; !strings.Contains(buf.String(), want) {
+		t.Errorf("log = %q, want it to contain %q", buf.String(), want)
 	}
 }

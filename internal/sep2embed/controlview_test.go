@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -214,5 +215,106 @@ func TestResponsesForNotFoundIsEmptyAndOtherErrorsAreReturned(t *testing.T) {
 	e.stores.Responses = listFailing{ScopedStore: e.stores.Responses, err: boom}
 	if got, err := e.ResponsesFor(context.Background(), "ctl-1", 0); !errors.Is(err, boom) || got != nil {
 		t.Errorf("store failure = %v, %v; want nil and the store error", got, err)
+	}
+}
+
+// The key ResponsesFor starts after is just below the first nanosecond of
+// since: a response at that nanosecond is read, one a nanosecond earlier is
+// not, in both orders of arrival.
+func TestResponsesForKeyBoundaryIsExactlyTheStartSecond(t *testing.T) {
+	t.Parallel()
+
+	const since = int64(1_700_000_000)
+	received := sep2.ResponseStatusEventReceived
+	e, _ := newTestEmbed(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		key     string
+		created int64
+	}{
+		{rspKey(since*1e9 - 1), since - 1},
+		{rspKey(since * 1e9), since},
+		{rspKey(since*1e9 + 1), since + 1},
+	} {
+		if err := e.stores.Responses.Create(ctx, "1", tc.key, sep2.Response{Subject: "ctl-new", Status: &received, CreatedDateTime: tc.created}); err != nil {
+			t.Fatalf("Create %s: %v", tc.key, err)
+		}
+	}
+
+	got, err := e.ResponsesFor(ctx, "ctl-new", since)
+	if err != nil {
+		t.Fatalf("ResponsesFor: %v", err)
+	}
+	if len(got) != 2 || got[0].CreatedDateTime != since || got[1].CreatedDateTime != since+1 {
+		t.Errorf("ResponsesFor = %+v, want the responses at %d and %d", got, since, since+1)
+	}
+}
+
+// The smallest since the key arithmetic serves is the first with a 19 digit
+// nanosecond count, which byte order keeps in time order; below it, and
+// above what an int64 nanosecond count holds, the read starts at the first
+// key.
+func TestResponseKeyBeforeRange(t *testing.T) {
+	t.Parallel()
+
+	const maxSince = math.MaxInt64 / 1_000_000_000
+	for _, tc := range []struct {
+		name  string
+		since int64
+		want  string
+	}{
+		{"zero reads from the first key", 0, ""},
+		{"negative reads from the first key", -5, ""},
+		{"1e9 s has an 18 digit key below it", 1_000_000_000, ""},
+		{"the first served second", 1_000_000_001, "rsp-1000000000999999999"},
+		{"the last served second", maxSince, "rsp-9223372035999999999"},
+		{"past the last reads from the first key", maxSince + 1, ""},
+	} {
+		if got := responseKeyBefore(tc.since); got != tc.want {
+			t.Errorf("%s: responseKeyBefore(%d) = %q, want %q", tc.name, tc.since, got, tc.want)
+		}
+	}
+}
+
+// pagedNotFound serves the first List from the real store and answers the
+// next with not found, as a store whose set vanished between pages would.
+type pagedNotFound struct {
+	store.ScopedStore[sep2.Response]
+	calls int
+}
+
+func (p *pagedNotFound) List(ctx context.Context, scope string, opts store.ListOptions) (store.ListResult[sep2.Response], error) {
+	p.calls++
+	if p.calls > 1 {
+		return store.ListResult[sep2.Response]{}, store.ErrNotFound
+	}
+	return p.ScopedStore.List(ctx, scope, opts)
+}
+
+// A not found on a later page ends the read and keeps what the earlier pages
+// held.
+func TestResponsesForNotFoundOnALaterPageKeepsWhatWasRead(t *testing.T) {
+	t.Parallel()
+
+	const since = int64(1_700_000_000)
+	received := sep2.ResponseStatusEventReceived
+	e, _ := newTestEmbed(t)
+	ctx := context.Background()
+	for i := 0; i < snapshotListLimit; i++ {
+		subject := "other"
+		if i == 0 {
+			subject = "ctl-new"
+		}
+		if err := e.stores.Responses.Create(ctx, "1", rspKey(since*1e9+int64(i)), sep2.Response{Subject: subject, Status: &received, CreatedDateTime: since}); err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+	}
+	paged := &pagedNotFound{ScopedStore: e.stores.Responses}
+	e.stores.Responses = paged
+
+	got, err := e.ResponsesFor(ctx, "ctl-new", since)
+
+	if err != nil || len(got) != 1 || paged.calls != 2 {
+		t.Errorf("ResponsesFor = %+v, %v after %d lists; want the one response from page one, no error, 2 lists", got, err, paged.calls)
 	}
 }
