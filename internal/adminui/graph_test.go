@@ -44,6 +44,15 @@ type fakeHistory struct {
 func (f *fakeHistory) Snapshot() []telemetryhistory.SeriesSnapshot { return f.snap }
 func (f *fakeHistory) Evictions() uint64                           { return 0 }
 
+func (f *fakeHistory) Series(key telemetryhistory.SeriesKey) ([]telemetryhistory.Sample, bool) {
+	for _, ss := range f.snap {
+		if ss.Key == key {
+			return ss.Samples, true
+		}
+	}
+	return nil, false
+}
+
 // graphEpoch is a fixed instant the tests stamp samples from, so wire
 // milliseconds are literals.
 const graphEpoch = int64(1_759_000_000)

@@ -271,6 +271,18 @@ func (s *Store) evictLeastRecentlyAppendedLocked() {
 	}
 }
 
+// Series returns a copy of the samples of the one series under key, oldest
+// first, and whether the store holds that series.
+func (s *Store) Series(key SeriesKey) ([]Sample, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.series[key]
+	if !ok {
+		return nil, false
+	}
+	return e.ring.snapshot(), true
+}
+
 // Snapshot returns a read-only copy of every retained series, sorted by
 // (Object, Attribute) for deterministic output. Every returned slice is
 // a fresh copy: mutating the result, including the per-series Samples

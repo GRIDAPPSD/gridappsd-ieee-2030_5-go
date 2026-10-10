@@ -47,9 +47,16 @@ const (
 	maxControlSeconds     = 3600
 	defaultControlSeconds = 300
 
-	// notMovingSeconds is how long after the first report the device may sit
-	// still before the verdict says so; the control's own duration caps it.
+	// notMovingSeconds is how long after the first judged report the device
+	// may sit still before the verdict says so; the control's own duration
+	// caps it.
 	notMovingSeconds = 180
+
+	// controlPickupSeconds is how long after the start a device that posts no
+	// Received response is assumed to take to pick the control up: one poll
+	// of the fleet's 30 s poll rate. Reports before then still show the old
+	// command.
+	controlPickupSeconds = 30
 
 	// maxControlRecords bounds the in-memory ledger of sends the status route
 	// answers from; the oldest is dropped first.
@@ -57,7 +64,14 @@ const (
 
 	// maxStatusReports bounds the SoC reports one status body carries.
 	maxStatusReports = 200
+
+	controlCleanupWarning = "an older scheduled control was not cancelled"
+	controlNoStopWarning  = "the control is in service, but the 0 W stop after it was not scheduled; it holds until its end and nothing stops it then"
 )
+
+// eventStatusCancelledRandomized is EventStatus.currentStatus 3, Cancelled
+// with Randomization; core names no constant for it.
+const eventStatusCancelledRandomized uint8 = 3
 
 // Verdicts of a send, judged by the reported state of charge.
 const (
@@ -124,6 +138,8 @@ type controlRecord struct {
 	start, end  int64
 	controlID   string
 	controlMRID string
+	// warning is shown with every status of the send.
+	warning string
 }
 
 // controlLedger holds the last maxControlRecords sends.
@@ -223,22 +239,26 @@ func (s *Server) handleControlSend(w http.ResponseWriter, r *http.Request) {
 	}
 	send, err := s.control.ApplyControlFor(r.Context(), delta, seconds)
 	warning := ""
-	if err != nil {
-		if send.ControlID == "" {
-			code, msg := controlFailure(err)
-			if code == http.StatusInternalServerError {
-				log.Printf("adminui: watts control for %s refused: %v", req.MRID, err)
-			}
-			if code == http.StatusTooManyRequests {
-				w.Header().Set("Retry-After", "1")
-			}
-			writeJSON(w, code, errorResponse{msg})
-			return
+	switch {
+	case err == nil:
+	case send.ControlID == "":
+		code, msg := controlFailure(err)
+		if code == http.StatusInternalServerError {
+			log.Printf("adminui: watts control for %s refused: %v", req.MRID, err)
 		}
+		if code == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "1")
+		}
+		writeJSON(w, code, errorResponse{msg})
+		return
+	case errors.Is(err, sep2embed.ErrControlFollowOnNotWritten):
+		log.Printf("adminui: watts control for %s issued without its 0 W follow-on: %v", req.MRID, err)
+		warning = controlNoStopWarning
+	default:
 		// Both controls are in service; only the cancel of an older
 		// scheduled control failed.
 		log.Printf("adminui: watts control for %s issued with a cleanup failure: %v", req.MRID, err)
-		warning = "an older scheduled control was not cancelled"
+		warning = controlCleanupWarning
 	}
 
 	id, err := newControlID()
@@ -249,9 +269,12 @@ func (s *Server) handleControlSend(w http.ResponseWriter, r *http.Request) {
 	}
 	rec := &controlRecord{
 		id: id, mrid: req.MRID, watts: watts, seconds: seconds,
-		start: send.Start, end: send.End, controlID: send.ControlID,
+		start: send.Start, end: send.End, controlID: send.ControlID, warning: warning,
 	}
-	if snap, ok, err := s.control.ControlSnapshot(r.Context(), req.MRID, send.ControlID); err == nil && ok {
+	// A failure here only delays learning the mRID to the first status read.
+	if snap, ok, err := s.control.ControlSnapshot(r.Context(), req.MRID, send.ControlID); err != nil {
+		log.Printf("adminui: watts control for %s: control snapshot: %v", req.MRID, err)
+	} else if ok {
 		rec.controlMRID = snap.MRID
 	}
 	s.controls.add(rec)
@@ -265,10 +288,9 @@ func (s *Server) handleControlSend(w http.ResponseWriter, r *http.Request) {
 	if serr != nil {
 		log.Printf("adminui: watts control %s status: %v", id, serr)
 		st = controlStatusResponse{ID: id, MRID: req.MRID, Watts: watts, DurationSeconds: seconds,
-			StartedAt: send.Start, EndsAt: send.End, Stop: watts == 0, ControlState: "unknown",
-			ResponseStatuses: []int{}, Reports: []outputPointResponse{}, Verdict: verdictWaiting}
+			StartedAt: send.Start, EndsAt: send.End, Now: s.now().Unix(), Stop: watts == 0, ControlState: "unknown",
+			ResponseStatuses: []int{}, Reports: []outputPointResponse{}, Verdict: verdictWaiting, Warning: warning}
 	}
-	st.Warning = warning
 	writeJSON(w, http.StatusOK, st)
 }
 
@@ -336,7 +358,8 @@ type controlStatusResponse struct {
 	Received         bool  `json:"received"`
 	ResponseStatuses []int `json:"responseStatuses"`
 	// ReportCount counts the SoC reports at or after StartedAt; Reports
-	// carries the newest maxStatusReports of them.
+	// carries the newest maxStatusReports of them. The verdict judges only
+	// those from the device's pickup of the control to EndsAt.
 	ReportCount    int                   `json:"reportCount"`
 	Reports        []outputPointResponse `json:"reports"`
 	Verdict        string                `json:"verdict"`
@@ -387,6 +410,7 @@ func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *fl
 
 	statuses := []int{}
 	received := false
+	var receivedAt int64
 	if rec.controlMRID != "" {
 		resps, err := s.control.ResponsesFor(ctx, rec.controlMRID, rec.start)
 		if err != nil {
@@ -400,13 +424,20 @@ func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *fl
 			}
 			if rs.Status == sep2.ResponseStatusEventReceived {
 				received = true
+				if rs.CreatedDateTime > 0 && (receivedAt == 0 || rs.CreatedDateTime < receivedAt) {
+					receivedAt = rs.CreatedDateTime
+				}
 			}
 		}
 		sort.Ints(statuses)
 	}
 
-	baseline, reports := s.socReports(rec.mrid, rec.start)
-	judged := judge(rec.watts, int64(rec.seconds), rec.start, now, baseline, reports, watch)
+	samples, _ := s.history.Series(telemetryhistory.SeriesKey{Object: rec.mrid, Attribute: socAttribute})
+	_, reports := splitReports(samples, rec.start)
+	from := judgedFrom(rec.start, receivedAt)
+	baseline, inControl := splitReports(samples, from)
+	inControl = reportsThrough(inControl, rec.end)
+	judged := judge(rec.watts, int64(rec.seconds), from, now, baseline, inControl, watch)
 
 	shown := reports
 	if len(shown) > maxStatusReports {
@@ -418,6 +449,7 @@ func (s *Server) controlStatus(ctx context.Context, rec controlRecord, watch *fl
 		ControlState: state, Received: received, ResponseStatuses: statuses,
 		ReportCount: len(reports), Reports: append([]outputPointResponse{}, shown...),
 		Verdict: judged.verdict, WatchPercent: watch, WatchReachedAt: judged.watchReachedAt,
+		Warning: rec.warning,
 	}
 	return out, nil
 }
@@ -431,7 +463,7 @@ func controlStateName(status uint8) string {
 		return "active"
 	case sep2.EventStatusCancelled:
 		return "cancelled"
-	case 3:
+	case eventStatusCancelledRandomized:
 		return "cancelled_randomized"
 	case sep2.EventStatusSuperseded:
 		return "superseded"
@@ -440,19 +472,29 @@ func controlStateName(status uint8) string {
 	}
 }
 
-// socReports reads the device's reported state of charge from the output
-// history: the newest sample before start, if any, and every sample at or
-// after it, oldest first.
-func (s *Server) socReports(mrid string, start int64) (baseline *float64, reports []outputPointResponse) {
-	for _, ss := range s.history.Snapshot() {
-		if ss.Key.Object != mrid || ss.Key.Attribute != socAttribute {
-			continue
-		}
-		return splitReports(ss.Samples, start)
+// judgedFrom is when the device could first have acted on the control: its
+// first Received response, or controlPickupSeconds after the start when it
+// posted none.
+func judgedFrom(start, receivedAt int64) int64 {
+	if receivedAt > 0 {
+		return max(start, receivedAt)
 	}
-	return nil, nil
+	return start + controlPickupSeconds
 }
 
+// reportsThrough drops the reports after end, when the follow-on has taken
+// over; reports are oldest first.
+func reportsThrough(reports []outputPointResponse, end int64) []outputPointResponse {
+	for i, p := range reports {
+		if p.T > end {
+			return reports[:i]
+		}
+	}
+	return reports
+}
+
+// splitReports splits a series at start: the newest sample before it, if
+// any, and every sample at or after it, oldest first.
 func splitReports(samples []telemetryhistory.Sample, start int64) (baseline *float64, reports []outputPointResponse) {
 	for _, sm := range samples {
 		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
@@ -478,15 +520,17 @@ type judgement struct {
 //
 //   - reached: a report is at the limit (0 or 100) in the commanded
 //     direction, or at the optional watch percent.
-//   - moving, wrong_way: two successive steps, counted from the last report
-//     before the send when there is one, both in or both against the
-//     commanded direction. Once seen they hold, so a device that stops after
-//     the control ends is still judged by what it did.
+//   - moving, wrong_way: the latest two successive steps that are both in
+//     or both against the commanded direction, counted from baseline when
+//     there is one. A flat step neither sets nor clears it, so a device that
+//     stops still reads as what it last did.
 //   - not_moving: neither of those within notMovingSeconds or the duration,
-//     whichever is shorter, counted from the first report after the send
-//     (from the send itself while there is none).
+//     whichever is shorter, counted from the first report (from `from`
+//     while there is none).
 //   - waiting: none of those yet.
-func judge(watts, durationSeconds, start, now int64, baseline *float64, reports []outputPointResponse, watch *float64) judgement {
+//
+// reports are those from `from` on, and baseline the newest before it.
+func judge(watts, durationSeconds, from, now int64, baseline *float64, reports []outputPointResponse, watch *float64) judgement {
 	if watts == 0 {
 		return judgement{verdict: verdictStopped}
 	}
@@ -536,18 +580,18 @@ func judge(watts, durationSeconds, start, now int64, baseline *float64, reports 
 		return 0
 	}
 	for i := 2; i < len(seq); i++ {
-		a, b := step(i-1), step(i)
-		if a == 1 && b == 1 {
+		switch a, b := step(i-1), step(i); {
+		case a == 1 && b == 1:
 			out.verdict = verdictMoving
-			return out
-		}
-		if a == -1 && b == -1 {
+		case a == -1 && b == -1:
 			out.verdict = verdictWrongWay
-			return out
 		}
 	}
+	if out.verdict != "" {
+		return out
+	}
 
-	anchor := start
+	anchor := from
 	if len(reports) > 0 {
 		anchor = reports[0].T
 	}

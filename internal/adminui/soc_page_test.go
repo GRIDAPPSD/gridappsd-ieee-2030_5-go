@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,9 +21,23 @@ import (
 
 // outputHistory is a HistorySource over fixed series.
 type outputHistory struct {
+	mu        sync.Mutex
 	series    []telemetryhistory.SeriesSnapshot
 	evictions uint64
 	during    func()
+	asked     []telemetryhistory.SeriesKey
+}
+
+func (f *outputHistory) Series(key telemetryhistory.SeriesKey) ([]telemetryhistory.Sample, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, key)
+	for _, ss := range f.series {
+		if ss.Key == key {
+			return slices.Clone(ss.Samples), true
+		}
+	}
+	return nil, false
 }
 
 func (f *outputHistory) Evictions() uint64 { return f.evictions }

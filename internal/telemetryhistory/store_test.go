@@ -170,6 +170,34 @@ func TestStore_SnapshotIsADefensiveCopy(t *testing.T) {
 	}
 }
 
+// TestStore_SeriesReadsOneSeriesAsACopy asserts Series returns only the
+// keyed series, oldest first, as a copy, and reports a missing key.
+func TestStore_SeriesReadsOneSeriesAsACopy(t *testing.T) {
+	t.Parallel()
+	s := &Store{}
+	key := SeriesKey{Object: "dev-1", Attribute: "DERStatus.stateOfChargeStatus"}
+	for _, sm := range []Sample{{At: 2, Value: 64}, {At: 1, Value: 65}} {
+		if err := s.Append(key, sm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Append(SeriesKey{Object: "dev-2", Attribute: key.Attribute}, Sample{At: 1, Value: 10}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := s.Series(key)
+	if !ok || len(got) != 2 || got[0] != (Sample{At: 1, Value: 65}) || got[1] != (Sample{At: 2, Value: 64}) {
+		t.Fatalf("Series = %+v, %v; want dev-1's two samples oldest first", got, ok)
+	}
+	got[0].Value = 999
+	if again, _ := s.Series(key); again[0].Value != 65 {
+		t.Errorf("store changed after the caller mutated a Series result: %+v", again)
+	}
+	if got, ok := s.Series(SeriesKey{Object: "dev-3", Attribute: key.Attribute}); ok || got != nil {
+		t.Errorf("missing series = %+v, %v; want nil and false", got, ok)
+	}
+}
+
 // TestStore_ConcurrentAppendAndSnapshot exercises the store under
 // concurrent writers and readers; run with -race.
 func TestStore_ConcurrentAppendAndSnapshot(t *testing.T) {

@@ -188,6 +188,7 @@ type ControlFlowSource interface {
 // *telemetryhistory.Store for the graph panels.
 type HistorySource interface {
 	Snapshot() []telemetryhistory.SeriesSnapshot
+	Series(key telemetryhistory.SeriesKey) ([]telemetryhistory.Sample, bool)
 	Evictions() uint64
 }
 

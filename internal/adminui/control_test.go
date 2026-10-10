@@ -34,17 +34,23 @@ type controlCall struct {
 }
 
 type fakeControl struct {
-	mu        sync.Mutex
-	calls     []controlCall
-	deltas    []sep2embed.ControlDelta
-	err       error
-	partial   bool
-	start     int64
-	snap      *sep2embed.DERControlSnapshot
-	snapErr   error
+	mu       sync.Mutex
+	calls    []controlCall
+	deltas   []sep2embed.ControlDelta
+	err      error
+	partial  bool
+	noFollow bool
+	start    int64
+	snap     *sep2embed.DERControlSnapshot
+	snapErr  error
+	// snapFn, when set, answers the n-th ControlSnapshot call (from 1)
+	// instead of snap.
+	snapFn    func(n int) *sep2embed.DERControlSnapshot
+	snapCalls int
 	responses []sep2embed.ResponseSnapshot
 	respErr   error
 	askedFor  []string
+	since     []int64
 }
 
 func newFakeControl() *fakeControl {
@@ -59,6 +65,9 @@ func (f *fakeControl) ApplyControlFor(_ context.Context, d sep2embed.ControlDelt
 	f.deltas = append(f.deltas, d)
 	send := sep2embed.ControlSend{ControlID: "ctl-1", FollowOnID: "fo-1", Start: f.start, End: f.start + int64(seconds)}
 	if f.err != nil {
+		if f.noFollow {
+			send.FollowOnID = ""
+		}
 		if f.partial {
 			return send, f.err
 		}
@@ -70,19 +79,25 @@ func (f *fakeControl) ApplyControlFor(_ context.Context, d sep2embed.ControlDelt
 func (f *fakeControl) ControlSnapshot(_ context.Context, _, controlID string) (sep2embed.DERControlSnapshot, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.snapCalls++
 	if f.snapErr != nil {
 		return sep2embed.DERControlSnapshot{}, false, f.snapErr
 	}
-	if f.snap == nil || f.snap.ID != controlID {
+	snap := f.snap
+	if f.snapFn != nil {
+		snap = f.snapFn(f.snapCalls)
+	}
+	if snap == nil || snap.ID != controlID {
 		return sep2embed.DERControlSnapshot{}, false, nil
 	}
-	return *f.snap, true, nil
+	return *snap, true, nil
 }
 
-func (f *fakeControl) ResponsesFor(_ context.Context, subject string, _ int64) ([]sep2embed.ResponseSnapshot, error) {
+func (f *fakeControl) ResponsesFor(_ context.Context, subject string, since int64) ([]sep2embed.ResponseSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.askedFor = append(f.askedFor, subject)
+	f.since = append(f.since, since)
 	if f.respErr != nil {
 		return nil, f.respErr
 	}
@@ -369,6 +384,36 @@ func TestControlSendWithACleanupFailureStillAnswersAndWarns(t *testing.T) {
 	}
 }
 
+// A send whose control is in service but whose 0 W follow-on was not written
+// is recorded and answered as in service, with a warning that nothing stops
+// it at its end.
+func TestControlSendWithAFailedFollowOnRecordsTheControlAndWarns(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.ctl.err = fmt.Errorf("%w: %w", sep2embed.ErrControlFollowOnNotWritten, errors.New(brokerSecret))
+	h.ctl.partial, h.ctl.noFollow = true, true
+
+	rec := postControl(t, h.s.Handler(), "application/json", `{"mrid":"_bat-1","watts":2000,"durationSeconds":900}`, "localhost")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rec.Code, rec.Body)
+	}
+	var st controlStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("body: %v: %s", err, rec.Body)
+	}
+	if st.Warning != controlNoStopWarning || st.ControlState != "active" || st.Watts != 2000 || st.EndsAt != t0+900 {
+		t.Errorf("body = %+v, want the control active until t0+900 with the no-stop warning", st)
+	}
+	if strings.Contains(rec.Body.String(), "hunter2") {
+		t.Errorf("body carries the error text: %s", rec.Body)
+	}
+	got := h.status(t, st.ID, "")
+	if got.ID != st.ID || got.ControlState != "active" || got.Watts != 2000 || got.Warning != controlNoStopWarning {
+		t.Errorf("status read = %+v, want the recorded send", got)
+	}
+}
+
 func TestControlRoutesKeepTheHostAllowlist(t *testing.T) {
 	t.Parallel()
 	h := newCtlHarness(t, Config{})
@@ -555,34 +600,52 @@ func TestControlStatusVerdicts(t *testing.T) {
 		want    string
 		count   int
 	}{
+		// With no Received response, reports are judged from one poll
+		// (controlPickupSeconds) after the start.
 		{"discharge falling twice is moving", `{"mrid":"_bat-1","watts":2000}`,
-			samples(float64(t0-30), 50, float64(t0+10), 49, float64(t0+40), 48), 45 * time.Second, "", verdictMoving, 2},
+			samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48), 75 * time.Second, "", verdictMoving, 2},
 		{"charge rising twice is moving", `{"mrid":"_bat-1","watts":-2000}`,
-			samples(float64(t0-30), 50, float64(t0+10), 51, float64(t0+40), 52), 45 * time.Second, "", verdictMoving, 2},
-		{"moving holds when the device then goes flat", `{"mrid":"_bat-1","watts":2000,"durationSeconds":60}`,
-			samples(float64(t0-30), 50, float64(t0+10), 49, float64(t0+40), 48, float64(t0+70), 48, float64(t0+100), 48), 200 * time.Second, "", verdictMoving, 4},
+			samples(float64(t0-30), 50, float64(t0+40), 51, float64(t0+70), 52), 75 * time.Second, "", verdictMoving, 2},
+		{"moving holds after the control ends and the device goes flat", `{"mrid":"_bat-1","watts":2000,"durationSeconds":120}`,
+			samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48, float64(t0+100), 48, float64(t0+130), 48), 200 * time.Second, "", verdictMoving, 4},
 		{"discharge to zero is reached", `{"mrid":"_bat-1","watts":2000}`,
-			samples(float64(t0-30), 2, float64(t0+10), 1, float64(t0+40), 0), 45 * time.Second, "", verdictReached, 2},
+			samples(float64(t0-30), 2, float64(t0+40), 1, float64(t0+70), 0), 75 * time.Second, "", verdictReached, 2},
 		{"charge to 100 is reached", `{"mrid":"_bat-1","watts":-2000}`,
-			samples(float64(t0+10), 99, float64(t0+40), 100), 45 * time.Second, "", verdictReached, 2},
+			samples(float64(t0+40), 99, float64(t0+70), 100), 75 * time.Second, "", verdictReached, 2},
 		{"a watch percent crossed is reached", `{"mrid":"_bat-1","watts":2000}`,
-			samples(float64(t0-30), 50, float64(t0+10), 49, float64(t0+40), 48), 45 * time.Second, "?watch=48.5", verdictReached, 2},
+			samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48), 75 * time.Second, "?watch=48.5", verdictReached, 2},
 		{"a watch percent not yet crossed leaves the verdict alone", `{"mrid":"_bat-1","watts":2000}`,
-			samples(float64(t0-30), 50, float64(t0+10), 49, float64(t0+40), 48), 45 * time.Second, "?watch=40", verdictMoving, 2},
+			samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48), 75 * time.Second, "?watch=40", verdictMoving, 2},
+		{"a watch of 0 is accepted and reached at empty", `{"mrid":"_bat-1","watts":2000}`,
+			samples(float64(t0-30), 1, float64(t0+40), 0), 45 * time.Second, "?watch=0", verdictReached, 1},
+		{"a watch of 100 is accepted and not reached by a discharge", `{"mrid":"_bat-1","watts":2000}`,
+			samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48), 75 * time.Second, "?watch=100", verdictMoving, 2},
 		{"discharge rising twice is wrong way", `{"mrid":"_bat-1","watts":2000}`,
-			samples(float64(t0-30), 50, float64(t0+10), 51, float64(t0+40), 52), 45 * time.Second, "", verdictWrongWay, 2},
+			samples(float64(t0-30), 50, float64(t0+40), 51, float64(t0+70), 52), 75 * time.Second, "", verdictWrongWay, 2},
 		{"charge falling twice is wrong way", `{"mrid":"_bat-1","watts":-2000}`,
-			samples(float64(t0-30), 50, float64(t0+10), 49, float64(t0+40), 48), 45 * time.Second, "", verdictWrongWay, 2},
+			samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48), 75 * time.Second, "", verdictWrongWay, 2},
 		{"flat for 180 s is not moving", `{"mrid":"_bat-1","watts":2000}`,
-			samples(float64(t0-30), 50, float64(t0+10), 50, float64(t0+40), 50), 191 * time.Second, "", verdictNotMoving, 2},
-		{"no report at all for 180 s is not moving", `{"mrid":"_bat-1","watts":2000}`,
-			nil, 180 * time.Second, "", verdictNotMoving, 0},
+			samples(float64(t0-30), 50, float64(t0+40), 50, float64(t0+70), 50), 221 * time.Second, "", verdictNotMoving, 2},
+		{"no report at all for 180 s after the pickup is not moving", `{"mrid":"_bat-1","watts":2000}`,
+			nil, (controlPickupSeconds + notMovingSeconds) * time.Second, "", verdictNotMoving, 0},
 		{"flat inside the window is still waiting", `{"mrid":"_bat-1","watts":2000}`,
-			samples(float64(t0-30), 50, float64(t0+10), 50), 100 * time.Second, "", verdictWaiting, 1},
-		{"a 60 s control gives up at 60 s, not 180", `{"mrid":"_bat-1","watts":2000,"durationSeconds":60}`,
-			samples(float64(t0-30), 50, float64(t0+5), 50), 66 * time.Second, "", verdictNotMoving, 1},
+			samples(float64(t0-30), 50, float64(t0+40), 50), 130 * time.Second, "", verdictWaiting, 1},
+		{"a 60 s control gives up 60 s after its first report, not 180", `{"mrid":"_bat-1","watts":2000,"durationSeconds":60}`,
+			samples(float64(t0-30), 50, float64(t0+35), 50), 96 * time.Second, "", verdictNotMoving, 1},
 		{"a report before the send is not a report since it", `{"mrid":"_bat-1","watts":2000}`,
 			samples(float64(t0-30), 50, float64(t0-5), 40), 10 * time.Second, "", verdictWaiting, 0},
+		// A discharge sent while the device was charging: it keeps charging
+		// until its poll picks the control up, then discharges.
+		{"reports before the pickup do not count against the new direction", `{"mrid":"_bat-1","watts":2000}`,
+			samples(float64(t0-30), 48, float64(t0+5), 50, float64(t0+15), 52, float64(t0+25), 54,
+				float64(t0+40), 52, float64(t0+70), 50, float64(t0+100), 48, float64(t0+130), 46), 135 * time.Second, "", verdictMoving, 7},
+		{"a device still going the wrong way after the pickup is wrong way", `{"mrid":"_bat-1","watts":2000}`,
+			samples(float64(t0-30), 48, float64(t0+5), 50, float64(t0+15), 52, float64(t0+25), 54,
+				float64(t0+40), 56, float64(t0+70), 58), 75 * time.Second, "", verdictWrongWay, 5},
+		{"a wrong way verdict is revised while the control is live", `{"mrid":"_bat-1","watts":2000}`,
+			samples(float64(t0-30), 50, float64(t0+40), 51, float64(t0+70), 52, float64(t0+100), 51, float64(t0+130), 50), 135 * time.Second, "", verdictMoving, 4},
+		{"reports after the control ends are not judged", `{"mrid":"_bat-1","watts":2000,"durationSeconds":60}`,
+			samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 50, float64(t0+100), 51), 200 * time.Second, "", verdictNotMoving, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -694,9 +757,12 @@ func TestControlStatusControlStateAndResponses(t *testing.T) {
 		{Subject: "someone-else", Status: sep2.ResponseStatusEventCompleted},
 	}
 	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
-	if sent.Received || len(sent.ResponseStatuses) != 2 {
-		// The fake already holds the responses at send time, so they show.
-		t.Logf("send-time received=%v statuses=%v", sent.Received, sent.ResponseStatuses)
+	// The fake already holds the responses at send time, so the POST shows them.
+	if !sent.Received || !slices.Equal(sent.ResponseStatuses, []int{1, 2}) {
+		t.Errorf("send-time received %v statuses %v, want true [1 2]", sent.Received, sent.ResponseStatuses)
+	}
+	if len(h.ctl.since) == 0 || h.ctl.since[0] != t0 {
+		t.Errorf("responses read since %v, want the send's start %d", h.ctl.since, t0)
 	}
 
 	st := h.status(t, sent.ID, "")
@@ -742,8 +808,8 @@ func TestControlStatusLearnsTheControlMRIDWhenTheSendCouldNotSeeIt(t *testing.T)
 	h := newCtlHarness(t, Config{})
 	h.ctl.snapErr = errors.New("store blip")
 	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
-	if sent.ControlState != "unknown" {
-		t.Errorf("send-time state %q, want unknown after a snapshot failure", sent.ControlState)
+	if sent.ControlState != "unknown" || sent.Now != t0 {
+		t.Errorf("send-time state %q now %d, want unknown and %d after a snapshot failure", sent.ControlState, sent.Now, t0)
 	}
 	h.ctl.snapErr = nil
 	h.ctl.responses = []sep2embed.ResponseSnapshot{{Subject: "ctl-mrid-1", Status: sep2.ResponseStatusEventReceived}}
@@ -836,5 +902,129 @@ func TestJudgeRows(t *testing.T) {
 				t.Errorf("watchReachedAt = %v, want %d", got.watchReachedAt, *tc.watchedAt)
 			}
 		})
+	}
+}
+
+// The control's mRID is captured at send time when the control is visible
+// then, so its responses are found after the control leaves the store even
+// though no status read ever saw it.
+func TestControlStatusUsesTheMRIDCapturedAtSend(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	visible := *h.ctl.snap
+	h.ctl.snapFn = func(n int) *sep2embed.DERControlSnapshot {
+		if n == 1 {
+			return &visible
+		}
+		return nil
+	}
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+	h.ctl.responses = []sep2embed.ResponseSnapshot{{Subject: "ctl-mrid-1", Status: sep2.ResponseStatusEventReceived}}
+
+	st := h.status(t, sent.ID, "")
+
+	if st.ControlState != "gone" || !st.Received {
+		t.Errorf("state %q received %v, want gone true", st.ControlState, st.Received)
+	}
+}
+
+// A control first seen by a status read has its mRID remembered, so a later
+// read finds its responses after it leaves the store.
+func TestControlStatusRemembersTheMRIDFirstSeenByAStatusRead(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	visible := *h.ctl.snap
+	h.ctl.snapFn = func(n int) *sep2embed.DERControlSnapshot {
+		if n == 3 {
+			return &visible
+		}
+		return nil
+	}
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+	h.ctl.responses = []sep2embed.ResponseSnapshot{{Subject: "ctl-mrid-1", Status: sep2.ResponseStatusEventReceived}}
+
+	first := h.status(t, sent.ID, "")
+	second := h.status(t, sent.ID, "")
+
+	if first.ControlState != "active" || second.ControlState != "gone" || !second.Received {
+		t.Errorf("states %q then %q, second received %v; want active, gone, true", first.ControlState, second.ControlState, second.Received)
+	}
+}
+
+// A Received response sets when judging starts: here it comes before the
+// default pickup, so reports from it on count.
+func TestControlStatusJudgesFromTheReceivedResponse(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		received bool
+		want     string
+	}{
+		{"received at t0+5", true, verdictMoving},
+		{"no received response", false, verdictWaiting},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newCtlHarness(t, Config{})
+			h.reports("_bat-1", samples(float64(t0-30), 50, float64(t0+10), 49, float64(t0+20), 48)...)
+			if tc.received {
+				h.ctl.responses = []sep2embed.ResponseSnapshot{
+					{Subject: "ctl-mrid-1", Status: sep2.ResponseStatusEventReceived, CreatedDateTime: t0 + 5},
+				}
+			}
+			sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+			h.clk.advance(25 * time.Second)
+
+			if st := h.status(t, sent.ID, ""); st.Verdict != tc.want {
+				t.Errorf("verdict %q, want %q", st.Verdict, tc.want)
+			}
+		})
+	}
+}
+
+// A status read copies only the sent device's state of charge series, never
+// the whole history.
+func TestControlStatusReadsOnlyTheDevicesSeries(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	h.reports("_bat-1", samples(float64(t0-30), 50, float64(t0+40), 49, float64(t0+70), 48)...)
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+	h.hist.during = func() { t.Error("a control status read took a whole-history snapshot") }
+	h.clk.advance(75 * time.Second)
+
+	st := h.status(t, sent.ID, "")
+
+	if st.ReportCount != 2 || st.Verdict != verdictMoving {
+		t.Errorf("count %d verdict %q, want 2 and moving", st.ReportCount, st.Verdict)
+	}
+	if want := (telemetryhistory.SeriesKey{Object: "_bat-1", Attribute: attrSoC}); !slices.Contains(h.hist.asked, want) {
+		t.Errorf("series asked for %+v, want %+v", h.hist.asked, want)
+	}
+}
+
+func TestControlStatusIsNotCached(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	sent := h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+
+	rec := doRequest(t, h.s.Handler(), http.MethodGet, "/apps/soc/api/control/"+sent.ID, "", "localhost")
+
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("status %d Cache-Control %q, want 200 and no-store", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+}
+
+// Not parallel: it swaps the process-wide log writer.
+func TestControlSendLogsASnapshotFailure(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	h := newCtlHarness(t, Config{})
+	h.ctl.snapErr = errors.New("store blip")
+
+	h.send(t, `{"mrid":"_bat-1","watts":2000}`)
+
+	if !strings.Contains(buf.String(), "control snapshot") || !strings.Contains(buf.String(), "store blip") {
+		t.Errorf("log = %q, want the send-time snapshot failure", buf.String())
 	}
 }
