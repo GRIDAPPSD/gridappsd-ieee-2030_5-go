@@ -609,3 +609,19 @@ func TestPageHasNoMirrorChartAndNoCommentary(t *testing.T) {
 		}
 	}
 }
+
+// The browser tab and the page heading both carry the product title.
+func TestPageTitleAndHeadingAreTheProductName(t *testing.T) {
+	t.Parallel()
+	const want = "PNNL IEEE 2030.5 Server"
+	s := pageServer(t, &outputHistory{})
+	body := doRequest(t, s.Handler(), http.MethodGet, "/apps/soc/", "", "localhost").Body.String()
+	for _, frag := range []string{"<title>" + want + "</title>", "<h1>" + want + "</h1>"} {
+		if !strings.Contains(body, frag) {
+			t.Errorf("page lacks %q", frag)
+		}
+	}
+	if strings.Contains(body, "SoC and readings") {
+		t.Error("page still carries the old title")
+	}
+}
