@@ -351,6 +351,9 @@ type Embed struct {
 	// tell them from a direct send.
 	busIssued issuedLedger
 
+	// latch holds each device's last issued direction for DirectionPink.
+	latch directionLatch
+
 	// sweepInterval is the runControlSweep period. Zero (an Embed built
 	// without New) uses DefaultControlSweepInterval.
 	sweepInterval time.Duration
@@ -663,6 +666,7 @@ func (e *Embed) ApplyControlDeltaOutcome(ctx context.Context, reg *registry.Regi
 	outcome, control, err := issueControl(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta, controlWindow{})
 	if err == nil && outcome == ControlIssued {
 		e.busIssued.add(derControlID(control.CreationTime, control.MRID))
+		e.latch.note(delta.Object, control)
 	}
 	return outcome, err
 }
@@ -768,6 +772,7 @@ func (e *Embed) ApplyControlFor(ctx context.Context, reg *registry.Registry, del
 	if e.notifier != nil {
 		defer e.notifier.Notify(ctx, derProgramListHref(requested.edevID, controlFSAID), sep2.NotificationStatusDefault)
 	}
+	e.latch.note(delta.Object, requested.control)
 	// Re-read so the follow-on's supersede pass sees the marks just made.
 	withRequested, err := e.stores.DERControls.List(ctx, requested.scope, store.ListOptions{Unbounded: true})
 	if err == nil {
