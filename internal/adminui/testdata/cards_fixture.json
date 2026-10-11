@@ -1,0 +1,7 @@
+{"now":1000,"total":3,"truncated":false,"skippedDevices":0,"statusUnavailable":false,"cards":[
+ {"name":"pv_a","mrid":"M-A","kind":"battery","stripe":"blue","stripeLabel":"CHARGING","connected":true,"lastSeenAt":990,"lastSeenAgeSeconds":10,
+  "status":{"stateOfChargePercent":42.5,"inverterStatus":"Tracking MPPT","operationalModeStatus":"Operational","storageModeStatus":"Charging","genConnectStatus":"Connected","storConnectStatus":"Connected, Operating","alarmStatus":"0","readingTime":995,"readingAgeSeconds":5},
+  "control":{"watts":-1500,"direction":"charge","source":"page","state":"active","secondsLeft":125,"endsAt":1125,"received":true,"controlMrid":"C-A"}},
+ {"name":"tl_b","mrid":"M-B","kind":"device","stripe":"grey","stripeLabel":"NOT CONNECTED","connected":false,"lastSeenAt":null,"lastSeenAgeSeconds":null,"status":null,"control":null},
+ {"name":"tl_c","mrid":"M-C","kind":"device","stripe":"<script>","stripeLabel":"CHARGE TO DISCHARGE","connected":true,"lastSeenAt":999,"lastSeenAgeSeconds":1,"status":null,"control":null}
+]}

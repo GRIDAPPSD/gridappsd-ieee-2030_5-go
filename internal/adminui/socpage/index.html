@@ -13,6 +13,14 @@
 <p class="muted">No login: anyone who reaches this port can read every series and send a charge or discharge power to any device.</p>
 </header>
 <main>
+<section aria-labelledby="cards-h">
+<h2 id="cards-h">Devices</h2>
+<p id="cards-status" class="muted" aria-live="off">loading</p>
+<p id="cards-error" class="error" role="alert" hidden></p>
+<p id="cards-empty" class="muted" hidden>No devices registered.</p>
+<div id="cards" class="cards"></div>
+</section>
+
 <section id="pickers" aria-labelledby="pickers-h">
 <h2 id="pickers-h">Pick</h2>
 <div class="pickrow">
