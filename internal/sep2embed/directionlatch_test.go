@@ -2,7 +2,12 @@ package sep2embed
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
+
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 )
 
 func TestDirectionPinkFollowsTheSendPath(t *testing.T) {
@@ -74,5 +79,78 @@ func TestDirectionPinkFollowsTheBusPath(t *testing.T) {
 		if got := e.DirectionPink("mrid-a"); got != st.pink {
 			t.Errorf("after bus %v W: pink = %v, want %v", st.watts, got, st.pink)
 		}
+	}
+}
+
+// A send whose requested control is not written leaves the latch as it was,
+// so a refused discharge does not turn the card pink.
+func TestDirectionPinkIsNotLatchedByAFailedSend(t *testing.T) {
+	t.Parallel()
+	e, reg, clock, _ := newSendEmbed(t, controlClockUnix)
+	ctx := context.Background()
+	if _, err := e.ApplyControlFor(ctx, reg, targetWDelta("mrid-a", 0.0, -2000), 60); err != nil {
+		t.Fatalf("charge send: %v", err)
+	}
+
+	real := e.stores.DERControls
+	e.stores.DERControls = faultyDERControls{
+		ScopedStore: real,
+		failCreate:  func(string, sep2.DERControl) bool { return true },
+	}
+	clock.set(controlClockUnix + 20)
+	if _, err := e.ApplyControlFor(ctx, reg, targetWDelta("mrid-a", 0.0, 3000), 60); !errors.Is(err, errInjected) {
+		t.Fatalf("discharge send error = %v, want the injected failure", err)
+	}
+	if e.DirectionPink("mrid-a") {
+		t.Error("pink after a failed discharge send, want the latch unchanged")
+	}
+
+	e.stores.DERControls = real
+	clock.set(controlClockUnix + 40)
+	if _, err := e.ApplyControlFor(ctx, reg, targetWDelta("mrid-a", 0.0, 3000), 60); err != nil {
+		t.Fatalf("retried discharge send: %v", err)
+	}
+	if !e.DirectionPink("mrid-a") {
+		t.Error("not pink after the discharge send succeeded")
+	}
+}
+
+// Charge on one path followed by discharge on the other is a direction
+// change, so the latch is shared between them.
+func TestDirectionPinkSpansTheTwoPaths(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	send := func(e *Embed, reg *registry.Registry, watts float64) error {
+		_, err := e.ApplyControlFor(ctx, reg, targetWDelta("mrid-a", 0.0, watts), 60)
+		return err
+	}
+	bus := func(e *Embed, reg *registry.Registry, watts float64) error {
+		_, err := e.ApplyControlDeltaOutcome(ctx, reg, targetWDelta("mrid-a", 0.0, watts))
+		return err
+	}
+	for _, tc := range []struct {
+		name          string
+		first, second func(*Embed, *registry.Registry, float64) error
+	}{
+		{"charge by send then discharge by bus", send, bus},
+		{"charge by bus then discharge by send", bus, send},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e, reg, clock, _ := newSendEmbed(t, controlClockUnix)
+			if err := tc.first(e, reg, -2000); err != nil {
+				t.Fatalf("charge: %v", err)
+			}
+			if e.DirectionPink("mrid-a") {
+				t.Fatal("pink after the first charge")
+			}
+			clock.set(controlClockUnix + 20)
+			if err := tc.second(e, reg, 3000); err != nil {
+				t.Fatalf("discharge: %v", err)
+			}
+			if !e.DirectionPink("mrid-a") {
+				t.Error("not pink after a discharge following a charge on the other path")
+			}
+		})
 	}
 }

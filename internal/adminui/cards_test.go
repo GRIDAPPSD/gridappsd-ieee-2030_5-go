@@ -422,3 +422,75 @@ func TestCardsEmptyRegistrySerializesAsAnEmptyList(t *testing.T) {
 		t.Errorf("empty registry = %d %s, want 200 and cards []", rec.Code, rec.Body)
 	}
 }
+
+// Of two active controls on one device the later start is the one in force,
+// whichever order the store lists them in.
+func TestCardTakesTheLaterStartedOfTwoActiveControls(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		earlyFirst bool
+	}{{"early listed first", true}, {"late listed first", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newCardsHarness(t)
+			h.device("_bat-1", "Battery 1", 1)
+			h.seen(1)
+			early := func() { h.active("_bat-1", "ctl-early", "m-early", t0-100, 600, 3000) }
+			late := func() { h.active("_bat-1", "ctl-late", "m-late", t0, 300, -2000) }
+			if tc.earlyFirst {
+				early()
+				late()
+			} else {
+				late()
+				early()
+			}
+			h.clk.set(t0 + 10)
+
+			c := oneCard(t, h)
+			if c.Control == nil || c.Control.ControlMRID != "m-late" || c.Control.Direction != "charge" || c.Control.Watts != -2000 {
+				t.Errorf("control = %+v, want the later-started -2000 W charge", c.Control)
+			}
+			if c.Stripe != "blue" || c.StripeLabel != "CHARGING" {
+				t.Errorf("stripe = %q %q, want blue CHARGING", c.Stripe, c.StripeLabel)
+			}
+		})
+	}
+}
+
+// A Responses read failure fails the whole list, unlike a Controls read
+// failure, which skips only its device. The status is deliberate and pinned.
+func TestCardsResponsesReadFailureFailsTheWholeList(t *testing.T) {
+	t.Parallel()
+	h := newCardsHarness(t)
+	h.device("_bat-1", "Battery 1", 1)
+	h.device("_bat-2", "Battery 2", 2)
+	h.seen(1)
+	h.active("_bat-1", "ctl-1", "m-1", t0, 300, -2000)
+	h.clk.set(t0 + 10)
+	h.ctl.respErr = errors.New("secret responses detail")
+
+	rec := doRequest(t, h.s.Handler(), http.MethodGet, cardsRoute, "", "localhost")
+	body := rec.Body.String()
+	if rec.Code != http.StatusInternalServerError || strings.Contains(body, "secret") || strings.Contains(body, "_bat-2") {
+		t.Errorf("responses failure = %d %s, want 500 with a fixed message and no card", rec.Code, body)
+	}
+}
+
+// Devices with the same name are ordered by mRID, whatever the registry order.
+func TestCardsSortSameNameDevicesByMRID(t *testing.T) {
+	t.Parallel()
+	h := newCardsHarness(t)
+	h.device("_b", "Twin", 2)
+	h.device("_a", "Twin", 1)
+	h.device("_c", "Twin", 3)
+
+	got := getCards(t, h)
+	var order []string
+	for _, c := range got.Cards {
+		order = append(order, c.MRID)
+	}
+	if strings.Join(order, ",") != "_a,_b,_c" {
+		t.Errorf("order = %v, want _a,_b,_c", order)
+	}
+}
