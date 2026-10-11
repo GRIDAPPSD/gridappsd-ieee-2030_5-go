@@ -278,7 +278,7 @@
       const held = heldCount();
       let t = what + ": " + held + " series, updated " + new Date().toLocaleTimeString();
       if (body.seriesTruncated) {
-        t += ". The server cut the list of series, so " + Math.max(0, (body.totalSeries || 0) - held) + " are missing";
+        t += ". The server cut the list of series, so " + Math.max(0, (body.totalSeries || 0) - (body.series || []).length) + " are missing";
       }
       if (body.evictions > 0) {
         t += ". History is being dropped: the server has evicted " + body.evictions + " series";
