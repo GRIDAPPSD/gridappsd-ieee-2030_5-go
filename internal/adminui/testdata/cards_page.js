@@ -57,6 +57,12 @@ async function fakeFetch(url, opts) {
     posts.push({ url, body: JSON.parse(opts.body) });
     if (postReply.kind === "throw") throw new Error("offline");
     if (postReply.kind === "http") return reply({ error: "boom" }, 500, { "Retry-After": "7" });
+    if (url.endsWith("/control/all")) {
+      const b = JSON.parse(opts.body);
+      const results = [{ mrid: "M-A", name: "pv_a", ok: true, id: "i1" }, { mrid: "M-B", name: "pv_b", ok: postReply.kind !== "partial", id: "i2", error: postReply.kind === "partial" ? "unknown device" : undefined }];
+      const ok = results.filter((r) => r.ok).length;
+      return reply({ watts: b.stop ? 0 : b.watts, stop: !!b.stop, durationSeconds: b.durationSeconds || 300, total: 2, succeeded: ok, failed: 2 - ok, results });
+    }
     return reply({ id: "x" });
   }
   if (url.endsWith("/cards")) {
@@ -262,6 +268,21 @@ async function main() {
     const e = document.getElementById("soc-error");
     sends.push({ input, posts: posts.slice(before), error: { text: e.textContent, hidden: !e.shown } });
   }
-  console.log(JSON.stringify({ polls, stops, sends }));
+  // All devices: the select's last choice posts to the all route with no
+  // mrid; Stop all posts a bare stop; a failed device is named in the result.
+  const alls = [];
+  const resultBox = () => document.getElementById("soc-all-result");
+  document.getElementById("soc-device").value = "*all*";
+  document.getElementById("soc-watts").value = "100";
+  for (const [label, kind, act] of [["send", "ok", "submit"], ["partial", "partial", "submit"], ["http", "http", "submit"], ["stop", "ok", "stopAll"]]) {
+    postReply = { kind };
+    const before = posts.length;
+    if (act === "submit") document.getElementById("soc-form").submit();
+    else document.getElementById("soc-stop-all").click();
+    await settle(); await settle();
+    const e = document.getElementById("soc-error");
+    alls.push({ label, posts: posts.slice(before), result: { text: resultBox().textContent, hidden: !resultBox().shown, warn: resultBox().className === "warn" }, error: { text: e.textContent, hidden: !e.shown } });
+  }
+  console.log(JSON.stringify({ polls, stops, sends, alls }));
 }
 main().catch((e) => { console.error(e); process.exit(1); });
