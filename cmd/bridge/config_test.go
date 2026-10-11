@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -1717,4 +1718,106 @@ func TestLoadConfigApplicationID(t *testing.T) {
 			t.Errorf("err = %v, want one naming SEP2_APPLICATION_ID", err)
 		}
 	})
+}
+
+func writeSocLabels(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "labels.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
+
+func TestLoadConfigSocLabelsFileLoadsTheMap(t *testing.T) {
+	path := writeSocLabels(t, `{"CA0A0024-DA79-4395-9B05-6A7B9DE0AED9":"n1","AAAAAAAA-0000-0000-0000-000000000002":"battery2"}`)
+	cfg, err := loadConfig([]string{"-soc-labels-file=" + path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	want := map[string]string{"CA0A0024-DA79-4395-9B05-6A7B9DE0AED9": "n1", "AAAAAAAA-0000-0000-0000-000000000002": "battery2"}
+	if !maps.Equal(cfg.SocLabels, want) {
+		t.Errorf("SocLabels = %v, want %v", cfg.SocLabels, want)
+	}
+}
+
+func TestLoadConfigSocLabelsFileEnvAndFlagPrecedence(t *testing.T) {
+	envPath := writeSocLabels(t, `{"AAAAAAAA-0000-0000-0000-000000000001":"n1"}`)
+	flagPath := writeSocLabels(t, `{"BBBBBBBB-0000-0000-0000-000000000002":"n2"}`)
+	t.Setenv("SOC_LABELS_FILE", envPath)
+
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig env: %v", err)
+	}
+	if cfg.SocLabels["AAAAAAAA-0000-0000-0000-000000000001"] != "n1" || len(cfg.SocLabels) != 1 {
+		t.Errorf("env SocLabels = %v", cfg.SocLabels)
+	}
+	cfg, err = loadConfig([]string{"-soc-labels-file=" + flagPath})
+	if err != nil {
+		t.Fatalf("loadConfig flag: %v", err)
+	}
+	if cfg.SocLabels["BBBBBBBB-0000-0000-0000-000000000002"] != "n2" || len(cfg.SocLabels) != 1 {
+		t.Errorf("flag must shadow env, SocLabels = %v", cfg.SocLabels)
+	}
+}
+
+func TestLoadConfigSocLabelsFileUnsetIsNil(t *testing.T) {
+	cfg, err := loadConfig(nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SocLabels != nil {
+		t.Errorf("SocLabels = %v, want nil", cfg.SocLabels)
+	}
+}
+
+func TestLoadConfigSocLabelsFileRejectsABadFileNamingFileAndKey(t *testing.T) {
+	const good = "AAAAAAAA-0000-0000-0000-000000000001"
+	for _, tc := range []struct {
+		name, body string
+		wantIn     []string
+	}{
+		{"array", `["n1"]`, []string{"not a JSON object"}},
+		{"trailing data", `{"` + good + `":"n1"} {}`, []string{"trailing"}},
+		{"lower case key", `{"aaaaaaaa-0000-0000-0000-000000000001":"n1"}`, []string{"aaaaaaaa-0000-0000-0000-000000000001", "model's form"}},
+		{"underscore key", `{"_` + good + `":"n1"}`, []string{"_" + good, "model's form"}},
+		{"non-string value", `{"` + good + `":5}`, []string{good, "string"}},
+		{"empty label", `{"` + good + `":""}`, []string{good, "empty"}},
+		{"duplicate label", `{"` + good + `":"n1","BBBBBBBB-0000-0000-0000-000000000002":"n1"}`, []string{`"n1"`, "duplicated"}},
+		{"duplicate key", `{"` + good + `":"n1","` + good + `":"n2"}`, []string{good, "duplicated"}},
+		{"empty object", `{}`, []string{"no entries"}},
+		{"long label", `{"` + good + `":"` + strings.Repeat("x", 65) + `"}`, []string{good, "longer than"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeSocLabels(t, tc.body)
+			_, err := loadConfig([]string{"-soc-labels-file=" + path})
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Errorf("error does not name the file %q: %v", path, err)
+			}
+			for _, w := range tc.wantIn {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error lacks %q: %v", w, err)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadConfigSocLabelsFileMissing(t *testing.T) {
+	_, err := loadConfig([]string{"-soc-labels-file=/nonexistent/labels.json"})
+	if err == nil || !strings.Contains(err.Error(), "/nonexistent/labels.json") || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("error = %v, want one naming the missing file", err)
+	}
+}
+
+func TestAdminUIConfigMapsSocLabels(t *testing.T) {
+	t.Parallel()
+	got := adminUIConfig(config{SocLabels: map[string]string{"AAAAAAAA": "n1"}})
+	if got.SocLabels["AAAAAAAA"] != "n1" {
+		t.Errorf("SocLabels = %v, want AAAAAAAA -> n1", got.SocLabels)
+	}
 }

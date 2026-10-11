@@ -868,6 +868,7 @@ func adminUIConfig(cfg config) adminui.Config {
 		IdleTimeout:         cfg.Tuning.AdminIdleTimeout,
 		ShutdownTimeout:     cfg.Tuning.AdminShutdownTimeout,
 		ClientIdleAfter:     cfg.Tuning.AdminClientIdleAfter,
+		SocLabels:           cfg.SocLabels,
 	}
 }
 

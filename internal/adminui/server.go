@@ -134,6 +134,9 @@ type Config struct {
 	// reads as idle instead of connected. Zero keeps
 	// DefaultClientIdleAfter.
 	ClientIdleAfter time.Duration
+
+	// SocLabels maps a device mRID to its EPRI label (n1..n40, battery1..battery9).
+	SocLabels map[string]string
 }
 
 // DefaultTimeouts reports the listener timeouts used when Config leaves
