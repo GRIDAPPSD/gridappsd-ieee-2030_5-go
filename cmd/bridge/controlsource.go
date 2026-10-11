@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 
-	"github.com/GRIDAPPSD/ieee-2030_5-core-go/pkg/sep2"
-
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
 )
@@ -42,16 +40,4 @@ func (c embedControl) BusIssued(controlID string) bool {
 
 func (c embedControl) DirectionPink(deviceMRID string) bool {
 	return c.embed.DirectionPink(deviceMRID)
-}
-
-func (c embedControl) SetDefaultTargetW(ctx context.Context, deviceMRID string, watts int64, pageIssued func(string) bool) (sep2embed.DefaultTargetSet, error) {
-	return c.embed.SetDefaultTargetW(ctx, c.reg, deviceMRID, watts, pageIssued)
-}
-
-func (c embedControl) ClearDefaultTargetW(ctx context.Context, deviceMRID string) error {
-	return c.embed.ClearDefaultTargetW(ctx, c.reg, deviceMRID)
-}
-
-func (c embedControl) DefaultTargetW(ctx context.Context, deviceMRID string) (*sep2.ActivePower, error) {
-	return c.embed.DefaultTargetW(ctx, deviceMRID)
 }

@@ -158,19 +158,6 @@ type deviceCard struct {
 	// Status is null for a device that never reported a DERStatus.
 	Status  *cardStatus  `json:"status"`
 	Control *cardControl `json:"control"`
-	// Default is the watts of the device's DefaultDERControl opModTargetW,
-	// null when it serves none. InForce is the target the device follows:
-	// the active control when there is one, otherwise the default, null when
-	// neither.
-	Default *float64     `json:"default"`
-	InForce *cardInForce `json:"inForce"`
-}
-
-// cardInForce names the target a device follows. Kind is "event" or
-// "default".
-type cardInForce struct {
-	Kind  string  `json:"kind"`
-	Watts float64 `json:"watts"`
 }
 
 type cardsResponse struct {
@@ -239,24 +226,11 @@ func (s *Server) handleCards(w http.ResponseWriter, r *http.Request) {
 			out.SkippedDevices++
 			continue
 		}
-		def, err := s.defaultWatts(r.Context(), e.MRID)
-		if err != nil {
-			log.Printf("adminui: cards: default for %s: %v", e.MRID, err)
-			out.SkippedDevices++
-			continue
-		}
 		card, err := s.buildCard(r.Context(), e, snaps, page, now)
 		if err != nil {
 			log.Printf("adminui: cards: %s: responses: %v", e.MRID, err)
 			writeJSON(w, http.StatusInternalServerError, errorResponse{"cards unavailable"})
 			return
-		}
-		card.Default = def
-		switch {
-		case card.Control != nil:
-			card.InForce = &cardInForce{Kind: "event", Watts: card.Control.Watts}
-		case def != nil:
-			card.InForce = &cardInForce{Kind: "default", Watts: *def}
 		}
 		if st, ok := statuses[e.MRID]; ok {
 			card.Status = cardStatusOf(st, now.Unix())

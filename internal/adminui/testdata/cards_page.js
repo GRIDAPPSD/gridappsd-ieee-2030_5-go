@@ -81,15 +81,23 @@ vm.createContext(ctx);
 const settle = () => new Promise((r) => setImmediate(r));
 const walk = (n, f) => { f(n); for (const c of n.children) if (typeof c !== "string") walk(c, f); };
 
+// dt/dd pairs of a list, as label -> value.
+function pairs(dl) {
+  const out = {};
+  for (let i = 0; i + 1 < dl.children.length; i += 2) out[dl.children[i].textContent] = dl.children[i + 1].textContent;
+  return out;
+}
+
 // What a reader sees: texts of nodes with no hidden ancestor go to texts, the
-// rest to hiddenTexts.
+// rest to hiddenTexts; lists are reported with their effective visibility.
 function cardView(card) {
-  const out = { className: card.className, ariaLabel: card.attrs["aria-label"], texts: [], hiddenTexts: [] };
+  const out = { className: card.className, ariaLabel: card.attrs["aria-label"], texts: [], hiddenTexts: [], lists: [] };
   walk(card, (n) => {
     if (n.tagName === "button") out.stop = { hidden: !n.shown, disabled: n.disabled, ariaLabel: n.attrs["aria-label"] };
     if (["dd", "strong", "span", "div", "p"].includes(n.tagName)) {
       if (n.children.length === 0 || n._text !== null) (n.shown ? out.texts : out.hiddenTexts).push(n.textContent);
     }
+    if (n.tagName === "dl") out.lists.push({ hidden: !n.shown, fields: pairs(n) });
   });
   return out;
 }
@@ -232,14 +240,6 @@ async function main() {
       mk("pv_one", "L-B1", "battery1"), mk("pv_nine", "L-B9", "battery9"), mk("alpha", "L-U", null)],
   });
   polls.push(snapshot("labels", list, firstEls));
-
-  // Connected battery cards: the label, the state of charge line, and the
-  // signed watts line only when a control is in force.
-  const withCtl = { ...clone().cards[0], name: "pv_x", mrid: "L-X", label: "battery1" };
-  const noCtl = { ...clone().cards[5], name: "pv_y", mrid: "L-Y", label: "battery2" };
-  const discharging = { ...clone().cards[3], name: "pv_z", mrid: "L-Z", label: "battery3" };
-  await pollNow({ now: 1000, total: 3, cards: [withCtl, noCtl, discharging] });
-  polls.push(snapshot("batteries", list, firstEls));
 
   await pollNow(b);
 

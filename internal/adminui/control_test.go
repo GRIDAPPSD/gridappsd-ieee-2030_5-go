@@ -65,17 +65,6 @@ type fakeControl struct {
 	pink     map[string]bool
 	askedFor []string
 	since    []int64
-	// defaults is what DefaultTargetW serves, by device mRID; defaultErrFor
-	// fails it for the devices it names.
-	defaults      map[string]*sep2.ActivePower
-	defaultErrFor map[string]error
-	// sets and clears record the default calls; setErr, setCancelled and
-	// clearErr shape their answers.
-	sets         []defaultCall
-	setErr       error
-	setCancelled []string
-	clears       []string
-	clearErr     error
 }
 
 func newFakeControl() *fakeControl {
