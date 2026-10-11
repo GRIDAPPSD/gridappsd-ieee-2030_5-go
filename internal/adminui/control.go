@@ -283,16 +283,12 @@ func (s *Server) handleControlSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	delta := sep2embed.ControlDelta{
-		Object:    req.MRID,
-		Attribute: "DERControl.DERControlBase.opModTargetW",
-		Value:     map[string]any{"multiplier": 0.0, "value": float64(watts)},
-	}
-	send, err := s.control.ApplyControlFor(r.Context(), delta, seconds)
-	warning := ""
-	switch {
-	case err == nil:
-	case send.ControlID == "":
+	rec, warning, err := s.issueControl(r.Context(), req.MRID, watts, seconds)
+	if err != nil {
+		if errors.Is(err, errNoStatusID) {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{"control issued but no status id could be made"})
+			return
+		}
 		code, msg := controlFailure(err)
 		if code == http.StatusInternalServerError {
 			log.Printf("adminui: watts control for %s refused: %v", req.MRID, err)
@@ -302,33 +298,8 @@ func (s *Server) handleControlSend(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, code, errorResponse{msg})
 		return
-	case errors.Is(err, sep2embed.ErrControlFollowOnNotWritten):
-		log.Printf("adminui: watts control for %s issued without its 0 W follow-on: %v", req.MRID, err)
-		warning = controlNoStopWarning
-	default:
-		// Both controls are in service; only the cancel of an older
-		// scheduled control failed.
-		log.Printf("adminui: watts control for %s issued with a cleanup failure: %v", req.MRID, err)
-		warning = controlCleanupWarning
 	}
-
-	id, err := newControlID()
-	if err != nil {
-		log.Printf("adminui: watts control id: %v", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse{"control issued but no status id could be made"})
-		return
-	}
-	rec := &controlRecord{
-		id: id, mrid: req.MRID, watts: watts, seconds: seconds,
-		start: send.Start, end: send.End, controlID: send.ControlID, followOnID: send.FollowOnID, warning: warning,
-	}
-	// A failure here only delays learning the mRID to the first status read.
-	if snap, ok, err := s.control.ControlSnapshot(r.Context(), req.MRID, send.ControlID); err != nil {
-		log.Printf("adminui: watts control for %s: control snapshot: %v", req.MRID, err)
-	} else if ok {
-		rec.controlMRID = snap.MRID
-	}
-	s.controls.add(rec)
+	id, send := rec.id, sep2embed.ControlSend{Start: rec.start, End: rec.end}
 
 	// The route takes no credential, so this line is the only record of who
 	// sent the control.
@@ -343,6 +314,54 @@ func (s *Server) handleControlSend(w http.ResponseWriter, r *http.Request) {
 			ResponseStatuses: []int{}, Reports: []outputPointResponse{}, Verdict: verdictWaiting, Warning: warning}
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// errNoStatusID marks a control that was issued but got no status id.
+var errNoStatusID = errors.New("adminui: no status id could be made")
+
+// issueControl sends one watts control through the embed, as the single and
+// the all-devices routes both do, and records it in the ledger. A non-nil
+// error means the control was not recorded: errNoStatusID when it was issued
+// without a status id, otherwise the embed's refusal.
+func (s *Server) issueControl(ctx context.Context, mrid string, watts int64, seconds uint32) (*controlRecord, string, error) {
+	delta := sep2embed.ControlDelta{
+		Object:    mrid,
+		Attribute: "DERControl.DERControlBase.opModTargetW",
+		Value:     map[string]any{"multiplier": 0.0, "value": float64(watts)},
+	}
+	send, err := s.control.ApplyControlFor(ctx, delta, seconds)
+	warning := ""
+	switch {
+	case err == nil:
+	case send.ControlID == "":
+		return nil, "", err
+	case errors.Is(err, sep2embed.ErrControlFollowOnNotWritten):
+		log.Printf("adminui: watts control for %s issued without its 0 W follow-on: %v", mrid, err)
+		warning = controlNoStopWarning
+	default:
+		// Both controls are in service; only the cancel of an older
+		// scheduled control failed.
+		log.Printf("adminui: watts control for %s issued with a cleanup failure: %v", mrid, err)
+		warning = controlCleanupWarning
+	}
+
+	id, err := newControlID()
+	if err != nil {
+		log.Printf("adminui: watts control id: %v", err)
+		return nil, warning, errNoStatusID
+	}
+	rec := &controlRecord{
+		id: id, mrid: mrid, watts: watts, seconds: seconds,
+		start: send.Start, end: send.End, controlID: send.ControlID, followOnID: send.FollowOnID, warning: warning,
+	}
+	// A failure here only delays learning the mRID to the first status read.
+	if snap, ok, err := s.control.ControlSnapshot(ctx, mrid, send.ControlID); err != nil {
+		log.Printf("adminui: watts control for %s: control snapshot: %v", mrid, err)
+	} else if ok {
+		rec.controlMRID = snap.MRID
+	}
+	s.controls.add(rec)
+	return rec, warning, nil
 }
 
 // resolve checks the request's shape and returns the watts and the duration
