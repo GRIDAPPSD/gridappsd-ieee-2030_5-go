@@ -37,3 +37,7 @@ func (c embedControl) ControlsFor(ctx context.Context, deviceMRID string) ([]sep
 func (c embedControl) BusIssued(controlID string) bool {
 	return c.embed.BusIssued(controlID)
 }
+
+func (c embedControl) DirectionPink(deviceMRID string) bool {
+	return c.embed.DirectionPink(deviceMRID)
+}

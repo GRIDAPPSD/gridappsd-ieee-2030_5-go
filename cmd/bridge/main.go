@@ -414,6 +414,7 @@ func run(ctx context.Context, cfg config) error {
 		Monitor:  mon,
 		Sender:   busSender,
 		Control:  embedControl{embed: embed, reg: reg},
+		Status:   embed,
 	})
 	switch {
 	case errors.Is(err, adminui.ErrDisabled):

@@ -37,10 +37,11 @@ const socPageCSP = "default-src 'self'; script-src 'self'; style-src 'self'; " +
 	"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
 // Defaults and ceilings for one output response, with the same meaning as
-// those of any series route: maxOutputResponsePoints bounds the whole body. A 49-device
-// fleet reports 7 DERStatus attributes each, 343 series; the default holds
-// them and the points default is what that many series can carry inside the
-// body bound. The history store below holds twice the fleet's series.
+// those of any series route: maxOutputResponsePoints bounds the whole body. The
+// decoder keeps one DERStatus attribute per device, so a 49-device fleet is 49
+// series; the default holds them and the points default is what that many
+// series can carry inside the body bound. The history store below holds twice
+// the fleet's series.
 const (
 	defaultOutputSeries     = 500
 	defaultOutputPoints     = 100
@@ -77,11 +78,12 @@ func (s *Server) socGetGate(next http.Handler) http.Handler {
 }
 
 // mountSoCPage mounts the page, its four assets (the script and style, and
-// the vendored chart library's script and style) and the devices and output
-// routes.
+// the vendored chart library's script and style) and the devices, output and
+// cards routes.
 func (s *Server) mountSoCPage(mux *http.ServeMux) {
 	mux.Handle(devicesRoute, s.socGetGate(http.HandlerFunc(s.handleDevices)))
 	mux.Handle(outputRoute, s.socGetGate(http.HandlerFunc(s.handleOutput)))
+	mux.Handle(cardsRoute, s.socGetGate(http.HandlerFunc(s.handleCards)))
 	mux.Handle(socPageIndex, s.socGetGate(staticFile("index.html", "text/html; charset=utf-8")))
 	mux.Handle(socPageScript, s.socGetGate(staticFile("app.js", "text/javascript; charset=utf-8")))
 	mux.Handle(socPageStyle, s.socGetGate(staticFile("style.css", "text/css; charset=utf-8")))

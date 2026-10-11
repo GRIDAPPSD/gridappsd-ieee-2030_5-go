@@ -238,6 +238,9 @@ type Sources struct {
 	Sender  *sender.Sender
 	// Control, when set, mounts the watts control routes.
 	Control ControlSource
+	// Status, when set, gives each card on the SoC page its latest DERStatus.
+	// Nil leaves every card's status null.
+	Status StatusSource
 
 	// Activity is the recorder the protocol router was given in
 	// assembly.RouterConfig.Activity. It feeds the Devices comms columns
@@ -263,6 +266,7 @@ type Server struct {
 	monitor  *monitorPanel
 	sender   *senderPanel
 	control  ControlSource
+	status   StatusSource
 	// controlLimit bounds the watts control send route.
 	controlLimit *tokenBucket
 	// controls remembers the sends the status route answers for.
@@ -341,6 +345,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		activity:  src.Activity,
 		history:   src.History,
 		control:   src.Control,
+		status:    src.Status,
 		controls:  newControlLedger(),
 		startedAt: time.Now(),
 		now:       time.Now,

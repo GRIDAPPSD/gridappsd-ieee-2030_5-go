@@ -124,6 +124,9 @@ type ControlSource interface {
 	// BusIssued reports whether the bus path issued the control with the
 	// given store id, as far as its bounded in-memory record knows.
 	BusIssued(controlID string) bool
+	// DirectionPink reports whether the device's last direction change was
+	// charge to discharge.
+	DirectionPink(deviceMRID string) bool
 	// EndedControl returns the record kept for a control after it left the
 	// store, so a stop that no status read saw is still dated.
 	EndedControl(mrid string) (sep2embed.EndedControl, bool)
