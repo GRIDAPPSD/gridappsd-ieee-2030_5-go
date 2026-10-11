@@ -555,6 +555,185 @@
     poll();
   }
 
+  // ---- device cards ----
+
+  const CARDS_POLL_MS = 5000;
+  const STRIPES = new Set(["grey", "green", "blue", "yellow", "pink"]);
+  const STATUS_FIELDS = [
+    ["State of charge", (st) => (typeof st.stateOfChargePercent === "number" ? st.stateOfChargePercent + "%" : "-")],
+    ["Inverter", (st) => st.inverterStatus || "-"],
+    ["Operational mode", (st) => st.operationalModeStatus || "-"],
+    ["Storage mode", (st) => st.storageModeStatus || "-"],
+    ["Generator connection", (st) => st.genConnectStatus || "-"],
+    ["Storage connection", (st) => st.storConnectStatus || "-"],
+    ["Alarm", (st) => st.alarmStatus || "-"],
+    ["Reported", (st) => (typeof st.readingAgeSeconds === "number" ? secondsText(st.readingAgeSeconds) + " ago" : "-")],
+  ];
+  const cardRows = new Map(); // mrid -> card parts
+  let cardOrder = "";
+
+  function secondsText(s) {
+    if (typeof s !== "number" || s < 0) return "-";
+    if (s < 60) return s + " s";
+    return Math.floor(s / 60) + " min " + (s % 60) + " s";
+  }
+
+  function describeWatts(c) {
+    if (c.direction === "discharge") return "Discharge " + c.watts + " W";
+    if (c.direction === "charge") return "Charge " + (-c.watts) + " W";
+    return "0 W (hold)";
+  }
+
+  function showCardsError(text) {
+    const e = $("cards-error");
+    setText(e, text);
+    e.hidden = text === "";
+  }
+
+  // A value the page does not recognise falls back to grey rather than into a
+  // class name taken from the server.
+  function stripeClass(stripe) {
+    return "card c-" + (STRIPES.has(stripe) ? stripe : "grey");
+  }
+
+  function pair(dl, label) {
+    const dt = el("dt", label);
+    const dd = el("dd", "-");
+    dl.append(dt, dd);
+    return dd;
+  }
+
+  function makeCard(mrid) {
+    const root = el("div", undefined, "card c-grey");
+    root.setAttribute("role", "group");
+    const head = el("div", undefined, "card-head");
+    const name = el("strong");
+    const kind = el("span", undefined, "muted");
+    head.append(name, " ", kind);
+    const label = el("div", undefined, "stripe-label");
+    const seen = el("div", undefined, "muted");
+    const noReport = el("p", "no report yet", "muted");
+    const statusList = el("dl", undefined, "ctl");
+    const statusCells = STATUS_FIELDS.map(([l]) => pair(statusList, l));
+    const control = el("dl", undefined, "ctl");
+    const watts = pair(control, "Control");
+    const source = pair(control, "Source");
+    const left = pair(control, "Time left");
+    const received = pair(control, "Received by the device");
+    const stop = el("button", "Stop");
+    stop.type = "button";
+    stop.addEventListener("click", () => stopRow(mrid, stop));
+    root.append(head, label, seen, noReport, statusList, control, stop);
+    return { root, name, kind, label, seen, noReport, statusList, statusCells, control, watts, source, left, received, stop };
+  }
+
+  function renderCard(row, c) {
+    row.root.className = stripeClass(c.stripe);
+    setText(row.name, c.name || c.mrid);
+    setText(row.kind, c.kind || "");
+    setText(row.label, c.stripeLabel || "");
+    setText(row.seen, typeof c.lastSeenAgeSeconds === "number" ? "last request " + secondsText(c.lastSeenAgeSeconds) + " ago" : "no request yet");
+    const st = c.status;
+    row.noReport.hidden = st !== null && st !== undefined;
+    row.statusList.hidden = !row.noReport.hidden;
+    if (st) STATUS_FIELDS.forEach(([, f], i) => setText(row.statusCells[i], f(st)));
+    const ctl = c.control;
+    row.control.hidden = !ctl;
+    row.stop.hidden = !ctl;
+    row.root.setAttribute("aria-label", (c.name || c.mrid) + ", " + (c.stripeLabel || ""));
+    if (!ctl) return;
+    setText(row.watts, describeWatts(ctl));
+    setText(row.source, ctl.source || "-");
+    setText(row.left, secondsText(ctl.secondsLeft));
+    setText(row.received, ctl.received ? "yes" : "not yet");
+    row.stop.setAttribute("aria-label", "Stop " + (c.name || c.mrid));
+  }
+
+  // Cards are reused across polls so a focused Stop button survives a refresh.
+  function renderCards(cards) {
+    $("cards-empty").hidden = cards.length > 0;
+    const kept = new Set();
+    const roots = [];
+    for (const c of cards) {
+      kept.add(c.mrid);
+      let row = cardRows.get(c.mrid);
+      if (!row) {
+        row = makeCard(c.mrid);
+        cardRows.set(c.mrid, row);
+      }
+      renderCard(row, c);
+      roots.push(row.root);
+    }
+    for (const k of [...cardRows.keys()]) {
+      if (!kept.has(k)) cardRows.delete(k);
+    }
+    const order = cards.map((c) => c.mrid).join("\n");
+    if (order !== cardOrder) {
+      $("cards").replaceChildren(...roots);
+      cardOrder = order;
+    }
+  }
+
+  function cardsSummary(body) {
+    let t = "devices: " + (body.cards || []).length + ", updated " + new Date().toLocaleTimeString();
+    if (body.truncated) t += ". Showing " + (body.cards || []).length + " of " + body.total;
+    if (body.skippedDevices > 0) t += ". " + body.skippedDevices + " devices could not be read";
+    if (body.statusUnavailable) t += ". DERStatus could not be read";
+    return t;
+  }
+
+  async function pollCards() {
+    const status = $("cards-status");
+    try {
+      await timedFetch(API + "cards", { cache: "no-store" }, async (resp) => {
+        if (resp.status === 503) {
+          setStatus(status, "cards: server busy, retrying", true);
+        } else if (!resp.ok) {
+          setStatus(status, "cards: HTTP " + resp.status, true);
+        } else {
+          const body = await resp.json();
+          renderCards(body.cards || []);
+          setStatus(status, cardsSummary(body), body.truncated === true || body.skippedDevices > 0 || body.statusUnavailable === true);
+        }
+      });
+    } catch (err) {
+      setStatus(status, "cards: " + err.message, true);
+    }
+    setTimeout(pollCards, CARDS_POLL_MS);
+  }
+
+  // Stop targets the card's own device and leaves the form's followed control
+  // alone.
+  async function stopRow(mrid, button) {
+    button.disabled = true;
+    showCardsError("");
+    try {
+      await timedFetch(API + "control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mrid, stop: true }),
+      }, async (resp) => {
+        if (resp.ok) return;
+        let payload = null;
+        let text = "";
+        try {
+          text = await resp.text();
+          payload = JSON.parse(text);
+        } catch (err) {
+          payload = null;
+        }
+        let msg = "HTTP " + resp.status + ": " + ((payload && payload.error) || text.trim() || resp.statusText);
+        const retry = resp.headers.get("Retry-After");
+        if (retry) msg += " (retry after " + retry + " s)";
+        showCardsError("Stop failed: " + msg);
+      });
+    } catch (err) {
+      showCardsError("No answer to the Stop (" + err.message + "). Whether it was applied is unknown; press Stop again to retry.");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   // ---- start ----
 
   $("device-filter").addEventListener("input", (ev) => {
@@ -582,5 +761,6 @@
   outputChart.container.textContent = "Pick at least one device that the output topic has reported on.";
   loadDevices();
   setInterval(loadDevices, 30000);
+  pollCards();
   startPoller("output", OUTPUT_SERIES_WANTED, $("output-status"), ingestOutput, describeSeries("output", () => outputStore.size));
 })();
