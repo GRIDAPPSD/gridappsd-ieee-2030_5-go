@@ -59,9 +59,22 @@ type pageStop struct {
 	Disabled bool `json:"disabled"`
 }
 
+type pageSend struct {
+	Input string `json:"input"`
+	Posts []struct {
+		URL  string         `json:"url"`
+		Body map[string]any `json:"body"`
+	} `json:"posts"`
+	Error struct {
+		Text   string `json:"text"`
+		Hidden bool   `json:"hidden"`
+	} `json:"error"`
+}
+
 type pageRun struct {
 	Polls []pagePoll `json:"polls"`
 	Stops []pageStop `json:"stops"`
+	Sends []pageSend `json:"sends"`
 }
 
 // runCardsPage runs the shipped app.js against a fake DOM and fake fetch
@@ -105,6 +118,24 @@ func wantFields(t *testing.T, what string, got, want map[string]string) {
 	}
 }
 
+// A card shows the reading time as a timestamp, never an age or a countdown.
+func assertNoAgo(t *testing.T, i int, v pageCard) {
+	t.Helper()
+	var all []string
+	all = append(all, v.Texts...)
+	all = append(all, v.HiddenText...)
+	for _, l := range v.Lists {
+		for k, val := range l.Fields {
+			all = append(all, k, val)
+		}
+	}
+	for _, s := range all {
+		if strings.Contains(s, " ago") || strings.Contains(s, "last request") || s == "Time left" || s == "Reported" {
+			t.Errorf("card %d shows age or countdown text %q", i, s)
+		}
+	}
+}
+
 func TestCardsPageRenders(t *testing.T) {
 	t.Parallel()
 	first := pollNamed(t, runCardsPage(t), "initial")
@@ -122,7 +153,7 @@ func TestCardsPageRenders(t *testing.T) {
 	if charging.ClassName != "card c-blue" {
 		t.Errorf("charging card class = %q, want %q", charging.ClassName, "card c-blue")
 	}
-	for _, want := range []string{"pv_a", "battery", "CHARGING", "last request 10 s ago"} {
+	for _, want := range []string{"pv_a", "battery", "CHARGING"} {
 		if !slices.Contains(charging.Texts, want) {
 			t.Errorf("charging card lacks %q: %q", want, charging.Texts)
 		}
@@ -130,10 +161,10 @@ func TestCardsPageRenders(t *testing.T) {
 	wantFields(t, "charging status", charging.Lists[0].Fields, map[string]string{
 		"State of charge": "42.5%", "Inverter": "Tracking MPPT", "Operational mode": "Operational",
 		"Storage mode": "Charging", "Generator connection": "Connected", "Storage connection": "Connected, Operating",
-		"Alarm": "0", "Reported": "5 s ago",
+		"Alarm": "0", "Reading time": "1970-01-01 00:16:35 UTC",
 	})
 	wantFields(t, "charging control", charging.Lists[1].Fields, map[string]string{
-		"Control": "Charge 1500 W", "Source": "page", "Time left": "2 min 5 s", "Received by the device": "yes",
+		"Control": "Charge 1500 W", "Source": "page", "Received by the device": "yes",
 	})
 	if charging.Lists[0].Hidden || charging.Lists[1].Hidden || charging.Stop.Hidden {
 		t.Errorf("charging card hides its lists or Stop: %+v", charging)
@@ -143,12 +174,12 @@ func TestCardsPageRenders(t *testing.T) {
 	}
 
 	// No report and no control: both lists, their "-" rows and Stop are hidden
-	// by the card, and only the no-report text and request age show.
+	// by the card, and only the no-report text shows.
 	noReport := first.Views[1]
 	if noReport.ClassName != "card c-grey" || !slices.Contains(noReport.Texts, "NOT CONNECTED") {
 		t.Errorf("no-report card = %q %q, want grey NOT CONNECTED", noReport.ClassName, noReport.Texts)
 	}
-	if !slices.Contains(noReport.Texts, "no report yet") || !slices.Contains(noReport.Texts, "no request yet") {
+	if !slices.Contains(noReport.Texts, "no report yet") {
 		t.Errorf("no-report card lacks no-report text: %q", noReport.Texts)
 	}
 	if !noReport.Lists[0].Hidden || !noReport.Lists[1].Hidden || !noReport.Stop.Hidden {
@@ -171,17 +202,17 @@ func TestCardsPageRenders(t *testing.T) {
 		t.Errorf("discharge card class = %q, want card c-green", discharge.ClassName)
 	}
 	wantFields(t, "discharge control", discharge.Lists[1].Fields, map[string]string{
-		"Control": "Discharge 800 W", "Source": "server", "Time left": "45 s", "Received by the device": "not yet",
+		"Control": "Discharge 800 W", "Source": "server", "Received by the device": "not yet",
 	})
 	wantFields(t, "discharge status", discharge.Lists[0].Fields, map[string]string{
 		"State of charge": "80%", "Inverter": "Idle", "Operational mode": "Off",
 		"Storage mode": "Discharging", "Generator connection": "Disconnected", "Storage connection": "Connected",
-		"Alarm": "1", "Reported": "1 s ago",
+		"Alarm": "1", "Reading time": "1970-01-01 00:16:39 UTC",
 	})
 
 	hold := first.Views[4]
 	wantFields(t, "hold control", hold.Lists[1].Fields, map[string]string{
-		"Control": "0 W (hold)", "Source": "page", "Time left": "60 min 0 s", "Received by the device": "yes",
+		"Control": "0 W (hold)", "Source": "page", "Received by the device": "yes",
 	})
 	if hold.ClassName != "card c-pink" {
 		t.Errorf("hold card class = %q, want card c-pink", hold.ClassName)
@@ -197,8 +228,12 @@ func TestCardsPageRenders(t *testing.T) {
 	wantFields(t, "stale status", stale.Lists[0].Fields, map[string]string{
 		"State of charge": "10%", "Inverter": "Fault", "Operational mode": "Operational",
 		"Storage mode": "Holding", "Generator connection": "Connected", "Storage connection": "Disconnected",
-		"Alarm": "2", "Reported": "3 min 20 s ago",
+		"Alarm": "2", "Reading time": "1970-01-01 00:13:20 UTC",
 	})
+
+	for i, v := range first.Views {
+		assertNoAgo(t, i, v)
+	}
 }
 
 // The page polls pollCards itself: values update in place, a device that
@@ -214,8 +249,8 @@ func TestCardsPagePolls(t *testing.T) {
 	}
 	wantFields(t, "updated status", map[string]string{
 		"State of charge": values.Views[0].Lists[0].Fields["State of charge"],
-		"Reported":        values.Views[0].Lists[0].Fields["Reported"],
-	}, map[string]string{"State of charge": "50%", "Reported": "1 min 5 s ago"})
+		"Reading time":    values.Views[0].Lists[0].Fields["Reading time"],
+	}, map[string]string{"State of charge": "50%", "Reading time": "1970-01-01 00:16:40 UTC"})
 
 	// An unchanged order leaves the list alone, so a focused Stop survives.
 	if initial := pollNamed(t, run, "initial"); values.Replaced != initial.Replaced {
@@ -272,7 +307,7 @@ func TestCardsPageSparseAndEmpty(t *testing.T) {
 	wantFields(t, "sparse status", sparse.Views[0].Lists[0].Fields, map[string]string{
 		"State of charge": "-", "Inverter": "-", "Operational mode": "-",
 		"Storage mode": "-", "Generator connection": "-", "Storage connection": "-",
-		"Alarm": "-", "Reported": "-",
+		"Alarm": "-", "Reading time": "-",
 	})
 	none := pollNamed(t, run, "none")
 	if len(none.Views) != 0 {
@@ -351,6 +386,39 @@ func TestCardsPageAssets(t *testing.T) {
 	for _, id := range []string{`id="cards"`, `id="cards-status"`, `id="cards-error"`, `id="cards-empty"`} {
 		if !strings.Contains(html, id) {
 			t.Errorf("index.html lacks %s", id)
+		}
+	}
+}
+
+// The form takes one signed watts number and posts it as typed: negative
+// charges, positive discharges, zero is refused in favor of Stop.
+func TestCardsPageSendSignedWatts(t *testing.T) {
+	t.Parallel()
+	run := runCardsPage(t)
+	byInput := map[string]pageSend{}
+	for _, s := range run.Sends {
+		byInput[s.Input] = s
+	}
+	for _, tc := range []struct {
+		input string
+		watts float64
+	}{{"-500", -500}, {"500", 500}} {
+		s, ok := byInput[tc.input]
+		if !ok || len(s.Posts) != 1 {
+			t.Fatalf("send %q = %+v, want one post", tc.input, s)
+		}
+		p := s.Posts[0]
+		if p.URL != "/apps/soc/api/control" || p.Body["mrid"] != "M-A" || p.Body["watts"] != tc.watts || p.Body["durationSeconds"] != float64(300) || len(p.Body) != 3 {
+			t.Errorf("send %q posted %s %v, want {mrid:M-A, watts:%v, durationSeconds:300}", tc.input, p.URL, p.Body, tc.watts)
+		}
+		if !s.Error.Hidden {
+			t.Errorf("send %q left an error: %q", tc.input, s.Error.Text)
+		}
+	}
+	for _, bad := range []string{"0", "12.5", ""} {
+		s, ok := byInput[bad]
+		if !ok || len(s.Posts) != 0 || s.Error.Hidden || !strings.Contains(s.Error.Text, "whole number") {
+			t.Errorf("send %q = %+v, want no post and a whole-number error", bad, s)
 		}
 	}
 }

@@ -13,6 +13,7 @@ class Node_ {
     this.className = "";
     this.hidden = false;
     this.disabled = false;
+    this.value = "";
     this._text = null;
     this.parent = null;
   }
@@ -29,6 +30,7 @@ class Node_ {
   setAttribute(k, v) { this.attrs[k] = String(v); }
   addEventListener(ev, fn) { (this.listeners[ev] = this.listeners[ev] || []).push(fn); }
   click() { for (const fn of this.listeners.click || []) fn({}); }
+  submit() { for (const fn of this.listeners.submit || []) fn({ preventDefault() {} }); }
   get selectedOptions() { return []; }
 }
 
@@ -165,7 +167,7 @@ async function main() {
   // Same order, new values: the cards must be updated in place.
   let b = clone();
   b.cards[0].status.stateOfChargePercent = 50;
-  b.cards[0].status.readingAgeSeconds = 65;
+  b.cards[0].status.readingTime = 1000;
   await pollNow(b);
   polls.push(snapshot("values", list, firstEls));
 
@@ -226,6 +228,21 @@ async function main() {
   stops.push(await pressStop(list, "Stop pv_a", "http"));
   stops.push(await pressStop(list, "Stop pv_a", "throw"));
   stops.push(await pressStop(list, "Stop bat_d", "ok"));
-  console.log(JSON.stringify({ polls, stops }));
+
+  // The form: one signed watts field, no direction radios.
+  const sends = [];
+  document.getElementById("soc-device").value = "M-A";
+  document.getElementById("soc-seconds").value = "300";
+  document.getElementById("soc-watch").value = "";
+  for (const input of ["-500", "500", "0", "12.5", ""]) {
+    postReply = { kind: "ok" };
+    document.getElementById("soc-watts").value = input;
+    const before = posts.length;
+    document.getElementById("soc-form").submit();
+    await settle(); await settle();
+    const e = document.getElementById("soc-error");
+    sends.push({ input, posts: posts.slice(before), error: { text: e.textContent, hidden: !e.shown } });
+  }
+  console.log(JSON.stringify({ polls, stops, sends }));
 }
 main().catch((e) => { console.error(e); process.exit(1); });

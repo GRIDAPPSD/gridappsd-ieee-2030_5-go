@@ -410,6 +410,14 @@
     return Number.isInteger(n) && n >= lo && n <= hi ? n : null;
   }
 
+  // Positive discharges and negative charges, as on the wire. Zero is refused:
+  // Stop is the way to end a control.
+  function parseSigned(raw) {
+    if (!/^-?[0-9]+$/.test(raw.trim())) return null;
+    const n = Number(raw);
+    return Number.isSafeInteger(n) && n !== 0 ? n : null;
+  }
+
   // An empty watch box means no watch; anything else must be a percent.
   function parseWatch(raw) {
     if (raw.trim() === "") return { ok: true, value: null };
@@ -422,17 +430,14 @@
     ev.preventDefault();
     const mrid = $("soc-device").value;
     if (!mrid) { showControlError("pick a device"); return; }
-    const dir = document.querySelector('input[name="soc-dir"]:checked');
-    if (!dir) { showControlError("pick Discharge or Charge"); return; }
-    const watts = parseWhole($("soc-watts").value, 1, Number.MAX_SAFE_INTEGER);
-    if (watts === null) { showControlError("watts must be a whole number above 0; use Stop for 0 W"); return; }
+    const watts = parseSigned($("soc-watts").value);
+    if (watts === null) { showControlError("watts must be a whole number, positive to discharge or negative to charge; use Stop for 0 W"); return; }
     const seconds = parseWhole($("soc-seconds").value, MIN_SECONDS, MAX_SECONDS);
     if (seconds === null) { showControlError("duration must be a whole number of seconds from " + MIN_SECONDS + " to " + MAX_SECONDS); return; }
     const watch = parseWatch($("soc-watch").value);
     if (!watch.ok) { showControlError("watch percent must be a number from 0 to 100, or empty"); return; }
-    // Discharge is positive and charge negative on the wire.
     const opt = $("soc-device").selectedOptions[0];
-    postControl({ mrid, watts: dir.value === "charge" ? -watts : watts, durationSeconds: seconds }, watch.value, opt ? opt.textContent : mrid);
+    postControl({ mrid, watts, durationSeconds: seconds }, watch.value, opt ? opt.textContent : mrid);
   }
 
   // Stop goes to the device of the control being followed, never to whatever
@@ -567,15 +572,17 @@
     ["Generator connection", (st) => st.genConnectStatus || "-"],
     ["Storage connection", (st) => st.storConnectStatus || "-"],
     ["Alarm", (st) => st.alarmStatus || "-"],
-    ["Reported", (st) => (typeof st.readingAgeSeconds === "number" ? secondsText(st.readingAgeSeconds) + " ago" : "-")],
+    ["Reading time", (st) => utcText(st.readingTime)],
   ];
   const cardRows = new Map(); // mrid -> card parts
   let cardOrder = "";
 
-  function secondsText(s) {
-    if (typeof s !== "number" || s < 0) return "-";
-    if (s < 60) return s + " s";
-    return Math.floor(s / 60) + " min " + (s % 60) + " s";
+  // The device's own report time, in UTC so it reads the same on every screen.
+  function utcText(sec) {
+    if (typeof sec !== "number") return "-";
+    const d = new Date(sec * 1000);
+    if (isNaN(d.getTime())) return "-";
+    return d.toISOString().slice(0, 19).replace("T", " ") + " UTC";
   }
 
   function describeWatts(c) {
@@ -611,20 +618,18 @@
     const kind = el("span", undefined, "muted");
     head.append(name, " ", kind);
     const label = el("div", undefined, "stripe-label");
-    const seen = el("div", undefined, "muted");
     const noReport = el("p", "no report yet", "muted");
     const statusList = el("dl", undefined, "ctl");
     const statusCells = STATUS_FIELDS.map(([l]) => pair(statusList, l));
     const control = el("dl", undefined, "ctl");
     const watts = pair(control, "Control");
     const source = pair(control, "Source");
-    const left = pair(control, "Time left");
     const received = pair(control, "Received by the device");
     const stop = el("button", "Stop");
     stop.type = "button";
     stop.addEventListener("click", () => stopRow(mrid, stop));
-    root.append(head, label, seen, noReport, statusList, control, stop);
-    return { root, name, kind, label, seen, noReport, statusList, statusCells, control, watts, source, left, received, stop };
+    root.append(head, label, noReport, statusList, control, stop);
+    return { root, name, kind, label, noReport, statusList, statusCells, control, watts, source, received, stop };
   }
 
   function renderCard(row, c) {
@@ -632,7 +637,6 @@
     setText(row.name, c.name || c.mrid);
     setText(row.kind, c.kind || "");
     setText(row.label, c.stripeLabel || "");
-    setText(row.seen, typeof c.lastSeenAgeSeconds === "number" ? "last request " + secondsText(c.lastSeenAgeSeconds) + " ago" : "no request yet");
     const st = c.status;
     row.noReport.hidden = st !== null && st !== undefined;
     row.statusList.hidden = !row.noReport.hidden;
@@ -644,7 +648,6 @@
     if (!ctl) return;
     setText(row.watts, describeWatts(ctl));
     setText(row.source, ctl.source || "-");
-    setText(row.left, secondsText(ctl.secondsLeft));
     setText(row.received, ctl.received ? "yes" : "not yet");
     row.stop.setAttribute("aria-label", "Stop " + (c.name || c.mrid));
   }

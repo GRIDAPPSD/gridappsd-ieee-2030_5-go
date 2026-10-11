@@ -49,12 +49,7 @@
 <h2 id="soc-h">Charge or discharge a device</h2>
 <form id="soc-form" autocomplete="off">
 <label>Device <select id="soc-device" required></select></label>
-<fieldset>
-<legend>Direction</legend>
-<label><input type="radio" name="soc-dir" value="discharge" checked> Discharge</label>
-<label><input type="radio" name="soc-dir" value="charge"> Charge</label>
-</fieldset>
-<label>Watts (above 0) <input id="soc-watts" type="number" min="1" step="1" required></label>
+<label>Watts (positive discharges, negative charges) <input id="soc-watts" type="number" step="1" required></label>
 <label>Duration in seconds (60 to 3600) <input id="soc-seconds" type="number" min="60" max="3600" step="1" value="300" required></label>
 <label>Watch percent (optional) <input id="soc-watch" type="number" min="0" max="100" step="any"></label>
 <button type="submit" id="soc-send">Send</button>
