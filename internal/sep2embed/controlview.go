@@ -41,6 +41,17 @@ func (e *Embed) ControlSnapshot(ctx context.Context, deviceMRID, controlID strin
 	return DERControlSnapshot{}, false, nil
 }
 
+// ControlsFor returns every DERControl still served for the device with the
+// given CIM mRID, superseded and cancelled ones included. An unknown device
+// has none and is not an error.
+func (e *Embed) ControlsFor(ctx context.Context, deviceMRID string) ([]DERControlSnapshot, error) {
+	edevID, ok := e.stores.EndDeviceIndexes.IndexFor(deviceMRID)
+	if !ok {
+		return nil, nil
+	}
+	return e.DERControls(ctx, edevID, controlFSAID, controlDERProgramID)
+}
+
 // ResponsesFor returns the Responses devices have posted since the Unix
 // second since whose subject is the given event mRID, in store order. It only
 // reads: the one writer of this store is the protocol listener's POST

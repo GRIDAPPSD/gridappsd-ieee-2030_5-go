@@ -58,6 +58,36 @@ func TestControlSnapshotFindsTheIssuedControlByItsID(t *testing.T) {
 	}
 }
 
+func TestControlsForListsTheSendAndFollowOnWithTheirIntervals(t *testing.T) {
+	t.Parallel()
+
+	clock := newMovableClock(controlClockUnix)
+	_, _, e, reg := newEmbedTestServer(t, func(cfg *Config) {
+		cfg.DERControl.Now = clock.now
+	}, "DERVIEW2")
+	ctx := context.Background()
+
+	send, err := e.ApplyControlFor(ctx, reg, targetWDelta("mrid-DERVIEW2", 0, -900), 120)
+	if err != nil {
+		t.Fatalf("ApplyControlFor: %v", err)
+	}
+	got, err := e.ControlsFor(ctx, "mrid-DERVIEW2")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("ControlsFor = %d controls, err %v; want 2", len(got), err)
+	}
+	byID := map[string]DERControlSnapshot{got[0].ID: got[0], got[1].ID: got[1]}
+	req, fo := byID[send.ControlID], byID[send.FollowOnID]
+	if req.Start != send.Start || req.Duration != 120 || req.Base == nil || req.Base.OpModTargetW.Value != -900 {
+		t.Errorf("requested = %+v, want start %d duration 120 watts -900", req, send.Start)
+	}
+	if fo.Start != send.End || fo.CurrentStatus != sep2.EventStatusScheduled || fo.Base.OpModTargetW.Value != 0 {
+		t.Errorf("follow-on = %+v, want start %d scheduled 0 W", fo, send.End)
+	}
+	if none, err := e.ControlsFor(ctx, "mrid-not-registered"); err != nil || len(none) != 0 {
+		t.Errorf("unknown device = %v, %v; want none and no error", none, err)
+	}
+}
+
 func TestResponsesForFiltersBySubjectAndKeepsFieldValues(t *testing.T) {
 	t.Parallel()
 

@@ -29,3 +29,7 @@ func (c embedControl) ResponsesFor(ctx context.Context, subject string, since in
 func (c embedControl) EndedControl(mrid string) (sep2embed.EndedControl, bool) {
 	return c.embed.EndedControl(mrid)
 }
+
+func (c embedControl) ControlsFor(ctx context.Context, deviceMRID string) ([]sep2embed.DERControlSnapshot, error) {
+	return c.embed.ControlsFor(ctx, deviceMRID)
+}

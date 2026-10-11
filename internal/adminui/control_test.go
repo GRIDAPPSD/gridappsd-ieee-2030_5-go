@@ -50,8 +50,11 @@ type fakeControl struct {
 	responses []sep2embed.ResponseSnapshot
 	respErr   error
 	ended     *sep2embed.EndedControl
-	askedFor  []string
-	since     []int64
+	// controls is what ControlsFor serves, by device mRID.
+	controls map[string][]sep2embed.DERControlSnapshot
+	ctlErr   error
+	askedFor []string
+	since    []int64
 }
 
 func newFakeControl() *fakeControl {
@@ -109,6 +112,15 @@ func (f *fakeControl) ResponsesFor(_ context.Context, subject string, since int6
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeControl) ControlsFor(_ context.Context, mrid string) ([]sep2embed.DERControlSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ctlErr != nil {
+		return nil, f.ctlErr
+	}
+	return f.controls[mrid], nil
 }
 
 func (f *fakeControl) EndedControl(mrid string) (sep2embed.EndedControl, bool) {
