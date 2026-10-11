@@ -8,6 +8,8 @@
   const POLL_MS = 5000;
   const CONTROL_POLL_MS = 3000;
   const MIN_SECONDS = 60;
+  // The select value that sends to every device; no device mRID is this.
+  const ALL_DEVICES = "*all*";
   const MAX_SECONDS = 3600;
   // A control still being served; the page polls while it is one of these.
   const LIVE_STATES = new Set(["scheduled", "active"]);
@@ -322,8 +324,17 @@
         o.value = d.mrid;
         return o;
       });
+      // The all-devices choice sits after the devices, so the form still
+      // opens on the first device.
+      if (list.length > 0) {
+        const all = el("option", "All devices");
+        all.value = ALL_DEVICES;
+        opts.push(all);
+      }
       select.replaceChildren(...opts);
-      if (keep && list.some((d) => d.mrid === keep)) {
+      if (keep === ALL_DEVICES && list.length > 0) {
+        select.value = keep;
+      } else if (keep && list.some((d) => d.mrid === keep)) {
         select.value = keep;
       } else if (keep && list.length > 0) {
         deviceNote = "The device you had selected is no longer in the list; the form now shows " + (list[0].name || list[0].mrid) + ".";
@@ -404,6 +415,65 @@
     }
   }
 
+  function showAllResult(text, warn) {
+    const e = $("soc-all-result");
+    e.textContent = text;
+    e.className = warn ? "warn" : "muted";
+    e.hidden = text === "";
+  }
+
+  // Sends one control to every device in a single request. The panel below
+  // follows one device, so it is left alone; the answer lists each device.
+  async function postAll(body) {
+    sending = true;
+    syncButtons();
+    showControlError("");
+    showAllResult("", false);
+    try {
+      await timedFetch(API + "control/all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }, async (resp) => {
+        let payload = null;
+        let text = "";
+        try {
+          text = await resp.text();
+          payload = JSON.parse(text);
+        } catch (err) {
+          payload = null;
+        }
+        if (!resp.ok) {
+          let msg = "HTTP " + resp.status + ": " + ((payload && payload.error) || text.trim() || resp.statusText);
+          const retry = resp.headers.get("Retry-After");
+          if (retry) msg += " (retry after " + retry + " s)";
+          showControlError(msg);
+          return;
+        }
+        if (!payload || !Array.isArray(payload.results)) {
+          showControlError("unexpected answer from the server");
+          return;
+        }
+        const what = payload.stop ? "Stop (0 W)" : payload.watts + " W for " + payload.durationSeconds + " s";
+        let msg = what + " sent to " + payload.succeeded + " of " + payload.total + " devices.";
+        const failed = payload.results.filter((r) => !r.ok);
+        if (failed.length > 0) {
+          msg += " Failed: " + failed.map((r) => (r.name || r.mrid) + " (" + r.error + ")").join(", ") + ".";
+        }
+        const warned = payload.results.filter((r) => r.ok && r.warning);
+        if (warned.length > 0) {
+          msg += " Warning: " + warned.map((r) => (r.name || r.mrid) + " (" + r.warning + ")").join(", ") + ".";
+        }
+        showAllResult(msg, failed.length > 0 || warned.length > 0);
+      });
+    } catch (err) {
+      showControlError("No answer to the all-devices send (" + err.message + "). Whether the bridge issued these controls is unknown: check the devices in the output chart before sending again.");
+    } finally {
+      sending = false;
+      syncButtons();
+    }
+  }
+
   function parseWhole(raw, lo, hi) {
     if (!/^[0-9]+$/.test(raw.trim())) return null;
     const n = Number(raw);
@@ -436,6 +506,10 @@
     if (seconds === null) { showControlError("duration must be a whole number of seconds from " + MIN_SECONDS + " to " + MAX_SECONDS); return; }
     const watch = parseWatch($("soc-watch").value);
     if (!watch.ok) { showControlError("watch percent must be a number from 0 to 100, or empty"); return; }
+    if (mrid === ALL_DEVICES) {
+      postAll({ watts, durationSeconds: seconds });
+      return;
+    }
     const opt = $("soc-device").selectedOptions[0];
     postControl({ mrid, watts, durationSeconds: seconds }, watch.value, opt ? opt.textContent : mrid);
   }
@@ -447,8 +521,13 @@
     postControl({ mrid: followed.mrid, stop: true }, null, followed.name);
   }
 
+  function onStopAll() {
+    postAll({ stop: true });
+  }
+
   function syncButtons() {
     $("soc-send").disabled = sending;
+    $("soc-stop-all").disabled = sending;
     $("soc-stop").disabled = sending || followed === null;
   }
 
@@ -761,6 +840,7 @@
   });
   $("soc-form").addEventListener("submit", onSend);
   $("soc-stop").addEventListener("click", onStop);
+  $("soc-stop-all").addEventListener("click", onStopAll);
   $("soc-device").addEventListener("change", () => {
     deviceNote = "";
     showDevicesError("");

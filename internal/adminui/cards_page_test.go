@@ -75,6 +75,24 @@ type pageRun struct {
 	Polls []pagePoll `json:"polls"`
 	Stops []pageStop `json:"stops"`
 	Sends []pageSend `json:"sends"`
+	Alls  []pageAll  `json:"alls"`
+}
+
+type pageAll struct {
+	Label string `json:"label"`
+	Posts []struct {
+		URL  string         `json:"url"`
+		Body map[string]any `json:"body"`
+	} `json:"posts"`
+	Result struct {
+		Text   string `json:"text"`
+		Hidden bool   `json:"hidden"`
+		Warn   bool   `json:"warn"`
+	} `json:"result"`
+	Error struct {
+		Text   string `json:"text"`
+		Hidden bool   `json:"hidden"`
+	} `json:"error"`
 }
 
 // runCardsPage runs the shipped app.js against a fake DOM and fake fetch
@@ -432,6 +450,38 @@ func TestCardsPageSendSignedWatts(t *testing.T) {
 		if !ok || len(s.Posts) != 0 || s.Error.Hidden || !strings.Contains(s.Error.Text, "whole number") {
 			t.Errorf("send %q = %+v, want no post and a whole-number error", bad, s)
 		}
+	}
+}
+
+// "All devices" posts the same watts and duration to the all route, with no
+// mrid, and says how many devices took it and which did not.
+func TestCardsPageSendToAllDevices(t *testing.T) {
+	t.Parallel()
+	byLabel := map[string]pageAll{}
+	for _, a := range runCardsPage(t).Alls {
+		byLabel[a.Label] = a
+	}
+	send := byLabel["send"]
+	if len(send.Posts) != 1 || send.Posts[0].URL != "/apps/soc/api/control/all" ||
+		send.Posts[0].Body["watts"] != float64(100) || send.Posts[0].Body["durationSeconds"] != float64(300) || len(send.Posts[0].Body) != 2 {
+		t.Fatalf("all send posted %+v, want {watts:100, durationSeconds:300} to the all route", send.Posts)
+	}
+	if send.Result.Hidden || send.Result.Warn || send.Result.Text != "100 W for 300 s sent to 2 of 2 devices." || !send.Error.Hidden {
+		t.Errorf("all send result = %+v error = %+v", send.Result, send.Error)
+	}
+	partial := byLabel["partial"]
+	if !partial.Result.Warn || partial.Result.Text != "100 W for 300 s sent to 1 of 2 devices. Failed: pv_b (unknown device)." {
+		t.Errorf("partial result = %+v, want the failed device named", partial.Result)
+	}
+	if h := byLabel["http"]; !h.Result.Hidden || !strings.Contains(h.Error.Text, "HTTP 500") || !strings.Contains(h.Error.Text, "retry after 7") {
+		t.Errorf("http failure = %+v", h)
+	}
+	stop := byLabel["stop"]
+	if len(stop.Posts) != 1 || stop.Posts[0].URL != "/apps/soc/api/control/all" || stop.Posts[0].Body["stop"] != true || len(stop.Posts[0].Body) != 1 {
+		t.Errorf("stop all posted %+v, want {stop:true} to the all route", stop.Posts)
+	}
+	if !strings.HasPrefix(stop.Result.Text, "Stop (0 W) sent to 2 of 2 devices.") {
+		t.Errorf("stop result = %q", stop.Result.Text)
 	}
 }
 
