@@ -246,8 +246,36 @@ func newControlID() (string, error) {
 
 func (s *Server) mountControl(mux *http.ServeMux) {
 	mux.Handle(controlSendPattern, socHeaders(s.hostAllowlist(withRemote(http.HandlerFunc(s.handleControlSend)))))
+	mux.Handle(controlAllPattern, socHeaders(s.hostAllowlist(withRemote(http.HandlerFunc(s.handleControlAll)))))
 	mux.Handle("GET "+controlActivePattern, s.socGetGate(http.HandlerFunc(s.handleControlActive)))
 	mux.Handle(controlStatusPattern, socHeaders(s.hostAllowlist(http.HandlerFunc(s.handleControlStatus))))
+}
+
+// decodeControlJSON runs the checks every control send shares, after the
+// rate limit: the JSON content type, the body bound, no unknown field and a
+// single object. It answers the refusal itself and reports false.
+func decodeControlJSON[T any](w http.ResponseWriter, r *http.Request, shape string) (T, bool) {
+	var req T
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, errorResponse{"content type must be application/json"})
+		return req, false
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxControlBody))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{"request body too large"})
+			return req, false
+		}
+		writeJSON(w, http.StatusBadRequest, errorResponse{shape})
+		return req, false
+	}
+	if dec.More() {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"body must hold one JSON object"})
+		return req, false
+	}
+	return req, true
 }
 
 func (s *Server) handleControlSend(w http.ResponseWriter, r *http.Request) {
@@ -256,24 +284,8 @@ func (s *Server) handleControlSend(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusTooManyRequests, errorResponse{controlRateLimited})
 		return
 	}
-	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
-		writeJSON(w, http.StatusUnsupportedMediaType, errorResponse{"content type must be application/json"})
-		return
-	}
-	var req controlRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxControlBody))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{"request body too large"})
-			return
-		}
-		writeJSON(w, http.StatusBadRequest, errorResponse{"body must be a JSON object with mrid and watts, or mrid and stop"})
-		return
-	}
-	if dec.More() {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"body must hold one JSON object"})
+	req, ok := decodeControlJSON[controlRequest](w, r, "body must be a JSON object with mrid and watts, or mrid and stop")
+	if !ok {
 		return
 	}
 
@@ -706,4 +718,99 @@ func judge(watts, durationSeconds, from, now int64, baseline *float64, reports [
 		out.verdict = verdictWaiting
 	}
 	return out
+}
+
+// controlAllPattern sends one control to every registered device.
+const controlAllPattern = "POST /apps/soc/api/control/all"
+
+type controlAllResult struct {
+	MRID    string `json:"mrid"`
+	Name    string `json:"name"`
+	OK      bool   `json:"ok"`
+	ID      string `json:"id,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Warning string `json:"warning,omitempty"`
+}
+
+type controlAllResponse struct {
+	Watts           int64              `json:"watts"`
+	Stop            bool               `json:"stop"`
+	DurationSeconds uint32             `json:"durationSeconds"`
+	Total           int                `json:"total"`
+	Succeeded       int                `json:"succeeded"`
+	Failed          int                `json:"failed"`
+	Results         []controlAllResult `json:"results"`
+}
+
+// allRequest is the all-devices POST body: a controlRequest without the mrid,
+// so a body that names one is refused as an unknown field.
+type allRequest struct {
+	Watts           *int64 `json:"watts"`
+	DurationSeconds *int64 `json:"durationSeconds"`
+	Stop            bool   `json:"stop"`
+}
+
+// handleControlAll issues the same control to every registered device in one
+// request. It takes one rate-limit token, and each device is sent through
+// issueControl exactly as a single send would be, so a device that fails is
+// reported in its own result and the others still go.
+func (s *Server) handleControlAll(w http.ResponseWriter, r *http.Request) {
+	if !s.controlLimit.allow(s.now()) {
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{controlRateLimited})
+		return
+	}
+	req, ok := decodeControlJSON[allRequest](w, r, "body must be a JSON object with watts, or stop")
+	if !ok {
+		return
+	}
+	// The shared checks run on a request naming a placeholder device; the
+	// body itself cannot carry one.
+	watts, seconds, msg := controlRequest{MRID: "all", Watts: req.Watts, DurationSeconds: req.DurationSeconds, Stop: req.Stop}.resolve()
+	if msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+		return
+	}
+	devices := s.registry.Snapshot()
+	if len(devices) == 0 {
+		writeJSON(w, http.StatusNotFound, errorResponse{"no registered devices"})
+		return
+	}
+	sort.SliceStable(devices, func(i, j int) bool {
+		if devices[i].Name != devices[j].Name {
+			return devices[i].Name < devices[j].Name
+		}
+		return devices[i].MRID < devices[j].MRID
+	})
+
+	out := controlAllResponse{Watts: watts, Stop: req.Stop, DurationSeconds: seconds,
+		Total: len(devices), Results: make([]controlAllResult, 0, len(devices))}
+	for _, d := range devices {
+		res := controlAllResult{MRID: d.MRID, Name: d.Name}
+		rec, warning, err := s.issueControl(r.Context(), d.MRID, watts, seconds)
+		switch {
+		case errors.Is(err, errNoStatusID):
+			res.Error = "control issued but no status id could be made"
+		case err != nil:
+			code, msg := controlFailure(err)
+			if code == http.StatusInternalServerError {
+				log.Printf("adminui: watts control for %s refused: %v", d.MRID, err)
+			}
+			res.Error = msg
+		default:
+			res.OK, res.ID, res.Warning = true, rec.id, warning
+		}
+		if res.OK {
+			out.Succeeded++
+		} else {
+			out.Failed++
+		}
+		out.Results = append(out.Results, res)
+	}
+
+	// The route takes no credential, so this line is the only record of who
+	// sent the controls.
+	log.Printf("adminui: watts control accepted from %s: device=all devices=%d ok=%d watts=%d duration=%ds",
+		remoteFrom(r.Context()), out.Total, out.Succeeded, watts, seconds)
+	writeJSON(w, http.StatusOK, out)
 }

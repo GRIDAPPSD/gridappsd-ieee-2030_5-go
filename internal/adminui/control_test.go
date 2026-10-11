@@ -34,10 +34,12 @@ type controlCall struct {
 }
 
 type fakeControl struct {
-	mu       sync.Mutex
-	calls    []controlCall
-	deltas   []sep2embed.ControlDelta
-	err      error
+	mu     sync.Mutex
+	calls  []controlCall
+	deltas []sep2embed.ControlDelta
+	err    error
+	// errFor fails the sends to the devices it names, before err applies.
+	errFor   map[string]error
 	partial  bool
 	noFollow bool
 	start    int64
@@ -77,6 +79,9 @@ func (f *fakeControl) ApplyControlFor(_ context.Context, d sep2embed.ControlDelt
 	val, _ := d.Value.(map[string]any)["value"].(float64)
 	f.calls = append(f.calls, controlCall{d.Object, int64(val), seconds})
 	f.deltas = append(f.deltas, d)
+	if e := f.errFor[d.Object]; e != nil {
+		return sep2embed.ControlSend{}, e
+	}
 	send := sep2embed.ControlSend{ControlID: "ctl-1", FollowOnID: "fo-1", Start: f.start, End: f.start + int64(seconds)}
 	if f.err != nil {
 		if f.noFollow {
