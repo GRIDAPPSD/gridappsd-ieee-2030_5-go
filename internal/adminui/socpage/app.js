@@ -270,15 +270,15 @@
     tick();
   }
 
-  // Names what the server cut. It does not say which series it left out, so
-  // the page reports how many are missing and which shown series hold only
-  // their newest points.
-  function describeSeries(what) {
+  // The count is the series the page holds, because a poll since the cursor
+  // carries only the series with new points. The server's cut is reported
+  // only when it says it cut, as how many series are missing.
+  function describeSeries(what, heldCount) {
     return (body) => {
-      const shown = (body.series || []).length;
-      let t = what + ": " + shown + " of " + (body.totalSeries || 0) + " series, updated " + new Date().toLocaleTimeString();
+      const held = heldCount();
+      let t = what + ": " + held + " series, updated " + new Date().toLocaleTimeString();
       if (body.seriesTruncated) {
-        t += ". The server cut the list of series, so " + Math.max(0, (body.totalSeries || 0) - shown) + " are missing";
+        t += ". The server cut the list of series, so " + Math.max(0, (body.totalSeries || 0) - (body.series || []).length) + " are missing";
       }
       if (body.evictions > 0) {
         t += ". History is being dropped: the server has evicted " + body.evictions + " series";
@@ -582,5 +582,5 @@
   outputChart.container.textContent = "Pick at least one device that the output topic has reported on.";
   loadDevices();
   setInterval(loadDevices, 30000);
-  startPoller("output", OUTPUT_SERIES_WANTED, $("output-status"), ingestOutput, describeSeries("output"));
+  startPoller("output", OUTPUT_SERIES_WANTED, $("output-status"), ingestOutput, describeSeries("output", () => outputStore.size));
 })();
