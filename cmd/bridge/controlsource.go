@@ -33,3 +33,7 @@ func (c embedControl) EndedControl(mrid string) (sep2embed.EndedControl, bool) {
 func (c embedControl) ControlsFor(ctx context.Context, deviceMRID string) ([]sep2embed.DERControlSnapshot, error) {
 	return c.embed.ControlsFor(ctx, deviceMRID)
 }
+
+func (c embedControl) BusIssued(controlID string) bool {
+	return c.embed.BusIssued(controlID)
+}

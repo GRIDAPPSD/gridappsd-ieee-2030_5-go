@@ -48,11 +48,19 @@ type fakeControl struct {
 	snapFn    func(n int) *sep2embed.DERControlSnapshot
 	snapCalls int
 	responses []sep2embed.ResponseSnapshot
-	respErr   error
-	ended     *sep2embed.EndedControl
+	// receivedAt, when it holds a subject, is the Unix second the fake store
+	// received every Response to it; ResponsesFor then drops them before
+	// since, as the real store does by its receipt-time keys.
+	receivedAt map[string]int64
+	respErr    error
+	ended      *sep2embed.EndedControl
 	// controls is what ControlsFor serves, by device mRID.
 	controls map[string][]sep2embed.DERControlSnapshot
 	ctlErr   error
+	// ctlErrFor fails ControlsFor for the devices it names.
+	ctlErrFor map[string]error
+	// bus holds the control ids BusIssued reports as bus-issued.
+	bus      map[string]bool
 	askedFor []string
 	since    []int64
 }
@@ -107,9 +115,13 @@ func (f *fakeControl) ResponsesFor(_ context.Context, subject string, since int6
 	}
 	var out []sep2embed.ResponseSnapshot
 	for _, r := range f.responses {
-		if r.Subject == subject {
-			out = append(out, r)
+		if r.Subject != subject {
+			continue
 		}
+		if at, ok := f.receivedAt[subject]; ok && at < since {
+			continue
+		}
+		out = append(out, r)
 	}
 	return out, nil
 }
@@ -120,7 +132,16 @@ func (f *fakeControl) ControlsFor(_ context.Context, mrid string) ([]sep2embed.D
 	if f.ctlErr != nil {
 		return nil, f.ctlErr
 	}
+	if err := f.ctlErrFor[mrid]; err != nil {
+		return nil, err
+	}
 	return f.controls[mrid], nil
+}
+
+func (f *fakeControl) BusIssued(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bus[id]
 }
 
 func (f *fakeControl) EndedControl(mrid string) (sep2embed.EndedControl, bool) {

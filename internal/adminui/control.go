@@ -121,6 +121,9 @@ type ControlSource interface {
 	ResponsesFor(ctx context.Context, subject string, since int64) ([]sep2embed.ResponseSnapshot, error)
 	// ControlsFor returns every control still served for a device.
 	ControlsFor(ctx context.Context, deviceMRID string) ([]sep2embed.DERControlSnapshot, error)
+	// BusIssued reports whether the bus path issued the control with the
+	// given store id, as far as its bounded in-memory record knows.
+	BusIssued(controlID string) bool
 	// EndedControl returns the record kept for a control after it left the
 	// store, so a stop that no status read saw is still dated.
 	EndedControl(mrid string) (sep2embed.EndedControl, bool)

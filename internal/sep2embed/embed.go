@@ -347,6 +347,10 @@ type Embed struct {
 	// nil on an Embed built by New.
 	ended *endedControlLedger
 
+	// busIssued records the controls the bus path issued, so a reader can
+	// tell them from a direct send.
+	busIssued issuedLedger
+
 	// sweepInterval is the runControlSweep period. Zero (an Embed built
 	// without New) uses DefaultControlSweepInterval.
 	sweepInterval time.Duration
@@ -656,7 +660,11 @@ func (e *Embed) ApplyControlDeltaOutcome(ctx context.Context, reg *registry.Regi
 	if err := e.sweepBeforeWrite(ctx, reg, delta.Object, nowUnix); err != nil {
 		return 0, fmt.Errorf("sep2embed: control delta: %w", err)
 	}
-	return ApplyControlDeltaOutcome(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta)
+	outcome, control, err := issueControl(ctx, e.stores, e.notifier, reg, pinnedClockPolicy(e.policy, nowUnix), delta, controlWindow{})
+	if err == nil && outcome == ControlIssued {
+		e.busIssued.add(derControlID(control.CreationTime, control.MRID))
+	}
+	return outcome, err
 }
 
 // ErrControlDurationInvalid is returned by ApplyControlFor for a duration

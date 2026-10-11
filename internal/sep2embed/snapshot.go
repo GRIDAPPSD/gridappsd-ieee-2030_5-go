@@ -95,6 +95,7 @@ type DERControlSnapshot struct {
 	MRID          string
 	CurrentStatus uint8
 	DateTime      int64
+	CreationTime  int64
 	// Start and Duration are the control's interval in Unix seconds and
 	// seconds; both are 0 when the stored control carries no interval.
 	Start    int64
@@ -290,6 +291,7 @@ func (e *Embed) DERControls(ctx context.Context, edevID, fsaID, derpID string) (
 			MRID:          c.MRID,
 			CurrentStatus: status,
 			DateTime:      dateTime,
+			CreationTime:  c.CreationTime,
 			Start:         start,
 			Duration:      duration,
 			Base:          derControlBaseSnapshotOf(c.DERControlBase),
