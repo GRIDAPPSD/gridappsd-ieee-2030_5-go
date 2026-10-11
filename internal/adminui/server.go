@@ -377,6 +377,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 
 		FlowReservationDeadline: cfg.Settings.FlowReservationDeadline,
 		RetentionGrace:          cfg.Settings.RetentionGrace,
+		TrustedOrigins:          cfg.Settings.TrustedOrigins,
 		// The bridge has always required a credential on loopback, and it
 		// seeds and writes these stores itself: an admin write (an FSA
 		// assignment, a new EndDevice, a DER control) would be a second

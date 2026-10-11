@@ -27,7 +27,7 @@ in_list() {
 # bridge_env_names prints every SEP2_ and GRIDAPPSD_ variable the bridge reads,
 # one per line: the getenv-style calls in config.go (the name is the first
 # string literal in the call), every name literal on a resolveCred line, the knob
-# table in tuning.go, and the four admin-plane settings read through the
+# table in tuning.go, and the five admin-plane settings read through the
 # server module's SettingsFromEnv.
 bridge_env_names() {
   {
@@ -42,7 +42,7 @@ bridge_env_names() {
 }
 
 # adminplane_names reads the names from the pinned server module when go and
-# the module are available, and otherwise falls back to the four it reads at
+# the module are available, and otherwise falls back to the five it reads at
 # the pinned version, so the suite still runs without a toolchain.
 adminplane_names() {
   local dir=""
@@ -52,7 +52,7 @@ adminplane_names() {
   if [ -n "$dir" ] && [ -r "$dir/pkg/sep2adminplane/settings.go" ]; then
     /usr/bin/grep -oE 'getenv\("SEP2_[A-Z0-9_]+"' "$dir/pkg/sep2adminplane/settings.go" | /usr/bin/grep -oE 'SEP2_[A-Z0-9_]+'
   else
-    printf '%s\n' SEP2_EDITION SEP2_PEN SEP2_FLOW_RESERVATION_DEADLINE_SECONDS SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS
+    printf '%s\n' SEP2_EDITION SEP2_PEN SEP2_FLOW_RESERVATION_DEADLINE_SECONDS SEP2_FLOW_RESERVATION_RETENTION_GRACE_SECONDS SEP2_ADMIN_TRUSTED_ORIGINS
   fi
 }
 
