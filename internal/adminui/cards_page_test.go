@@ -247,8 +247,43 @@ func TestCardsPagePolls(t *testing.T) {
 	if h := pollNamed(t, run, "http500").Status; !h.Error || h.Text != "cards: HTTP 500" {
 		t.Errorf("500 status = %+v", h)
 	}
+	for _, name := range []string{"warnTruncated", "warnSkipped", "warnUnavailable"} {
+		if w := pollNamed(t, run, name).Status; !w.Error || !strings.HasPrefix(w.Text, "devices: 5, ") || !strings.Contains(w.Text, ". ") {
+			t.Errorf("%s status = %+v, want the error flag", name, w)
+		}
+	}
+	if f := pollNamed(t, run, "fetchFail").Status; !f.Error || f.Text != "cards: offline" {
+		t.Errorf("failed fetch status = %+v, want cards: offline with the error flag", f)
+	}
 	if r := pollNamed(t, run, "recovered").Status; r.Error || !strings.HasPrefix(r.Text, "devices: 5, ") {
 		t.Errorf("recovered status = %+v, want no error flag", r)
+	}
+}
+
+// A status object that lacks every field shows "-" for each, and an empty
+// device list shows the empty-state text.
+func TestCardsPageSparseAndEmpty(t *testing.T) {
+	t.Parallel()
+	run := runCardsPage(t)
+	sparse := pollNamed(t, run, "sparse")
+	if len(sparse.Views) != 1 || sparse.Views[0].Lists[0].Hidden {
+		t.Fatalf("sparse poll views = %+v, want one card with its status list shown", sparse.Views)
+	}
+	wantFields(t, "sparse status", sparse.Views[0].Lists[0].Fields, map[string]string{
+		"State of charge": "-", "Inverter": "-", "Operational mode": "-",
+		"Storage mode": "-", "Generator connection": "-", "Storage connection": "-",
+		"Alarm": "-", "Reported": "-",
+	})
+	none := pollNamed(t, run, "none")
+	if len(none.Views) != 0 {
+		t.Errorf("empty poll left %d cards", len(none.Views))
+	}
+	// Empty reports the empty-state text as hidden.
+	if none.Empty {
+		t.Error("empty-state text hidden with zero cards")
+	}
+	if !strings.HasPrefix(none.Status.Text, "devices: 0, ") || none.Status.Error {
+		t.Errorf("empty summary = %+v, want devices: 0 with no warning", none.Status)
 	}
 }
 

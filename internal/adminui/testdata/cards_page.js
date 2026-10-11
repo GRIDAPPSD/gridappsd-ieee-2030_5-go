@@ -57,7 +57,10 @@ async function fakeFetch(url, opts) {
     if (postReply.kind === "http") return reply({ error: "boom" }, 500, { "Retry-After": "7" });
     return reply({ id: "x" });
   }
-  if (url.endsWith("/cards")) return reply(cardsReply.body, cardsReply.status);
+  if (url.endsWith("/cards")) {
+    if (cardsReply.status === "throw") throw new Error("offline");
+    return reply(cardsReply.body, cardsReply.status);
+  }
   if (url.endsWith("/devices")) return reply([]);
   return reply({ series: [], now: 0 });
 }
@@ -106,11 +109,14 @@ const errorBox = () => {
   return { text: e.textContent, hidden: !e.shown };
 };
 
-// Fires the re-armed pollCards timer itself, not any other 5 s timer.
+// Fires the pending pollCards timer itself, not any other 5 s timer, and
+// consumes it: a page that does not re-arm after this poll leaves none for the
+// next call, which then fails the run.
 async function pollNow(body, status = 200) {
   cardsReply = { status, body };
-  const t = timers.filter((x) => x.fn.name === "pollCards").pop();
-  if (!t) throw new Error("no pollCards timer armed");
+  const i = timers.map((x) => x.fn.name).lastIndexOf("pollCards");
+  if (i < 0) throw new Error("no pollCards timer armed since the previous poll");
+  const [t] = timers.splice(i, 1);
   t.fn();
   await settle(); await settle();
 }
@@ -177,12 +183,44 @@ async function main() {
   await pollNow(after);
   polls.push(snapshot("warnings", list, firstEls));
 
+  // Each warning alone sets the error flag.
+  for (const [name, flags] of [
+    ["warnTruncated", { truncated: true }],
+    ["warnSkipped", { skippedDevices: 2 }],
+    ["warnUnavailable", { statusUnavailable: true }],
+  ]) {
+    const w = clone();
+    w.total = 9;
+    w.cards = b.cards;
+    Object.assign(w, flags);
+    await pollNow(w);
+    polls.push(snapshot(name, list, firstEls));
+  }
+
   await pollNow({}, 503);
   polls.push(snapshot("busy", list, firstEls));
   await pollNow({}, 500);
   polls.push(snapshot("http500", list, firstEls));
   await pollNow(b);
   polls.push(snapshot("recovered", list, firstEls));
+
+  // The /cards request itself fails.
+  await pollNow(null, "throw");
+  polls.push(snapshot("fetchFail", list, firstEls));
+
+  // A status object with none of its fields.
+  const sparse = clone();
+  sparse.total = 1;
+  sparse.cards = [sparse.cards[0]];
+  sparse.cards[0].status = {};
+  await pollNow(sparse);
+  polls.push(snapshot("sparse", list, firstEls));
+
+  // No devices at all.
+  await pollNow({ total: 0, cards: [] });
+  polls.push(snapshot("none", list, firstEls));
+
+  await pollNow(b);
 
   const stops = [];
   stops.push(await pressStop(list, "Stop pv_a", "http"));
