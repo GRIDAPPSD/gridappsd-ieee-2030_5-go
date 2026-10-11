@@ -3,6 +3,7 @@ package adminui
 import (
 	"encoding/json"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"regexp"
@@ -13,11 +14,17 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui/socpage"
 )
 
+type pageList struct {
+	Hidden bool              `json:"hidden"`
+	Fields map[string]string `json:"fields"`
+}
+
 type pageCard struct {
-	ClassName  string   `json:"className"`
-	AriaLabel  string   `json:"ariaLabel"`
-	Texts      []string `json:"texts"`
-	HiddenText []string `json:"hiddenTexts"`
+	ClassName  string     `json:"className"`
+	AriaLabel  string     `json:"ariaLabel"`
+	Texts      []string   `json:"texts"`
+	HiddenText []string   `json:"hiddenTexts"`
+	Lists      []pageList `json:"lists"`
 	Stop       struct {
 		Hidden   bool `json:"hidden"`
 		Disabled bool `json:"disabled"`
@@ -104,10 +111,10 @@ func pollNamed(t *testing.T, run pageRun, name string) pagePoll {
 	return pagePoll{}
 }
 
-func wantTexts(t *testing.T, what string, got, want []string) {
+func wantFields(t *testing.T, what string, got, want map[string]string) {
 	t.Helper()
-	if !slices.Equal(got, want) {
-		t.Errorf("%s visible text = %q, want %q", what, got, want)
+	if !maps.Equal(got, want) {
+		t.Errorf("%s = %v, want %v", what, got, want)
 	}
 }
 
@@ -117,6 +124,11 @@ func assertNoAgo(t *testing.T, i int, v pageCard) {
 	var all []string
 	all = append(all, v.Texts...)
 	all = append(all, v.HiddenText...)
+	for _, l := range v.Lists {
+		for k, val := range l.Fields {
+			all = append(all, k, val)
+		}
+	}
 	for _, s := range all {
 		if strings.Contains(s, " ago") || strings.Contains(s, "last request") || s == "Time left" || s == "Reported" {
 			t.Errorf("card %d shows age or countdown text %q", i, s)
@@ -141,25 +153,43 @@ func TestCardsPageRenders(t *testing.T) {
 	if charging.ClassName != "card c-blue" {
 		t.Errorf("charging card class = %q, want %q", charging.ClassName, "card c-blue")
 	}
-	// The visible text is the title, the kind, the unlabeled tag, the state of
-	// charge line and the watts in force; no other status row.
-	wantTexts(t, "charging card", charging.Texts, []string{"pv_a", "battery", "unlabeled", "42.5% at 1970-01-01 00:16:35 UTC", "-1500 W"})
-	if charging.Stop.Hidden {
-		t.Errorf("charging card hides Stop: %+v", charging)
+	for _, want := range []string{"pv_a", "battery", "CHARGING"} {
+		if !slices.Contains(charging.Texts, want) {
+			t.Errorf("charging card lacks %q: %q", want, charging.Texts)
+		}
 	}
-	if charging.AriaLabel != "pv_a, CHARGING" {
-		t.Errorf("charging aria-label = %q, want the stripe label kept for readers", charging.AriaLabel)
+	wantFields(t, "charging status", charging.Lists[0].Fields, map[string]string{
+		"State of charge": "42.5%", "Inverter": "Tracking MPPT", "Operational mode": "Operational",
+		"Storage mode": "Charging", "Generator connection": "Connected", "Storage connection": "Connected, Operating",
+		"Alarm": "0", "Reading time": "1970-01-01 00:16:35 UTC",
+	})
+	wantFields(t, "charging control", charging.Lists[1].Fields, map[string]string{
+		"Control": "Charge 1500 W", "Source": "page", "Received by the device": "yes",
+	})
+	if charging.Lists[0].Hidden || charging.Lists[1].Hidden || charging.Stop.Hidden {
+		t.Errorf("charging card hides its lists or Stop: %+v", charging)
+	}
+	if slices.Contains(charging.Texts, "no report yet") || !slices.Contains(charging.HiddenText, "no report yet") {
+		t.Errorf("charging card shows no-report text: shown %q hidden %q", charging.Texts, charging.HiddenText)
 	}
 
-	// No report and no control: only the no-report text shows, and the watts
-	// line and Stop are hidden.
+	// No report and no control: both lists, their "-" rows and Stop are hidden
+	// by the card, and only the no-report text shows.
 	noReport := first.Views[1]
-	if noReport.ClassName != "card c-grey" {
-		t.Errorf("no-report card class = %q, want grey", noReport.ClassName)
+	if noReport.ClassName != "card c-grey" || !slices.Contains(noReport.Texts, "NOT CONNECTED") {
+		t.Errorf("no-report card = %q %q, want grey NOT CONNECTED", noReport.ClassName, noReport.Texts)
 	}
-	wantTexts(t, "no-report card", noReport.Texts, []string{"tl_b", "device", "unlabeled", "no report yet"})
-	if !noReport.Stop.Hidden {
-		t.Errorf("no-report card shows Stop: %+v", noReport)
+	if !slices.Contains(noReport.Texts, "no report yet") {
+		t.Errorf("no-report card lacks no-report text: %q", noReport.Texts)
+	}
+	if !noReport.Lists[0].Hidden || !noReport.Lists[1].Hidden || !noReport.Stop.Hidden {
+		t.Errorf("no-report card shows a list or Stop: %+v", noReport)
+	}
+	if slices.Contains(noReport.Texts, "-") {
+		t.Errorf("no-report card shows a placeholder row: %q", noReport.Texts)
+	}
+	if !slices.Contains(noReport.HiddenText, "-") {
+		t.Errorf("no-report card has no hidden placeholder rows: %q", noReport.HiddenText)
 	}
 
 	// A stripe value outside the known five never becomes a class name.
@@ -171,25 +201,35 @@ func TestCardsPageRenders(t *testing.T) {
 	if discharge.ClassName != "card c-green" {
 		t.Errorf("discharge card class = %q, want card c-green", discharge.ClassName)
 	}
-	if got := discharge.Texts[len(discharge.Texts)-2:]; !slices.Equal(got, []string{"80% at 1970-01-01 00:16:39 UTC", "+800 W"}) {
-		t.Errorf("discharge card lines = %q, want the state of charge and +800 W", got)
-	}
+	wantFields(t, "discharge control", discharge.Lists[1].Fields, map[string]string{
+		"Control": "Discharge 800 W", "Source": "server", "Received by the device": "not yet",
+	})
+	wantFields(t, "discharge status", discharge.Lists[0].Fields, map[string]string{
+		"State of charge": "80%", "Inverter": "Idle", "Operational mode": "Off",
+		"Storage mode": "Discharging", "Generator connection": "Disconnected", "Storage connection": "Connected",
+		"Alarm": "1", "Reading time": "1970-01-01 00:16:39 UTC",
+	})
 
 	hold := first.Views[4]
+	wantFields(t, "hold control", hold.Lists[1].Fields, map[string]string{
+		"Control": "0 W (hold)", "Source": "page", "Received by the device": "yes",
+	})
 	if hold.ClassName != "card c-pink" {
 		t.Errorf("hold card class = %q, want card c-pink", hold.ClassName)
 	}
-	if got := hold.Texts[len(hold.Texts)-1]; got != "0 W" {
-		t.Errorf("hold watts line = %q, want 0 W", got)
+	if hold.Lists[1].Hidden || !hold.Lists[0].Hidden {
+		t.Errorf("hold card lists hidden = %v %v, want control shown and status hidden", hold.Lists[0].Hidden, hold.Lists[1].Hidden)
 	}
 
 	stale := first.Views[5]
-	if stale.ClassName != "card c-yellow" || !stale.Stop.Hidden {
-		t.Errorf("stale card = %q stop hidden %v, want yellow with no Stop", stale.ClassName, stale.Stop.Hidden)
+	if stale.ClassName != "card c-yellow" || !stale.Lists[1].Hidden || !stale.Stop.Hidden || stale.Lists[0].Hidden {
+		t.Errorf("stale card = %q lists %+v stop hidden %v, want yellow with status only", stale.ClassName, stale.Lists, stale.Stop.Hidden)
 	}
-	if got := stale.Texts[len(stale.Texts)-1]; got != "10% at 1970-01-01 00:13:20 UTC" {
-		t.Errorf("stale card last line = %q, want its state of charge line and no watts", got)
-	}
+	wantFields(t, "stale status", stale.Lists[0].Fields, map[string]string{
+		"State of charge": "10%", "Inverter": "Fault", "Operational mode": "Operational",
+		"Storage mode": "Holding", "Generator connection": "Connected", "Storage connection": "Disconnected",
+		"Alarm": "2", "Reading time": "1970-01-01 00:13:20 UTC",
+	})
 
 	for i, v := range first.Views {
 		assertNoAgo(t, i, v)
@@ -207,9 +247,10 @@ func TestCardsPagePolls(t *testing.T) {
 	if !slices.Equal(values.FirstIndex, []int{0, 1, 2, 3, 4, 5}) {
 		t.Errorf("same-order poll element indexes = %v, want the six first elements", values.FirstIndex)
 	}
-	if got := values.Views[0].Texts[3]; got != "50% at 1970-01-01 00:16:40 UTC" {
-		t.Errorf("updated state of charge line = %q, want 50%% at 1970-01-01 00:16:40 UTC", got)
-	}
+	wantFields(t, "updated status", map[string]string{
+		"State of charge": values.Views[0].Lists[0].Fields["State of charge"],
+		"Reading time":    values.Views[0].Lists[0].Fields["Reading time"],
+	}, map[string]string{"State of charge": "50%", "Reading time": "1970-01-01 00:16:40 UTC"})
 
 	// An unchanged order leaves the list alone, so a focused Stop survives.
 	if initial := pollNamed(t, run, "initial"); values.Replaced != initial.Replaced {
@@ -254,18 +295,20 @@ func TestCardsPagePolls(t *testing.T) {
 	}
 }
 
-// A status object that lacks every field reads as no report, and an empty
+// A status object that lacks every field shows "-" for each, and an empty
 // device list shows the empty-state text.
 func TestCardsPageSparseAndEmpty(t *testing.T) {
 	t.Parallel()
 	run := runCardsPage(t)
 	sparse := pollNamed(t, run, "sparse")
-	if len(sparse.Views) != 1 {
-		t.Fatalf("sparse poll views = %+v, want one card", sparse.Views)
+	if len(sparse.Views) != 1 || sparse.Views[0].Lists[0].Hidden {
+		t.Fatalf("sparse poll views = %+v, want one card with its status list shown", sparse.Views)
 	}
-	if got := sparse.Views[0].Texts[len(sparse.Views[0].Texts)-2]; got != "no report yet" {
-		t.Errorf("sparse card state of charge line = %q, want no report yet", got)
-	}
+	wantFields(t, "sparse status", sparse.Views[0].Lists[0].Fields, map[string]string{
+		"State of charge": "-", "Inverter": "-", "Operational mode": "-",
+		"Storage mode": "-", "Generator connection": "-", "Storage connection": "-",
+		"Alarm": "-", "Reading time": "-",
+	})
 	none := pollNamed(t, run, "none")
 	if len(none.Views) != 0 {
 		t.Errorf("empty poll left %d cards", len(none.Views))
@@ -286,22 +329,9 @@ func TestCardsPageZeroReadingTime(t *testing.T) {
 	if len(zero.Views) != 1 {
 		t.Fatalf("zeroTime cards = %d, want 1", len(zero.Views))
 	}
-	if got := zero.Views[0].Texts[len(zero.Views[0].Texts)-2]; got != "42.5%" {
-		t.Errorf("state of charge line for readingTime 0 = %q, want 42.5%% with no epoch time", got)
+	if got := zero.Views[0].Lists[0].Fields["Reading time"]; got != "-" {
+		t.Errorf("Reading time for readingTime 0 = %q, want -", got)
 	}
-}
-
-// A connected battery card shows exactly its label, the state of charge line,
-// and the signed watts line only while a control is in force.
-func TestCardsPageBatteryCardsShowOnlySoC(t *testing.T) {
-	t.Parallel()
-	p := pollNamed(t, runCardsPage(t), "batteries")
-	if len(p.Views) != 3 {
-		t.Fatalf("battery cards = %d, want 3", len(p.Views))
-	}
-	wantTexts(t, "battery with control", p.Views[0].Texts, []string{"battery1", "42.5% at 1970-01-01 00:16:35 UTC", "-1500 W"})
-	wantTexts(t, "battery without control", p.Views[1].Texts, []string{"battery2", "10% at 1970-01-01 00:13:20 UTC"})
-	wantTexts(t, "battery discharging", p.Views[2].Texts, []string{"battery3", "80% at 1970-01-01 00:16:39 UTC", "+800 W"})
 }
 
 // A Stop posts the card's own device; a failed Stop shows its error and
