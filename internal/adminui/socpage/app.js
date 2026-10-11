@@ -564,16 +564,6 @@
 
   const CARDS_POLL_MS = 5000;
   const STRIPES = new Set(["grey", "green", "blue", "yellow", "pink"]);
-  const STATUS_FIELDS = [
-    ["State of charge", (st) => (typeof st.stateOfChargePercent === "number" ? st.stateOfChargePercent + "%" : "-")],
-    ["Inverter", (st) => st.inverterStatus || "-"],
-    ["Operational mode", (st) => st.operationalModeStatus || "-"],
-    ["Storage mode", (st) => st.storageModeStatus || "-"],
-    ["Generator connection", (st) => st.genConnectStatus || "-"],
-    ["Storage connection", (st) => st.storConnectStatus || "-"],
-    ["Alarm", (st) => st.alarmStatus || "-"],
-    ["Reading time", (st) => utcText(st.readingTime)],
-  ];
   const cardRows = new Map(); // mrid -> card parts
   let cardOrder = "";
 
@@ -585,10 +575,18 @@
     return d.toISOString().slice(0, 19).replace("T", " ") + " UTC";
   }
 
-  function describeWatts(c) {
-    if (c.direction === "discharge") return "Discharge " + c.watts + " W";
-    if (c.direction === "charge") return "Charge " + (-c.watts) + " W";
-    return "0 W (hold)";
+  // The state of charge with the device's own report time; a status with no
+  // state of charge reads as no report.
+  function socLine(st) {
+    if (!st || typeof st.stateOfChargePercent !== "number") return "no report yet";
+    const at = utcText(st.readingTime);
+    return st.stateOfChargePercent + "%" + (at === "-" ? "" : " at " + at);
+  }
+
+  // Signed watts, positive discharge, as the control is in force.
+  function signedWatts(c) {
+    const w = Number(c.watts);
+    return (w > 0 ? "+" : "") + w + " W";
   }
 
   function showCardsError(text) {
@@ -603,13 +601,6 @@
     return "card c-" + (STRIPES.has(stripe) ? stripe : "grey");
   }
 
-  function pair(dl, label) {
-    const dt = el("dt", label);
-    const dd = el("dd", "-");
-    dl.append(dt, dd);
-    return dd;
-  }
-
   function makeCard(mrid) {
     const root = el("div", undefined, "card c-grey");
     root.setAttribute("role", "group");
@@ -619,19 +610,13 @@
     const cim = el("span", undefined, "muted");
     const tag = el("span", "unlabeled", "muted");
     head.append(name, " ", cim, " ", kind, " ", tag);
-    const label = el("div", undefined, "stripe-label");
-    const noReport = el("p", "no report yet", "muted");
-    const statusList = el("dl", undefined, "ctl");
-    const statusCells = STATUS_FIELDS.map(([l]) => pair(statusList, l));
-    const control = el("dl", undefined, "ctl");
-    const watts = pair(control, "Control");
-    const source = pair(control, "Source");
-    const received = pair(control, "Received by the device");
+    const soc = el("p", "no report yet");
+    const watts = el("p", "");
     const stop = el("button", "Stop");
     stop.type = "button";
     stop.addEventListener("click", () => stopRow(mrid, stop));
-    root.append(head, label, noReport, statusList, control, stop);
-    return { root, name, cim, tag, kind, label, noReport, statusList, statusCells, control, watts, source, received, stop };
+    root.append(head, soc, watts, stop);
+    return { root, name, cim, tag, kind, soc, watts, stop };
   }
 
   function renderCard(row, c) {
@@ -647,19 +632,13 @@
     row.tag.hidden = labelled;
     setText(row.kind, labelOnly ? "" : c.kind || "");
     row.kind.hidden = labelOnly;
-    setText(row.label, c.stripeLabel || "");
-    const st = c.status;
-    row.noReport.hidden = st !== null && st !== undefined;
-    row.statusList.hidden = !row.noReport.hidden;
-    if (st) STATUS_FIELDS.forEach(([, f], i) => setText(row.statusCells[i], f(st)));
+    setText(row.soc, socLine(c.status));
     const ctl = c.control;
-    row.control.hidden = !ctl;
+    row.watts.hidden = !ctl;
     row.stop.hidden = !ctl;
     row.root.setAttribute("aria-label", (labelled ? c.label : c.name || c.mrid) + ", " + (c.stripeLabel || ""));
     if (!ctl) return;
-    setText(row.watts, describeWatts(ctl));
-    setText(row.source, ctl.source || "-");
-    setText(row.received, ctl.received ? "yes" : "not yet");
+    setText(row.watts, signedWatts(ctl));
     row.stop.setAttribute("aria-label", "Stop " + (labelled ? c.label : c.name || c.mrid));
   }
 

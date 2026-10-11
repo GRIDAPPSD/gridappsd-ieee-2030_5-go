@@ -23,8 +23,6 @@ button:disabled { opacity: 0.5; cursor: default; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 0.75rem; }
 .card { border: 1px solid #333a44; border-right: 8px solid #8b949e; border-radius: 4px; padding: 0.5rem 0.75rem; background: #1b2027; }
-.card .stripe-label { font-size: 0.8rem; font-weight: 700; margin: 0.15rem 0; }
-.card .ctl { margin: 0.4rem 0; }
 .c-grey { border-right-color: #8b949e; }
 .c-green { border-right-color: #3fb950; }
 .c-blue { border-right-color: #388bfd; }
