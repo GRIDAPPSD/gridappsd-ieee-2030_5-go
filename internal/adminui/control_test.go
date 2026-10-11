@@ -60,7 +60,9 @@ type fakeControl struct {
 	// ctlErrFor fails ControlsFor for the devices it names.
 	ctlErrFor map[string]error
 	// bus holds the control ids BusIssued reports as bus-issued.
-	bus      map[string]bool
+	bus map[string]bool
+	// pink holds the devices DirectionPink reports as pink.
+	pink     map[string]bool
 	askedFor []string
 	since    []int64
 }
@@ -142,6 +144,12 @@ func (f *fakeControl) BusIssued(id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.bus[id]
+}
+
+func (f *fakeControl) DirectionPink(mrid string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pink[mrid]
 }
 
 func (f *fakeControl) EndedControl(mrid string) (sep2embed.EndedControl, bool) {
