@@ -434,3 +434,30 @@ func TestCardsPageSendSignedWatts(t *testing.T) {
 		}
 	}
 }
+
+// A labelled card is titled by its label with the CIM name beside it, the
+// order the server sent is kept (n2 before n10, n40 before battery1), and only
+// the unmapped card shows the unlabeled tag.
+func TestCardsPageTitlesByLabelInServerOrder(t *testing.T) {
+	t.Parallel()
+	p := pollNamed(t, runCardsPage(t), "labels")
+	wantOrder := []string{"n2, NOT CONNECTED", "n10, NOT CONNECTED", "n40, NOT CONNECTED",
+		"battery1, NOT CONNECTED", "battery9, NOT CONNECTED", "alpha, NOT CONNECTED"}
+	if !slices.Equal(p.Order, wantOrder) {
+		t.Fatalf("aria order = %q, want %q", p.Order, wantOrder)
+	}
+	titles := []string{"n2", "n10", "n40", "battery1", "battery9", "alpha"}
+	subs := []string{"tl_two", "tl_ten", "tl_forty", "pv_one", "pv_nine", ""}
+	for i, v := range p.Views {
+		if len(v.Texts) == 0 || v.Texts[0] != titles[i] {
+			t.Errorf("card %d texts = %q, want title %q first", i, v.Texts, titles[i])
+		}
+		if subs[i] != "" && !slices.Contains(v.Texts, subs[i]) {
+			t.Errorf("card %d lacks CIM name subtitle %q: %q", i, subs[i], v.Texts)
+		}
+		tagged := slices.Contains(v.Texts, "unlabeled")
+		if tagged != (i == 5) {
+			t.Errorf("card %d unlabeled tag shown = %v, want %v", i, tagged, i == 5)
+		}
+	}
+}

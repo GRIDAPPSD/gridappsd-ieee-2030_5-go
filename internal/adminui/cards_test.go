@@ -494,3 +494,94 @@ func TestCardsSortSameNameDevicesByMRID(t *testing.T) {
 		t.Errorf("order = %v, want _a,_b,_c", order)
 	}
 }
+
+func TestCardsCarryTheEPRILabelInFleetOrder(t *testing.T) {
+	t.Parallel()
+	h := newCardsHarness(t)
+	h.s.cfg.SocLabels = map[string]string{
+		"M-N10": "n10", "M-N2": "n2", "M-N40": "n40", "M-B9": "battery9", "M-B1": "battery1",
+	}
+	h.device("M-ZETA", "zeta", 1)
+	h.device("M-B9", "pv_nine", 2)
+	h.device("M-N10", "tl_ten", 3)
+	h.device("M-ALPHA", "alpha", 4)
+	h.device("M-B1", "pv_one", 5)
+	h.device("M-N40", "tl_forty", 6)
+	h.device("M-N2", "tl_two", 7)
+
+	got := getCards(t, h)
+	var order []string
+	for _, c := range got.Cards {
+		order = append(order, c.MRID)
+	}
+	want := "M-N2,M-N10,M-N40,M-B1,M-B9,M-ALPHA,M-ZETA"
+	if strings.Join(order, ",") != want {
+		t.Fatalf("order = %v, want %s", order, want)
+	}
+	byMRID := map[string]deviceCard{}
+	for _, c := range got.Cards {
+		byMRID[c.MRID] = c
+	}
+	for mrid, wantLabel := range h.s.cfg.SocLabels {
+		c := byMRID[mrid]
+		if c.Label == nil || *c.Label != wantLabel {
+			t.Errorf("%s label = %v, want %q", mrid, c.Label, wantLabel)
+		}
+	}
+	// name and mrid stay the registry's, and an unmapped device has no label.
+	if c := byMRID["M-N2"]; c.Name != "tl_two" {
+		t.Errorf("labelled card name = %q, want tl_two", c.Name)
+	}
+	if c := byMRID["M-ALPHA"]; c.Label != nil || c.Name != "alpha" {
+		t.Errorf("unlabelled card = label %v name %q, want nil and alpha", c.Label, c.Name)
+	}
+}
+
+// The wire carries label: null, not an absent key, for an unmapped device.
+func TestCardsLabelIsNullOnTheWireWithoutALabelsFile(t *testing.T) {
+	t.Parallel()
+	h := newCardsHarness(t)
+	h.device("M-A", "pv_a", 1)
+	h.device("M-B", "tl_b", 2)
+
+	rec := doRequest(t, h.s.Handler(), http.MethodGet, cardsRoute, "", "localhost")
+	var raw struct {
+		Cards []map[string]json.RawMessage `json:"cards"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if len(raw.Cards) != 2 {
+		t.Fatalf("cards = %d, want 2", len(raw.Cards))
+	}
+	for _, c := range raw.Cards {
+		if string(c["label"]) != "null" {
+			t.Errorf("label = %s, want null", c["label"])
+		}
+	}
+	if raw.Cards[0]["name"] == nil || string(raw.Cards[0]["name"]) != `"pv_a"` {
+		t.Errorf("name = %s, want pv_a (unchanged)", raw.Cards[0]["name"])
+	}
+}
+
+// A battery label makes the card a battery even when its CIM name has no pv_
+// prefix, so the page and the EPRI client page agree.
+func TestCardKindFollowsABatteryLabel(t *testing.T) {
+	t.Parallel()
+	h := newCardsHarness(t)
+	h.s.cfg.SocLabels = map[string]string{"M-A": "battery3", "M-B": "n3"}
+	h.device("M-A", "util_leg", 1)
+	h.device("M-B", "pv_odd", 2)
+
+	got := getCards(t, h)
+	kinds := map[string]string{}
+	for _, c := range got.Cards {
+		kinds[c.MRID] = c.Kind
+	}
+	if kinds["M-A"] != "battery" {
+		t.Errorf("battery-labelled kind = %q, want battery", kinds["M-A"])
+	}
+	if kinds["M-B"] != "battery" {
+		t.Errorf("pv_ kind = %q, want battery (name rule unchanged)", kinds["M-B"])
+	}
+}

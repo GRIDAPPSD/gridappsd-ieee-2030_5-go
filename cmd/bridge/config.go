@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"regexp"
@@ -256,6 +257,10 @@ type config struct {
 	// rejects an existing but empty file outright rather than producing
 	// an empty slice.
 	SEP2BatteryLegs []string
+
+	// SocLabels maps a device mRID (model form) to its EPRI fleet label,
+	// loaded from -soc-labels-file. Nil means no file was given.
+	SocLabels map[string]string
 
 	// SEP2PollRate and SEP2PostRate are the optional fleet-wide IEEE
 	// 2030.5 poll and post intervals, in seconds, from -sep2-poll-rate and
@@ -578,6 +583,11 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&registrationPINFileFlag, "sep2-registration-pin-file", "",
 		"path to a JSON object mapping device LFDI to that device's IEEE 2030.5 registration PIN; unset means no per-device PINs are configured (env: SEP2_REGISTRATION_PIN_FILE)")
 
+	// soc-labels-file resolves like the battery leg list: flag, then env.
+	var socLabelsFileFlag string
+	fs.StringVar(&socLabelsFileFlag, "soc-labels-file", "",
+		"path to a JSON object mapping device mRID (upper case, no leading underscore) to its EPRI fleet label such as n1 or battery1, shown on the SoC page cards (env: SOC_LABELS_FILE); unset means every card has no label")
+
 	// sep2-battery-leg-list-file registers with an empty string default
 	// and is resolved (flag, then env) after Parse below, matching the
 	// poll/post rate flags' precedence dance rather than the PIN flags'
@@ -741,6 +751,17 @@ func loadConfig(args []string) (config, error) {
 			return config{}, err
 		}
 		cfg.SEP2BatteryLegs = legs
+	}
+
+	if socLabelsFileFlag == "" {
+		socLabelsFileFlag = os.Getenv("SOC_LABELS_FILE")
+	}
+	if socLabelsFileFlag != "" {
+		labels, err := loadSocLabelsFile(socLabelsFileFlag)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.SocLabels = labels
 	}
 
 	// Rate flags resolve here alongside the PIN flags, and for the same
@@ -1267,6 +1288,73 @@ func loadBatteryLegListFile(path string) ([]string, error) {
 		return nil, fmt.Errorf("config: -sep2-battery-leg-list-file %q contains no mRIDs", path)
 	}
 	return legs, nil
+}
+
+// maxSocLabelLen bounds a label so a bad file cannot fill a card.
+const maxSocLabelLen = 64
+
+// loadSocLabelsFile reads the JSON object at path that maps a device mRID to
+// its fleet label. It rejects, naming the file and the key, anything that is
+// not an object of strings, a key outside the model's mRID form (see
+// batteryLegMRIDPattern), a repeated key, an empty or over-long label, and a
+// label used by two devices. A bad file stops the boot rather than serving a
+// partial map.
+func loadSocLabelsFile(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("config: -soc-labels-file %q does not exist", path)
+		}
+		return nil, fmt.Errorf("config: -soc-labels-file %q is not readable: %w", path, err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, fmt.Errorf("config: -soc-labels-file %q is not a JSON object of mRID to label", path)
+	}
+	labels := make(map[string]string)
+	owner := make(map[string]string)
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("config: -soc-labels-file %q: %w", path, err)
+		}
+		key, _ := keyTok.(string)
+		if !batteryLegMRIDPattern.MatchString(key) {
+			return nil, fmt.Errorf("config: -soc-labels-file %q: key %q is not an mRID in the model's form (upper case, no leading underscore)", path, key)
+		}
+		if _, dup := labels[key]; dup {
+			return nil, fmt.Errorf("config: -soc-labels-file %q: key %q is duplicated", path, key)
+		}
+		valTok, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("config: -soc-labels-file %q: key %q: %w", path, key, err)
+		}
+		label, ok := valTok.(string)
+		if !ok {
+			return nil, fmt.Errorf("config: -soc-labels-file %q: key %q: the label must be a string", path, key)
+		}
+		if label == "" {
+			return nil, fmt.Errorf("config: -soc-labels-file %q: key %q: the label is empty", path, key)
+		}
+		if len(label) > maxSocLabelLen {
+			return nil, fmt.Errorf("config: -soc-labels-file %q: key %q: the label is longer than %d bytes", path, key, maxSocLabelLen)
+		}
+		if first, dup := owner[label]; dup {
+			return nil, fmt.Errorf("config: -soc-labels-file %q: label %q is duplicated (keys %q and %q)", path, label, first, key)
+		}
+		owner[label] = key
+		labels[key] = label
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, fmt.Errorf("config: -soc-labels-file %q: %w", path, err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("config: -soc-labels-file %q has trailing data after the object", path)
+	}
+	if len(labels) == 0 {
+		return nil, fmt.Errorf("config: -soc-labels-file %q contains no entries", path)
+	}
+	return labels, nil
 }
 
 // resolveCred returns the first non-empty value among the parsed flag,

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +42,53 @@ const (
 
 	absent = "-"
 )
+
+// labelPattern splits a fleet label into its group and number: n1..n40 are
+// houses, battery1..battery9 the batteries.
+var labelPattern = regexp.MustCompile(`^(n|battery)([0-9]+)$`)
+
+// Order groups of the cards: labelled houses, labelled batteries, any other
+// label, then devices the labels file does not map.
+const (
+	groupHouse = iota
+	groupBattery
+	groupOtherLabel
+	groupUnlabeled
+)
+
+// cardRank is the sort key of a device: its group, the number within the
+// group (labels n2 before n10), and the text that breaks ties.
+type cardRank struct {
+	group int
+	num   int
+	text  string
+}
+
+func rankOf(name, label string, labelled bool) cardRank {
+	if !labelled {
+		return cardRank{group: groupUnlabeled, text: name}
+	}
+	if m := labelPattern.FindStringSubmatch(label); m != nil {
+		if n, err := strconv.Atoi(m[2]); err == nil {
+			g := groupHouse
+			if m[1] == "battery" {
+				g = groupBattery
+			}
+			return cardRank{group: g, num: n}
+		}
+	}
+	return cardRank{group: groupOtherLabel, text: label}
+}
+
+func (a cardRank) less(b cardRank) bool {
+	if a.group != b.group {
+		return a.group < b.group
+	}
+	if a.num != b.num {
+		return a.num < b.num
+	}
+	return a.text < b.text
+}
 
 // StatusSource is the read surface Server needs from *sep2embed.Embed for the
 // latest stored DERStatus of each device.
@@ -92,8 +141,10 @@ type cardStatus struct {
 // deviceCard is one registered device. The LFDI is never served.
 type deviceCard struct {
 	Name string `json:"name"`
-	MRID string `json:"mrid"`
-	Kind string `json:"kind"`
+	// Label is null for a device the labels file does not map.
+	Label *string `json:"label"`
+	MRID  string  `json:"mrid"`
+	Kind  string  `json:"kind"`
 	// Stripe is grey (not connected), pink (last direction change was charge
 	// to discharge), yellow (discharging), blue (charging) or green, checked
 	// in that order; StripeLabel is its text.
@@ -125,7 +176,9 @@ type cardsResponse struct {
 }
 
 // handleCards answers GET /apps/soc/api/cards with one card per registered
-// device, sorted by name then mRID and capped at maxCards.
+// device, capped at maxCards. The order is the EPRI fleet order (n1..n40, then
+// battery1..battery9, then any other label), with unlabeled devices last by
+// name; ties fall back to name then mRID. The page keeps this order.
 //
 // Connected means the device's last accepted request is younger than the idle
 // threshold the Devices tab uses. The control shown is the one in force now,
@@ -144,6 +197,10 @@ func (s *Server) handleCards(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	devices := slices.Clone(s.registry.Snapshot())
 	sort.SliceStable(devices, func(i, j int) bool {
+		a, b := s.rankOfEntry(devices[i]), s.rankOfEntry(devices[j])
+		if a != b {
+			return a.less(b)
+		}
 		if devices[i].Name != devices[j].Name {
 			return devices[i].Name < devices[j].Name
 		}
@@ -205,8 +262,19 @@ func (s *Server) statusByMRID(ctx context.Context) (map[string]sep2.DERStatus, e
 	return m, nil
 }
 
+func (s *Server) rankOfEntry(e registry.Entry) cardRank {
+	label, ok := s.cfg.SocLabels[e.MRID]
+	return rankOf(e.Name, label, ok)
+}
+
 func (s *Server) buildCard(ctx context.Context, e registry.Entry, snaps []sep2embed.DERControlSnapshot, page map[string]struct{}, now time.Time) (deviceCard, error) {
 	card := deviceCard{Name: e.Name, MRID: e.MRID, Kind: deviceKind(e.Name)}
+	if label, ok := s.cfg.SocLabels[e.MRID]; ok {
+		card.Label = &label
+		if strings.HasPrefix(label, kindBattery) {
+			card.Kind = kindBattery
+		}
+	}
 
 	if last, _, ok := s.activity.Last(e.LFDI); ok {
 		at := last.Unix()

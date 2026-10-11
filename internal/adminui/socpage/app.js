@@ -616,7 +616,9 @@
     const head = el("div", undefined, "card-head");
     const name = el("strong");
     const kind = el("span", undefined, "muted");
-    head.append(name, " ", kind);
+    const cim = el("span", undefined, "muted");
+    const tag = el("span", "unlabeled", "muted");
+    head.append(name, " ", cim, " ", kind, " ", tag);
     const label = el("div", undefined, "stripe-label");
     const noReport = el("p", "no report yet", "muted");
     const statusList = el("dl", undefined, "ctl");
@@ -629,12 +631,18 @@
     stop.type = "button";
     stop.addEventListener("click", () => stopRow(mrid, stop));
     root.append(head, label, noReport, statusList, control, stop);
-    return { root, name, kind, label, noReport, statusList, statusCells, control, watts, source, received, stop };
+    return { root, name, cim, tag, kind, label, noReport, statusList, statusCells, control, watts, source, received, stop };
   }
 
   function renderCard(row, c) {
     row.root.className = stripeClass(c.stripe);
-    setText(row.name, c.name || c.mrid);
+    // A labelled card is titled by its EPRI label with the CIM name beside it;
+    // an unmapped one shows the CIM name and an unlabeled tag.
+    const labelled = typeof c.label === "string" && c.label !== "";
+    setText(row.name, labelled ? c.label : c.name || c.mrid);
+    setText(row.cim, labelled ? c.name || c.mrid : "");
+    row.cim.hidden = !labelled;
+    row.tag.hidden = labelled;
     setText(row.kind, c.kind || "");
     setText(row.label, c.stripeLabel || "");
     const st = c.status;
@@ -644,12 +652,12 @@
     const ctl = c.control;
     row.control.hidden = !ctl;
     row.stop.hidden = !ctl;
-    row.root.setAttribute("aria-label", (c.name || c.mrid) + ", " + (c.stripeLabel || ""));
+    row.root.setAttribute("aria-label", (labelled ? c.label : c.name || c.mrid) + ", " + (c.stripeLabel || ""));
     if (!ctl) return;
     setText(row.watts, describeWatts(ctl));
     setText(row.source, ctl.source || "-");
     setText(row.received, ctl.received ? "yes" : "not yet");
-    row.stop.setAttribute("aria-label", "Stop " + (c.name || c.mrid));
+    row.stop.setAttribute("aria-label", "Stop " + (labelled ? c.label : c.name || c.mrid));
   }
 
   // Cards are reused across polls so a focused Stop button survives a refresh.

@@ -230,6 +230,17 @@ async function main() {
   await pollNow({ total: 0, cards: [] });
   polls.push(snapshot("none", list, firstEls));
 
+  // Labelled cards arrive in the server's order (n2 before n10, n40 before
+  // battery1, unlabelled last) and the page keeps it; the title is the label,
+  // the CIM name the subtitle, and only the unmapped card carries the tag.
+  const mk = (name, mrid, label) => ({ ...clone().cards[1], name, mrid, label });
+  await pollNow({
+    now: 1000, total: 6, truncated: false, skippedDevices: 0, statusUnavailable: false,
+    cards: [mk("tl_two", "L-2", "n2"), mk("tl_ten", "L-10", "n10"), mk("tl_forty", "L-40", "n40"),
+      mk("pv_one", "L-B1", "battery1"), mk("pv_nine", "L-B9", "battery9"), mk("alpha", "L-U", null)],
+  });
+  polls.push(snapshot("labels", list, firstEls));
+
   await pollNow(b);
 
   const stops = [];
