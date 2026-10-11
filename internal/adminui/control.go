@@ -130,15 +130,6 @@ type ControlSource interface {
 	// EndedControl returns the record kept for a control after it left the
 	// store, so a stop that no status read saw is still dated.
 	EndedControl(mrid string) (sep2embed.EndedControl, bool)
-	// SetDefaultTargetW sets the device's default opModTargetW and cancels
-	// its active and scheduled opModTargetW controls that pageIssued names.
-	SetDefaultTargetW(ctx context.Context, deviceMRID string, watts int64, pageIssued func(controlID string) bool) (sep2embed.DefaultTargetSet, error)
-	// ClearDefaultTargetW restores the device's default opModTargetW to the
-	// fleet seed.
-	ClearDefaultTargetW(ctx context.Context, deviceMRID string) error
-	// DefaultTargetW returns the device's default opModTargetW, nil when it
-	// serves none.
-	DefaultTargetW(ctx context.Context, deviceMRID string) (*sep2.ActivePower, error)
 }
 
 // controlRequest is the POST body. Watts and DurationSeconds are pointers so
@@ -255,7 +246,6 @@ func newControlID() (string, error) {
 
 func (s *Server) mountControl(mux *http.ServeMux) {
 	mux.Handle(controlSendPattern, socHeaders(s.hostAllowlist(withRemote(http.HandlerFunc(s.handleControlSend)))))
-	mux.Handle(defaultSendPattern, socHeaders(s.hostAllowlist(withRemote(http.HandlerFunc(s.handleDefaultSend)))))
 	mux.Handle("GET "+controlActivePattern, s.socGetGate(http.HandlerFunc(s.handleControlActive)))
 	mux.Handle(controlStatusPattern, socHeaders(s.hostAllowlist(http.HandlerFunc(s.handleControlStatus))))
 }
