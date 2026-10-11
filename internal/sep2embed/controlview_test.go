@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -55,6 +56,40 @@ func TestControlSnapshotFindsTheIssuedControlByItsID(t *testing.T) {
 	}
 	if _, ok, err := e.ControlSnapshot(ctx, "mrid-not-registered", send.ControlID); ok || err != nil {
 		t.Errorf("an unknown device = ok %v err %v, want not found and no error", ok, err)
+	}
+}
+
+func TestControlsForListsTheSendAndFollowOnWithTheirIntervals(t *testing.T) {
+	t.Parallel()
+
+	clock := newMovableClock(controlClockUnix)
+	_, _, e, reg := newEmbedTestServer(t, func(cfg *Config) {
+		cfg.DERControl.Now = clock.now
+	}, "DERVIEW2")
+	ctx := context.Background()
+
+	send, err := e.ApplyControlFor(ctx, reg, targetWDelta("mrid-DERVIEW2", 0, -900), 120)
+	if err != nil {
+		t.Fatalf("ApplyControlFor: %v", err)
+	}
+	got, err := e.ControlsFor(ctx, "mrid-DERVIEW2")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("ControlsFor = %d controls, err %v; want 2", len(got), err)
+	}
+	byID := map[string]DERControlSnapshot{got[0].ID: got[0], got[1].ID: got[1]}
+	req, fo := byID[send.ControlID], byID[send.FollowOnID]
+	if req.Start != send.Start || req.Duration != 120 || req.Base == nil || req.Base.OpModTargetW.Value != -900 {
+		t.Errorf("requested = %+v, want start %d duration 120 watts -900", req, send.Start)
+	}
+	if fo.Start != send.End || fo.CurrentStatus != sep2.EventStatusScheduled || fo.Base.OpModTargetW.Value != 0 {
+		t.Errorf("follow-on = %+v, want start %d scheduled 0 W", fo, send.End)
+	}
+	if req.CreationTime < send.Start || fo.CreationTime <= req.CreationTime {
+		t.Errorf("creation times = %d then %d, want at or after %d and ordered", req.CreationTime, fo.CreationTime, send.Start)
+	}
+	// The send path refuses a device with no seeded index the same way.
+	if none, err := e.ControlsFor(ctx, "mrid-not-registered"); !errors.Is(err, ErrUnknownControlDevice) || none != nil {
+		t.Errorf("unknown device = %v, %v; want nil and ErrUnknownControlDevice", none, err)
 	}
 }
 
@@ -316,5 +351,184 @@ func TestResponsesForNotFoundOnALaterPageKeepsWhatWasRead(t *testing.T) {
 
 	if err != nil || len(got) != 1 || paged.calls != 2 {
 		t.Errorf("ResponsesFor = %+v, %v after %d lists; want the one response from page one, no error, 2 lists", got, err, paged.calls)
+	}
+}
+
+// A scheduled control is fetched, and Received, before its start and before
+// its creationTime when sends in one second push creationTime ahead, so
+// ResponsesSince must sit at or below the issue second.
+func TestResponsesSinceReadsAReceivedPostedAtTheIssueSecond(t *testing.T) {
+	t.Parallel()
+
+	clock := newMovableClock(controlClockUnix)
+	_, _, e, reg := newEmbedTestServer(t, func(cfg *Config) {
+		cfg.DERControl.Now = clock.now
+	}, "DERVIEW3")
+	ctx := context.Background()
+
+	var send ControlSend
+	for i := range 3 {
+		var err error
+		if send, err = e.ApplyControlFor(ctx, reg, targetWDelta("mrid-DERVIEW3", 0, float64(100*(i+1))), 120); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	fo, ok, err := e.ControlSnapshot(ctx, "mrid-DERVIEW3", send.FollowOnID)
+	if err != nil || !ok {
+		t.Fatalf("follow-on snapshot: ok %v err %v", ok, err)
+	}
+	if fo.CreationTime <= controlClockUnix {
+		t.Fatalf("follow-on creationTime %d does not lead the issue second %d; the case is not exercised", fo.CreationTime, controlClockUnix)
+	}
+	received := sep2.ResponseStatusEventReceived
+	if err := e.stores.Responses.Create(ctx, "1", rspKey(controlClockUnix*1e9+1),
+		sep2.Response{Subject: fo.MRID, Status: &received, CreatedDateTime: controlClockUnix}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		since int64
+		want  int
+	}{
+		{"ResponsesSince", fo.ResponsesSince(), 1},
+		{"the start misses it", fo.Start, 0},
+		{"creationTime misses it", fo.CreationTime, 0},
+	} {
+		got, err := e.ResponsesFor(ctx, fo.MRID, tc.since)
+		if err != nil || len(got) != tc.want {
+			t.Errorf("%s: since %d = %d responses, err %v; want %d", tc.name, tc.since, len(got), err, tc.want)
+		}
+	}
+}
+
+func TestBusIssuedRecordsOnlyTheBusPathsControls(t *testing.T) {
+	t.Parallel()
+
+	clock := newMovableClock(controlClockUnix)
+	_, _, e, reg := newEmbedTestServer(t, func(cfg *Config) {
+		cfg.DERControl.Now = clock.now
+	}, "DERVIEW4")
+	ctx := context.Background()
+
+	if out, err := e.ApplyControlDeltaOutcome(ctx, reg, targetWDelta("mrid-DERVIEW4", 0, 700)); err != nil || out != ControlIssued {
+		t.Fatalf("bus delta = %d, %v; want issued", out, err)
+	}
+	clock.set(controlClockUnix + 1)
+	if out, err := e.ApplyControlDeltaOutcome(ctx, reg, targetWDelta("mrid-DERVIEW4", 0, 700)); err != nil || out != ControlRestated {
+		t.Fatalf("restated bus delta = %d, %v; want restated", out, err)
+	}
+	clock.set(controlClockUnix + 2)
+	send, err := e.ApplyControlFor(ctx, reg, targetWDelta("mrid-DERVIEW4", 0, 900), 120)
+	if err != nil {
+		t.Fatalf("ApplyControlFor: %v", err)
+	}
+	snaps, err := e.ControlsFor(ctx, "mrid-DERVIEW4")
+	if err != nil || len(snaps) != 3 {
+		t.Fatalf("ControlsFor = %d controls, err %v; want 3", len(snaps), err)
+	}
+	bus := 0
+	for _, sn := range snaps {
+		direct := sn.ID == send.ControlID || sn.ID == send.FollowOnID
+		if got := e.BusIssued(sn.ID); got == direct {
+			t.Errorf("BusIssued(%s) = %v for a direct send %v", sn.ID, got, direct)
+		}
+		if !direct {
+			bus++
+		}
+	}
+	if bus != 1 {
+		t.Errorf("bus controls = %d, want 1", bus)
+	}
+}
+
+func TestIssuedLedgerDropsTheOldestPastItsBound(t *testing.T) {
+	t.Parallel()
+
+	var l issuedLedger
+	for i := range maxBusIssued + 1 {
+		l.add(strconv.Itoa(i))
+	}
+	l.add(strconv.Itoa(maxBusIssued))
+	if l.has("0") || !l.has("1") || !l.has(strconv.Itoa(maxBusIssued)) || len(l.order) != maxBusIssued {
+		t.Errorf("ledger kept 0 %v, 1 %v, newest %v, %d ids; want false true true %d",
+			l.has("0"), l.has("1"), l.has(strconv.Itoa(maxBusIssued)), len(l.order), maxBusIssued)
+	}
+}
+
+// A burst in one second drives creationTime the full bound ahead of the issue
+// second, and ResponsesSince must still reach back to that second.
+func TestResponsesSinceReachesTheFullCreationTimeLead(t *testing.T) {
+	t.Parallel()
+
+	clock := newMovableClock(controlClockUnix)
+	_, _, e, reg := newEmbedTestServer(t, func(cfg *Config) {
+		cfg.DERControl.Now = clock.now
+	}, "DERVIEW5")
+	ctx := context.Background()
+
+	for i := range 3 {
+		if _, err := e.ApplyControlFor(ctx, reg, targetWDelta("mrid-DERVIEW5", 0, float64(100*(i+1))), 120); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	for i := 0; ; i++ {
+		err := e.ApplyControlDelta(ctx, reg, targetWDelta("mrid-DERVIEW5", 0, float64(5000+i)))
+		if errors.Is(err, ErrControlDeltaRateUnrepresentable) {
+			break
+		}
+		if err != nil || i > int(maxCreationTimeLeadSeconds) {
+			t.Fatalf("delta %d: %v; want the rate error within the bound", i, err)
+		}
+	}
+	snaps, err := e.ControlsFor(ctx, "mrid-DERVIEW5")
+	if err != nil {
+		t.Fatalf("ControlsFor: %v", err)
+	}
+	var newest DERControlSnapshot
+	for _, sn := range snaps {
+		if sn.CreationTime > newest.CreationTime {
+			newest = sn
+		}
+	}
+	if got := newest.CreationTime - controlClockUnix; got != maxCreationTimeLeadSeconds {
+		t.Fatalf("newest creationTime leads the issue second by %d, want %d", got, maxCreationTimeLeadSeconds)
+	}
+	if got := newest.ResponsesSince(); got != controlClockUnix {
+		t.Errorf("ResponsesSince = %d, want the issue second %d", got, controlClockUnix)
+	}
+	received := sep2.ResponseStatusEventReceived
+	if err := e.stores.Responses.Create(ctx, "1", rspKey(controlClockUnix*1e9+1),
+		sep2.Response{Subject: newest.MRID, Status: &received, CreatedDateTime: controlClockUnix}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := e.ResponsesFor(ctx, newest.MRID, newest.ResponsesSince())
+	if err != nil || len(got) != 1 {
+		t.Errorf("ResponsesFor = %d responses, err %v; want the Received posted at the issue second", len(got), err)
+	}
+}
+
+// A restated bus delta issues nothing, so it records no id as bus-issued.
+func TestBusIssuedIgnoresARestatedDelta(t *testing.T) {
+	t.Parallel()
+
+	clock := newMovableClock(controlClockUnix)
+	_, _, e, reg := newEmbedTestServer(t, func(cfg *Config) {
+		cfg.DERControl.Now = clock.now
+	}, "DERVIEW6")
+	ctx := context.Background()
+
+	if out, err := e.ApplyControlDeltaOutcome(ctx, reg, targetWDelta("mrid-DERVIEW6", 0, 700)); err != nil || out != ControlIssued {
+		t.Fatalf("bus delta = %d, %v; want issued", out, err)
+	}
+	clock.set(controlClockUnix + 1)
+	if out, err := e.ApplyControlDeltaOutcome(ctx, reg, targetWDelta("mrid-DERVIEW6", 0, 700)); err != nil || out != ControlRestated {
+		t.Fatalf("restated delta = %d, %v; want restated", out, err)
+	}
+	if n := len(e.busIssued.order); n != 1 {
+		t.Errorf("ledger holds %d ids after one issue and one restatement, want 1", n)
+	}
+	if e.busIssued.has(derControlID(0, "")) {
+		t.Errorf("ledger holds an id for the restatement's zero control")
 	}
 }

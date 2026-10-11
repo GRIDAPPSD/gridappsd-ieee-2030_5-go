@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync"
 
 	coreresponse "github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2srv/handlers/response"
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/store"
@@ -39,6 +40,71 @@ func (e *Embed) ControlSnapshot(ctx context.Context, deviceMRID, controlID strin
 		}
 	}
 	return DERControlSnapshot{}, false, nil
+}
+
+// ControlsFor returns every DERControl still served for the device with the
+// given CIM mRID, superseded and cancelled ones included. A device with no
+// seeded URL index is ErrUnknownControlDevice, as it is on the send path:
+// callers pass registered devices, so a missing index is drift, not "none".
+func (e *Embed) ControlsFor(ctx context.Context, deviceMRID string) ([]DERControlSnapshot, error) {
+	edevID, ok := e.stores.EndDeviceIndexes.IndexFor(deviceMRID)
+	if !ok {
+		return nil, fmt.Errorf("%w: mrid=%q has no seeded URL index", ErrUnknownControlDevice, deviceMRID)
+	}
+	return e.DERControls(ctx, edevID, controlFSAID, controlDERProgramID)
+}
+
+// ResponsesSince is the Unix second to pass ResponsesFor so that every
+// Response to the control is read: creationTime runs at most
+// maxCreationTimeLeadSeconds ahead of the issue instant, and no device can
+// respond before the issue. A control's start is not such a bound, because
+// a scheduled control is fetched, and Received, before it starts.
+func (s DERControlSnapshot) ResponsesSince() int64 {
+	return s.CreationTime - maxCreationTimeLeadSeconds
+}
+
+// maxBusIssued bounds the bus-issued control ids an Embed remembers; past
+// it the oldest is dropped, and BusIssued answers false for it.
+const maxBusIssued = 8192
+
+// issuedLedger remembers the store ids of the last maxBusIssued controls
+// the bus path issued. The zero value is ready.
+type issuedLedger struct {
+	mu    sync.Mutex
+	ids   map[string]struct{}
+	order []string
+}
+
+func (l *issuedLedger) add(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ids == nil {
+		l.ids = map[string]struct{}{}
+	}
+	if _, ok := l.ids[id]; ok {
+		return
+	}
+	l.ids[id] = struct{}{}
+	l.order = append(l.order, id)
+	if len(l.order) > maxBusIssued {
+		delete(l.ids, l.order[0])
+		l.order = l.order[1:]
+	}
+}
+
+func (l *issuedLedger) has(id string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, ok := l.ids[id]
+	return ok
+}
+
+// BusIssued reports whether the bus path (ApplyControlDeltaOutcome) issued
+// the control with the given store id since this Embed started, within the
+// last maxBusIssued it issued. False is not proof of another issuer: the
+// record is in memory and bounded.
+func (e *Embed) BusIssued(controlID string) bool {
+	return e.busIssued.has(controlID)
 }
 
 // ResponsesFor returns the Responses devices have posted since the Unix

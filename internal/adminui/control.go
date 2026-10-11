@@ -29,6 +29,10 @@ import (
 const (
 	controlSendPattern   = "POST /apps/soc/api/control"
 	controlStatusPattern = "GET /apps/soc/api/control/{id}"
+	// controlActivePattern is a literal path under the status pattern's {id}
+	// wildcard; the mux serves the more specific pattern, and a send id is
+	// 16 hex digits, so it can never be "active".
+	controlActivePattern = "/apps/soc/api/control/active"
 
 	// maxControlBody bounds a send request; a real one is under 100 bytes.
 	maxControlBody = 1 << 10
@@ -115,6 +119,11 @@ type ControlSource interface {
 	ApplyControlFor(ctx context.Context, delta sep2embed.ControlDelta, durationSeconds uint32) (sep2embed.ControlSend, error)
 	ControlSnapshot(ctx context.Context, deviceMRID, controlID string) (sep2embed.DERControlSnapshot, bool, error)
 	ResponsesFor(ctx context.Context, subject string, since int64) ([]sep2embed.ResponseSnapshot, error)
+	// ControlsFor returns every control still served for a device.
+	ControlsFor(ctx context.Context, deviceMRID string) ([]sep2embed.DERControlSnapshot, error)
+	// BusIssued reports whether the bus path issued the control with the
+	// given store id, as far as its bounded in-memory record knows.
+	BusIssued(controlID string) bool
 	// EndedControl returns the record kept for a control after it left the
 	// store, so a stop that no status read saw is still dated.
 	EndedControl(mrid string) (sep2embed.EndedControl, bool)
@@ -140,6 +149,7 @@ type controlRecord struct {
 	seconds     uint32
 	start, end  int64
 	controlID   string
+	followOnID  string
 	controlMRID string
 	// stoppedAt is when the served control stopped being in force before its
 	// end (superseded or cancelled), 0 while none has been seen.
@@ -181,6 +191,21 @@ func (l *controlLedger) get(id string) (controlRecord, bool) {
 	return *r, true
 }
 
+// pageControlIDs returns the store ids of every control the page issued
+// since the bridge started, follow-ons included, within the ledger's bound.
+func (l *controlLedger) pageControlIDs() map[string]struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ids := make(map[string]struct{}, 2*len(l.byID))
+	for _, r := range l.byID {
+		ids[r.controlID] = struct{}{}
+		if r.followOnID != "" {
+			ids[r.followOnID] = struct{}{}
+		}
+	}
+	return ids
+}
+
 // learnMRID remembers the control's mRID the first time it is seen, because
 // the control leaves the store after it ends and its responses are keyed by
 // the mRID.
@@ -218,6 +243,7 @@ func newControlID() (string, error) {
 
 func (s *Server) mountControl(mux *http.ServeMux) {
 	mux.Handle(controlSendPattern, socHeaders(s.hostAllowlist(withRemote(http.HandlerFunc(s.handleControlSend)))))
+	mux.Handle("GET "+controlActivePattern, s.socGetGate(http.HandlerFunc(s.handleControlActive)))
 	mux.Handle(controlStatusPattern, socHeaders(s.hostAllowlist(http.HandlerFunc(s.handleControlStatus))))
 }
 
@@ -291,7 +317,7 @@ func (s *Server) handleControlSend(w http.ResponseWriter, r *http.Request) {
 	}
 	rec := &controlRecord{
 		id: id, mrid: req.MRID, watts: watts, seconds: seconds,
-		start: send.Start, end: send.End, controlID: send.ControlID, warning: warning,
+		start: send.Start, end: send.End, controlID: send.ControlID, followOnID: send.FollowOnID, warning: warning,
 	}
 	// A failure here only delays learning the mRID to the first status read.
 	if snap, ok, err := s.control.ControlSnapshot(r.Context(), req.MRID, send.ControlID); err != nil {

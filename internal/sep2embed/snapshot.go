@@ -95,7 +95,12 @@ type DERControlSnapshot struct {
 	MRID          string
 	CurrentStatus uint8
 	DateTime      int64
-	Base          *DERControlBaseSnapshot
+	CreationTime  int64
+	// Start and Duration are the control's interval in Unix seconds and
+	// seconds; both are 0 when the stored control carries no interval.
+	Start    int64
+	Duration uint32
+	Base     *DERControlBaseSnapshot
 }
 
 // edevIDFromHref recovers the EndDevice store id (the opaque URL index) from
@@ -271,6 +276,12 @@ func (e *Embed) DERControls(ctx context.Context, edevID, fsaID, derpID string) (
 			dateTime = c.EventStatus.DateTime
 		}
 
+		var start int64
+		var duration uint32
+		if c.Interval != nil {
+			start, duration = c.Interval.Start, c.Interval.Duration
+		}
+
 		snaps = append(snaps, DERControlSnapshot{
 			// Recomputed from the record, for the reason given on
 			// supersedePriorControls: derControlID produced the key, and
@@ -280,6 +291,9 @@ func (e *Embed) DERControls(ctx context.Context, edevID, fsaID, derpID string) (
 			MRID:          c.MRID,
 			CurrentStatus: status,
 			DateTime:      dateTime,
+			CreationTime:  c.CreationTime,
+			Start:         start,
+			Duration:      duration,
 			Base:          derControlBaseSnapshotOf(c.DERControlBase),
 		})
 	}
