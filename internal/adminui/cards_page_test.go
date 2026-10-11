@@ -322,6 +322,18 @@ func TestCardsPageSparseAndEmpty(t *testing.T) {
 	}
 }
 
+// A reading time of 0 is "sent none", not the epoch.
+func TestCardsPageZeroReadingTime(t *testing.T) {
+	t.Parallel()
+	zero := pollNamed(t, runCardsPage(t), "zeroTime")
+	if len(zero.Views) != 1 {
+		t.Fatalf("zeroTime cards = %d, want 1", len(zero.Views))
+	}
+	if got := zero.Views[0].Lists[0].Fields["Reading time"]; got != "-" {
+		t.Errorf("Reading time for readingTime 0 = %q, want -", got)
+	}
+}
+
 // A Stop posts the card's own device; a failed Stop shows its error and
 // re-enables the button, and a later good Stop clears the error.
 func TestCardsPageStop(t *testing.T) {

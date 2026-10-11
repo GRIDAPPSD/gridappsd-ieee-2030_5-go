@@ -218,6 +218,14 @@ async function main() {
   await pollNow(sparse);
   polls.push(snapshot("sparse", list, firstEls));
 
+  // A reading time of 0 means the device sent none.
+  const zero = clone();
+  zero.total = 1;
+  zero.cards = [zero.cards[0]];
+  zero.cards[0].status.readingTime = 0;
+  await pollNow(zero);
+  polls.push(snapshot("zeroTime", list, firstEls));
+
   // No devices at all.
   await pollNow({ total: 0, cards: [] });
   polls.push(snapshot("none", list, firstEls));

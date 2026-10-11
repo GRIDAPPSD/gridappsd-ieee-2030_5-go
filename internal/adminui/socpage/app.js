@@ -579,7 +579,7 @@
 
   // The device's own report time, in UTC so it reads the same on every screen.
   function utcText(sec) {
-    if (typeof sec !== "number") return "-";
+    if (typeof sec !== "number" || !Number.isFinite(sec) || sec <= 0) return "-";
     const d = new Date(sec * 1000);
     if (isNaN(d.getTime())) return "-";
     return d.toISOString().slice(0, 19).replace("T", " ") + " UTC";
