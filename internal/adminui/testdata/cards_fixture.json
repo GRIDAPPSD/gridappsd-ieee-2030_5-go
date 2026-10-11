@@ -1,7 +1,138 @@
-{"now":1000,"total":3,"truncated":false,"skippedDevices":0,"statusUnavailable":false,"cards":[
- {"name":"pv_a","mrid":"M-A","kind":"battery","stripe":"blue","stripeLabel":"CHARGING","connected":true,"lastSeenAt":990,"lastSeenAgeSeconds":10,
-  "status":{"stateOfChargePercent":42.5,"inverterStatus":"Tracking MPPT","operationalModeStatus":"Operational","storageModeStatus":"Charging","genConnectStatus":"Connected","storConnectStatus":"Connected, Operating","alarmStatus":"0","readingTime":995,"readingAgeSeconds":5},
-  "control":{"watts":-1500,"direction":"charge","source":"page","state":"active","secondsLeft":125,"endsAt":1125,"received":true,"controlMrid":"C-A"}},
- {"name":"tl_b","mrid":"M-B","kind":"device","stripe":"grey","stripeLabel":"NOT CONNECTED","connected":false,"lastSeenAt":null,"lastSeenAgeSeconds":null,"status":null,"control":null},
- {"name":"tl_c","mrid":"M-C","kind":"device","stripe":"<script>","stripeLabel":"CHARGE TO DISCHARGE","connected":true,"lastSeenAt":999,"lastSeenAgeSeconds":1,"status":null,"control":null}
-]}
+{
+ "now": 1000,
+ "total": 6,
+ "truncated": false,
+ "skippedDevices": 0,
+ "statusUnavailable": false,
+ "cards": [
+  {
+   "name": "pv_a",
+   "mrid": "M-A",
+   "kind": "battery",
+   "stripe": "blue",
+   "stripeLabel": "CHARGING",
+   "connected": true,
+   "lastSeenAt": 990,
+   "lastSeenAgeSeconds": 10,
+   "status": {
+    "stateOfChargePercent": 42.5,
+    "inverterStatus": "Tracking MPPT",
+    "operationalModeStatus": "Operational",
+    "storageModeStatus": "Charging",
+    "genConnectStatus": "Connected",
+    "storConnectStatus": "Connected, Operating",
+    "alarmStatus": "0",
+    "readingTime": 995,
+    "readingAgeSeconds": 5
+   },
+   "control": {
+    "watts": -1500,
+    "direction": "charge",
+    "source": "page",
+    "state": "active",
+    "secondsLeft": 125,
+    "endsAt": 1125,
+    "received": true,
+    "controlMrid": "C-A"
+   }
+  },
+  {
+   "name": "tl_b",
+   "mrid": "M-B",
+   "kind": "device",
+   "stripe": "grey",
+   "stripeLabel": "NOT CONNECTED",
+   "connected": false,
+   "lastSeenAt": null,
+   "lastSeenAgeSeconds": null,
+   "status": null,
+   "control": null
+  },
+  {
+   "name": "tl_c",
+   "mrid": "M-C",
+   "kind": "device",
+   "stripe": "<script>",
+   "stripeLabel": "CHARGE TO DISCHARGE",
+   "connected": true,
+   "lastSeenAt": 999,
+   "lastSeenAgeSeconds": 1,
+   "status": null,
+   "control": null
+  },
+  {
+   "name": "bat_d",
+   "mrid": "M-D",
+   "kind": "battery",
+   "stripe": "green",
+   "stripeLabel": "DISCHARGING",
+   "connected": true,
+   "lastSeenAt": 995,
+   "lastSeenAgeSeconds": 5,
+   "status": {
+    "stateOfChargePercent": 80,
+    "inverterStatus": "Idle",
+    "operationalModeStatus": "Off",
+    "storageModeStatus": "Discharging",
+    "genConnectStatus": "Disconnected",
+    "storConnectStatus": "Connected",
+    "alarmStatus": "1",
+    "readingTime": 999,
+    "readingAgeSeconds": 1
+   },
+   "control": {
+    "watts": 800,
+    "direction": "discharge",
+    "source": "server",
+    "state": "scheduled",
+    "secondsLeft": 45,
+    "endsAt": 1045,
+    "received": false,
+    "controlMrid": "C-D"
+   }
+  },
+  {
+   "name": "hold_e",
+   "mrid": "M-E",
+   "kind": "battery",
+   "stripe": "pink",
+   "stripeLabel": "HOLDING",
+   "connected": true,
+   "lastSeenAt": 996,
+   "lastSeenAgeSeconds": 4,
+   "status": null,
+   "control": {
+    "watts": 0,
+    "direction": "hold",
+    "source": "page",
+    "state": "active",
+    "secondsLeft": 3600,
+    "endsAt": 4600,
+    "received": true,
+    "controlMrid": "C-E"
+   }
+  },
+  {
+   "name": "pv_f",
+   "mrid": "M-F",
+   "kind": "pv",
+   "stripe": "yellow",
+   "stripeLabel": "STALE",
+   "connected": true,
+   "lastSeenAt": 900,
+   "lastSeenAgeSeconds": 100,
+   "status": {
+    "stateOfChargePercent": 10,
+    "inverterStatus": "Fault",
+    "operationalModeStatus": "Operational",
+    "storageModeStatus": "Holding",
+    "genConnectStatus": "Connected",
+    "storConnectStatus": "Disconnected",
+    "alarmStatus": "2",
+    "readingTime": 800,
+    "readingAgeSeconds": 200
+   },
+   "control": null
+  }
+ ]
+}
