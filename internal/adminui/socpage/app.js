@@ -637,13 +637,16 @@
   function renderCard(row, c) {
     row.root.className = stripeClass(c.stripe);
     // A labelled card is titled by its EPRI label with the CIM name beside it;
-    // an unmapped one shows the CIM name and an unlabeled tag.
+    // an unmapped one shows the CIM name and an unlabeled tag. A battery's CIM
+    // name starts with pv_, so its card shows the label alone.
     const labelled = typeof c.label === "string" && c.label !== "";
+    const labelOnly = labelled && c.label.startsWith("battery");
     setText(row.name, labelled ? c.label : c.name || c.mrid);
-    setText(row.cim, labelled ? c.name || c.mrid : "");
-    row.cim.hidden = !labelled;
+    setText(row.cim, labelled && !labelOnly ? c.name || c.mrid : "");
+    row.cim.hidden = !labelled || labelOnly;
     row.tag.hidden = labelled;
-    setText(row.kind, c.kind || "");
+    setText(row.kind, labelOnly ? "" : c.kind || "");
+    row.kind.hidden = labelOnly;
     setText(row.label, c.stripeLabel || "");
     const st = c.status;
     row.noReport.hidden = st !== null && st !== undefined;

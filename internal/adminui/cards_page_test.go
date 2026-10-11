@@ -452,7 +452,17 @@ func TestCardsPageTitlesByLabelInServerOrder(t *testing.T) {
 		if len(v.Texts) == 0 || v.Texts[0] != titles[i] {
 			t.Errorf("card %d texts = %q, want title %q first", i, v.Texts, titles[i])
 		}
-		if subs[i] != "" && !slices.Contains(v.Texts, subs[i]) {
+		battery := i == 3 || i == 4
+		if battery {
+			if len(v.Texts) == 0 || v.Texts[0] != titles[i] {
+				t.Errorf("battery card %d title = %q, want exactly %q", i, v.Texts, titles[i])
+			}
+			for _, absent := range []string{subs[i], "device"} {
+				if slices.Contains(v.Texts, absent) {
+					t.Errorf("battery card %d shows %q beside its label: %q", i, absent, v.Texts)
+				}
+			}
+		} else if subs[i] != "" && !slices.Contains(v.Texts, subs[i]) {
 			t.Errorf("card %d lacks CIM name subtitle %q: %q", i, subs[i], v.Texts)
 		}
 		tagged := slices.Contains(v.Texts, "unlabeled")
