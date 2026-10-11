@@ -455,3 +455,80 @@ func TestIssuedLedgerDropsTheOldestPastItsBound(t *testing.T) {
 			l.has("0"), l.has("1"), l.has(strconv.Itoa(maxBusIssued)), len(l.order), maxBusIssued)
 	}
 }
+
+// A burst in one second drives creationTime the full bound ahead of the issue
+// second, and ResponsesSince must still reach back to that second.
+func TestResponsesSinceReachesTheFullCreationTimeLead(t *testing.T) {
+	t.Parallel()
+
+	clock := newMovableClock(controlClockUnix)
+	_, _, e, reg := newEmbedTestServer(t, func(cfg *Config) {
+		cfg.DERControl.Now = clock.now
+	}, "DERVIEW5")
+	ctx := context.Background()
+
+	for i := range 3 {
+		if _, err := e.ApplyControlFor(ctx, reg, targetWDelta("mrid-DERVIEW5", 0, float64(100*(i+1))), 120); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	for i := 0; ; i++ {
+		err := e.ApplyControlDelta(ctx, reg, targetWDelta("mrid-DERVIEW5", 0, float64(5000+i)))
+		if errors.Is(err, ErrControlDeltaRateUnrepresentable) {
+			break
+		}
+		if err != nil || i > int(maxCreationTimeLeadSeconds) {
+			t.Fatalf("delta %d: %v; want the rate error within the bound", i, err)
+		}
+	}
+	snaps, err := e.ControlsFor(ctx, "mrid-DERVIEW5")
+	if err != nil {
+		t.Fatalf("ControlsFor: %v", err)
+	}
+	var newest DERControlSnapshot
+	for _, sn := range snaps {
+		if sn.CreationTime > newest.CreationTime {
+			newest = sn
+		}
+	}
+	if got := newest.CreationTime - controlClockUnix; got != maxCreationTimeLeadSeconds {
+		t.Fatalf("newest creationTime leads the issue second by %d, want %d", got, maxCreationTimeLeadSeconds)
+	}
+	if got := newest.ResponsesSince(); got != controlClockUnix {
+		t.Errorf("ResponsesSince = %d, want the issue second %d", got, controlClockUnix)
+	}
+	received := sep2.ResponseStatusEventReceived
+	if err := e.stores.Responses.Create(ctx, "1", rspKey(controlClockUnix*1e9+1),
+		sep2.Response{Subject: newest.MRID, Status: &received, CreatedDateTime: controlClockUnix}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := e.ResponsesFor(ctx, newest.MRID, newest.ResponsesSince())
+	if err != nil || len(got) != 1 {
+		t.Errorf("ResponsesFor = %d responses, err %v; want the Received posted at the issue second", len(got), err)
+	}
+}
+
+// A restated bus delta issues nothing, so it records no id as bus-issued.
+func TestBusIssuedIgnoresARestatedDelta(t *testing.T) {
+	t.Parallel()
+
+	clock := newMovableClock(controlClockUnix)
+	_, _, e, reg := newEmbedTestServer(t, func(cfg *Config) {
+		cfg.DERControl.Now = clock.now
+	}, "DERVIEW6")
+	ctx := context.Background()
+
+	if out, err := e.ApplyControlDeltaOutcome(ctx, reg, targetWDelta("mrid-DERVIEW6", 0, 700)); err != nil || out != ControlIssued {
+		t.Fatalf("bus delta = %d, %v; want issued", out, err)
+	}
+	clock.set(controlClockUnix + 1)
+	if out, err := e.ApplyControlDeltaOutcome(ctx, reg, targetWDelta("mrid-DERVIEW6", 0, 700)); err != nil || out != ControlRestated {
+		t.Fatalf("restated delta = %d, %v; want restated", out, err)
+	}
+	if n := len(e.busIssued.order); n != 1 {
+		t.Errorf("ledger holds %d ids after one issue and one restatement, want 1", n)
+	}
+	if e.busIssued.has(derControlID(0, "")) {
+		t.Errorf("ledger holds an id for the restatement's zero control")
+	}
+}

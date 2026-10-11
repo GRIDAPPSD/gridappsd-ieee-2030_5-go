@@ -375,3 +375,30 @@ func TestActiveControlsReleasesItsSlot(t *testing.T) {
 		}
 	}
 }
+
+// A Received posted before the control's creationTime, within the lead, still
+// counts: the read starts at the lead below creationTime, not at it.
+func TestActiveControlsReadsFromTheLeadBelowCreationTime(t *testing.T) {
+	t.Parallel()
+	h := newCtlHarness(t, Config{})
+	setRegistry(h, registry.Entry{MRID: "_bat-1", Name: "Battery 1"})
+	h.ctl.controls = map[string][]sep2embed.DERControlSnapshot{
+		"_bat-1": {{ID: "fo-1", MRID: "m-fo", CurrentStatus: sep2.EventStatusScheduled, CreationTime: t0 + 8,
+			Start: t0 + 300, Duration: 900, Base: targetW(0, 0)}},
+	}
+	h.ctl.responses = []sep2embed.ResponseSnapshot{{Subject: "m-fo", Status: sep2.ResponseStatusEventReceived}}
+	h.ctl.receivedAt = map[string]int64{"m-fo": t0 + 2}
+	h.clk.set(t0 + 10)
+
+	got := getActive(t, h)
+	if len(got.Controls) != 1 || !got.Controls[0].Received {
+		t.Errorf("rows = %+v, want the follow-on with received true", got.Controls)
+	}
+	if want := controlsSince(t0 + 8); len(h.ctl.since) != 1 || h.ctl.since[0] != want {
+		t.Errorf("responses read since %v, want [%d]", h.ctl.since, want)
+	}
+}
+
+func controlsSince(creationTime int64) int64 {
+	return sep2embed.DERControlSnapshot{CreationTime: creationTime}.ResponsesSince()
+}
