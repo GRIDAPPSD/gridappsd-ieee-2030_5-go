@@ -8,9 +8,9 @@ import (
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui/healthpage"
 )
 
-// healthPageCSP is the page's own policy. The plane keeps it and adds
-// frame-ancestors 'self'.
-const healthPageCSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; " +
+// pageCSP is the policy of the bridge's page panels. The plane keeps it and
+// adds frame-ancestors 'self'.
+const pageCSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; " +
 	"base-uri 'none'; form-action 'none'"
 
 // publishingResponse is the sender's switch as the health data carries it.
@@ -48,23 +48,24 @@ func (s *Server) healthData() healthData {
 // It is read only: the plane lets every method through to a page.
 func (s *Server) healthPage() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /{$}", healthPageFile("index.html", "text/html; charset=utf-8"))
-	mux.Handle("GET /app.js", healthPageFile("app.js", "text/javascript; charset=utf-8"))
-	mux.Handle("GET /style.css", healthPageFile("style.css", "text/css; charset=utf-8"))
+	mux.Handle("GET /{$}", pageFile(healthpage.Files, "index.html", "text/html; charset=utf-8"))
+	mux.Handle("GET /app.js", pageFile(healthpage.Files, "app.js", "text/javascript; charset=utf-8"))
+	mux.Handle("GET /style.css", pageFile(healthpage.Files, "style.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /data", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, s.healthData())
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", healthPageCSP)
+		w.Header().Set("Content-Security-Policy", pageCSP)
 		mux.ServeHTTP(w, r)
 	})
 }
 
-func healthPageFile(name, contentType string) http.Handler {
+// pageFile serves one embedded file of a page panel.
+func pageFile(files fs.FS, name, contentType string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		b, err := fs.ReadFile(healthpage.Files, name)
+		b, err := fs.ReadFile(files, name)
 		if err != nil {
-			log.Printf("adminui: health page file %s: %v", name, err)
+			log.Printf("adminui: page file %s: %v", name, err)
 			http.Error(w, "page file unavailable", http.StatusInternalServerError)
 			return
 		}

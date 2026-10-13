@@ -389,7 +389,7 @@ func TestDERProgramsPanelFailsOnAReadError(t *testing.T) {
 		src := testSources()
 		mod(&src)
 		s := newServer(t, Config{Key: testKey}, src)
-		rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/gridappsd-derprograms", "Bearer "+testKey, "localhost")
+		rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/gridappsd-derprograms/data", "Bearer "+testKey, "localhost")
 		body := rec.Body.String()
 		if rec.Code != http.StatusInternalServerError || strings.Contains(body, "store down") || strings.Contains(body, "No DERPrograms served") {
 			t.Errorf("%s read failure: %d %s, want 500 without the error text", name, rec.Code, body)
@@ -454,7 +454,7 @@ func TestFoldedPanelTrimmedBySizeSaysWhy(t *testing.T) {
 		{LFDI: "LFDIA", Reason: strings.Repeat("r", 1200*1024), At: time.Unix(1700000000, 0)},
 	}}}
 	s := newServer(t, Config{Key: testKey}, src)
-	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/gridappsd-connections", "Bearer "+testKey, "localhost")
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/apps/gridappsd-connections/data", "Bearer "+testKey, "localhost")
 	if rec.Code != http.StatusOK || rec.Body.Len() > 1<<20 {
 		t.Fatalf("oversized row: %d, %d bytes, want 200 within 1 MiB", rec.Code, rec.Body.Len())
 	}

@@ -59,9 +59,17 @@ type wireDescriptor struct {
 }
 
 // getPanel fetches a panel the way the shell does, through the full
-// listener handler, and fails unless it answers 200.
+// listener handler, and fails unless it answers 200. A table page panel is
+// read from its page's data route, which has the descriptor's section shape.
 func getPanel(t *testing.T, s *Server, id string) wireDescriptor {
 	t.Helper()
+	for _, tp := range tablePanels {
+		if tp.id == id {
+			var d wireDescriptor
+			decodeJSON(t, getPanelBody(t, s, id), &d)
+			return d
+		}
+	}
 	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+id, "Bearer "+testKey, "localhost")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET panel %s: status %d, body %s", id, rec.Code, rec.Body.String())
