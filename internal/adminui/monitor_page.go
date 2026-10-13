@@ -117,6 +117,10 @@ func (p *monitorPanel) serveStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no")
+	// The bound is in place before the first bytes go out. A recorder
+	// supports no deadlines; a real connection that fails to take one is cut
+	// at the listener's own limits.
+	_ = rc.SetWriteDeadline(time.Now().Add(monitorWriteTimeout))
 	w.WriteHeader(http.StatusOK)
 	if err := rc.Flush(); err != nil {
 		v.Close()
@@ -135,8 +139,7 @@ func writeMonitorEvent(w http.ResponseWriter, rc *http.ResponseController, ev mo
 		log.Printf("adminui: monitor event: %v", err)
 		return false
 	}
-	// A recorder supports no deadlines; a real connection that fails to
-	// take one is cut at the listener's own limits.
+	// Each event gets a fresh bound.
 	_ = rc.SetWriteDeadline(time.Now().Add(monitorWriteTimeout))
 	var id string
 	if ev.ID != 0 {

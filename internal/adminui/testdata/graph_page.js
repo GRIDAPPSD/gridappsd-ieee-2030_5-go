@@ -86,10 +86,11 @@ async function run(source, sc) {
   let nextTimer = 0;
   let timeoutCalls = 0;
   let controllers = 0;
+  let status_ = sc.status || 200;
   async function fetch(url) {
     urls.push(url);
     const q = url.startsWith("data") ? url.slice(4) : null;
-    const status = q === null ? 404 : sc.status || 200;
+    const status = q === null ? 404 : status_;
     const body = sc.bodies && Object.prototype.hasOwnProperty.call(sc.bodies, q) ? sc.bodies[q] : sc.body;
     return { ok: status < 400, status, json: async () => body };
   }
@@ -130,6 +131,7 @@ async function run(source, sc) {
   const steps = [];
   for (const step of sc.steps || []) {
     if (step === "hide") document.hidden = true;
+    else if (step.startsWith("status:")) status_ = Number(step.slice(7));
     else if (step === "show") {
       document.hidden = false;
       for (const fn of listeners.visibilitychange || []) fn();

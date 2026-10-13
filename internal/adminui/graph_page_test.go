@@ -277,6 +277,32 @@ func TestGraphPageRepollKeepsTheChart(t *testing.T) {
 	}
 }
 
+// TestGraphPageKeepsTheChartThroughAFailedPoll: one failed poll after a good
+// one says the data is unavailable and clears the table, but leaves the chart
+// as it was, and the next good poll updates it in place.
+func TestGraphPageKeepsTheChartThroughAFailedPoll(t *testing.T) {
+	t.Parallel()
+
+	body := rawGraph(t, twoBatteries(t), "")
+	run := runGraphPage(t, graphPageSource(t), map[string]graphScenario{"flaky": {
+		Body: body, Steps: []string{"status:500", "tick", "status:200", "tick"},
+	}})["flaky"]
+	if len(run.Steps) != 4 {
+		t.Fatalf("steps = %+v", run.Steps)
+	}
+	if run.Chart.Created != 1 || run.Chart.Destroyed != 0 || run.Chart.SetData != 1 {
+		t.Errorf("after fail then recover: chart created %d, destroyed %d, setData %d; want 1, 0 and 1", run.Chart.Created, run.Chart.Destroyed, run.Chart.SetData)
+	}
+	if !strings.HasPrefix(run.Status, "updated ") || run.StatusClass != "muted" || len(run.Latest.Rows) != 2 {
+		t.Errorf("after recovery: status %q (%q), %d latest rows; want it updated again", run.Status, run.StatusClass, len(run.Latest.Rows))
+	}
+	failed := runGraphPage(t, graphPageSource(t), map[string]graphScenario{"failed": {Body: body, Steps: []string{"status:500", "tick"}}})["failed"]
+	if !strings.Contains(failed.Status, "unavailable") || failed.StatusClass != "error" || failed.Chart.Destroyed != 0 || failed.Latest.Columns != nil {
+		t.Errorf("after a failed poll: status %q (%q), chart destroyed %d, latest %+v; want an unavailable notice, the chart kept and the table cleared",
+			failed.Status, failed.StatusClass, failed.Chart.Destroyed, failed.Latest)
+	}
+}
+
 func TestGraphPageShowsEmptyFailedAndNoLibraryStates(t *testing.T) {
 	t.Parallel()
 
@@ -448,6 +474,14 @@ func TestGraphPageMutantsAreCaught(t *testing.T) {
 		runs := runGraphPage(t, mutate("if (chart && sig === chartSig) {", "if (false) {"), map[string]graphScenario{"repoll": {Body: body, Steps: []string{"tick"}}})
 		if r := runs["repoll"]; r.Chart.Created == 1 && r.Chart.SetData == 1 {
 			t.Error("the repoll check passed against a page that rebuilds the chart each time")
+		}
+	})
+	t.Run("blanks the chart on a failed poll", func(t *testing.T) {
+		t.Parallel()
+		mutant := mutate(`setStatus("unavailable: " + e.message, true);`, `drawChart([], "", ""); setStatus("unavailable: " + e.message, true);`)
+		run := runGraphPage(t, mutant, map[string]graphScenario{"f": {Body: body, Steps: []string{"status:500", "tick"}}})["f"]
+		if run.Chart.Destroyed == 0 {
+			t.Error("the failed-poll check passed against a page that blanks the chart")
 		}
 	})
 	t.Run("does not join gaps", func(t *testing.T) {

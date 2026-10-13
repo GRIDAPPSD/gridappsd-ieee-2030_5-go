@@ -68,6 +68,7 @@ async function run(source, sc) {
   let timeoutCalls = 0;
   let controllers = 0;
   let prevented = 0;
+  let thrown = 0;
   async function fetch(url) {
     urls.push(url);
     const status = url === "topics" ? sc.status || 200 : 404;
@@ -116,7 +117,11 @@ async function run(source, sc) {
     else if (step === "start" || step.startsWith("start:")) {
       if (step !== "start") document.getElementById("topic").value = step.slice(6);
       document.getElementById("watch").fire("submit", { preventDefault() { prevented++; } });
-    } else if (step.startsWith("emit:")) last.onmessage({ data: step.slice(5) });
+    } else if (step.startsWith("emit:")) {
+      // A throw from the page's handler is what a browser reports as an
+      // uncaught error; it is counted, not left to end the run.
+      try { last.onmessage({ data: step.slice(5) }); } catch (e) { thrown++; }
+    }
     else if (step.startsWith("error:")) {
       last.readyState = Number(step.slice(6));
       last.onerror({});
@@ -141,6 +146,7 @@ async function run(source, sc) {
     steps,
     timers: pending.length,
     prevented,
+    thrown,
     removed: counters.removed,
     innerHTML: counters.innerHTML,
     style: counters.style,

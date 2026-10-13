@@ -211,8 +211,9 @@
       render(await r.json());
       setStatus("updated " + new Date().toISOString(), false);
     } catch (e) {
+      // The chart stays as last drawn: one failed poll is not a reason to
+      // lose the picture, and the status says the data is not current.
       $("latest").replaceChildren();
-      drawChart([], "", "");
       setStatus("unavailable: " + e.message, true);
     } finally {
       if (limit) limit.done();

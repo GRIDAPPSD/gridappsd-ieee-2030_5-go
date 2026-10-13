@@ -69,6 +69,11 @@
     try {
       ev = JSON.parse(data);
     } catch (e) {
+      ev = null;
+    }
+    // JSON that is not an object (null, a number, a string, an array) is not
+    // an event, and reading its fields would throw or draw "undefined".
+    if (ev === null || typeof ev !== "object" || Array.isArray(ev)) {
       addLine("unreadable event", "status");
       return;
     }
