@@ -1,11 +1,9 @@
 package adminui
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"strings"
+	"net/http"
 	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2admin"
@@ -27,13 +25,14 @@ const (
 func (s *Server) panels() []sep2admin.Panel {
 	views := []struct {
 		id, label string
+		page      http.Handler
 		view      sep2admin.ViewFunc
 	}{
-		{panelHealth, "Bridge health", nil},
-		{panelConnections, "Connections", s.connectionsView},
-		{panelDERPrograms, "DER programs", s.derProgramsView},
-		{panelControlFlow, "Control flow", s.controlFlowView},
-		{panelGraphInput, "Graph: device status", s.graphInputView},
+		{panelHealth, "Bridge health", s.healthPage(), nil},
+		{panelConnections, "Connections", s.tablePage(panelConnections, s.connectionsData), nil},
+		{panelDERPrograms, "DER programs", s.tablePage(panelDERPrograms, s.derProgramsData), nil},
+		{panelControlFlow, "Control flow", s.tablePage(panelControlFlow, s.controlFlowData), nil},
+		{panelGraphInput, "Graph: device status", nil, s.graphInputView},
 	}
 	out := make([]sep2admin.Panel, 0, len(views))
 	for i, v := range views {
@@ -43,9 +42,7 @@ func (s *Server) panels() []sep2admin.Panel {
 			Placement:         sep2admin.ExtensionSlot(i + 1),
 			DescriptorVersion: sep2admin.CurrentDescriptorVersion,
 			View:              v.view,
-		}
-		if v.id == panelHealth {
-			p.Page = s.healthPage()
+			Page:              v.page,
 		}
 		if v.id == panelGraphInput {
 			// View answers with no selection: the newest batteries.
@@ -65,14 +62,6 @@ func (s *Server) panels() []sep2admin.Panel {
 
 func descriptor(sections ...sep2admin.Section) sep2admin.Descriptor {
 	return sep2admin.Descriptor{Version: sep2admin.CurrentDescriptorVersion, Sections: sections}
-}
-
-func definitions(heading, empty string, groups ...sep2admin.DefinitionGroup) sep2admin.Section {
-	return sep2admin.Section{
-		Heading: heading,
-		Empty:   empty,
-		Body:    sep2admin.NewDefinitionListBody(sep2admin.DefinitionListBody{Groups: groups}),
-	}
 }
 
 func text(v string) sep2admin.Cell { return sep2admin.TextCell(sep2admin.Value(v)) }
@@ -109,48 +98,6 @@ func linkOrText(href, label string) sep2admin.Cell {
 	return link
 }
 
-// simOutputTopicText shows that no simulation id is configured instead of
-// a blank cell, which reads as a fault.
-func simOutputTopicText(topic string) string {
-	if topic == "" {
-		return "not subscribed (no simulation id configured)"
-	}
-	return topic
-}
-
-func (s *Server) controlFlowView(context.Context) (sep2admin.Descriptor, error) {
-	snap := s.flow.Snapshot()
-	state := definitions("Control flow", "", sep2admin.DefinitionGroup{
-		Heading: "Topics",
-		Entries: []sep2admin.DefinitionEntry{
-			{Key: "Simulation output topic", Value: text(simOutputTopicText(snap.OutputTopic))},
-			{Key: "Control delta input topic", Value: text(snap.InputTopic)},
-		},
-	}, sep2admin.DefinitionGroup{
-		Heading: "Counters",
-		Entries: []sep2admin.DefinitionEntry{
-			{Key: "Applied", Value: number(snap.Applied)},
-			{Key: "Restated", Value: number(snap.Restated)},
-			{Key: "Skipped", Value: number(snap.Skipped)},
-			{Key: "Empty frames", Value: number(snap.EmptyFrames)},
-		},
-	})
-
-	// No delta yet is its own state, shown as the section's empty text
-	// rather than as a delta with blank fields.
-	var lastGroups []sep2admin.DefinitionGroup
-	if l := snap.Last; l != nil {
-		lastGroups = append(lastGroups, sep2admin.DefinitionGroup{Entries: []sep2admin.DefinitionEntry{
-			{Key: "Object", Value: text(l.Object)},
-			{Key: "Attribute", Value: text(l.Attribute)},
-			{Key: "Value", Value: text(jsonText(l.Value))},
-			{Key: "Applied at", Value: timeCell(l.AppliedAt)},
-		}})
-	}
-	last := definitions("Last applied delta", "No control delta has been applied yet.", lastGroups...)
-	return descriptor(state, last), nil
-}
-
 // jsonText renders a delta value as JSON, so a string, a number and an
 // object stay distinguishable.
 func jsonText(v any) string {
@@ -159,114 +106,6 @@ func jsonText(v any) string {
 		return fmt.Sprint(v)
 	}
 	return string(b)
-}
-
-// derProgramsView lists every served DERProgram. It stays its own panel:
-// the server's FSAs tab has no hook for an embedder's panel, so it cannot
-// be folded in from here.
-func (s *Server) derProgramsView(ctx context.Context) (sep2admin.Descriptor, error) {
-	edevs, err := s.devices.EndDevices(ctx)
-	if err != nil {
-		return sep2admin.Descriptor{}, fmt.Errorf("reading end devices: %w", err)
-	}
-	programs, err := s.servedDERPrograms(ctx, edevs)
-	if err != nil {
-		return sep2admin.Descriptor{}, err
-	}
-	rows := make([]sep2admin.Row, 0, len(programs))
-	for _, p := range programs {
-		defaultControl := text("absent")
-		if p.DefaultDERControlLink != "" {
-			defaultControl = text(p.DefaultDERControlLink)
-		}
-		rows = append(rows, sep2admin.Row{
-			text(p.EndDeviceID), text(p.ID), text(p.MRID), text(p.Description),
-			number(p.Primacy), text(p.Href), defaultControl,
-		})
-	}
-	return tables(table("DER programs", "No DERPrograms served.",
-		[]string{"DERPrograms as served by the embedded server. Read only."},
-		[]string{"EndDevice", "ID", "MRID", "Description", "Primacy", "Href", "DefaultDERControl"}, rows)), nil
-}
-
-// connectionsView is what the Devices tab cannot show: LFDIs that made
-// requests but are not a served EndDevice, and every handshake attempt.
-func (s *Server) connectionsView(ctx context.Context) (sep2admin.Descriptor, error) {
-	snap := s.clientSnapshot()
-	disabled := s.cfg.ObservationDisabled
-	return tables(s.strangersSection(ctx, snap.Clients, disabled), handshakesSection(snap.Handshakes, disabled)), nil
-}
-
-// strangersSection lists the observed clients whose LFDI is not a served
-// EndDevice. A roster read failure empties only this section: without the
-// roster no client can be called a stranger, so it says so rather than
-// listing every client.
-func (s *Server) strangersSection(ctx context.Context, clients []connobs.ClientSnapshot, disabled bool) tableSpec {
-	const heading = "LFDIs seen with no EndDevice"
-	columns := []string{"LFDI", "Status", "Last seen", "Age", "Requests", "Paths touched"}
-	empty := "Every LFDI seen is a served EndDevice, or none has connected yet."
-	if disabled {
-		empty = "Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show which clients, if any, are connected."
-	}
-	var prose []string
-	edevs, err := s.devices.EndDevices(ctx)
-	if err != nil {
-		log.Printf("adminui: panel %s: reading end devices: %v", panelConnections, err)
-		// Without the roster no client can be called a stranger. The
-		// observer-disabled text, when it applies, stays the empty text.
-		if !disabled {
-			empty = "Served EndDevice roster unavailable."
-		}
-		return table(heading, empty, []string{fmt.Sprintf("Roster read failed: %v", err)}, columns, nil)
-	}
-	served := make(map[string]bool, len(edevs))
-	for _, e := range edevs {
-		served[e.LFDI] = true
-	}
-
-	rows := make([]sep2admin.Row, 0)
-	connectedCount := 0
-	for _, c := range clients {
-		if served[c.LFDI] {
-			continue
-		}
-		if s.clientConnected(c) {
-			connectedCount++
-		}
-		rows = append(rows, sep2admin.Row{
-			text(c.LFDI), s.clientStatus(c), timeCell(c.LastSeen), ageCell(c.Age), number(c.RequestCount), text(strings.Join(c.Paths, ", ")),
-		})
-	}
-	if disabled {
-		prose = []string{"The connection observer is off (SEP2_ENABLE_CCM), so connected and idle counts are not available."}
-	} else {
-		prose = []string{fmt.Sprintf("%d connected, %d idle. A client is idle once unseen for %s; idle clients stay listed. Read only.",
-			connectedCount, len(rows)-connectedCount, s.idleAfter)}
-	}
-	return table(heading, empty, prose, columns, rows)
-}
-
-func handshakesSection(attempts []connobs.HandshakeAttempt, disabled bool) tableSpec {
-	rows := make([]sep2admin.Row, 0, len(attempts))
-	for _, h := range attempts {
-		result := sep2admin.BadgeCell(sep2admin.BadgeError, "rejected")
-		if h.Accepted {
-			result = sep2admin.BadgeCell(sep2admin.BadgeOK, "accepted")
-		}
-		known := sep2admin.BadgeCell(sep2admin.BadgeNeutral, "unknown")
-		if h.Known {
-			known = sep2admin.BadgeCell(sep2admin.BadgeOK, "known")
-		}
-		rows = append(rows, sep2admin.Row{
-			text(h.LFDI), orDash(h.RemoteAddr), result, orDash(h.Reason), known, timeCell(h.At),
-		})
-	}
-	empty := "No handshake attempts recorded yet."
-	if disabled {
-		empty = "Connection observation is disabled (SEP2_ENABLE_CCM): this list cannot show handshake attempts."
-	}
-	return table("Handshake attempts (cert validity)", empty, nil,
-		[]string{"LFDI", "Remote address", "Result", "Reason", "Known", "At"}, rows)
 }
 
 // clientSnapshot is the connobs snapshot with each client's last-seen time
@@ -298,16 +137,4 @@ func (s *Server) clientSnapshot() connobs.Snapshot {
 // threshold, so a client exactly at it is already idle.
 func (s *Server) clientConnected(c connobs.ClientSnapshot) bool {
 	return c.Age < s.idleAfter
-}
-
-func (s *Server) clientStatus(c connobs.ClientSnapshot) sep2admin.Cell {
-	if s.clientConnected(c) {
-		return sep2admin.BadgeCell(sep2admin.BadgeOK, "connected")
-	}
-	return sep2admin.BadgeCell(sep2admin.BadgeWarn, "idle")
-}
-
-// ageCell shows an age in whole seconds, such as "3m12s".
-func ageCell(d time.Duration) sep2admin.Cell {
-	return text(d.Truncate(time.Second).String())
 }

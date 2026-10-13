@@ -36,12 +36,18 @@ func tables(specs ...tableSpec) sep2admin.Descriptor {
 	for i, s := range specs {
 		lens[i] = len(s.rows)
 	}
+	return fitToCaps(lens, func(limits []int) sep2admin.Descriptor { return buildTables(specs, limits) })
+}
+
+// fitToCaps builds with the row budget shared across tables of the given
+// lengths, and halves the budget until the encoding fits the byte cap.
+func fitToCaps[T any](lens []int, build func(limits []int) T) T {
 	budget := panelMaxRows
 	for {
 		limits := shareRows(lens, budget)
-		d := buildTables(specs, limits)
-		// An encode error is left for the plane to report, as it would for
-		// any panel.
+		d := build(limits)
+		// An encode error is left for the caller to report, as the plane
+		// would for any panel.
 		b, err := json.Marshal(d)
 		if err != nil || len(b) <= panelMaxBytes || budget == 0 {
 			return d
@@ -50,13 +56,18 @@ func tables(specs ...tableSpec) sep2admin.Descriptor {
 	}
 }
 
+// trimNote is the sentence a section carries when it lost rows to the caps.
+func trimNote(shown, total int) string {
+	return fmt.Sprintf("Showing %d of %d rows: a panel holds at most %d rows and %d KiB.",
+		shown, total, panelMaxRows, panelMaxBytes>>10)
+}
+
 func buildTables(specs []tableSpec, limits []int) sep2admin.Descriptor {
 	sections := make([]sep2admin.Section, 0, len(specs))
 	for i, s := range specs {
 		prose, empty := s.prose, s.empty
 		if limits[i] < len(s.rows) {
-			note := fmt.Sprintf("Showing %d of %d rows: a panel holds at most %d rows and %d KiB.",
-				limits[i], len(s.rows), panelMaxRows, panelMaxBytes>>10)
+			note := trimNote(limits[i], len(s.rows))
 			prose = append(append([]string(nil), prose...), note)
 			empty = note
 		}
