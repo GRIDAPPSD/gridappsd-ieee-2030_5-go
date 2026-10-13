@@ -76,6 +76,12 @@ type formRefusal struct{ reason string }
 
 func (e *formRefusal) Error() string { return "adminui: form refused: " + e.reason }
 
+// formRateLimited is the error a route's run returns when the route's own
+// rate limit is spent. It is answered 429 with a Retry-After.
+type formRateLimited struct{ reason string }
+
+func (e *formRateLimited) Error() string { return "adminui: form rate limited: " + e.reason }
+
 // formRoute is one POST route of a page: the fields it takes, and what it
 // does with a validated submission. remote is the caller's address, which
 // the sender records as who made the change.
@@ -146,12 +152,17 @@ func formHandler(page, name string, route formRoute) http.Handler {
 		ctx := r.Context()
 		msg, err := route.run(ctx, remote, vals)
 		var refusal *formRefusal
+		var limited *formRateLimited
 		switch {
 		case ctx.Err() != nil:
 			// The browser left or the server is closing; the run may have
 			// finished, so the answer says the outcome is not known.
 			log.Printf("adminui: page %s route %s: outcome=canceled remote=%s", page, name, remote)
 			writeJSON(w, http.StatusServiceUnavailable, message{formCanceled})
+		case errors.As(err, &limited):
+			log.Printf("adminui: page %s route %s: outcome=rate-limited remote=%s", page, name, remote)
+			w.Header().Set("Retry-After", "1")
+			writeJSON(w, http.StatusTooManyRequests, message{boundedMessage(limited.reason)})
 		case errors.As(err, &refusal):
 			log.Printf("adminui: page %s route %s: outcome=refused remote=%s", page, name, remote)
 			writeJSON(w, http.StatusUnprocessableEntity, message{boundedMessage(refusal.reason)})

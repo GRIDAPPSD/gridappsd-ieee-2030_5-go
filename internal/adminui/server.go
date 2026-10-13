@@ -361,7 +361,7 @@ func New(cfg Config, src Sources) (*Server, error) {
 		s.monitor = newMonitorPanel(src.Monitor, s.startedAt)
 	}
 	if src.Sender != nil {
-		s.sender = &senderPanel{s: src.Sender}
+		s.sender = newSenderPanel(src.Sender, func() time.Time { return s.now() })
 	}
 
 	plane, err := sep2adminplane.New(sep2adminplane.Config{

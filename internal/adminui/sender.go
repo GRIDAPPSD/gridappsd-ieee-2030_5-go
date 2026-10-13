@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui/senderpage"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sender"
@@ -44,6 +45,21 @@ func remoteFrom(ctx context.Context) string {
 // pages.
 type senderPanel struct {
 	s *sender.Sender
+	// flipLimit bounds the switch flips, which spend no send tokens: a burst
+	// of flipBurst, then one per flipRefillEvery.
+	flipLimit *tokenBucket
+	now       func() time.Time
+}
+
+const (
+	flipBurst       = 5
+	flipRefillEvery = time.Second
+
+	flipRateLimited = "too many switch flips; wait a moment and retry"
+)
+
+func newSenderPanel(s *sender.Sender, now func() time.Time) *senderPanel {
+	return &senderPanel{s: s, flipLimit: newBucket(now(), flipBurst, flipRefillEvery), now: now}
 }
 
 // switchDoc is the data of the Bus publishing page. On is the state the
@@ -135,6 +151,9 @@ func (p *senderPanel) deviceIDs() []string {
 }
 
 func (p *senderPanel) flip(ctx context.Context, remote string, v formValues) (string, error) {
+	if !p.flipLimit.allow(p.now()) {
+		return "", &formRateLimited{reason: flipRateLimited}
+	}
 	st := p.s.SetPublishing(v.boolean("on"), remote)
 	if st.On {
 		return "Publishing is ON.", nil

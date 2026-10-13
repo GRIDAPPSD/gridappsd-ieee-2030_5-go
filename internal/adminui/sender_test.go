@@ -763,3 +763,54 @@ func TestShutdownStaysWithinOneBound(t *testing.T) {
 		t.Fatal("Run did not return")
 	}
 }
+
+// TestSwitchFlipIsRateLimited: flips spend no send tokens, so the switch has
+// its own limit. The sixth rapid flip is refused with a 429 and leaves the
+// switch and its audit trail as they were; one refill interval later a flip
+// goes through.
+func TestSwitchFlipIsRateLimited(t *testing.T) {
+	t.Parallel()
+	snd := newTestSender(t, &recordingBus{}, false)
+	s := senderServer(t, snd)
+	now := time.Unix(1_700_000_000, 0)
+	s.sender.now = func() time.Time { return now }
+	s.sender.flipLimit = newBucket(now, flipBurst, flipRefillEvery)
+
+	for i := 0; i < flipBurst; i++ {
+		on := i%2 == 0
+		code, _ := postPanelAction(t, s.Handler(), switchPanelID, "publishing", fmt.Sprintf(`{"on":%t}`, on))
+		if code != http.StatusOK {
+			t.Fatalf("flip %d: status %d, want 200", i+1, code)
+		}
+	}
+	if !snd.Publishing().On {
+		t.Fatal("setup: the fifth flip should leave publishing on")
+	}
+	flipsBefore := len(snd.Recent())
+
+	req := httptest.NewRequest(http.MethodPost, "/apps/"+switchPanelID+"/publishing", strings.NewReader(`{"on":false}`))
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Host = "localhost"
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "1" || !strings.Contains(rec.Body.String(), flipRateLimited) {
+		t.Errorf("sixth flip = %d retry-after %q body %s, want 429, 1 and the limit message", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
+	}
+	if !snd.Publishing().On {
+		t.Error("a limited flip changed the switch")
+	}
+	if got := len(snd.Recent()); got != flipsBefore {
+		t.Errorf("recent entries = %d after a limited flip, want %d", got, flipsBefore)
+	}
+
+	now = now.Add(flipRefillEvery)
+	code, out := postPanelAction(t, s.Handler(), switchPanelID, "publishing", `{"on":false}`)
+	if code != http.StatusOK || !strings.HasPrefix(out["message"].(string), "Publishing is OFF.") {
+		t.Errorf("flip after a refill interval = %d %v, want 200 off", code, out)
+	}
+	if snd.Publishing().On || snd.Publishing().ChangedBy != "127.0.0.1:40000" {
+		t.Errorf("state after the allowed flip = %+v", snd.Publishing())
+	}
+}
