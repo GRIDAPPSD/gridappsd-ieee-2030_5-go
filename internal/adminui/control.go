@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,8 +64,14 @@ const (
 	controlPickupSeconds = 30
 
 	// maxControlRecords bounds the in-memory ledger of sends the status route
-	// answers from; the oldest is dropped first.
-	maxControlRecords = 256
+	// answers from; the oldest is dropped first. A fleet-wide send adds one
+	// record per device, so 2048 keeps several sends of the 58-device fleet
+	// (about 35) where 256 held fewer than five.
+	maxControlRecords = 2048
+
+	// controlAllTimeout bounds an all-devices send that no longer follows its
+	// request's cancellation, so a stuck store cannot hold it forever.
+	controlAllTimeout = 2 * time.Minute
 
 	// maxStatusReports bounds the SoC reports one status body carries.
 	maxStatusReports = 200
@@ -785,9 +792,14 @@ func (s *Server) handleControlAll(w http.ResponseWriter, r *http.Request) {
 
 	out := controlAllResponse{Watts: watts, Stop: req.Stop, DurationSeconds: seconds,
 		Total: len(devices), Results: make([]controlAllResult, 0, len(devices))}
-	for _, d := range devices {
+	// The page aborts its fetch after 10 s; the loop must still reach every
+	// device, or the fleet is left partly controlled.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), controlAllTimeout)
+	defer cancel()
+	var ids strings.Builder
+	for i, d := range devices {
 		res := controlAllResult{MRID: d.MRID, Name: d.Name}
-		rec, warning, err := s.issueControl(r.Context(), d.MRID, watts, seconds)
+		rec, warning, err := s.issueControl(ctx, d.MRID, watts, seconds)
 		switch {
 		case errors.Is(err, errNoStatusID):
 			res.Error = "control issued but no status id could be made"
@@ -800,17 +812,22 @@ func (s *Server) handleControlAll(w http.ResponseWriter, r *http.Request) {
 		default:
 			res.OK, res.ID, res.Warning = true, rec.id, warning
 		}
+		if i > 0 {
+			ids.WriteByte(',')
+		}
 		if res.OK {
 			out.Succeeded++
+			ids.WriteString(d.MRID + "=" + res.ID)
 		} else {
 			out.Failed++
+			ids.WriteString(d.MRID + "=failed")
 		}
 		out.Results = append(out.Results, res)
 	}
 
 	// The route takes no credential, so this line is the only record of who
 	// sent the controls.
-	log.Printf("adminui: watts control accepted from %s: device=all devices=%d ok=%d watts=%d duration=%ds",
-		remoteFrom(r.Context()), out.Total, out.Succeeded, watts, seconds)
+	log.Printf("adminui: watts control accepted from %s: device=all devices=%d ok=%d watts=%d duration=%ds ids=%s",
+		remoteFrom(r.Context()), out.Total, out.Succeeded, watts, seconds, ids.String())
 	writeJSON(w, http.StatusOK, out)
 }
