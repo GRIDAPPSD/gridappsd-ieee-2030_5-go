@@ -10,8 +10,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2admin"
-
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/busmonitor"
 )
 
@@ -30,85 +28,74 @@ const (
 	monitorHexPrefix = 32
 )
 
-// monitorParam admits a topic name's characters only; busmonitor.Watch
-// still decides whether the name is one that may be watched.
-var monitorParam = sep2admin.StreamParam{
-	MaxLen:  len("/topic/") + 200,
-	Charset: "/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.*>",
+// Stream bounds. At most monitorMaxStreams streams are open at once, and a
+// browser that takes longer than monitorWriteTimeout to accept one event is
+// cut, so a stalled connection cannot hold a viewer.
+const (
+	monitorMaxStreams   = 8
+	monitorWriteTimeout = 10 * time.Second
+)
+
+// The topic name a stream request may carry: its length and characters
+// only; busmonitor.Watch still decides whether the name may be watched.
+const (
+	monitorTopicMaxLen  = len("/topic/") + 200
+	monitorTopicCharset = "/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.*>"
+)
+
+// Kinds of a monitor event on the wire.
+const (
+	monitorKindMessage = "message"
+	monitorKindStatus  = "status"
+)
+
+// monitorEvent is one event of a topic stream. ID is zero for an event that
+// is not resumable, which the wire then leaves without an id line.
+type monitorEvent struct {
+	ID    uint64
+	Time  time.Time
+	Kind  string
+	Text  string
+	Final bool
 }
 
-// monitorPanel serves the bus monitor: the View describes how to use it
-// and lists the watched topics, and the Stream carries one topic's feed.
+// monitorPanel serves the bus monitor page: the topics route lists the
+// watched topics and the stream route carries one topic's feed.
 type monitorPanel struct {
 	mon MonitorSource
 	// idBase offsets every event ID by the panel's start time in
 	// microseconds. A browser resuming with an ID from a previous bridge
 	// process would otherwise be ahead of the new process's sequence, and
-	// the plane would drop every event at or below it.
+	// the stream would drop every event at or below it.
 	idBase uint64
+	// slots holds one entry for each open stream.
+	slots chan struct{}
 }
 
 func newMonitorPanel(mon MonitorSource, start time.Time) *monitorPanel {
-	return &monitorPanel{mon: mon, idBase: uint64(start.UnixMicro())}
+	return &monitorPanel{mon: mon, idBase: uint64(start.UnixMicro()), slots: make(chan struct{}, monitorMaxStreams)}
 }
 
-func (p *monitorPanel) panel(slot int) sep2admin.Panel {
-	return sep2admin.Panel{
-		ID:                panelBusMonitor,
-		Label:             "Bus monitor",
-		Placement:         sep2admin.ExtensionSlot(slot),
-		DescriptorVersion: sep2admin.CurrentDescriptorVersion,
-		View:              p.view,
-		Stream:            &sep2admin.Stream{Param: monitorParam, Open: p.open},
-	}
-}
-
-func (p *monitorPanel) view(context.Context) (sep2admin.Descriptor, error) {
-	topics := p.mon.Topics()
-	rows := make([]sep2admin.Row, 0, len(topics))
-	for _, t := range topics {
-		rows = append(rows, sep2admin.Row{text(t.Name), text(string(t.State)), number(t.Viewers), number(t.Buffered)})
-	}
-	return tables(table("Watched topics", "No topic is being watched.",
-		[]string{
-			fmt.Sprintf("Enter a topic such as /topic/goss.gridappsd.platform.log and press Start. A segment may be * and the name may end in .> to watch many topics. Queues, the bus health probe, the token topics and the broker advisories are refused. At most %d topics are watched at once, each on its own broker connection, closed %s after its last viewer leaves.",
-				busmonitor.MaxTopics, busmonitor.IdleClose),
-			fmt.Sprintf("A viewer first gets the newest %d messages the topic has buffered, then the live feed. Each line shows the topic, the size and up to %d bytes of the body; a body that is not UTF-8 text shows as its size and a hex prefix.",
-				busmonitor.RingSize, monitorBodyShown),
-		},
-		[]string{"Topic", "State", "Viewers", "Buffered"}, rows)), nil
-}
-
-// open attaches a viewer and feeds it from its own goroutine until the
-// stream ends. A topic the monitor refuses fails the open, the one way a
-// source can refuse without holding one of the plane's stream slots; the
-// plane logs the reason, and the browser only learns the stream was refused.
-func (p *monitorPanel) open(ctx context.Context, req sep2admin.StreamRequest, send sep2admin.StreamSendFunc) error {
-	v, err := p.mon.Watch(req.Param)
-	if err != nil {
-		return fmt.Errorf("topic %q not watched: %w", req.Param, err)
-	}
-	go p.feed(ctx, v, req.After, send)
-	return nil
-}
-
-func (p *monitorPanel) feed(ctx context.Context, v *busmonitor.Viewer, after uint64, send sep2admin.StreamSendFunc) {
+// feed sends the topic's backlog, its state, then each live event until the
+// view ends, send reports a failure, or ctx is done. It closes the viewer.
+func (p *monitorPanel) feed(ctx context.Context, v *busmonitor.Viewer, after uint64, send func(monitorEvent) bool) {
 	defer v.Close()
 	for _, m := range v.Backlog() {
 		if id := p.idBase + m.Seq; id > after && !send(p.messageEvent(m)) {
 			return
 		}
 	}
-	if !send(sep2admin.StreamEvent{ID: p.idBase + v.JoinSeq(), Time: time.Now(), Kind: sep2admin.StreamStatus, Text: statusText(v.Status())}) {
+	if !send(monitorEvent{ID: p.idBase + v.JoinSeq(), Time: time.Now(), Kind: monitorKindStatus, Text: statusText(v.Status())}) {
 		return
 	}
 	for {
 		select {
 		case <-ctx.Done():
+			send(monitorEvent{Time: time.Now(), Kind: monitorKindStatus, Text: "stream closed: server shutting down", Final: true})
 			return
 		case ev, ok := <-v.Events():
 			if !ok {
-				send(sep2admin.StreamEvent{ID: p.idBase + v.EndSeq(), Time: time.Now(), Kind: sep2admin.StreamStatus,
+				send(monitorEvent{ID: p.idBase + v.EndSeq(), Time: time.Now(), Kind: monitorKindStatus, Final: true,
 					Text: "monitor stopped this view: " + viewerEndReason(v.Err()) + "; press Start to watch again"})
 				return
 			}
@@ -119,15 +106,15 @@ func (p *monitorPanel) feed(ctx context.Context, v *busmonitor.Viewer, after uin
 	}
 }
 
-func (p *monitorPanel) event(ev busmonitor.Event) sep2admin.StreamEvent {
+func (p *monitorPanel) event(ev busmonitor.Event) monitorEvent {
 	if ev.Kind == busmonitor.EventMessage {
 		return p.messageEvent(ev.Message)
 	}
-	return sep2admin.StreamEvent{ID: p.idBase + ev.Seq, Time: ev.Time, Kind: sep2admin.StreamStatus, Text: statusText(ev.Status)}
+	return monitorEvent{ID: p.idBase + ev.Seq, Time: ev.Time, Kind: monitorKindStatus, Text: statusText(ev.Status)}
 }
 
-func (p *monitorPanel) messageEvent(m busmonitor.Message) sep2admin.StreamEvent {
-	return sep2admin.StreamEvent{ID: p.idBase + m.Seq, Time: m.Received, Kind: sep2admin.StreamMessage, Text: messageText(m)}
+func (p *monitorPanel) messageEvent(m busmonitor.Message) monitorEvent {
+	return monitorEvent{ID: p.idBase + m.Seq, Time: m.Received, Kind: monitorKindMessage, Text: messageText(m)}
 }
 
 func viewerEndReason(err error) string {

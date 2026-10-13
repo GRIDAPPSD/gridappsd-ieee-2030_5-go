@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bus monitor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<h1>Bus monitor</h1>
+<div id="prose"></div>
+<form id="watch" autocomplete="off">
+<label>Topic <input id="topic" type="text" maxlength="207" spellcheck="false" placeholder="/topic/goss.gridappsd.platform.log"></label>
+<button type="submit" id="start">Start</button>
+<button type="button" id="stop" disabled>Stop</button>
+</form>
+<p id="status" class="muted" role="status">not watching</p>
+<div id="log" class="log" role="log" aria-live="off" tabindex="0"></div>
+<h2>Watched topics</h2>
+<p id="topics-status" class="muted" role="status">loading</p>
+<div id="topics"></div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

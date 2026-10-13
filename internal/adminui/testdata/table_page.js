@@ -80,9 +80,19 @@ async function run(source, sc) {
     const status = url === "data" ? sc.status || 200 : 404;
     return { ok: status < 400, status, json: async () => sc.body };
   }
+  let timeoutCalls = 0;
+  let controllers = 0;
+  let aborts = 0;
+  class AbortController_ {
+    constructor() { controllers++; this.signal = { aborted: false }; }
+    abort() { aborts++; this.signal.aborted = true; }
+  }
+  // noTimeout is a browser whose AbortSignal has no timeout().
+  const abortSignal = sc.noTimeout ? {} : { timeout: () => { timeoutCalls++; return undefined; } };
   const ctx = {
     document, fetch, Date, String, Error, Array, Map, Set, Object,
-    AbortSignal: { timeout: () => undefined },
+    AbortSignal: abortSignal,
+    AbortController: AbortController_,
     setTimeout: (fn) => { pending.push(fn); return pending.length; },
     clearTimeout: () => { cleared++; },
   };
@@ -118,6 +128,9 @@ async function run(source, sc) {
     steps,
     innerHTML: counters.innerHTML,
     style: counters.style,
+    timeoutCalls,
+    controllers,
+    cleared,
   };
 }
 

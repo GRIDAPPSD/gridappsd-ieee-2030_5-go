@@ -90,19 +90,34 @@
     s.className = isError ? "error" : "muted";
   }
 
+  // AbortSignal.timeout is missing from older browsers; the fallback aborts
+  // a controller from a timer, and done() clears that timer.
+  function timeoutSignal(ms) {
+    if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+      return { signal: AbortSignal.timeout(ms), done() {} };
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return { signal: ctrl.signal, done() { clearTimeout(timer); } };
+  }
+
   let timer = null;
   let inflight = false;
 
   async function load() {
     inflight = true;
+    let limit = null;
     try {
-      const r = await fetch(DATA, { cache: "no-store", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      limit = timeoutSignal(FETCH_TIMEOUT_MS);
+      const r = await fetch(DATA, { cache: "no-store", signal: limit.signal });
       if (!r.ok) throw new Error("HTTP " + r.status);
       render(await r.json());
       setStatus("updated " + new Date().toISOString(), false);
     } catch (e) {
       $("content").replaceChildren();
       setStatus("unavailable: " + e.message, true);
+    } finally {
+      if (limit) limit.done();
     }
     inflight = false;
   }

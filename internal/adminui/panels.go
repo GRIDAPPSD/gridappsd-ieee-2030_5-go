@@ -26,32 +26,28 @@ func (s *Server) panels() []sep2admin.Panel {
 	views := []struct {
 		id, label string
 		page      http.Handler
-		view      sep2admin.ViewFunc
 	}{
-		{panelHealth, "Bridge health", s.healthPage(), nil},
-		{panelConnections, "Connections", s.tablePage(panelConnections, s.connectionsData), nil},
-		{panelDERPrograms, "DER programs", s.tablePage(panelDERPrograms, s.derProgramsData), nil},
-		{panelControlFlow, "Control flow", s.tablePage(panelControlFlow, s.controlFlowData), nil},
-		{panelGraphInput, "Graph: device status", nil, s.graphInputView},
+		{panelHealth, "Bridge health", s.healthPage()},
+		{panelConnections, "Connections", s.tablePage(panelConnections, s.connectionsData)},
+		{panelDERPrograms, "DER programs", s.tablePage(panelDERPrograms, s.derProgramsData)},
+		{panelControlFlow, "Control flow", s.tablePage(panelControlFlow, s.controlFlowData)},
+		{panelGraphInput, "Graph: device status", s.graphPage()},
 	}
-	out := make([]sep2admin.Panel, 0, len(views))
+	if s.monitor != nil {
+		views = append(views, struct {
+			id, label string
+			page      http.Handler
+		}{panelBusMonitor, "Bus monitor", s.monitorPage()})
+	}
+	out := make([]sep2admin.Panel, 0, len(views)+2)
 	for i, v := range views {
-		p := sep2admin.Panel{
+		out = append(out, sep2admin.Panel{
 			ID:                v.id,
 			Label:             v.label,
 			Placement:         sep2admin.ExtensionSlot(i + 1),
 			DescriptorVersion: sep2admin.CurrentDescriptorVersion,
-			View:              v.view,
 			Page:              v.page,
-		}
-		if v.id == panelGraphInput {
-			// View answers with no selection: the newest batteries.
-			p.Picker = &sep2admin.Picker{Choices: s.graphChoices, Select: s.graphSelectView}
-		}
-		out = append(out, p)
-	}
-	if s.monitor != nil {
-		out = append(out, s.monitor.panel(len(out)+1))
+		})
 	}
 	if s.sender != nil {
 		out = append(out, s.sender.switchPanel(len(out)+1))
@@ -65,10 +61,6 @@ func descriptor(sections ...sep2admin.Section) sep2admin.Descriptor {
 }
 
 func text(v string) sep2admin.Cell { return sep2admin.TextCell(sep2admin.Value(v)) }
-
-func number[T int | int64 | uint8 | uint64](v T) sep2admin.Cell {
-	return text(fmt.Sprint(v))
-}
 
 // timeCell shows t in the JSON routes' format. The descriptor refuses a
 // zero time, which an unset field would be, so that shows as "-".
