@@ -2,8 +2,8 @@ github.com/GRIDAPPSD/gridappsd-go v0.1.0 h1:HKeQPSB/HZEAQj9P7PhDgF/wYjAbZa/yp5hD
 github.com/GRIDAPPSD/gridappsd-go v0.1.0/go.mod h1:Y/eEXOS6Co5uer73z3mIHrpSt0ja2W25AEUuLsJwFeI=
 github.com/GRIDAPPSD/ieee-2030_5-core-go v0.24.0 h1:oEvTyZ3PEIJpHmfoKuUmbgrANSGC733jjuuSF4B65wg=
 github.com/GRIDAPPSD/ieee-2030_5-core-go v0.24.0/go.mod h1:dApepO2tCpWeD8xsfvtnaudTm6mZlkZIHmOcj9s7DjE=
-github.com/GRIDAPPSD/ieee-2030_5-server-go v0.15.0 h1:eDjg1ls7LrPJOjGl0U1o5QW6KL7z1xM4qDN5SDLbRus=
-github.com/GRIDAPPSD/ieee-2030_5-server-go v0.15.0/go.mod h1:wxC8o3L9wkP0cF8hji1BVELHV+kzrKIv7Vk2cGCuYdE=
+github.com/GRIDAPPSD/ieee-2030_5-server-go v0.16.0 h1:8JmdqTDzVFThuKMIqN1mUSb6PZ4tLQMIjQdUYbsKZso=
+github.com/GRIDAPPSD/ieee-2030_5-server-go v0.16.0/go.mod h1:wxC8o3L9wkP0cF8hji1BVELHV+kzrKIv7Vk2cGCuYdE=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
