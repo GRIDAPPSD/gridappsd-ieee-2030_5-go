@@ -2,8 +2,10 @@ package adminui
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sep2embed"
@@ -272,5 +275,100 @@ func TestControlSingleSendIsUnchangedByTheAllRoute(t *testing.T) {
 	rec := postControl(t, h.s.Handler(), "application/json", `{"watts":5}`, "localhost")
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "mrid is required") {
 		t.Errorf("single send without mrid: %d %s, want the unchanged 400", rec.Code, rec.Body)
+	}
+}
+
+// cancelAfterFirst cancels the request context once the first device is sent
+// and records whether each send still had a live context.
+type cancelAfterFirst struct {
+	ControlSource
+	cancel context.CancelFunc
+	live   []bool
+}
+
+func (c *cancelAfterFirst) ApplyControlFor(ctx context.Context, d sep2embed.ControlDelta, seconds uint32) (sep2embed.ControlSend, error) {
+	c.live = append(c.live, ctx.Err() == nil)
+	send, err := c.ControlSource.ApplyControlFor(ctx, d, seconds)
+	if len(c.live) == 1 {
+		c.cancel()
+	}
+	return send, err
+}
+
+func TestControlAllCompletesEveryDeviceWhenTheRequestIsCancelledMidLoop(t *testing.T) {
+	h := allHarness(t, "_a", "_b", "_c")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wrap := &cancelAfterFirst{ControlSource: h.ctl, cancel: cancel}
+	h.s.control = wrap
+
+	req := httptest.NewRequest(http.MethodPost, allRoute, strings.NewReader(`{"watts":100}`)).WithContext(ctx)
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Host = "localhost"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.s.Handler().ServeHTTP(rec, req)
+
+	var out controlAllResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body: %v: %s", err, rec.Body)
+	}
+	if len(h.ctl.calls) != 3 || out.Succeeded != 3 || out.Failed != 0 {
+		t.Errorf("calls=%d summary=%+v, want all 3 devices sent", len(h.ctl.calls), out)
+	}
+	for i, ok := range wrap.live {
+		if !ok {
+			t.Errorf("send %d ran on a cancelled context", i)
+		}
+	}
+}
+
+func TestControlAllLogLineCarriesEveryDeviceIDOrFailure(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	h := allHarness(t, "_a", "_b", "_c")
+	h.ctl.errFor = map[string]error{"_b": errBoom}
+
+	out := h.sendAll(t, `{"watts":100}`)
+
+	var line string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(l, "watts control accepted") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("no accepted line: %s", buf.String())
+	}
+	for _, w := range []string{"_a=" + out.Results[0].ID, "_b=failed", "_c=" + out.Results[2].ID} {
+		if !strings.Contains(line, w) {
+			t.Errorf("line %q lacks %q", line, w)
+		}
+	}
+	if strings.Contains(line, "secret detail") {
+		t.Errorf("line carries the error text: %q", line)
+	}
+}
+
+func TestControlHistoryHoldsSeveralFleetWideSends(t *testing.T) {
+	const devices, sends = 60, 5
+	mrids := make([]string, devices)
+	for i := range mrids {
+		mrids[i] = fmt.Sprintf("_d%02d", i)
+	}
+	h := allHarness(t, mrids...)
+	h.s.controlLimit = newTokenBucket(h.clk.now())
+	var ids []string
+	for i := 0; i < sends; i++ {
+		h.clk.t = h.clk.t.Add(10 * time.Second)
+		for _, r := range h.sendAll(t, `{"watts":100}`).Results {
+			ids = append(ids, r.ID)
+		}
+	}
+	for i, id := range ids {
+		if _, ok := h.s.controls.get(id); !ok {
+			t.Fatalf("record %d of %d was evicted", i, len(ids))
+		}
 	}
 }
