@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph: device status</title>
+<link rel="stylesheet" href="uplot.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<h1 id="title">Graph: device status</h1>
+<p id="status" class="muted" role="status">loading</p>
+<div id="prose"></div>
+<fieldset id="picker">
+<legend>Batteries</legend>
+<p id="picker-hint" class="muted"></p>
+<button type="button" id="clear">Clear selection</button>
+<div id="choices" class="picklist" role="group" aria-label="Batteries"></div>
+</fieldset>
+<h2>State of charge</h2>
+<div id="chart" class="chart" role="img" aria-label="State of charge" aria-describedby="chart-summary"></div>
+<p id="chart-summary" class="sr-only"></p>
+<div id="latest"></div>
+</main>
+<script src="uplot.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

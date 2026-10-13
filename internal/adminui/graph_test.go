@@ -1,8 +1,10 @@
 package adminui
 
 import (
-	"context"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,28 +13,34 @@ import (
 
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2admin"
 
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui/graphpage"
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui/socpage"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/registry"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/telemetryhistory"
 )
 
-type wireChartSeries struct {
-	Name   string       `json:"name"`
-	Points [][2]float64 `json:"points"`
-}
-
-type wireChartSection struct {
-	Kind    string   `json:"kind"`
-	Heading string   `json:"heading"`
+// wireGraph is the graph data route's document as the page reads it.
+type wireGraph struct {
+	Title   string   `json:"title"`
+	Unit    string   `json:"unit"`
+	Max     int      `json:"max"`
 	Prose   []string `json:"prose"`
 	Empty   string   `json:"empty"`
-	Body    struct {
-		Unit   string            `json:"unit"`
-		Series []wireChartSeries `json:"series"`
-	} `json:"body"`
-}
-
-type wireChartDescriptor struct {
-	Sections []wireChartSection `json:"sections"`
+	Choices []struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+	} `json:"choices"`
+	Series []struct {
+		MRID   string       `json:"mrid"`
+		Name   string       `json:"name"`
+		Points [][2]float64 `json:"points"`
+	} `json:"series"`
+	Latest struct {
+		Heading string        `json:"heading"`
+		Prose   []string      `json:"prose"`
+		Empty   string        `json:"empty"`
+		Body    pageTableBody `json:"body"`
+	} `json:"latest"`
 }
 
 // fakeHistory is a HistorySource that returns what a test preloaded, so a
@@ -77,28 +85,32 @@ func graphServer(t *testing.T, history HistorySource, now time.Time, names ...re
 	return s
 }
 
-func getGraph(t *testing.T, s *Server) (chart wireChartSection, d wireDescriptor) {
+func graphPath(file string) string { return "/apps/" + panelGraphInput + "/" + file }
+
+// getGraph fetches the data route through the full listener handler, as the
+// page does, with query such as "?sel=M-01".
+func getGraph(t *testing.T, s *Server, query string) wireGraph {
 	t.Helper()
-	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelGraphInput, "Bearer "+testKey, "localhost")
+	rec := doRequest(t, s.Handler(), http.MethodGet, graphPath("data")+query, "Bearer "+testKey, "localhost")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET panel %s: %d %s", panelGraphInput, rec.Code, rec.Body.String())
+		t.Fatalf("GET graph data %s: %d %s", query, rec.Code, rec.Body.String())
 	}
-	var cd wireChartDescriptor
-	decodeJSON(t, rec.Body.Bytes(), &cd)
-	decodeJSON(t, rec.Body.Bytes(), &d)
-	for _, sec := range cd.Sections {
-		if sec.Kind == "chart" {
-			return sec, d
-		}
-	}
-	t.Fatalf("no chart section in %s", rec.Body.String())
-	return
+	var g wireGraph
+	decodeJSON(t, rec.Body.Bytes(), &g)
+	return g
 }
 
-// TestGraphInputPanelChartsTwoBatteriesWithALatestTable is the issue's
-// first done-when line: one chart, one series per battery, in percent,
-// and a table of each series' newest value and its age.
-func TestGraphInputPanelChartsTwoBatteriesWithALatestTable(t *testing.T) {
+func (g wireGraph) names() []string {
+	var out []string
+	for _, s := range g.Series {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+// TestGraphDataChartsTwoBatteriesWithALatestTable: one line per battery, in
+// percent, and a table of each series' newest value and its age.
+func TestGraphDataChartsTwoBatteriesWithALatestTable(t *testing.T) {
 	t.Parallel()
 
 	h := &fakeHistory{snap: []telemetryhistory.SeriesSnapshot{
@@ -109,46 +121,66 @@ func TestGraphInputPanelChartsTwoBatteriesWithALatestTable(t *testing.T) {
 	}}
 	now := time.Unix(graphEpoch+75, 0)
 	s := graphServer(t, h, now, registry.Entry{MRID: "m-1", Name: "Battery One"})
-	chart, d := getGraph(t, s)
+	g := getGraph(t, s, "")
 
-	if chart.Body.Unit != "%" {
-		t.Errorf("unit = %q, want %%", chart.Body.Unit)
+	if g.Unit != "%" || g.Title != "Graph: device status" || g.Max != 16 {
+		t.Errorf("unit %q, title %q, max %d; want %%, the tab label and 16", g.Unit, g.Title, g.Max)
 	}
-	want := []wireChartSeries{
-		{Name: "Battery One", Points: [][2]float64{{float64(graphEpoch) * 1000, 65.5}, {float64(graphEpoch+15) * 1000, 64}}},
-		{Name: "m-2", Points: [][2]float64{{float64(graphEpoch+5) * 1000, 30}}},
+	type line = struct {
+		MRID   string       `json:"mrid"`
+		Name   string       `json:"name"`
+		Points [][2]float64 `json:"points"`
 	}
-	if len(chart.Body.Series) != len(want) {
-		t.Fatalf("series = %+v, want %+v (the setpoint series must not be charted)", chart.Body.Series, want)
+	want := []line{
+		{MRID: "m-1", Name: "Battery One", Points: [][2]float64{{float64(graphEpoch), 65.5}, {float64(graphEpoch + 15), 64}}},
+		{MRID: "m-2", Name: "m-2", Points: [][2]float64{{float64(graphEpoch + 5), 30}}},
+	}
+	if len(g.Series) != len(want) {
+		t.Fatalf("series = %+v, want %+v (the setpoint series must not be charted)", g.Series, want)
 	}
 	for i, w := range want {
-		g := chart.Body.Series[i]
-		if g.Name != w.Name || !slices.Equal(g.Points, w.Points) {
-			t.Errorf("series[%d] = %+v, want %+v", i, g, w)
+		got := g.Series[i]
+		if got.MRID != w.MRID || got.Name != w.Name || !slices.Equal(got.Points, w.Points) {
+			t.Errorf("series[%d] = %+v, want %+v", i, got, w)
 		}
 	}
 
-	table := section(t, d, "Latest state of charge")
-	assertColumns(t, table, "Series", "Value (%)", "As of", "Age", "Charted")
-	if len(table.Body.Rows) != 2 {
-		t.Fatalf("latest rows = %d, want 2", len(table.Body.Rows))
+	if !slices.Equal(g.Latest.Body.Columns, []string{"Series", "Value (%)", "As of", "Age", "Charted"}) {
+		t.Errorf("latest columns = %q", g.Latest.Body.Columns)
 	}
-	r0, r1 := table.Body.Rows[0], table.Body.Rows[1]
-	if got := texts([]wireCell{r0[0], r0[1], r0[3]}); !slices.Equal(got, []string{"Battery One", "64", "1m0s"}) {
-		t.Errorf("row 0 = %q, want Battery One 64 1m0s", got)
+	rows := g.Latest.Body.Rows
+	if len(rows) != 2 {
+		t.Fatalf("latest rows = %d, want 2", len(rows))
 	}
-	if got := texts([]wireCell{r1[0], r1[1], r1[3]}); !slices.Equal(got, []string{"m-2", "30", "1m10s"}) {
-		t.Errorf("row 1 = %q, want m-2 30 1m10s", got)
+	cells := func(r []pageCell, idx ...int) []string {
+		var out []string
+		for _, i := range idx {
+			out = append(out, r[i].Text)
+		}
+		return out
 	}
-	if r0[2].Kind != "time" || r0[2].DateTime != time.Unix(graphEpoch+15, 0).UTC().Format(time.RFC3339) {
-		t.Errorf("row 0 as-of = %+v, want a time cell at the newest sample", r0[2])
+	if got := cells(rows[0], 0, 1, 3, 4); !slices.Equal(got, []string{"Battery One", "64", "1m0s", "Yes"}) {
+		t.Errorf("row 0 = %q, want Battery One 64 1m0s Yes", got)
+	}
+	if got := cells(rows[1], 0, 1, 3, 4); !slices.Equal(got, []string{"m-2", "30", "1m10s", "Yes"}) {
+		t.Errorf("row 1 = %q, want m-2 30 1m10s Yes", got)
+	}
+	if rows[0][2].Kind != "time" || rows[0][2].DateTime != time.Unix(graphEpoch+15, 0).UTC().Format(time.RFC3339) {
+		t.Errorf("row 0 as-of = %+v, want a time cell at the newest sample", rows[0][2])
+	}
+	wantChoices := []string{"Battery One", "m-2"}
+	var gotChoices []string
+	for _, c := range g.Choices {
+		gotChoices = append(gotChoices, c.Label)
+	}
+	if !slices.Equal(gotChoices, wantChoices) {
+		t.Errorf("choices = %q, want %q", gotChoices, wantChoices)
 	}
 }
 
-// TestGraphInputPanelServesTheNewest720 is the second done-when line,
-// through the real store: 2000 appended samples leave 1440, of which the
-// panel serves the newest 720.
-func TestGraphInputPanelServesTheNewest720(t *testing.T) {
+// TestGraphDataServesTheNewest720: 2000 appended samples leave 1440 in the
+// real store, of which the page is sent the newest 720.
+func TestGraphDataServesTheNewest720(t *testing.T) {
 	t.Parallel()
 
 	var store telemetryhistory.Store
@@ -160,14 +192,14 @@ func TestGraphInputPanelServesTheNewest720(t *testing.T) {
 		}
 	}
 	s := graphServer(t, &store, time.Now())
-	chart, _ := getGraph(t, s)
+	g := getGraph(t, s, "")
 
-	pts := chart.Body.Series[0].Points
+	pts := g.Series[0].Points
 	if len(pts) != 720 {
 		t.Fatalf("points = %d, want 720", len(pts))
 	}
-	if last := pts[len(pts)-1]; last != [2]float64{float64(base+1999) * 1000, 1999} {
-		t.Errorf("last point = %v, want the newest sample %v", last, [2]float64{float64(base+1999) * 1000, 1999})
+	if last := pts[len(pts)-1]; last != [2]float64{float64(base + 1999), 1999} {
+		t.Errorf("last point = %v, want the newest sample %v", last, [2]float64{float64(base + 1999), 1999})
 	}
 	if first := pts[0]; first[1] != 1280 {
 		t.Errorf("first point value = %v, want 1280 (the 720th newest)", first[1])
@@ -177,26 +209,14 @@ func TestGraphInputPanelServesTheNewest720(t *testing.T) {
 			t.Fatalf("points[%d] time %v not after %v", i, pts[i][0], pts[i-1][0])
 		}
 	}
-	if !strings.Contains(strings.Join(chart.Prose, " "), "newest 720 samples") {
-		t.Errorf("prose %q does not say the line was cut to 720", chart.Prose)
+	if !strings.Contains(strings.Join(g.Prose, " "), "newest 720 samples") {
+		t.Errorf("prose %q does not say the line was cut to 720", g.Prose)
 	}
 }
 
-func TestGraphInputPanelAnswers401WithoutACredential(t *testing.T) {
-	t.Parallel()
-
-	s := graphServer(t, &fakeHistory{}, time.Now())
-	for _, auth := range []string{"", "Bearer wrong-key-wrong-key"} {
-		rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelGraphInput, auth, "localhost")
-		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("auth %q: %d, want 401", auth, rec.Code)
-		}
-	}
-}
-
-// TestGraphInputPanelDropsSamplesTheChartRefuses: the store refuses these
-// at ingest, so a fake source stands in for a store that did not.
-func TestGraphInputPanelDropsSamplesTheChartRefuses(t *testing.T) {
+// TestGraphDataDropsSamplesTheChartRefuses: the store refuses these at
+// ingest, so a fake source stands in for a store that did not.
+func TestGraphDataDropsSamplesTheChartRefuses(t *testing.T) {
 	t.Parallel()
 
 	nan := 0.0
@@ -212,24 +232,24 @@ func TestGraphInputPanelDropsSamplesTheChartRefuses(t *testing.T) {
 		soc("m-2", sample(0, 1)),
 	}}
 	s := graphServer(t, h, time.Unix(graphEpoch+10, 0))
-	chart, d := getGraph(t, s)
+	g := getGraph(t, s, "")
 
-	if len(chart.Body.Series) != 1 || chart.Body.Series[0].Name != "m-1" {
-		t.Fatalf("series = %+v, want only m-1 (m-2 has no chartable sample)", chart.Body.Series)
+	if len(g.Series) != 1 || g.Series[0].Name != "m-1" {
+		t.Fatalf("series = %+v, want only m-1 (m-2 has no chartable sample)", g.Series)
 	}
-	want := [][2]float64{{float64(graphEpoch+1) * 1000, 51}, {float64(graphEpoch+2) * 1000, 54}}
-	if got := chart.Body.Series[0].Points; !slices.Equal(got, want) {
+	want := [][2]float64{{float64(graphEpoch + 1), 51}, {float64(graphEpoch + 2), 54}}
+	if got := g.Series[0].Points; !slices.Equal(got, want) {
 		t.Errorf("points = %v, want %v", got, want)
 	}
-	if !strings.Contains(strings.Join(chart.Prose, " "), "5 samples were not charted") {
-		t.Errorf("prose %q does not count the 5 dropped samples", chart.Prose)
+	if !strings.Contains(strings.Join(g.Prose, " "), "5 samples were not charted") {
+		t.Errorf("prose %q does not count the 5 dropped samples", g.Prose)
 	}
-	if rows := section(t, d, "Latest state of charge").Body.Rows; len(rows) != 1 {
+	if rows := g.Latest.Body.Rows; len(rows) != 1 {
 		t.Errorf("latest rows = %d, want 1", len(rows))
 	}
 }
 
-func TestGraphInputPanelLabelsSeries(t *testing.T) {
+func TestGraphDataLabelsSeries(t *testing.T) {
 	t.Parallel()
 
 	h := &fakeHistory{snap: []telemetryhistory.SeriesSnapshot{
@@ -243,47 +263,46 @@ func TestGraphInputPanelLabelsSeries(t *testing.T) {
 		registry.Entry{MRID: "m-2", Name: "Same"},
 		registry.Entry{MRID: "m-3", Name: "<img src=x onerror=alert(1)>"},
 		registry.Entry{MRID: "m-4"})
-	chart, _ := getGraph(t, s)
+	g := getGraph(t, s, "")
 
-	var got []string
-	for _, ser := range chart.Body.Series {
-		got = append(got, ser.Name)
-	}
 	// Shared names fall back to the mRID, an empty name falls back too, and
-	// a name is passed through as data for the shell to render as text.
-	if want := []string{"m-1", "m-2", "<img src=x onerror=alert(1)>", "m-4"}; !slices.Equal(got, want) {
-		t.Errorf("names = %q, want %q", got, want)
+	// a name is passed through as data for the page to write as text.
+	if want := []string{"m-1", "m-2", "<img src=x onerror=alert(1)>", "m-4"}; !slices.Equal(g.names(), want) {
+		t.Errorf("names = %q, want %q", g.names(), want)
 	}
 }
 
-func TestGraphInputPanelWithNoSamplesSaysSo(t *testing.T) {
+// TestGraphDataSendsEmptyAsEmpty reads the serialized bytes: no samples is
+// empty arrays, never null, and the empty text travels with the data.
+func TestGraphDataSendsEmptyAsEmpty(t *testing.T) {
 	t.Parallel()
 
 	s := graphServer(t, &fakeHistory{}, time.Now())
-	chart, d := getGraph(t, s)
-	if len(chart.Body.Series) != 0 || chart.Empty != "No state of charge samples yet." {
-		t.Errorf("chart = %+v, want no series and the empty text", chart)
+	rec := doRequest(t, s.Handler(), http.MethodGet, graphPath("data"), "Bearer "+testKey, "localhost")
+	body := rec.Body.String()
+	for _, w := range []string{`"series":[]`, `"choices":[]`, `"rows":[]`, `"empty":"No state of charge samples yet."`} {
+		if !strings.Contains(body, w) {
+			t.Errorf("data %s lacks %s", body, w)
+		}
 	}
-	if rows := section(t, d, "Latest state of charge").Body.Rows; len(rows) != 0 {
-		t.Errorf("latest rows = %d, want 0", len(rows))
+	if strings.Contains(body, "null") {
+		t.Errorf("data %s carries a null", body)
 	}
 }
 
-func TestGraphInputPanelAgeNeverReadsNegative(t *testing.T) {
+func TestGraphDataAgeNeverReadsNegative(t *testing.T) {
 	t.Parallel()
 
 	h := &fakeHistory{snap: []telemetryhistory.SeriesSnapshot{soc("m-1", sample(graphEpoch+120, 1))}}
 	s := graphServer(t, h, time.Unix(graphEpoch, 0))
-	_, d := getGraph(t, s)
-	if got := section(t, d, "Latest state of charge").Body.Rows[0][3].Text; got != "0s" {
+	if got := getGraph(t, s, "").Latest.Body.Rows[0][3].Text; got != "0s" {
 		t.Errorf("age of a report stamped ahead of the clock = %q, want 0s", got)
 	}
 }
 
-// TestGraphInputPanelNeverFailsOnSeriesCount: 40 batteries, each with 1440
-// samples, is over the series limit and, untrimmed, over the Descriptor
-// point limit. The plane would answer 500 to either.
-func TestGraphInputPanelNeverFailsOnSeriesCount(t *testing.T) {
+// TestGraphDataFitsTheChartLimits: 40 batteries, each with 1440 samples, is
+// over the series limit and, untrimmed, over the point limit.
+func TestGraphDataFitsTheChartLimits(t *testing.T) {
 	t.Parallel()
 
 	var snap []telemetryhistory.SeriesSnapshot
@@ -296,22 +315,22 @@ func TestGraphInputPanelNeverFailsOnSeriesCount(t *testing.T) {
 		snap = append(snap, soc(fmt.Sprintf("m-%02d", i), ss[:len(ss)-i]...))
 	}
 	s := graphServer(t, &fakeHistory{snap: snap}, time.Unix(graphEpoch+2000, 0))
-	chart, d := getGraph(t, s)
+	g := getGraph(t, s, "")
 
-	if len(chart.Body.Series) != 16 {
-		t.Fatalf("series = %d, want 16", len(chart.Body.Series))
+	if len(g.Series) != 16 {
+		t.Fatalf("series = %d, want 16", len(g.Series))
 	}
 	// The 16 with the newest samples are batteries 0..15 here (fewest
 	// samples dropped from the tail), in their original order.
-	for i, ser := range chart.Body.Series {
+	for i, ser := range g.Series {
 		if want := fmt.Sprintf("m-%02d", i); ser.Name != want {
 			t.Errorf("series[%d] = %q, want %q", i, ser.Name, want)
 		}
 	}
-	if !strings.Contains(strings.Join(chart.Prose, " "), "Showing 16 of 40 series") {
-		t.Errorf("prose %q does not say 24 series were cut", chart.Prose)
+	if !strings.Contains(strings.Join(g.Prose, " "), "Showing 16 of 40 series") {
+		t.Errorf("prose %q does not say 24 series were cut", g.Prose)
 	}
-	rows := section(t, d, "Latest state of charge").Body.Rows
+	rows := g.Latest.Body.Rows
 	if len(rows) != 40 {
 		t.Fatalf("latest rows = %d, want 40 (every battery)", len(rows))
 	}
@@ -386,78 +405,18 @@ func pickerHistory(n int) []telemetryhistory.SeriesSnapshot {
 	return snap
 }
 
-func chartNames(c wireChartSection) []string {
-	var out []string
-	for _, s := range c.Body.Series {
-		out = append(out, s.Name)
-	}
-	return out
-}
-
-func getSelected(t *testing.T, s *Server, query string) (wireChartSection, wireDescriptor) {
-	t.Helper()
-	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelGraphInput+query, "Bearer "+testKey, "localhost")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET %s: %d %s", query, rec.Code, rec.Body.String())
-	}
-	var cd wireChartDescriptor
-	var d wireDescriptor
-	decodeJSON(t, rec.Body.Bytes(), &cd)
-	decodeJSON(t, rec.Body.Bytes(), &d)
-	for _, sec := range cd.Sections {
-		if sec.Kind == "chart" {
-			return sec, d
-		}
-	}
-	t.Fatalf("no chart in %s", rec.Body.String())
-	return wireChartSection{}, d
-}
-
-// TestGraphChoicesPassTheServersValidatorForTheLiveShape: upper-case GUID
-// mRIDs, a name two batteries share, a name over the label limit and an
-// mRID outside the id pattern. The plane answers 500 to a choice list
-// ValidateChoices refuses, so every shape must come out valid.
-func TestGraphChoicesPassTheServersValidatorForTheLiveShape(t *testing.T) {
-	t.Parallel()
-
-	guid1 := "3F2504E0-4F89-11D3-9A0C-0305E82C3301"
-	guid2 := "3F2504E0-4F89-11D3-9A0C-0305E82C3302"
-	guid3 := "3F2504E0-4F89-11D3-9A0C-0305E82C3303"
-	h := &fakeHistory{snap: []telemetryhistory.SeriesSnapshot{
-		soc(guid1, sample(graphEpoch, 1)),
-		soc(guid2, sample(graphEpoch, 2)),
-		soc(guid3, sample(graphEpoch, 3)),
-		soc("{bad id}", sample(graphEpoch, 4)),
-	}}
-	s := graphServer(t, h, time.Unix(graphEpoch+1, 0),
-		registry.Entry{MRID: guid1, Name: "Twin"},
-		registry.Entry{MRID: guid2, Name: "Twin"},
-		registry.Entry{MRID: guid3, Name: strings.Repeat("n", 129)})
-	got, err := s.graphChoices(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sep2admin.ValidateChoices(got); err != nil {
-		t.Fatalf("ValidateChoices: %v for %+v", err, got)
-	}
-	want := []sep2admin.Choice{{ID: guid1, Label: guid1}, {ID: guid2, Label: guid2}, {ID: guid3, Label: guid3}}
-	if !slices.Equal(got, want) {
-		t.Errorf("choices = %+v, want %+v (shared and overlong names fall back to the mRID, the bad id is left out)", got, want)
-	}
-}
-
-func TestGraphSelectChartsExactlyTheSelectedBatteries(t *testing.T) {
+func TestGraphSelectionChartsExactlyTheSelectedBatteries(t *testing.T) {
 	t.Parallel()
 
 	s := graphServer(t, &fakeHistory{snap: pickerHistory(20)}, time.Unix(graphEpoch+100, 0))
-	chart, d := getSelected(t, s, "?sel=M-01&sel=M-05&sel=M-03")
-	if got, want := chartNames(chart), []string{"M-01", "M-03", "M-05"}; !slices.Equal(got, want) {
+	g := getGraph(t, s, "?sel=M-01&sel=M-05&sel=M-03")
+	if got, want := g.names(), []string{"M-01", "M-03", "M-05"}; !slices.Equal(got, want) {
 		t.Errorf("series = %q, want %q", got, want)
 	}
-	if strings.Contains(strings.Join(chart.Prose, " "), "Showing") {
-		t.Errorf("prose %q carries a cut note for a selection that fits", chart.Prose)
+	if strings.Contains(strings.Join(g.Prose, " "), "Showing") {
+		t.Errorf("prose %q carries a cut note for a selection that fits", g.Prose)
 	}
-	rows := section(t, d, "Latest state of charge").Body.Rows
+	rows := g.Latest.Body.Rows
 	if len(rows) != 20 {
 		t.Fatalf("latest rows = %d, want 20", len(rows))
 	}
@@ -476,12 +435,12 @@ func TestGraphNoSelectionChartsTheSixteenMostRecent(t *testing.T) {
 	t.Parallel()
 
 	s := graphServer(t, &fakeHistory{snap: pickerHistory(49)}, time.Unix(graphEpoch+100, 0))
-	chart, d := getSelected(t, s, "")
-	names := chartNames(chart)
+	g := getGraph(t, s, "")
+	names := g.names()
 	if len(names) != 16 || names[0] != "M-33" || names[15] != "M-48" {
 		t.Errorf("series = %q, want M-33..M-48", names)
 	}
-	rows := section(t, d, "Latest state of charge").Body.Rows
+	rows := g.Latest.Body.Rows
 	if len(rows) != 49 {
 		t.Fatalf("latest rows = %d, want all 49", len(rows))
 	}
@@ -497,18 +456,17 @@ func TestGraphNoSelectionChartsTheSixteenMostRecent(t *testing.T) {
 }
 
 // TestGraphLatestTableTrimsPastTheRowCap: 1200 batteries cannot fit one
-// panel; the table says what it cut instead of the plane answering 500.
+// answer; the table says what it cut.
 func TestGraphLatestTableTrimsPastTheRowCap(t *testing.T) {
 	t.Parallel()
 
 	s := graphServer(t, &fakeHistory{snap: pickerHistory(1200)}, time.Unix(graphEpoch+2000, 0))
-	_, d := getSelected(t, s, "")
-	sec := section(t, d, "Latest state of charge")
-	if len(sec.Body.Rows) != 1000 {
-		t.Errorf("rows = %d, want the cap of 1000", len(sec.Body.Rows))
+	g := getGraph(t, s, "")
+	if len(g.Latest.Body.Rows) != 1000 {
+		t.Errorf("rows = %d, want the cap of 1000", len(g.Latest.Body.Rows))
 	}
-	if !strings.Contains(strings.Join(sec.Prose, " "), "Showing 1000 of 1200 rows") {
-		t.Errorf("prose %q carries no trim notice", sec.Prose)
+	if !strings.Contains(strings.Join(g.Latest.Prose, " "), "Showing 1000 of 1200 rows") {
+		t.Errorf("prose %q carries no trim notice", g.Latest.Prose)
 	}
 }
 
@@ -516,91 +474,166 @@ func TestGraphEmptyRegistryAndHistoryGiveNoChoicesAndTheDefaultView(t *testing.T
 	t.Parallel()
 
 	s := graphServer(t, &fakeHistory{}, time.Unix(graphEpoch, 0))
-	choices, err := s.graphChoices(context.Background())
-	if err != nil || len(choices) != 0 {
-		t.Fatalf("choices = %+v, %v; want none and no error", choices, err)
+	g := getGraph(t, s, "")
+	if len(g.Choices) != 0 || len(g.Series) != 0 || g.Empty != "No state of charge samples yet." {
+		t.Errorf("graph = %+v, want no choices, no series and the empty text", g)
 	}
-	chart, d := getSelected(t, s, "")
-	if len(chart.Body.Series) != 0 || chart.Empty != "No state of charge samples yet." {
-		t.Errorf("chart = %+v, want the empty default view", chart)
-	}
-	if rows := section(t, d, "Latest state of charge").Body.Rows; len(rows) != 0 {
-		t.Errorf("rows = %d, want 0", len(rows))
+	if len(g.Latest.Body.Rows) != 0 || g.Latest.Empty != "No state of charge samples yet." {
+		t.Errorf("latest = %+v, want no rows and the empty text", g.Latest)
 	}
 }
 
-// TestGraphPickerThroughThePlane drives the plane's own routes: the list
-// entry, the choices route, and a selection. A battery that leaves the
-// history is gone from the choices on the next request.
-func TestGraphPickerThroughThePlane(t *testing.T) {
+// TestGraphPanelIsAPagePanel: the tab keeps its id, label and position, is
+// served as a page, and the plane mounts no descriptor, picker or choices
+// route for it.
+func TestGraphPanelIsAPagePanel(t *testing.T) {
+	t.Parallel()
+
+	h := &fakeHistory{snap: pickerHistory(20)}
+	s := graphServer(t, h, time.Unix(graphEpoch+100, 0))
+	p := s.panels()[4]
+	if p.ID != panelGraphInput || p.Label != "Graph: device status" || p.Page == nil || p.View != nil || p.Picker != nil {
+		t.Errorf("panel 5 = %q %q page %t view %t picker %t, want the graph page panel", p.ID, p.Label, p.Page != nil, p.View != nil, p.Picker != nil)
+	}
+	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels", "Bearer "+testKey, "localhost")
+	var manifest []struct {
+		ID     string          `json:"id"`
+		Page   string          `json:"page"`
+		Picker json.RawMessage `json:"picker"`
+	}
+	decodeJSON(t, rec.Body.Bytes(), &manifest)
+	if len(manifest) < 5 || manifest[4].ID != panelGraphInput || manifest[4].Page != graphPath("") || len(manifest[4].Picker) != 0 {
+		t.Errorf("manifest[4] = %+v, want %s with page %s and no picker", manifest, panelGraphInput, graphPath(""))
+	}
+	for _, route := range []string{"", "/choices"} {
+		if rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelGraphInput+route, "Bearer "+testKey, "localhost"); rec.Code == http.StatusOK {
+			t.Errorf("descriptor route %q = %d, want it not served", route, rec.Code)
+		}
+	}
+}
+
+// TestGraphChoicesFollowTheHistory: a battery that leaves the history is gone
+// from the choices on the next request.
+func TestGraphChoicesFollowTheHistory(t *testing.T) {
 	t.Parallel()
 
 	h := &fakeHistory{snap: pickerHistory(20)}
 	s := graphServer(t, h, time.Unix(graphEpoch+100, 0), registry.Entry{MRID: "M-02", Name: "Two"})
-	get := func(path string) []byte {
-		t.Helper()
-		rec := doRequest(t, s.Handler(), http.MethodGet, path, "Bearer "+testKey, "localhost")
-		if rec.Code != http.StatusOK {
-			t.Fatalf("GET %s: %d %s", path, rec.Code, rec.Body.String())
-		}
-		return rec.Body.Bytes()
+	g := getGraph(t, s, "")
+	if len(g.Choices) != 20 || g.Choices[0].ID != "M-00" || g.Choices[19].ID != "M-02" || g.Choices[19].Label != "Two" {
+		t.Fatalf("choices = %+v, want 20 sorted by label with M-02 named Two last", g.Choices)
 	}
-
-	var list []struct {
-		ID     string `json:"id"`
-		Picker *struct {
-			Max int `json:"max"`
-		} `json:"picker"`
-	}
-	decodeJSON(t, get("/api/ui/panels"), &list)
-	for _, e := range list {
-		hasPicker := e.Picker != nil
-		if hasPicker != (e.ID == panelGraphInput) || (hasPicker && e.Picker.Max != 16) {
-			t.Errorf("panel %s picker = %+v, want max 16 on %s only", e.ID, e.Picker, panelGraphInput)
-		}
-	}
-
-	type choicesBody struct {
-		Max     int `json:"max"`
-		Choices []struct{ ID, Label string }
-	}
-	var cb choicesBody
-	decodeJSON(t, get("/api/ui/panels/"+panelGraphInput+"/choices"), &cb)
-	if cb.Max != 16 || len(cb.Choices) != 20 {
-		t.Fatalf("choices = max %d, %d entries; want 16 and 20", cb.Max, len(cb.Choices))
-	}
-	last := cb.Choices[len(cb.Choices)-1]
-	if cb.Choices[0].ID != "M-00" || last.ID != "M-02" || last.Label != "Two" {
-		t.Errorf("choices = %+v ... %+v, want sorted by label with M-02 named Two last", cb.Choices[0], last)
-	}
-
-	var cd wireChartDescriptor
-	decodeJSON(t, get("/api/ui/panels/"+panelGraphInput+"?sel=M-07&sel=M-19"), &cd)
-	if got := chartNames(cd.Sections[0]); !slices.Equal(got, []string{"M-07", "M-19"}) {
-		t.Errorf("selection chart = %q, want M-07 M-19", got)
-	}
-
 	h.snap = h.snap[:19]
-	decodeJSON(t, get("/api/ui/panels/"+panelGraphInput+"/choices"), &cb)
-	for _, c := range cb.Choices {
+	for _, c := range getGraph(t, s, "").Choices {
 		if c.ID == "M-19" {
 			t.Errorf("M-19 still offered after it left the history")
 		}
 	}
 }
 
-// choiceFor serves one battery named name and returns its choice.
-func choicesFor(t *testing.T, snap []telemetryhistory.SeriesSnapshot, names ...registry.Entry) []sep2admin.Choice {
-	t.Helper()
-	s := graphServer(t, &fakeHistory{snap: snap}, time.Unix(graphEpoch+10, 0), names...)
-	got, err := s.graphChoices(context.Background())
+func TestGraphPageServesItsFilesAndTheSharedChartLibrary(t *testing.T) {
+	t.Parallel()
+
+	s := graphServer(t, &fakeHistory{}, time.Now())
+	for _, f := range []struct{ path, ctype, marker string }{
+		{"", "text/html", `src="uplot.min.js"`},
+		{"app.js", "text/javascript", "fetch("},
+		{"style.css", "text/css", "body"},
+		{"uplot.min.js", "text/javascript", "uPlot"},
+		{"uplot.min.css", "text/css", ".uplot"},
+	} {
+		rec := doRequest(t, s.Handler(), http.MethodGet, graphPath(f.path), "Bearer "+testKey, "localhost")
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %q: status %d, want 200", f.path, rec.Code)
+			continue
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, f.ctype) {
+			t.Errorf("GET %q: Content-Type %q, want prefix %q", f.path, ct, f.ctype)
+		}
+		if !strings.Contains(rec.Body.String(), f.marker) {
+			t.Errorf("GET %q: body lacks %q", f.path, f.marker)
+		}
+		csp := strings.Join(rec.Header().Values("Content-Security-Policy"), "; ")
+		for _, want := range []string{"script-src 'self'", "style-src 'self'", "frame-ancestors 'self'"} {
+			if !strings.Contains(csp, want) {
+				t.Errorf("GET %q: CSP %q lacks %q", f.path, csp, want)
+			}
+		}
+		if strings.Contains(csp, "unsafe-inline") {
+			t.Errorf("GET %q: CSP %q allows inline", f.path, csp)
+		}
+	}
+	// One copy of the library: the page serves the SoC page's bytes.
+	want, err := fs.ReadFile(socpage.Files, "uplot.min.js")
 	if err != nil {
 		t.Fatal(err)
 	}
+	rec := doRequest(t, s.Handler(), http.MethodGet, graphPath("uplot.min.js"), "Bearer "+testKey, "localhost")
+	if !bytes.Equal(rec.Body.Bytes(), want) {
+		t.Error("uplot.min.js is not the SoC page's vendored copy")
+	}
+	for _, name := range []string{"uplot.min.js", "uplot.min.css"} {
+		if _, err := fs.Stat(graphpage.Files, name); err == nil {
+			t.Errorf("graphpage embeds its own %s", name)
+		}
+	}
+}
+
+func TestGraphPageNeedsTheCredentialAndRefusesWrites(t *testing.T) {
+	t.Parallel()
+
+	s := graphServer(t, &fakeHistory{}, time.Now())
+	for _, auth := range []string{"", "Bearer wrong-key-wrong-key"} {
+		for _, f := range []string{"", "data", "app.js", "uplot.min.js"} {
+			rec := doRequest(t, s.Handler(), http.MethodGet, graphPath(f), auth, "localhost")
+			if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden && rec.Code != http.StatusSeeOther {
+				t.Errorf("GET %q with auth %q = %d, want a refusal", f, auth, rec.Code)
+			}
+		}
+	}
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		if rec := doRequest(t, s.Handler(), m, graphPath("data"), "Bearer "+testKey, "localhost"); rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s data = %d, want 405: the page is read only", m, rec.Code)
+		}
+	}
+	if rec := doRequest(t, s.Handler(), http.MethodGet, graphPath("nope"), "Bearer "+testKey, "localhost"); rec.Code != http.StatusNotFound {
+		t.Errorf("GET unknown file = %d, want 404", rec.Code)
+	}
+}
+
+// choicesFor serves the batteries in snap and returns their choices.
+func choicesFor(t *testing.T, snap []telemetryhistory.SeriesSnapshot, names ...registry.Entry) []sep2admin.Choice {
+	t.Helper()
+	s := graphServer(t, &fakeHistory{snap: snap}, time.Unix(graphEpoch+10, 0), names...)
+	series, _ := s.socSeries()
+	got := pickableChoices(series)
 	if err := sep2admin.ValidateChoices(got); err != nil {
 		t.Fatalf("ValidateChoices: %v for %+v", err, got)
 	}
 	return got
+}
+
+// TestGraphChoicesPassTheValidatorForTheLiveShape: upper-case GUID mRIDs, a
+// name two batteries share, a name over the label limit and an mRID outside
+// the id pattern. Every shape must come out valid.
+func TestGraphChoicesPassTheValidatorForTheLiveShape(t *testing.T) {
+	t.Parallel()
+
+	guid1 := "3F2504E0-4F89-11D3-9A0C-0305E82C3301"
+	guid2 := "3F2504E0-4F89-11D3-9A0C-0305E82C3302"
+	guid3 := "3F2504E0-4F89-11D3-9A0C-0305E82C3303"
+	got := choicesFor(t, []telemetryhistory.SeriesSnapshot{
+		soc(guid1, sample(graphEpoch, 1)),
+		soc(guid2, sample(graphEpoch, 2)),
+		soc(guid3, sample(graphEpoch, 3)),
+		soc("{bad id}", sample(graphEpoch, 4)),
+	}, registry.Entry{MRID: guid1, Name: "Twin"},
+		registry.Entry{MRID: guid2, Name: "Twin"},
+		registry.Entry{MRID: guid3, Name: strings.Repeat("n", 129)})
+	want := []sep2admin.Choice{{ID: guid1, Label: guid1}, {ID: guid2, Label: guid2}, {ID: guid3, Label: guid3}}
+	if !slices.Equal(got, want) {
+		t.Errorf("choices = %+v, want %+v (shared and overlong names fall back to the mRID, the bad id is left out)", got, want)
+	}
 }
 
 func TestGraphChoicesFallBackToTheMRIDForANameThatIsNotUTF8(t *testing.T) {
@@ -646,36 +679,22 @@ func TestGraphChoicesKeepEveryBatteryWhenALabelCollides(t *testing.T) {
 	}
 }
 
-// TestGraphChoicesCapAtTheServerLimit: 300 batteries would make the
-// plane answer 500 to the choices route and to every selection.
-func TestGraphChoicesCapAtTheServerLimit(t *testing.T) {
+// TestGraphChoicesCapAtTheLimit: 300 batteries are cut to the choice limit
+// and the page says how many cannot be picked; a selection still charts.
+func TestGraphChoicesCapAtTheLimit(t *testing.T) {
 	t.Parallel()
 
-	h := &fakeHistory{snap: pickerHistory(300)}
-	s := graphServer(t, h, time.Unix(graphEpoch+1000, 0))
-	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelGraphInput+"/choices", "Bearer "+testKey, "localhost")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("choices: %d %s", rec.Code, rec.Body.String())
+	s := graphServer(t, &fakeHistory{snap: pickerHistory(300)}, time.Unix(graphEpoch+1000, 0))
+	g := getGraph(t, s, "")
+	if len(g.Choices) != sep2admin.MaxChoices {
+		t.Errorf("choices = %d, want %d", len(g.Choices), sep2admin.MaxChoices)
 	}
-	var cb struct{ Choices []struct{ ID, Label string } }
-	decodeJSON(t, rec.Body.Bytes(), &cb)
-	if len(cb.Choices) != sep2admin.MaxChoices {
-		t.Errorf("choices = %d, want %d", len(cb.Choices), sep2admin.MaxChoices)
+	if !strings.Contains(strings.Join(g.Prose, " "), "44 of 300 batteries are not offered") {
+		t.Errorf("prose %q does not say 44 batteries cannot be picked", g.Prose)
 	}
-	chart, _ := getSelected(t, s, "?sel=M-10")
-	if got := chartNames(chart); !slices.Equal(got, []string{"M-10"}) {
+	if got := getGraph(t, s, "?sel=M-10").names(); !slices.Equal(got, []string{"M-10"}) {
 		t.Errorf("selection over 300 batteries charted %q, want M-10", got)
 	}
-	prose := strings.Join(getGraphChart(t, s).Prose, " ")
-	if !strings.Contains(prose, "44 of 300 batteries are not offered") {
-		t.Errorf("prose %q does not say 44 batteries cannot be picked", prose)
-	}
-}
-
-func getGraphChart(t *testing.T, s *Server) wireChartSection {
-	t.Helper()
-	c, _ := getSelected(t, s, "")
-	return c
 }
 
 func TestGraphBatteryWithAnUnpickableIDIsStillChartedByDefault(t *testing.T) {
@@ -684,12 +703,12 @@ func TestGraphBatteryWithAnUnpickableIDIsStillChartedByDefault(t *testing.T) {
 	s := graphServer(t, &fakeHistory{snap: []telemetryhistory.SeriesSnapshot{
 		soc("{bad id}", sample(graphEpoch, 4)), soc("M-1", sample(graphEpoch, 5)),
 	}}, time.Unix(graphEpoch+1, 0))
-	chart, d := getSelected(t, s, "")
-	if got := chartNames(chart); !slices.Equal(got, []string{"{bad id}", "M-1"}) {
-		t.Errorf("series = %q, want both batteries", got)
+	g := getGraph(t, s, "")
+	if !slices.Equal(g.names(), []string{"{bad id}", "M-1"}) {
+		t.Errorf("series = %q, want both batteries", g.names())
 	}
-	if rows := section(t, d, "Latest state of charge").Body.Rows; len(rows) != 2 {
-		t.Errorf("rows = %d, want 2", len(rows))
+	if len(g.Latest.Body.Rows) != 2 || len(g.Choices) != 1 {
+		t.Errorf("rows = %d, choices = %d; want 2 rows and the one pickable choice", len(g.Latest.Body.Rows), len(g.Choices))
 	}
 }
 
@@ -697,17 +716,15 @@ func TestGraphSelectionOfDepartedBatteries(t *testing.T) {
 	t.Parallel()
 
 	s := graphServer(t, &fakeHistory{snap: pickerHistory(20)}, time.Unix(graphEpoch+100, 0))
-	chart, _ := getSelected(t, s, "?sel=GONE-1&sel=GONE-2")
-	if names := chartNames(chart); len(names) != 16 || names[15] != "M-19" {
+	if names := getGraph(t, s, "?sel=GONE-1&sel=GONE-2").names(); len(names) != 16 || names[15] != "M-19" {
 		t.Errorf("all-departed selection charted %q, want the default 16 newest", names)
 	}
-	chart, _ = getSelected(t, s, "?sel=GONE-1&sel=M-04")
-	if got := chartNames(chart); !slices.Equal(got, []string{"M-04"}) {
+	if got := getGraph(t, s, "?sel=GONE-1&sel=M-04").names(); !slices.Equal(got, []string{"M-04"}) {
 		t.Errorf("partly-departed selection charted %q, want only M-04", got)
 	}
 }
 
-func TestGraphPickerRefusesAMalformedSelection(t *testing.T) {
+func TestGraphRefusesAMalformedSelection(t *testing.T) {
 	t.Parallel()
 
 	s := graphServer(t, &fakeHistory{snap: pickerHistory(20)}, time.Unix(graphEpoch+100, 0))
@@ -721,7 +738,7 @@ func TestGraphPickerRefusesAMalformedSelection(t *testing.T) {
 		"bad id":      "?sel=a%20b",
 		"duplicate":   "?sel=M-01&sel=M-01",
 	} {
-		rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelGraphInput+q, "Bearer "+testKey, "localhost")
+		rec := doRequest(t, s.Handler(), http.MethodGet, graphPath("data")+q, "Bearer "+testKey, "localhost")
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status %d, want 400", name, rec.Code)
 		}

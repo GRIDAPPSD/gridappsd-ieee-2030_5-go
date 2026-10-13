@@ -155,7 +155,7 @@ func openMonitorStream(t *testing.T, baseURL, topic, lastEventID string) streamR
 
 func openMonitorStreamWithKey(t *testing.T, baseURL, topic, lastEventID, key string) streamReader {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/ui/panels/"+panelBusMonitor+"/stream?param="+url.QueryEscape(topic), nil)
+	req, err := http.NewRequest(http.MethodGet, baseURL+monitorPath("stream")+"?param="+url.QueryEscape(topic), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,48 +187,113 @@ func monitorServer(t *testing.T, mon MonitorSource) (*Server, *httptest.Server) 
 	return s, hs
 }
 
-// TestMonitorPanelIsTheSixthTabWithATopicStream: with a monitor the
-// manifest gains the bus monitor after the five read-only tabs, declaring
-// a stream whose parameter admits every character of a topic name.
-func TestMonitorPanelIsTheSixthTabWithATopicStream(t *testing.T) {
+func monitorPath(file string) string { return "/apps/" + panelBusMonitor + "/" + file }
+
+// TestMonitorPanelIsTheSixthTabAsAPage: with a monitor the manifest gains
+// the bus monitor after the five fixed tabs, served as a page that declares
+// no stream; the plane mounts no descriptor or stream route for it.
+func TestMonitorPanelIsTheSixthTabAsAPage(t *testing.T) {
 	t.Parallel()
 	mon, _ := newTestMonitor(t)
 	s, _ := monitorServer(t, mon)
 
 	rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels", "Bearer "+testKey, "localhost")
 	var manifest []struct {
-		ID     string `json:"id"`
-		Label  string `json:"label"`
-		Stream *struct {
-			MaxLen  int    `json:"maxLen"`
-			Charset string `json:"charset"`
-		} `json:"stream"`
+		ID     string          `json:"id"`
+		Label  string          `json:"label"`
+		Page   string          `json:"page"`
+		Stream json.RawMessage `json:"stream"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &manifest)
 	if len(manifest) != 6 {
 		t.Fatalf("manifest has %d panels, want 6: %+v", len(manifest), manifest)
 	}
 	got := manifest[5]
-	if got.ID != panelBusMonitor || got.Label != "Bus monitor" || got.Stream == nil {
-		t.Fatalf("panel 6 = %+v, want %s \"Bus monitor\" with a stream", got, panelBusMonitor)
+	if got.ID != panelBusMonitor || got.Label != "Bus monitor" || got.Page != monitorPath("") {
+		t.Fatalf("panel 6 = %+v, want %s \"Bus monitor\" with page %s", got, panelBusMonitor, monitorPath(""))
 	}
-	if got.Stream.MaxLen != 207 {
-		t.Errorf("stream maxLen = %d, want 207 (/topic/ plus 200)", got.Stream.MaxLen)
-	}
-	for _, c := range "/topic/goss.gridappsd.*.>_-AZ09" {
-		if !strings.ContainsRune(got.Stream.Charset, c) {
-			t.Errorf("charset %q lacks %q", got.Stream.Charset, c)
+	for _, m := range manifest {
+		if len(m.Stream) != 0 {
+			t.Errorf("panel %s declares a stream", m.ID)
 		}
 	}
-	for _, c := range " ?&%#\\" {
-		if strings.ContainsRune(got.Stream.Charset, c) {
-			t.Errorf("charset %q admits %q", got.Stream.Charset, c)
+	p := s.panels()[5]
+	if p.Page == nil || p.View != nil || p.Stream != nil {
+		t.Errorf("panel 6 Page set = %t, View set = %t, Stream set = %t, want a page panel only", p.Page != nil, p.View != nil, p.Stream != nil)
+	}
+	for _, route := range []string{"", "/stream"} {
+		if rec := doRequest(t, s.Handler(), http.MethodGet, "/api/ui/panels/"+panelBusMonitor+route, "Bearer "+testKey, "localhost"); rec.Code == http.StatusOK {
+			t.Errorf("descriptor route %q = %d, want it not served", route, rec.Code)
 		}
 	}
-	for i := range 5 {
-		if manifest[i].Stream != nil {
-			t.Errorf("panel %s declares a stream", manifest[i].ID)
+}
+
+func TestMonitorPageServesItsFilesAndNeedsTheCredential(t *testing.T) {
+	t.Parallel()
+	mon, _ := newTestMonitor(t)
+	s, _ := monitorServer(t, mon)
+
+	for _, f := range []struct{ path, ctype, marker string }{
+		{"", "text/html", `src="app.js"`},
+		{"app.js", "text/javascript", "EventSource"},
+		{"style.css", "text/css", "body"},
+	} {
+		rec := doRequest(t, s.Handler(), http.MethodGet, monitorPath(f.path), "Bearer "+testKey, "localhost")
+		if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), f.ctype) || !strings.Contains(rec.Body.String(), f.marker) {
+			t.Errorf("GET %q: status %d, Content-Type %q, marker %q present %t", f.path, rec.Code, rec.Header().Get("Content-Type"), f.marker, strings.Contains(rec.Body.String(), f.marker))
 		}
+		csp := strings.Join(rec.Header().Values("Content-Security-Policy"), "; ")
+		for _, want := range []string{"script-src 'self'", "style-src 'self'", "connect-src 'self'", "frame-ancestors 'self'"} {
+			if !strings.Contains(csp, want) {
+				t.Errorf("GET %q: CSP %q lacks %q", f.path, csp, want)
+			}
+		}
+	}
+	for _, f := range []string{"", "topics", "stream?param=/topic/x", "app.js"} {
+		rec := doRequest(t, s.Handler(), http.MethodGet, monitorPath(f), "", "localhost")
+		if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden && rec.Code != http.StatusSeeOther {
+			t.Errorf("GET %q with no credential = %d, want a refusal", f, rec.Code)
+		}
+	}
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		for _, f := range []string{"topics", "stream?param=/topic/x"} {
+			if rec := doRequest(t, s.Handler(), m, monitorPath(f), "Bearer "+testKey, "localhost"); rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s = %d, want 405: the page is read only", m, f, rec.Code)
+			}
+		}
+	}
+}
+
+// TestMonitorTopicsListsTheWatchedTopics reads the serialized bytes: no
+// topic is an empty array, and a watched one carries its state and counts.
+func TestMonitorTopicsListsTheWatchedTopics(t *testing.T) {
+	t.Parallel()
+	mon, b := newTestMonitor(t)
+	s, _ := monitorServer(t, mon)
+
+	rec := doRequest(t, s.Handler(), http.MethodGet, monitorPath("topics"), "Bearer "+testKey, "localhost")
+	if !strings.Contains(rec.Body.String(), `"topics":[]`) || strings.Contains(rec.Body.String(), "null") {
+		t.Errorf("no topic watched: body %s, want an empty array and no null", rec.Body.String())
+	}
+
+	const topic = "/topic/test.listed"
+	v, err := mon.Watch(topic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	sub := b.next(t, topic)
+	sub.in <- cimstomp.Message{Destination: topic, Body: []byte("one")}
+	for n := 0; n < 2; n++ {
+		<-v.Events()
+	}
+	var got monitorTopics
+	decodeJSON(t, doRequest(t, s.Handler(), http.MethodGet, monitorPath("topics"), "Bearer "+testKey, "localhost").Body.Bytes(), &got)
+	if len(got.Topics) != 1 || got.Topics[0] != (monitorTopicRow{Name: topic, State: "live", Viewers: 1, Buffered: 1}) {
+		t.Errorf("topics = %+v, want the one live topic with 1 viewer and 1 buffered message", got.Topics)
+	}
+	if len(got.Prose) != 2 || !strings.Contains(got.Prose[0], "At most 8 topics") || !strings.Contains(got.Prose[1], "newest 200 messages") {
+		t.Errorf("prose = %q, want the usage text with the monitor's bounds", got.Prose)
 	}
 }
 
@@ -292,8 +357,8 @@ func TestMonitorStreamReplaysThenPushesMessagesAndStatus(t *testing.T) {
 }
 
 // TestMonitorStreamRefusalFreesItsSlot: a topic the monitor will not watch
-// fails the open, so it opens no connection and holds none of the plane's
-// eight stream slots.
+// is refused before the stream starts, so it opens no connection and holds
+// none of the eight stream slots.
 func TestMonitorStreamRefusalFreesItsSlot(t *testing.T) {
 	t.Parallel()
 	mon, _ := newTestMonitor(t)
@@ -302,7 +367,7 @@ func TestMonitorStreamRefusalFreesItsSlot(t *testing.T) {
 	refused := []string{"/queue/x", testProbe, testProbe + ".>", "/topic/pnnl.goss.token.topic", "/topic/ActiveMQ.Advisory.Conn"}
 	for i := 0; i < 9; i++ {
 		topic := refused[i%len(refused)]
-		req, err := http.NewRequest(http.MethodGet, hs.URL+"/api/ui/panels/"+panelBusMonitor+"/stream?param="+url.QueryEscape(topic), nil)
+		req, err := http.NewRequest(http.MethodGet, hs.URL+monitorPath("stream")+"?param="+url.QueryEscape(topic), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -326,6 +391,204 @@ func TestMonitorStreamRefusalFreesItsSlot(t *testing.T) {
 	}
 	if ev := openMonitorStream(t, hs.URL, "/topic/test.after-refusals", "").next(); ev.Kind != "status" {
 		t.Errorf("valid stream after nine refusals: %+v", ev)
+	}
+}
+
+// rawMonitorStream opens a stream and returns the response, left open. The
+// caller closes the returned cancel to end it.
+func rawMonitorStream(t *testing.T, baseURL, query string) (*http.Response, context.CancelFunc) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, baseURL+monitorPath("stream")+query, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "localhost"
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	ctx, cancel := context.WithCancel(context.Background())
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		t.Fatalf("GET stream %s: %v", query, err)
+	}
+	t.Cleanup(func() { cancel(); _ = resp.Body.Close() })
+	return resp, cancel
+}
+
+// TestMonitorStreamRefusesABadTopicParam: the parameter admits a topic's
+// characters and length only, before any viewer is attached.
+func TestMonitorStreamRefusesABadTopicParam(t *testing.T) {
+	t.Parallel()
+	mon, _ := newTestMonitor(t)
+	_, hs := monitorServer(t, mon)
+
+	long := "/topic/" + strings.Repeat("a", 201)
+	for name, q := range map[string]string{
+		"missing":   "",
+		"empty":     "?param=",
+		"space":     "?param=" + url.QueryEscape("/topic/a b"),
+		"query":     "?param=" + url.QueryEscape("/topic/a?b"),
+		"backslash": "?param=" + url.QueryEscape("/topic/a\\b"),
+		"too long":  "?param=" + url.QueryEscape(long),
+	} {
+		resp, _ := rawMonitorStream(t, hs.URL, q)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, resp.StatusCode)
+		}
+	}
+	resp, _ := rawMonitorStream(t, hs.URL, "?param="+url.QueryEscape("/topic/"+strings.Repeat("a", 200)))
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("200-character topic: status %d, want 200 (the length bound is 207 with the prefix)", resp.StatusCode)
+	}
+	if got := len(mon.Topics()); got != 1 {
+		t.Errorf("topics watched = %d, want only the valid one", got)
+	}
+}
+
+// TestValidMonitorTopic pins the parameter bound itself: the monitor would
+// refuse most of these later, but a bad name must not reach it.
+func TestValidMonitorTopic(t *testing.T) {
+	t.Parallel()
+
+	for topic, want := range map[string]bool{
+		"":                                   false,
+		"/topic/a":                           true,
+		"/topic/goss.gridappsd.*.>":          true,
+		"/topic/" + strings.Repeat("a", 200): true,
+		"/topic/" + strings.Repeat("a", 201): false,
+		"/topic/a b":                         false,
+		"/topic/a?b":                         false,
+		"/topic/a\\b":                        false,
+		"/topic/a\nb":                        false,
+		"/topic/\u00e9":                      false,
+	} {
+		if got := validMonitorTopic(topic); got != want {
+			t.Errorf("validMonitorTopic(%q) = %t, want %t", topic, got, want)
+		}
+	}
+}
+
+// TestMonitorStreamHoldsAtMostEightStreams: a ninth open stream is refused
+// with 503 and a retry hint, and a closed stream frees its slot.
+func TestMonitorStreamHoldsAtMostEightStreams(t *testing.T) {
+	t.Parallel()
+	mon, _ := newTestMonitor(t)
+	_, hs := monitorServer(t, mon)
+
+	var cancels []context.CancelFunc
+	for i := range monitorMaxStreams {
+		resp, cancel := rawMonitorStream(t, hs.URL, "?param=/topic/test.slot"+strconv.Itoa(i))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("stream %d: status %d, want 200", i, resp.StatusCode)
+		}
+		cancels = append(cancels, cancel)
+	}
+	resp, _ := rawMonitorStream(t, hs.URL, "?param=/topic/test.slot1")
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("ninth stream: status %d, Retry-After %q, want 503 with a hint", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	cancels[0]()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		resp, _ := rawMonitorStream(t, hs.URL, "?param=/topic/test.slot1")
+		if resp.StatusCode == http.StatusOK {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a closed stream never freed its slot: last status %d", resp.StatusCode)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestMonitorStreamResumesAfterTheLastEventID: events at or below the
+// browser's Last-Event-ID are not replayed.
+func TestMonitorStreamResumesAfterTheLastEventID(t *testing.T) {
+	t.Parallel()
+	mon, b := newTestMonitor(t)
+	_, hs := monitorServer(t, mon)
+	const topic = "/topic/test.after"
+
+	first, err := mon.Watch(topic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	sub := b.next(t, topic)
+	sub.in <- cimstomp.Message{Destination: topic, Body: []byte("one")}
+	sub.in <- cimstomp.Message{Destination: topic, Body: []byte("two")}
+	for n := 0; n < 3; n++ {
+		<-first.Events()
+	}
+
+	all := openMonitorStream(t, hs.URL, topic, "")
+	m1, m2 := all.next(), all.next()
+	ev := openMonitorStream(t, hs.URL, topic, strconv.FormatUint(m1.id, 10)).next()
+	if ev.Kind != "message" || ev.Text != m2.Text || ev.id != m2.id {
+		t.Errorf("first event after id %d = %+v, want the second message %+v", m1.id, ev, m2)
+	}
+	// A header that is not a number replays everything.
+	if ev := openMonitorStream(t, hs.URL, topic, "not-a-number").next(); ev.id != m1.id {
+		t.Errorf("first event after a bad id = %+v, want the first message %+v", ev, m1)
+	}
+}
+
+// TestMonitorFeedClosesAViewerThatCannotKeepUp: a send that stalls while the
+// topic floods past the viewer's buffer ends the view with the monitor's own
+// reason, and the viewer is closed.
+func TestMonitorFeedClosesAViewerThatCannotKeepUp(t *testing.T) {
+	t.Parallel()
+	mon, b := newTestMonitor(t)
+	s, _ := monitorServer(t, mon)
+	const topic = "/topic/test.slow"
+
+	v, err := mon.Watch(topic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := b.next(t, topic)
+
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var got []monitorEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		first := true
+		s.monitor.feed(context.Background(), v, 0, func(ev monitorEvent) bool {
+			if first {
+				first = false
+				<-release
+			}
+			mu.Lock()
+			got = append(got, ev)
+			mu.Unlock()
+			return true
+		})
+	}()
+	for i := 0; i < 400; i++ {
+		sub.in <- cimstomp.Message{Destination: topic, Body: []byte("x")}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !errors.Is(v.Err(), busmonitor.ErrSlowViewer) {
+		if time.Now().After(deadline) {
+			t.Fatalf("viewer error = %v, want ErrSlowViewer after 400 messages with no reader", v.Err())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("feed did not return after the view ended")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	last := got[len(got)-1]
+	if !last.Final || last.Kind != "status" || !strings.HasPrefix(last.Text, "monitor stopped this view: viewer closed because it did not keep up") {
+		t.Errorf("last event = %+v, want a final status naming the slow viewer", last)
+	}
+	if len(got) > 300 {
+		t.Errorf("delivered %d events, want the buffer's worth and not all 400", len(got))
 	}
 }
 

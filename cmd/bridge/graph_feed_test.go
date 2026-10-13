@@ -23,7 +23,7 @@ const graphTestKey = "graph-test-admin-key"
 
 func graphGet(t *testing.T, h http.Handler, auth string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/ui/panels/gridappsd-graph-input", nil)
+	req := httptest.NewRequest(http.MethodGet, "/apps/gridappsd-graph-input/data", nil)
 	req.RemoteAddr = "127.0.0.1:40000"
 	req.Host = "localhost"
 	if auth != "" {
@@ -37,7 +37,7 @@ func graphGet(t *testing.T, h http.Handler, auth string) *httptest.ResponseRecor
 // TestGraphPanelShowsStateOfChargeThePublisherSent feeds state of
 // charge through the publisher's history hook, the only path it reaches
 // the history by in the bridge, and
-// reads the panel the shell reads. Writing into the store directly would
+// reads the data the graph page reads. Writing into the store directly would
 // pass while the publisher fed nothing.
 func TestGraphPanelShowsStateOfChargeThePublisherSent(t *testing.T) {
 	var store telemetryhistory.Store
@@ -89,40 +89,35 @@ func TestGraphPanelShowsStateOfChargeThePublisherSent(t *testing.T) {
 		t.Fatalf("panel: %d %s", rec.Code, rec.Body.String())
 	}
 	var d struct {
-		Sections []struct {
-			Kind string `json:"kind"`
+		Unit   string `json:"unit"`
+		Series []struct {
+			Name   string       `json:"name"`
+			Points [][2]float64 `json:"points"`
+		} `json:"series"`
+		Latest struct {
 			Body struct {
-				Unit   string `json:"unit"`
-				Series []struct {
-					Name   string       `json:"name"`
-					Points [][2]float64 `json:"points"`
-				} `json:"series"`
 				Rows [][]struct {
 					Text string `json:"text"`
 				} `json:"rows"`
 			} `json:"body"`
-		} `json:"sections"`
+		} `json:"latest"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(d.Sections) != 2 || d.Sections[0].Kind != "chart" || d.Sections[1].Kind != "table" {
-		t.Fatalf("sections = %s, want a chart then a table", rec.Body.String())
+	if d.Unit != "%" || len(d.Series) != 2 {
+		t.Fatalf("graph data = %s, want unit %% and two series", rec.Body.String())
 	}
-	chart := d.Sections[0].Body
-	if chart.Unit != "%" || len(chart.Series) != 2 {
-		t.Fatalf("chart = %+v, want unit %% and two series", chart)
-	}
-	b1, b2 := chart.Series[0], chart.Series[1]
+	b1, b2 := d.Series[0], d.Series[1]
 	if b1.Name != "bat-1" || len(b1.Points) != 2 ||
-		b1.Points[0] != [2]float64{float64(frameEpoch) * 1000, 65} ||
-		b1.Points[1] != [2]float64{float64(frameEpoch+15) * 1000, 64} {
+		b1.Points[0] != [2]float64{float64(frameEpoch), 65} ||
+		b1.Points[1] != [2]float64{float64(frameEpoch + 15), 64} {
 		t.Errorf("bat-1 = %+v, want 65 then 64 at the envelope times", b1)
 	}
-	if b2.Name != "bat-2" || len(b2.Points) != 1 || b2.Points[0] != [2]float64{float64(frameEpoch) * 1000, 30} {
+	if b2.Name != "bat-2" || len(b2.Points) != 1 || b2.Points[0] != [2]float64{float64(frameEpoch), 30} {
 		t.Errorf("bat-2 = %+v, want 30 at the envelope time", b2)
 	}
-	rows := d.Sections[1].Body.Rows
+	rows := d.Latest.Body.Rows
 	if len(rows) != 2 || rows[0][0].Text != "bat-1" || rows[0][1].Text != "64" || rows[1][1].Text != "30" {
 		t.Errorf("latest rows = %+v, want bat-1 64 and bat-2 30", rows)
 	}
