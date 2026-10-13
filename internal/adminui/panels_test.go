@@ -63,6 +63,11 @@ type wireDescriptor struct {
 // read from its page's data route, which has the descriptor's section shape.
 func getPanel(t *testing.T, s *Server, id string) wireDescriptor {
 	t.Helper()
+	if id == panelSender || id == panelPublishing {
+		var d wireDescriptor
+		decodeJSON(t, rawPageData(t, s, id), &d)
+		return d
+	}
 	for _, tp := range tablePanels {
 		if tp.id == id {
 			var d wireDescriptor

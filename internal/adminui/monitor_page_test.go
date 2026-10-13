@@ -2,14 +2,18 @@ package adminui
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui/monitorpage"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/cimstomp"
@@ -53,6 +57,7 @@ type monitorRun struct {
 	} `json:"steps"`
 	Timers       int `json:"timers"`
 	Prevented    int `json:"prevented"`
+	Thrown       int `json:"thrown"`
 	Removed      int `json:"removed"`
 	InnerHTML    int `json:"innerHTML"`
 	Style        int `json:"style"`
@@ -256,6 +261,29 @@ func TestMonitorPageWritesServerStringsAsText(t *testing.T) {
 	}
 }
 
+// TestMonitorPageSurvivesAFrameThatIsNotAnEventObject: JSON that parses to
+// null, a number or a string is not an event, and must be noted like text that
+// is not JSON, not thrown from the message handler or drawn as an event with
+// undefined fields.
+func TestMonitorPageSurvivesAFrameThatIsNotAnEventObject(t *testing.T) {
+	t.Parallel()
+
+	run := runMonitorPage(t, monitorPageSource(t), map[string]monitorScenario{"odd": {
+		Steps: []string{"start:/topic/a", "emit:null", "emit:5", `emit:"text"`, "emit:[1]", event("message", "after", false)},
+	}})["odd"]
+	if run.Thrown != 0 || len(run.Log) != 5 {
+		t.Fatalf("handler threw %d times, log = %+v, want no throw, 4 notes and the one real message", run.Thrown, run.Log)
+	}
+	for i := range 4 {
+		if run.Log[i].Text != "unreadable event" || run.Log[i].Class != "status" {
+			t.Errorf("line %d = %+v, want the unreadable-event note", i, run.Log[i])
+		}
+	}
+	if !strings.HasSuffix(run.Log[4].Text, " after") {
+		t.Errorf("last line = %+v, want the real message after the odd frames", run.Log[4])
+	}
+}
+
 func TestMonitorPageKeepsTheNewest500Lines(t *testing.T) {
 	t.Parallel()
 
@@ -325,6 +353,70 @@ func TestMonitorPageFallsBackWhereAbortSignalHasNoTimeout(t *testing.T) {
 	}
 }
 
+// orderWriter is a response writer that supports deadlines and records the
+// order of the calls that matter to a stream: a deadline set and a flush.
+type orderWriter struct {
+	mu     sync.Mutex
+	header http.Header
+	calls  []string
+	first  chan struct{}
+	once   sync.Once
+}
+
+func newOrderWriter() *orderWriter {
+	return &orderWriter{header: http.Header{}, first: make(chan struct{})}
+}
+
+func (w *orderWriter) Header() http.Header         { return w.header }
+func (w *orderWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (w *orderWriter) WriteHeader(int)             {}
+func (w *orderWriter) Flush() {
+	w.mu.Lock()
+	w.calls = append(w.calls, "flush")
+	w.mu.Unlock()
+	w.once.Do(func() { close(w.first) })
+}
+func (w *orderWriter) SetWriteDeadline(time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls = append(w.calls, "deadline")
+	return nil
+}
+
+// TestMonitorStreamSetsTheWriteDeadlineBeforeTheFirstFlush: the write bound
+// that cuts a stalled browser is in place before the stream's first bytes
+// are flushed, not only once the first event is written.
+func TestMonitorStreamSetsTheWriteDeadlineBeforeTheFirstFlush(t *testing.T) {
+	t.Parallel()
+	mon, _ := newTestMonitor(t)
+	s, _ := monitorServer(t, mon)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/stream?param=/topic/test.deadline", nil).WithContext(ctx)
+	w := newOrderWriter()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.monitorPage().ServeHTTP(w, req)
+	}()
+	select {
+	case <-w.first:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream never flushed")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream did not end when its request was canceled")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.calls) == 0 || w.calls[0] != "deadline" || !slices.Contains(w.calls, "flush") {
+		t.Errorf("calls = %q, want a deadline before the first flush", w.calls)
+	}
+}
+
 // TestMonitorPageMutantsAreCaught proves the page tests can fail: each
 // mutant breaks one property of app.js, and the test that guards it must
 // see it.
@@ -353,6 +445,14 @@ func TestMonitorPageMutantsAreCaught(t *testing.T) {
 		runs := runMonitorPage(t, mutate("e.textContent = text;", "e.innerHTML = text;"), map[string]monitorScenario{"h": {Steps: []string{"start:/topic/a", hostileEvent()}}})
 		if runs["h"].InnerHTML == 0 {
 			t.Error("the text-only check passed against a page that writes innerHTML")
+		}
+	})
+	t.Run("reads a null frame as an event", func(t *testing.T) {
+		t.Parallel()
+		mutant := mutate(`if (ev === null || typeof ev !== "object" || Array.isArray(ev)) {`, `if (false) {`)
+		run := runMonitorPage(t, mutant, map[string]monitorScenario{"n": {Steps: []string{"start:/topic/a", "emit:null", event("message", "after", false)}}})["n"]
+		if run.Thrown == 0 && len(run.Log) == 2 && run.Log[0].Text == "unreadable event" {
+			t.Error("the null-frame check passed against a page that reads null as an event")
 		}
 	})
 	t.Run("keeps the stream after a final event", func(t *testing.T) {

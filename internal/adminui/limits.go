@@ -3,41 +3,17 @@ package adminui
 import (
 	"encoding/json"
 	"fmt"
-
-	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2admin"
 )
 
 // The plane answers 500 for a Descriptor over either cap, counted across
 // all of its sections, so a panel trims itself to fit instead. The values
 // copy the plane's unexported maxPanelRows and maxPanelBytes;
-// TestPanelsNeverFailOnRowCount fails if the plane's row cap shrinks.
+// TestPanelsNeverFailOnRowCount fails if the plane's row cap shrinks. The
+// page panels keep the same caps, so a page answers what a panel did.
 const (
 	panelMaxRows  = 1000
 	panelMaxBytes = 1 << 20
 )
-
-// tableSpec is a table section before it is fitted to the caps.
-type tableSpec struct {
-	heading, empty string
-	prose          []string
-	columns        []string
-	rows           []sep2admin.Row
-}
-
-func table(heading, empty string, prose []string, columns []string, rows []sep2admin.Row) tableSpec {
-	return tableSpec{heading: heading, empty: empty, prose: prose, columns: columns, rows: rows}
-}
-
-// tables builds a Descriptor of table sections that the plane will serve:
-// the row budget is shared fairly between the sections, and halved until
-// the encoding fits the byte cap. A section that lost rows says so.
-func tables(specs ...tableSpec) sep2admin.Descriptor {
-	lens := make([]int, len(specs))
-	for i, s := range specs {
-		lens[i] = len(s.rows)
-	}
-	return fitToCaps(lens, func(limits []int) sep2admin.Descriptor { return buildTables(specs, limits) })
-}
 
 // fitToCaps builds with the row budget shared across tables of the given
 // lengths, and halves the budget until the encoding fits the byte cap.
@@ -60,25 +36,6 @@ func fitToCaps[T any](lens []int, build func(limits []int) T) T {
 func trimNote(shown, total int) string {
 	return fmt.Sprintf("Showing %d of %d rows: a panel holds at most %d rows and %d KiB.",
 		shown, total, panelMaxRows, panelMaxBytes>>10)
-}
-
-func buildTables(specs []tableSpec, limits []int) sep2admin.Descriptor {
-	sections := make([]sep2admin.Section, 0, len(specs))
-	for i, s := range specs {
-		prose, empty := s.prose, s.empty
-		if limits[i] < len(s.rows) {
-			note := trimNote(limits[i], len(s.rows))
-			prose = append(append([]string(nil), prose...), note)
-			empty = note
-		}
-		sections = append(sections, sep2admin.Section{
-			Heading: s.heading,
-			Prose:   prose,
-			Empty:   empty,
-			Body:    sep2admin.NewTableBody(sep2admin.TableBody{Columns: s.columns, Rows: s.rows[:limits[i]]}),
-		})
-	}
-	return descriptor(sections...)
 }
 
 // shareRows splits budget across tables of the given lengths: a table

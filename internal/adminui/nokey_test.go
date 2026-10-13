@@ -19,10 +19,10 @@ func noKeyServer(t *testing.T, insecure bool) *Server {
 	return newServer(t, Config{InsecureNoKey: insecure}, src)
 }
 
-// postNoAuth posts a sender action with no Authorization header, from the
+// postNoAuth posts a sender page form with no Authorization header, from the
 // loopback address and Host doRequest uses.
 func postNoAuth(h http.Handler, panel, action, body string, extra map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/ui/panels/"+panel+"/actions/"+action, strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/apps/"+panel+"/"+action, strings.NewReader(body))
 	req.RemoteAddr = "127.0.0.1:40000"
 	req.Host = "localhost"
 	req.Header.Set("Content-Type", "application/json")

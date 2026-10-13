@@ -382,12 +382,12 @@ func New(cfg Config, src Sources) (*Server, error) {
 		// seeds and writes these stores itself: an admin write (an FSA
 		// assignment, a new EndDevice, a DER control) would be a second
 		// writer behind its back, so the plane mounts no write route.
-		// Panel actions write no store: the sender publishes to the bus,
-		// and the control subscriber stays the only store writer.
+		// The sender pages write no store: the sender publishes to the bus,
+		// and the control subscriber stays the only store writer. The pages
+		// take their own POSTs, which ReadOnly does not filter.
 		LoopbackBypass: false,
 		ControlWrites:  false,
 		ReadOnly:       true,
-		PanelActions:   true,
 		Panels:         s.panels(),
 		DeviceColumns:  []sep2admin.DeviceColumnSource{&deviceColumns{registry: s.registry, devices: s.devices}},
 	})
@@ -490,13 +490,12 @@ func (s *Server) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		// One shutdown bound covers both steps. The plane closes first, so
-		// each panel stream gets its final status event rather than a cut
-		// connection, and running panel actions are told to stop and
-		// waited for, for at most half the bound.
+		// its event streams get their final status rather than a cut
+		// connection. Shutdown then cancels every request context and waits
+		// for the handlers, a sender page POST among them, which answers
+		// that its outcome is not known.
 		deadline := time.Now().Add(s.timeouts.shutdown)
-		if n := s.plane.Close(s.timeouts.shutdown / 2); n > 0 {
-			log.Printf("adminui: %d panel action(s) still running at shutdown; they may still take effect", n)
-		}
+		s.plane.Close(s.timeouts.shutdown / 2)
 		shutdownCtx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {

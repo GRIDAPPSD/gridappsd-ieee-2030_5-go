@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2admin"
 
@@ -20,13 +19,17 @@ const (
 	panelControlFlow = "gridappsd-controlflow"
 )
 
-// panels are the bridge's views as admin plane tabs. The shell lists
-// extension panels by (Rank, ID), so Rank fixes the tab order.
+// panelView is one tab: its id, label and page handler.
+type panelView struct {
+	id, label string
+	page      http.Handler
+}
+
+// panels are the bridge's views as admin plane tabs, each a page the bridge
+// serves. The shell lists extension panels by (Rank, ID), so Rank fixes the
+// tab order.
 func (s *Server) panels() []sep2admin.Panel {
-	views := []struct {
-		id, label string
-		page      http.Handler
-	}{
+	views := []panelView{
 		{panelHealth, "Bridge health", s.healthPage()},
 		{panelConnections, "Connections", s.tablePage(panelConnections, s.connectionsData)},
 		{panelDERPrograms, "DER programs", s.tablePage(panelDERPrograms, s.derProgramsData)},
@@ -34,12 +37,15 @@ func (s *Server) panels() []sep2admin.Panel {
 		{panelGraphInput, "Graph: device status", s.graphPage()},
 	}
 	if s.monitor != nil {
-		views = append(views, struct {
-			id, label string
-			page      http.Handler
-		}{panelBusMonitor, "Bus monitor", s.monitorPage()})
+		views = append(views, panelView{panelBusMonitor, "Bus monitor", s.monitorPage()})
 	}
-	out := make([]sep2admin.Panel, 0, len(views)+2)
+	if s.sender != nil {
+		views = append(views,
+			panelView{panelPublishing, "Bus publishing", s.switchPage()},
+			panelView{panelSender, "Bus sender", s.senderPage()},
+		)
+	}
+	out := make([]sep2admin.Panel, 0, len(views))
 	for i, v := range views {
 		out = append(out, sep2admin.Panel{
 			ID:                v.id,
@@ -49,45 +55,7 @@ func (s *Server) panels() []sep2admin.Panel {
 			Page:              v.page,
 		})
 	}
-	if s.sender != nil {
-		out = append(out, s.sender.switchPanel(len(out)+1))
-		out = append(out, s.sender.panel(len(out)+1))
-	}
 	return out
-}
-
-func descriptor(sections ...sep2admin.Section) sep2admin.Descriptor {
-	return sep2admin.Descriptor{Version: sep2admin.CurrentDescriptorVersion, Sections: sections}
-}
-
-func text(v string) sep2admin.Cell { return sep2admin.TextCell(sep2admin.Value(v)) }
-
-// timeCell shows t in the JSON routes' format. The descriptor refuses a
-// zero time, which an unset field would be, so that shows as "-".
-func timeCell(t time.Time) sep2admin.Cell {
-	if t.IsZero() {
-		return text("-")
-	}
-	return sep2admin.TimeCell(t, sep2admin.Value(t.Format(timeFormat)))
-}
-
-// orDash shows an empty value as "-", so a blank cell reads as no value.
-func orDash(v string) sep2admin.Cell {
-	if v == "" {
-		return text("-")
-	}
-	return text(v)
-}
-
-// linkOrText is a link when sep2admin's own href rule accepts href, and
-// escaped text otherwise. Checking by encoding the cell keeps one rule:
-// an unsafe link built into a View would fail the whole panel.
-func linkOrText(href, label string) sep2admin.Cell {
-	link := sep2admin.LinkCell(href, sep2admin.Value(label))
-	if _, err := json.Marshal(link); err != nil {
-		return text(href)
-	}
-	return link
 }
 
 // jsonText renders a delta value as JSON, so a string, a number and an

@@ -8,14 +8,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/GRIDAPPSD/ieee-2030_5-server-go/pkg/sep2admin"
-
+	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/adminui/senderpage"
 	"github.com/GRIDAPPSD/gridappsd-ieee-2030_5-go/internal/sender"
 )
 
-// The switch has a panel of its own: the plane runs one call per panel at
-// a time, so on the sends' panel an off flip would wait behind the very
-// send it is meant to stop, which can block in go-stomp for 10 s.
+// The switch keeps a panel of its own, so the Bus publishing tab stays
+// where it was and an off flip never shares a page with the sends it stops.
 const (
 	panelPublishing = "gridappsd-publishing"
 	panelSender     = "gridappsd-sender"
@@ -27,8 +25,8 @@ const stillDeliverable = "A send already handed to the STOMP client can still re
 
 type remoteKey struct{}
 
-// withRemote keeps the caller's address on the request context, where a
-// panel action, which never sees the request, reads it for the audit.
+// withRemote keeps the caller's address on the request context, where the
+// sender and control routes read it for the audit.
 func withRemote(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), remoteKey{}, r.RemoteAddr)))
@@ -42,162 +40,205 @@ func remoteFrom(ctx context.Context) string {
 	return "unknown"
 }
 
-// senderPanel offers the publish switch, the four control forms and the
-// raw-JSON box, and shows the switch, the recent sends and the refusals.
+// senderPanel is the bus sender behind the Bus publishing and Bus sender
+// pages.
 type senderPanel struct {
 	s *sender.Sender
 }
 
-func (p *senderPanel) panel(slot int) sep2admin.Panel {
-	device := sep2admin.ActionField{Name: "device", Label: "Device", Kind: sep2admin.ActionChoice, Choices: p.deviceChoices}
-	multiplier := sep2admin.ActionField{Name: "multiplier", Label: "Multiplier (power of ten)", Kind: sep2admin.ActionInteger,
-		Min: sender.MinMultiplier, Max: sender.MaxMultiplier}
-	value := func(unit string) sep2admin.ActionField {
-		return sep2admin.ActionField{Name: "value", Label: "Value (target = value x 10^multiplier " + unit + ")", Kind: sep2admin.ActionInteger,
-			Min: math.MinInt16, Max: math.MaxInt16}
-	}
-	return sep2admin.Panel{
-		ID:                panelSender,
-		Label:             "Bus sender",
-		Placement:         sep2admin.ExtensionSlot(slot),
-		DescriptorVersion: sep2admin.CurrentDescriptorVersion,
-		View:              p.view,
-		Actions: []sep2admin.Action{
-			{ID: "active-power", Label: "Set active power target", Run: p.activePower,
-				Fields: []sep2admin.ActionField{device, multiplier, value("W")}},
-			{ID: "reactive-power", Label: "Set reactive power target", Run: p.reactivePower,
-				Fields: []sep2admin.ActionField{device, multiplier, value("var")}},
-			{ID: "connect", Label: "Connect or disconnect", Run: p.connect,
-				Fields: []sep2admin.ActionField{device, {Name: "connect", Label: "Connect", Kind: sep2admin.ActionBoolean}}},
-			{ID: "energize", Label: "Energize or de-energize", Run: p.energize,
-				Fields: []sep2admin.ActionField{device, {Name: "energize", Label: "Energize", Kind: sep2admin.ActionBoolean}}},
-			{ID: "raw", Label: "Send raw JSON", Run: p.raw,
-				Fields: []sep2admin.ActionField{{Name: "json", Label: "Message JSON (difference_mrid required)", Kind: sep2admin.ActionText, MaxLen: sep2admin.MaxActionTextLen}}},
-		},
-	}
+// switchDoc is the data of the Bus publishing page. On is the state the
+// page's button acts on.
+type switchDoc struct {
+	pageDoc
+	On bool `json:"on"`
 }
 
-func (p *senderPanel) switchPanel(slot int) sep2admin.Panel {
-	return sep2admin.Panel{
-		ID:                panelPublishing,
-		Label:             "Bus publishing",
-		Placement:         sep2admin.ExtensionSlot(slot),
-		DescriptorVersion: sep2admin.CurrentDescriptorVersion,
-		View: func(context.Context) (sep2admin.Descriptor, error) {
-			return descriptor(p.switchSection()), nil
-		},
-		Actions: []sep2admin.Action{{ID: "publishing", Label: "Publishing switch", Run: p.flip,
-			Fields: []sep2admin.ActionField{{Name: "on", Label: "Publishing on", Kind: sep2admin.ActionToggle}}}},
-	}
+type senderDevice struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// senderLimits are the bounds the forms enforce, sent so the page's inputs
+// carry them. The server checks every submission against the same values.
+type senderLimits struct {
+	MultiplierMin int64 `json:"multiplierMin"`
+	MultiplierMax int64 `json:"multiplierMax"`
+	ValueMin      int64 `json:"valueMin"`
+	ValueMax      int64 `json:"valueMax"`
+	RawMax        int64 `json:"rawMax"`
+}
+
+// senderDoc is the data of the Bus sender page. Devices and Sections are
+// arrays, never null.
+type senderDoc struct {
+	pageDoc
+	On      bool           `json:"on"`
+	Devices []senderDevice `json:"devices"`
+	Limits  senderLimits   `json:"limits"`
+}
+
+// switchPage is the handler of the Bus publishing page panel.
+func (s *Server) switchPage() http.Handler {
+	p := s.sender
+	return formPage(panelPublishing, senderpage.Files, "switch.html", "switch.js",
+		func() any { return p.switchData() },
+		map[string]formRoute{
+			"publishing": {
+				fields: []formField{{name: "on", kind: fieldBoolean}},
+				run:    p.flip,
+			},
+		})
+}
+
+// senderPage is the handler of the Bus sender page panel.
+func (s *Server) senderPage() http.Handler {
+	p := s.sender
+	device := formField{name: "device", kind: fieldChoice, choices: p.deviceIDs}
+	multiplier := formField{name: "multiplier", kind: fieldInteger, min: sender.MinMultiplier, max: sender.MaxMultiplier}
+	value := formField{name: "value", kind: fieldInteger, min: math.MinInt16, max: math.MaxInt16}
+	return formPage(panelSender, senderpage.Files, "sender.html", "sender.js",
+		func() any { return p.senderData() },
+		map[string]formRoute{
+			"active-power":   {fields: []formField{device, multiplier, value}, run: p.activePower},
+			"reactive-power": {fields: []formField{device, multiplier, value}, run: p.reactivePower},
+			"connect":        {fields: []formField{device, {name: "connect", kind: fieldBoolean}}, run: p.connect},
+			"energize":       {fields: []formField{device, {name: "energize", kind: fieldBoolean}}, run: p.energize},
+			"raw":            {fields: []formField{{name: "json", kind: fieldText, maxLen: formTextMax}}, run: p.raw},
+		})
 }
 
 // deviceChoices offers each registered device by name and submits its
 // mRID, with the graph picker's rules for ids and labels.
-func (p *senderPanel) deviceChoices(context.Context) ([]sep2admin.Choice, error) {
+func (p *senderPanel) deviceChoices() []senderDevice {
 	devs := p.s.Devices()
 	// pickableChoices reads only the mRID and name of a series.
 	items := make([]chartSeries, 0, len(devs))
 	for _, d := range devs {
 		items = append(items, chartSeries{mrid: d.MRID, name: d.Name})
 	}
-	return pickableChoices(items), nil
-}
-
-func (p *senderPanel) flip(ctx context.Context, v sep2admin.ActionValues) (sep2admin.ActionResult, error) {
-	st := p.s.SetPublishing(v.Bool("on"), remoteFrom(ctx))
-	if st.On {
-		return sep2admin.ActionResult{Message: "Publishing is ON."}, nil
+	choices := pickableChoices(items)
+	out := make([]senderDevice, 0, len(choices))
+	for _, c := range choices {
+		out = append(out, senderDevice{ID: c.ID, Label: c.Label})
 	}
-	return sep2admin.ActionResult{Message: fmt.Sprintf("Publishing is OFF. %d send(s) were still in flight when the wait ended. %s",
-		st.StillInFlight, stillDeliverable)}, nil
+	return out
 }
 
-func (p *senderPanel) activePower(ctx context.Context, v sep2admin.ActionValues) (sep2admin.ActionResult, error) {
-	return sent(p.s.SendActivePower(ctx, remoteFrom(ctx), v.String("device"), int(v.Int("multiplier")), int(v.Int("value"))))
+// deviceIDs are the mRIDs a form may name, read at each submission.
+func (p *senderPanel) deviceIDs() []string {
+	choices := p.deviceChoices()
+	ids := make([]string, 0, len(choices))
+	for _, c := range choices {
+		ids = append(ids, c.ID)
+	}
+	return ids
 }
 
-func (p *senderPanel) reactivePower(ctx context.Context, v sep2admin.ActionValues) (sep2admin.ActionResult, error) {
-	return sent(p.s.SendReactivePower(ctx, remoteFrom(ctx), v.String("device"), int(v.Int("multiplier")), int(v.Int("value"))))
+func (p *senderPanel) flip(ctx context.Context, remote string, v formValues) (string, error) {
+	st := p.s.SetPublishing(v.boolean("on"), remote)
+	if st.On {
+		return "Publishing is ON.", nil
+	}
+	return fmt.Sprintf("Publishing is OFF. %d send(s) were still in flight when the wait ended. %s",
+		st.StillInFlight, stillDeliverable), nil
 }
 
-func (p *senderPanel) connect(ctx context.Context, v sep2admin.ActionValues) (sep2admin.ActionResult, error) {
-	return sent(p.s.SendConnect(ctx, remoteFrom(ctx), v.String("device"), v.Bool("connect")))
+func (p *senderPanel) activePower(ctx context.Context, remote string, v formValues) (string, error) {
+	return sent(p.s.SendActivePower(ctx, remote, v.text("device"), int(v.integer("multiplier")), int(v.integer("value"))))
 }
 
-func (p *senderPanel) energize(ctx context.Context, v sep2admin.ActionValues) (sep2admin.ActionResult, error) {
-	return sent(p.s.SendEnergize(ctx, remoteFrom(ctx), v.String("device"), v.Bool("energize")))
+func (p *senderPanel) reactivePower(ctx context.Context, remote string, v formValues) (string, error) {
+	return sent(p.s.SendReactivePower(ctx, remote, v.text("device"), int(v.integer("multiplier")), int(v.integer("value"))))
 }
 
-func (p *senderPanel) raw(ctx context.Context, v sep2admin.ActionValues) (sep2admin.ActionResult, error) {
-	return sent(p.s.SendRaw(ctx, remoteFrom(ctx), []byte(v.String("json"))))
+func (p *senderPanel) connect(ctx context.Context, remote string, v formValues) (string, error) {
+	return sent(p.s.SendConnect(ctx, remote, v.text("device"), v.boolean("connect")))
+}
+
+func (p *senderPanel) energize(ctx context.Context, remote string, v formValues) (string, error) {
+	return sent(p.s.SendEnergize(ctx, remote, v.text("device"), v.boolean("energize")))
+}
+
+func (p *senderPanel) raw(ctx context.Context, remote string, v formValues) (string, error) {
+	return sent(p.s.SendRaw(ctx, remote, []byte(v.text("json"))))
 }
 
 // sent answers a send. A refusal (the switch, the rate, the first failing
 // JSON path) is written for the operator and shown as one. A bus failure is
-// a failure: the plane logs its detail, which is transport text, and
+// a failure: the handler logs its detail, which is transport text, and
 // answers a bare 500; the send's row reads failed.
-func sent(res sender.Result, err error) (sep2admin.ActionResult, error) {
+func sent(res sender.Result, err error) (string, error) {
 	if errors.Is(err, sender.ErrPublishFailed) {
-		return sep2admin.ActionResult{}, fmt.Errorf("bus sender: %w", err)
+		return "", fmt.Errorf("bus sender: %w", err)
 	}
 	if err != nil {
-		return sep2admin.ActionResult{}, &sep2admin.ActionRefusal{Reason: strings.TrimPrefix(err.Error(), "sender: ")}
+		return "", &formRefusal{reason: strings.TrimPrefix(err.Error(), "sender: ")}
 	}
-	return sep2admin.ActionResult{Message: fmt.Sprintf("Published difference_mrid %s to %s. Its outcome appears under Recent sends.",
-		res.DifferenceMRID, res.Destination)}, nil
+	return fmt.Sprintf("Published difference_mrid %s to %s. Its outcome appears under Recent sends.",
+		res.DifferenceMRID, res.Destination), nil
 }
 
-func (p *senderPanel) switchSection() sep2admin.Section {
+func (p *senderPanel) switchSection() pageSection {
 	st := p.s.Publishing()
-	state := sep2admin.BadgeCell(sep2admin.BadgeNeutral, "OFF")
+	state := pBadge(badgeNeutral, "OFF")
 	if st.On {
-		state = sep2admin.BadgeCell(sep2admin.BadgeWarn, "ON")
+		state = pBadge(badgeWarn, "ON")
 	}
-	entries := []sep2admin.DefinitionEntry{
+	entries := []pageEntry{
 		{Key: "Publishing", Value: state},
-		{Key: "Last changed", Value: timeCell(st.ChangedAt)},
-		{Key: "Changed from", Value: text(st.ChangedBy)},
+		{Key: "Last changed", Value: pTime(st.ChangedAt)},
+		{Key: "Changed from", Value: pText(st.ChangedBy)},
 	}
 	if !st.On && st.StillInFlight > 0 {
-		entries = append(entries, sep2admin.DefinitionEntry{Key: "Still in flight at the off flip",
-			Value: sep2admin.BadgeCell(sep2admin.BadgeWarn, sep2admin.Value(fmt.Sprintf("%d send(s); they may still be delivered", st.StillInFlight)))})
+		entries = append(entries, pageEntry{Key: "Still in flight at the off flip",
+			Value: pBadge(badgeWarn, fmt.Sprintf("%d send(s); they may still be delivered", st.StillInFlight))})
 	}
-	return sep2admin.Section{
-		Heading: "Publishing switch",
-		Prose: []string{
-			"Publishing is off after every start unless SEP2_ADMIN_UI_BUS_PUBLISH_AT_START is true. While it is off every send is refused. The switch is on the Bus publishing tab.",
-			"Switching off refuses new sends at once and waits a few seconds for sends in flight. " + stillDeliverable,
-		},
-		Body: sep2admin.NewDefinitionListBody(sep2admin.DefinitionListBody{Groups: []sep2admin.DefinitionGroup{{Entries: entries}}}),
+	sec := listSection("Publishing switch", "", pageGroup{Entries: entries})
+	sec.Prose = []string{
+		"Publishing is off after every start unless SEP2_ADMIN_UI_BUS_PUBLISH_AT_START is true. While it is off every send is refused. The switch is on the Bus publishing tab.",
+		"Switching off refuses new sends at once and waits a few seconds for sends in flight. " + stillDeliverable,
+	}
+	return sec
+}
+
+func (p *senderPanel) switchData() switchDoc {
+	return switchDoc{
+		pageDoc: pageDoc{Title: "Bus publishing", Sections: []pageSection{p.switchSection()}},
+		On:      p.s.Publishing().On,
 	}
 }
 
-func (p *senderPanel) view(context.Context) (sep2admin.Descriptor, error) {
-	sw := p.switchSection()
-
+func (p *senderPanel) senderData() senderDoc {
 	recent := p.s.Recent()
-	recentRows := make([]sep2admin.Row, 0, len(recent))
+	recentRows := make([][]pageCell, 0, len(recent))
 	for _, e := range recent {
-		recentRows = append(recentRows, sep2admin.Row{
-			timeCell(e.Time), text(e.Kind), orDash(e.Remote), orDash(e.DifferenceMRID), orDash(deltasText(e.Deltas)),
-			outcomeCell(e), orDash(e.Reason),
+		recentRows = append(recentRows, []pageCell{
+			pTime(e.Time), pText(e.Kind), pOrDash(e.Remote), pOrDash(e.DifferenceMRID), pOrDash(deltasText(e.Deltas)),
+			outcomeCell(e), pOrDash(e.Reason),
 		})
 	}
 	refusals := p.s.Refusals()
-	refusalRows := make([]sep2admin.Row, 0, len(refusals))
+	refusalRows := make([][]pageCell, 0, len(refusals))
 	for _, e := range refusals {
-		refusalRows = append(refusalRows, sep2admin.Row{timeCell(e.Time), text(e.Kind), orDash(e.Remote), orDash(e.DifferenceMRID), text(e.Reason)})
+		refusalRows = append(refusalRows, []pageCell{pTime(e.Time), pText(e.Kind), pOrDash(e.Remote), pOrDash(e.DifferenceMRID), pText(e.Reason)})
 	}
-	d := tables(
-		table("Recent sends", "Nothing sent or switched yet.",
+	tableDoc := pageTables("Bus sender",
+		pageTable("Recent sends", "Nothing sent or switched yet.",
 			[]string{fmt.Sprintf("The newest %d sends and switch flips, newest first. A send's outcome is what the control path did with it.", sender.MaxRecent)},
 			[]string{"Time", "Kind", "From", "difference_mrid", "Changes", "Outcome", "Reason"}, recentRows),
-		table("Refusals", "No send has been refused.",
+		pageTable("Refusals", "No send has been refused.",
 			[]string{"Sends turned away before anything was published, newest first."},
 			[]string{"Time", "Kind", "From", "difference_mrid", "Reason"}, refusalRows),
 	)
-	d.Sections = append([]sep2admin.Section{sw}, d.Sections...)
-	return d, nil
+	return senderDoc{
+		pageDoc: pageDoc{Title: "Bus sender", Sections: append([]pageSection{p.switchSection()}, tableDoc.Sections...)},
+		On:      p.s.Publishing().On,
+		Devices: p.deviceChoices(),
+		Limits: senderLimits{
+			MultiplierMin: sender.MinMultiplier, MultiplierMax: sender.MaxMultiplier,
+			ValueMin: math.MinInt16, ValueMax: math.MaxInt16, RawMax: formTextMax,
+		},
+	}
 }
 
 // deltasText is each change as object attribute=value, with the control
@@ -218,15 +259,15 @@ func deltasText(ds []sender.Delta) string {
 	return strings.Join(parts, "; ")
 }
 
-func outcomeCell(e sender.Entry) sep2admin.Cell {
-	variant := sep2admin.BadgeNeutral
+func outcomeCell(e sender.Entry) pageCell {
+	variant := badgeNeutral
 	switch e.Outcome {
 	case sender.OutcomeIssued, sender.OutcomeRestated, "on":
-		variant = sep2admin.BadgeOK
+		variant = badgeOK
 	case sender.OutcomeRefused, sender.OutcomeFailed:
-		variant = sep2admin.BadgeError
+		variant = badgeError
 	case sender.OutcomeNone, sender.OutcomePending:
-		variant = sep2admin.BadgeWarn
+		variant = badgeWarn
 	}
-	return sep2admin.BadgeCell(variant, sep2admin.Value(e.Outcome))
+	return pBadge(variant, e.Outcome)
 }
