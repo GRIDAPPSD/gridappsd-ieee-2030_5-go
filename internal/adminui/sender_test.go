@@ -328,8 +328,10 @@ func TestSenderViewShowsTheTrueSwitchAndRows(t *testing.T) {
 	if flip := texts(recent.Body.Rows[1]); flip[1] != "switch" || flip[2] != "127.0.0.1:40000" {
 		t.Errorf("flip row = %q", flip)
 	}
-	health := entries(t, section(t, getPanel(t, s, panelHealth), "Bridge"))
-	assertBadge(t, "health publishing", health["Publishing"], "warn", "ON")
+	pub := getHealthData(t, s).Publishing
+	if pub == nil || !pub.On || pub.ChangedBy != st.ChangedBy || pub.ChangedAt != st.ChangedAt.Format(timeFormat) {
+		t.Errorf("health publishing = %+v, want on, changed by %q at %s", pub, st.ChangedBy, st.ChangedAt.Format(timeFormat))
+	}
 }
 
 // TestSenderOffFlipShowsSendsStillInFlight: the off answer and the View

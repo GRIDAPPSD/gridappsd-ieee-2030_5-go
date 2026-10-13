@@ -29,7 +29,7 @@ func (s *Server) panels() []sep2admin.Panel {
 		id, label string
 		view      sep2admin.ViewFunc
 	}{
-		{panelHealth, "Bridge health", s.healthView},
+		{panelHealth, "Bridge health", nil},
 		{panelConnections, "Connections", s.connectionsView},
 		{panelDERPrograms, "DER programs", s.derProgramsView},
 		{panelControlFlow, "Control flow", s.controlFlowView},
@@ -43,6 +43,9 @@ func (s *Server) panels() []sep2admin.Panel {
 			Placement:         sep2admin.ExtensionSlot(i + 1),
 			DescriptorVersion: sep2admin.CurrentDescriptorVersion,
 			View:              v.view,
+		}
+		if v.id == panelHealth {
+			p.Page = s.healthPage()
 		}
 		if v.id == panelGraphInput {
 			// View answers with no selection: the newest batteries.
@@ -104,51 +107,6 @@ func linkOrText(href, label string) sep2admin.Cell {
 		return text(href)
 	}
 	return link
-}
-
-func (s *Server) healthView(context.Context) (sep2admin.Descriptor, error) {
-	h := s.health()
-	stomp := sep2admin.BadgeCell(sep2admin.BadgeWarn, "disconnected")
-	if h.StompConnected {
-		stomp = sep2admin.BadgeCell(sep2admin.BadgeOK, "connected")
-	}
-	sor := text("not set")
-	if h.SORLink != "" {
-		sor = linkOrText(h.SORLink, "Server of record dashboard")
-	}
-	groups := append([]sep2admin.DefinitionGroup{{Entries: []sep2admin.DefinitionEntry{
-		{Key: "Status", Value: sep2admin.BadgeCell(sep2admin.BadgeOK, sep2admin.Value(h.Status))},
-		{Key: "STOMP connection", Value: stomp},
-		{Key: "mTLS listener", Value: text(h.MTLSListener)},
-		{Key: "Server SFDI", Value: text(h.ServerSFDI)},
-		{Key: "Server LFDI", Value: text(h.ServerLFDI)},
-		{Key: "Feeder mRID", Value: text(h.FeederMRID)},
-		{Key: "Simulation ID", Value: text(h.SimulationID)},
-		{Key: "Registry entries", Value: number(h.RegistryCount)},
-		{Key: "Placeholder identities", Value: number(h.PlaceholderCount)},
-		{Key: "Certificate derived identities", Value: number(h.CertificateCount)},
-		{Key: "Uptime (seconds)", Value: number(h.UptimeSeconds)},
-		{Key: "Server of record", Value: sor},
-	}}}, s.publishingGroup()...)
-	return descriptor(definitions("Bridge", "", groups...)), nil
-}
-
-// publishingGroup repeats the sender's switch on the health panel, so the
-// state of writes to the simulation is visible without opening the sender.
-func (s *Server) publishingGroup() []sep2admin.DefinitionGroup {
-	if s.sender == nil {
-		return nil
-	}
-	st := s.sender.s.Publishing()
-	badge := sep2admin.BadgeCell(sep2admin.BadgeNeutral, "OFF")
-	if st.On {
-		badge = sep2admin.BadgeCell(sep2admin.BadgeWarn, "ON")
-	}
-	return []sep2admin.DefinitionGroup{{Heading: "Bus sender", Entries: []sep2admin.DefinitionEntry{
-		{Key: "Publishing", Value: badge},
-		{Key: "Last changed", Value: timeCell(st.ChangedAt)},
-		{Key: "Changed from", Value: text(st.ChangedBy)},
-	}}}
 }
 
 // simOutputTopicText shows that no simulation id is configured instead of
