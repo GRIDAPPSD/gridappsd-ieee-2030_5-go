@@ -165,6 +165,8 @@ type nodeScenario struct {
 	Body   json.RawMessage `json:"body,omitempty"`
 	Hidden bool            `json:"hidden,omitempty"`
 	Steps  []string        `json:"steps,omitempty"`
+	// NoTimeout runs the page in a browser whose AbortSignal has no timeout().
+	NoTimeout bool `json:"noTimeout,omitempty"`
 }
 
 type nodeCell struct {
@@ -199,16 +201,19 @@ type nodeStep struct {
 }
 
 type nodeRun struct {
-	Title       string        `json:"title"`
-	DocTitle    string        `json:"docTitle"`
-	Status      string        `json:"status"`
-	StatusClass string        `json:"statusClass"`
-	Sections    []nodeSection `json:"sections"`
-	Fetches     int           `json:"fetches"`
-	Timers      int           `json:"timers"`
-	Steps       []nodeStep    `json:"steps"`
-	InnerHTML   int           `json:"innerHTML"`
-	Style       int           `json:"style"`
+	Title        string        `json:"title"`
+	DocTitle     string        `json:"docTitle"`
+	Status       string        `json:"status"`
+	StatusClass  string        `json:"statusClass"`
+	Sections     []nodeSection `json:"sections"`
+	Fetches      int           `json:"fetches"`
+	Timers       int           `json:"timers"`
+	Steps        []nodeStep    `json:"steps"`
+	InnerHTML    int           `json:"innerHTML"`
+	Style        int           `json:"style"`
+	TimeoutCalls int           `json:"timeoutCalls"`
+	Controllers  int           `json:"controllers"`
+	Cleared      int           `json:"cleared"`
 }
 
 func tablePageSource(t *testing.T) string {
@@ -425,6 +430,33 @@ func checkTablePolling(t *testing.T, runs map[string]nodeRun) {
 	}
 }
 
+// TestTablePageFallsBackWhereAbortSignalHasNoTimeout: a browser without
+// AbortSignal.timeout still loads the page, with its own controller and a
+// timer it clears; a browser with it uses it and makes no controller.
+func TestTablePageFallsBackWhereAbortSignalHasNoTimeout(t *testing.T) {
+	t.Parallel()
+
+	body := getPanelBody(t, newServer(t, Config{Key: testKey}, testSources()), panelDERPrograms)
+	check := func(t *testing.T, source string) map[string]nodeRun {
+		t.Helper()
+		return runTablePage(t, source, map[string]nodeScenario{
+			"old": {Body: body, NoTimeout: true},
+			"new": {Body: body},
+		})
+	}
+	runs := check(t, tablePageSource(t))
+	old := runs["old"]
+	if len(old.Sections) != 1 || old.Sections[0].Empty != "No DERPrograms served." || old.Fetches != 1 {
+		t.Errorf("page without AbortSignal.timeout: %d sections, %d fetches, status %q; want it loaded", len(old.Sections), old.Fetches, old.Status)
+	}
+	if old.TimeoutCalls != 0 || old.Controllers != 1 || old.Cleared != 1 {
+		t.Errorf("fallback: %d timeout calls, %d controllers, %d timers cleared; want 0, 1 and 1", old.TimeoutCalls, old.Controllers, old.Cleared)
+	}
+	if cur := runs["new"]; cur.TimeoutCalls != 1 || cur.Controllers != 0 {
+		t.Errorf("with AbortSignal.timeout: %d calls, %d controllers; want 1 and 0", cur.TimeoutCalls, cur.Controllers)
+	}
+}
+
 // TestTablePageMutantsAreCaught proves the page tests can fail: each
 // mutant breaks one property of table.js, and the test that guards it must
 // see the difference.
@@ -440,6 +472,14 @@ func TestTablePageMutantsAreCaught(t *testing.T) {
 	}
 	body := getPanelBody(t, newServer(t, Config{Key: testKey}, testSources()), panelDERPrograms)
 
+	t.Run("calls AbortSignal.timeout without a fallback", func(t *testing.T) {
+		t.Parallel()
+		mutant := mutate(`if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {`, `if (true) {`)
+		old := runTablePage(t, mutant, map[string]nodeScenario{"old": {Body: body, NoTimeout: true}})["old"]
+		if len(old.Sections) != 0 {
+			t.Error("the fallback check passed against a page that always calls AbortSignal.timeout")
+		}
+	})
 	t.Run("polls while hidden", func(t *testing.T) {
 		t.Parallel()
 		mutant := mutate("if (document.hidden) return;", "")
