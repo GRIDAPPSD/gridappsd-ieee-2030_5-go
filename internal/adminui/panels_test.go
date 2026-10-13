@@ -128,7 +128,7 @@ func assertBadge(t *testing.T, where string, c wireCell, variant, text string) {
 }
 
 // TestHealthPanelCarriesEveryHealthField: each /api/health field appears
-// in the panel with the same value the JSON route serves.
+// in the health page's data with the value the JSON route serves.
 func TestHealthPanelCarriesEveryHealthField(t *testing.T) {
 	t.Parallel()
 
@@ -138,41 +138,41 @@ func TestHealthPanelCarriesEveryHealthField(t *testing.T) {
 	src.Stomp = &fakeStomp{connected: true}
 	s := newServer(t, Config{Key: testKey, FeederMRID: "feeder-1", SimulationID: "sim-1", SORLink: "https://sor.example/dash"}, src)
 
-	got := entries(t, section(t, getPanel(t, s, panelHealth), "Bridge"))
-	want := map[string]string{
-		"mTLS listener":                  "127.0.0.1:8443",
-		"Server SFDI":                    "999888777",
-		"Server LFDI":                    "FEDCBA9876543210",
-		"Feeder mRID":                    "feeder-1",
-		"Simulation ID":                  "sim-1",
-		"Registry entries":               "3",
-		"Placeholder identities":         "1",
-		"Certificate derived identities": "2",
+	got := getHealthData(t, s)
+	want := healthResponse{
+		Status:           "ok",
+		StompConnected:   true,
+		MTLSListener:     "127.0.0.1:8443",
+		ServerSFDI:       "999888777",
+		ServerLFDI:       "FEDCBA9876543210",
+		FeederMRID:       "feeder-1",
+		SimulationID:     "sim-1",
+		RegistryCount:    3,
+		PlaceholderCount: 1,
+		CertificateCount: 2,
+		SORLink:          "https://sor.example/dash",
 	}
-	for k, v := range want {
-		if got[k].Text != v {
-			t.Errorf("%s = %+v, want %q", k, got[k], v)
-		}
+	if got.UptimeSeconds < 0 {
+		t.Errorf("uptimeSeconds = %d, want a whole number of seconds", got.UptimeSeconds)
 	}
-	assertBadge(t, "Status", got["Status"], "ok", "ok")
-	assertBadge(t, "STOMP connection", got["STOMP connection"], "ok", "connected")
-	if _, err := time.ParseDuration(got["Uptime (seconds)"].Text + "s"); err != nil {
-		t.Errorf("Uptime (seconds) = %+v, want a whole number", got["Uptime (seconds)"])
+	got.UptimeSeconds = 0
+	if got.healthResponse != want {
+		t.Errorf("health data = %+v, want %+v", got.healthResponse, want)
 	}
-	if sor := got["Server of record"]; sor.Kind != "link" || sor.Href != "https://sor.example/dash" {
-		t.Errorf("Server of record = %+v, want a link to the configured URL", sor)
+	if got.Publishing != nil {
+		t.Errorf("publishing = %+v, want absent with no sender", got.Publishing)
 	}
 }
 
-// TestHealthPanelShowsAnUnsafeSORLinkAsText: a link the descriptor would
-// refuse must not fail the whole panel, and must not become a link.
-func TestHealthPanelShowsAnUnsafeSORLinkAsText(t *testing.T) {
+// TestHealthPanelServesAnUnsafeSORLinkRaw: the data route carries the
+// configured value untouched and the page decides whether it may be a link
+// (TestHealthPageRefusesUnsafeLinks), so the panel does not fail on it.
+func TestHealthPanelServesAnUnsafeSORLinkRaw(t *testing.T) {
 	t.Parallel()
 
 	s := newServer(t, Config{Key: testKey, SORLink: "javascript:alert(1)"}, testSources())
-	sor := entries(t, section(t, getPanel(t, s, panelHealth), "Bridge"))["Server of record"]
-	if sor.Kind != "text" || sor.Text != "javascript:alert(1)" || sor.Href != "" {
-		t.Errorf("Server of record = %+v, want the raw value as plain text", sor)
+	if got := getHealthData(t, s).SORLink; got != "javascript:alert(1)" {
+		t.Errorf("sorLink = %q, want the configured value", got)
 	}
 }
 
@@ -312,6 +312,10 @@ func TestNoResponseEverContainsTheAdminKey(t *testing.T) {
 
 	paths := slices.Clone(bridgeJSONRoutes)
 	for _, p := range s.panels() {
+		if p.Page != nil {
+			paths = append(paths, "/apps/"+p.ID+"/", "/apps/"+p.ID+"/data")
+			continue
+		}
 		paths = append(paths, "/api/ui/panels/"+p.ID)
 	}
 	for _, path := range paths {
@@ -364,8 +368,10 @@ func TestNoControlWriteRouteIsMounted(t *testing.T) {
 
 // TestListenerMountsNoWriteRoute: the bridge seeds and writes the stores
 // itself, so every route on the listener reads, except the two auth POSTs
-// that login and the SSE ticket need and the panel action route, whose
-// actions publish to the bus and write no store. A plane pattern with no
+// that login and the SSE ticket need, the panel action route, whose
+// actions publish to the bus and write no store, and the page panel mount,
+// which the plane opens to every method and the page itself must refuse
+// (checked below). A plane pattern with no
 // method would accept every method, so it fails too; the bridge JSON
 // routes are method-less but sit behind requireGET.
 func TestListenerMountsNoWriteRoute(t *testing.T) {
@@ -373,6 +379,9 @@ func TestListenerMountsNoWriteRoute(t *testing.T) {
 
 	s := newServer(t, Config{Key: testKey}, testSources())
 	allowed := map[string]bool{"POST /auth/login": true, "POST /auth/ticket": true, "POST /api/ui/panels/{id}/actions/{action}": true}
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		allowed[m+" /apps/{id}/"] = true
+	}
 	if len(s.planePatterns) == 0 {
 		t.Fatal("the plane reports no patterns, so this test checks nothing")
 	}
@@ -389,6 +398,18 @@ func TestListenerMountsNoWriteRoute(t *testing.T) {
 	for _, route := range bridgeJSONRoutes {
 		if rec := doRequest(t, s.Handler(), http.MethodPost, route, "Bearer "+testKey, "localhost"); rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("POST %s with the key: %d, want 405", route, rec.Code)
+		}
+	}
+	for _, p := range s.panels() {
+		if p.Page == nil {
+			continue
+		}
+		for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+			for _, path := range []string{"/apps/" + p.ID + "/", "/apps/" + p.ID + "/data"} {
+				if rec := doRequest(t, s.Handler(), m, path, "Bearer "+testKey, "localhost"); rec.Code != http.StatusMethodNotAllowed {
+					t.Errorf("%s %s with the key: %d, want the page to refuse with 405", m, path, rec.Code)
+				}
+			}
 		}
 	}
 }
