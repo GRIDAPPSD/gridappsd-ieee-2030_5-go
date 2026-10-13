@@ -100,10 +100,18 @@ type tokenBucket struct {
 	mu     sync.Mutex
 	tokens float64
 	last   time.Time
+	burst  float64
+	every  time.Duration
 }
 
 func newTokenBucket(now time.Time) *tokenBucket {
-	return &tokenBucket{tokens: controlBurst, last: now}
+	return newBucket(now, controlBurst, controlRefillEvery)
+}
+
+// newBucket starts a full bucket of burst tokens that refills one token per
+// every.
+func newBucket(now time.Time, burst int, every time.Duration) *tokenBucket {
+	return &tokenBucket{tokens: float64(burst), last: now, burst: float64(burst), every: every}
 }
 
 // allow takes one token if there is one.
@@ -111,7 +119,7 @@ func (b *tokenBucket) allow(now time.Time) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if el := now.Sub(b.last); el > 0 {
-		b.tokens = min(float64(controlBurst), b.tokens+float64(el)/float64(controlRefillEvery))
+		b.tokens = min(b.burst, b.tokens+float64(el)/float64(b.every))
 		b.last = now
 	}
 	if b.tokens < 1 {
