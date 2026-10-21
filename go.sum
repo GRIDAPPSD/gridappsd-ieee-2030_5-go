@@ -1,5 +1,5 @@
-github.com/GRIDAPPSD/gridappsd-go v0.1.0 h1:HKeQPSB/HZEAQj9P7PhDgF/wYjAbZa/yp5hD5ymuB2M=
-github.com/GRIDAPPSD/gridappsd-go v0.1.0/go.mod h1:Y/eEXOS6Co5uer73z3mIHrpSt0ja2W25AEUuLsJwFeI=
+github.com/GRIDAPPSD/gridappsd-go v0.4.0 h1:53Ayorh57LhTc3KByq0Z+JZU3uMFNboQgez3PWOJFRw=
+github.com/GRIDAPPSD/gridappsd-go v0.4.0/go.mod h1:Y/eEXOS6Co5uer73z3mIHrpSt0ja2W25AEUuLsJwFeI=
 github.com/GRIDAPPSD/ieee-2030_5-core-go v0.27.0 h1:wZJo9qw5hPA+QHwNRn7PhSumW4HnMTdGWLnCW3ft00U=
 github.com/GRIDAPPSD/ieee-2030_5-core-go v0.27.0/go.mod h1:dApepO2tCpWeD8xsfvtnaudTm6mZlkZIHmOcj9s7DjE=
 github.com/GRIDAPPSD/ieee-2030_5-server-go v0.18.0 h1:WSd6h12WcvGjfLy7+unOTZ0Sh+Bin8NCiFRR6mJWS20=
