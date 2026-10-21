@@ -487,9 +487,11 @@ func TestNewestControlIsReachedByPagingTheDERControlList(t *testing.T) {
 	t.Parallel()
 
 	const (
-		step     = 60
-		deltas   = 12 // strictly more than paging.DefaultLimit
-		pageSize = 10
+		step       = 60
+		deltas     = 12 // strictly more than paging.DefaultLimit
+		pageSize   = 10
+		firstValue = 1000
+		valueStep  = 100
 	)
 	baseURL, devices, e, reg := newEmbedTestServer(t, func(cfg *Config) {
 		cfg.DERControl.Now = steppingClock(controlClockUnix, step)
@@ -501,7 +503,7 @@ func TestNewestControlIsReachedByPagingTheDERControlList(t *testing.T) {
 
 	var lastValue float64
 	for i := range deltas {
-		lastValue = float64(1000 + i*100)
+		lastValue = float64(firstValue + i*valueStep)
 		applyTestControlDeltaValue(t, e, reg, "mrid-DERCPAGE1", "opModTargetW", lastValue)
 	}
 
@@ -523,7 +525,7 @@ func TestNewestControlIsReachedByPagingTheDERControlList(t *testing.T) {
 
 	// Table 50 order: the oldest start is served first, so the oldest control
 	// is on page one and the newest is not.
-	oldest := fmt.Sprintf(`<opModTargetW><multiplier>0</multiplier><value>%d</value></opModTargetW>`, 1000)
+	oldest := fmt.Sprintf(`<opModTargetW><multiplier>0</multiplier><value>%d</value></opModTargetW>`, firstValue)
 	if !bytes.Contains(first[0], []byte(oldest)) {
 		t.Errorf("the first served DERControl is not the oldest one (Table 50 order is interval.start ascending)\nfirst=%s", first[0])
 	}

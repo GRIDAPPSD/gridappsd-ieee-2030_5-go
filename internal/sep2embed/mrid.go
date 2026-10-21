@@ -171,15 +171,15 @@ func canonicalControlPayload(base *sep2.DERControlBase) ([]byte, error) {
 // of one issued DERControl.
 //
 // It is the creation instant in DESCENDING order, then the event's own mRID.
-// Both halves are load-bearing.
 //
 // The mRID half supplies uniqueness and restart-reproducibility: it is
 // already a function of the event's whole content, so no counter or clock
 // state has to survive a restart for the same replay to land on the same
 // href.
 //
-// The descending-time half is kept so an id issued before the server moved to
-// Table 50 list order stays the same href after an upgrade. It no longer
+// The descending-time half is historical. The bridge's stores are memory-only
+// (stores.go), so no id outlives a restart and nothing depends on its shape
+// staying stable. It once kept the newest control first in a list; it no longer
 // decides the order a DERControlList is served in: the server orders the list
 // itself (interval.start ascending, creationTime descending, mRID descending),
 // so the newest control a bridge issues is listed last and a client that does

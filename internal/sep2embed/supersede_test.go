@@ -280,6 +280,47 @@ func TestSupersedesRequiresAStrictlyLaterCreationTime(t *testing.T) {
 	}
 }
 
+// TestSupersedesClassifiesAPriorControlUsingANewCoreMode pins that a prior
+// control carrying opModWattVar, one of the modes core v0.27.0 added, is seen
+// by the classifier. Without the table row it would read as carrying no mode
+// and every incoming control would classify as independent.
+func TestSupersedesClassifiesAPriorControlUsingANewCoreMode(t *testing.T) {
+	t.Parallel()
+
+	curve := &sep2.DERCurveLink{}
+	control := func(at int64, wattVar, targetW bool) sep2.DERControl {
+		var base sep2.DERControlBase
+		if wattVar {
+			base.OpModWattVar = curve
+		}
+		if targetW {
+			base.OpModTargetW = &sep2.ActivePower{Value: 1}
+		}
+		c := sep2.DERControl{DERControlBase: &base}
+		c.CreationTime = at
+		c.Interval = &sep2.DateTimeInterval{Start: at, Duration: 1800}
+		return c
+	}
+
+	existing := control(1000, true, false)
+	tests := []struct {
+		name     string
+		incoming sep2.DERControl
+		want     modeRelation
+	}{
+		{"same new mode", control(1600, true, false), modesIdentical},
+		{"different mode", control(1600, false, true), modesIndependent},
+		{"new mode plus another", control(1600, true, true), modesPartial},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := supersedes(existing, tt.incoming); got != tt.want {
+				t.Errorf("supersedes = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestEventStatusPerEdition is the direct statement of the edition split, and
 // it is the reason both branches are written rather than only the one this
 // server currently selects.
