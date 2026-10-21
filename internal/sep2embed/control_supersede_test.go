@@ -468,30 +468,28 @@ func TestDeriveEventMRIDIsAFunctionOfItsInputs(t *testing.T) {
 	assertValidMRID(t, "deriveEventMRID(nil base)", derive(mridKindDERControl, lfdi, controlClockUnix, nil))
 }
 
-// TestNewestControlIsServedOnTheFirstUnpagedPage guards the paging hazard the
-// per-event id scheme introduced, and it is a defect of exactly the shape
-// the descending-time id ordering exists to remove.
+// TestNewestControlIsReachedByPagingTheDERControlList guards the paging
+// consequence of the order the server serves a DERControlList in.
 //
-// Core lists a scoped collection in ascending id byte order
-// (store.SortByIDAsc) and defaults an unpaged GET to ten items
-// (sep2srv/paging.DefaultLimit). Once each control delta issues its own
-// DERControl, a device accumulates more than ten of them well inside one
-// interval. Had the id been the mRID alone, the list order would be a hash
-// order, and the newest control, the whole reason the delta was issued, could
-// land on page two and never be fetched by a client that does not page. The
-// client would then hold a stale setpoint while the server believed it had
-// issued a new one, which is the observed defect arriving by a different
-// route.
+// The server lists DERControls in IEEE 2030.5-2018 Table 50 order
+// (interval.start ascending, then creationTime descending, then mRID
+// descending) and defaults an unpaged GET to ten items
+// (sep2srv/paging.DefaultLimit). The store id no longer decides list order,
+// so derControlID cannot put the newest control first. Every control the
+// bridge issues starts at its own creation instant, so the newest control is
+// the LAST one listed, and once a device holds more than ten controls it is
+// on the second page.
 //
-// derControlID therefore leads with the creation instant in descending order.
-// That is our choice, not the standard's: section 4.6.1 requires a defined
-// list order but names none for DERControlList.
-func TestNewestControlIsServedOnTheFirstUnpagedPage(t *testing.T) {
+// The test pins what a client that pages sees: the list reports every
+// resident control in "all", is served oldest start first, and the newest
+// control is on the page that starts at the tenth item.
+func TestNewestControlIsReachedByPagingTheDERControlList(t *testing.T) {
 	t.Parallel()
 
 	const (
-		step   = 60
-		deltas = 12 // strictly more than paging.DefaultLimit
+		step     = 60
+		deltas   = 12 // strictly more than paging.DefaultLimit
+		pageSize = 10
 	)
 	baseURL, devices, e, reg := newEmbedTestServer(t, func(cfg *Config) {
 		cfg.DERControl.Now = steppingClock(controlClockUnix, step)
@@ -507,29 +505,43 @@ func TestNewestControlIsServedOnTheFirstUnpagedPage(t *testing.T) {
 		applyTestControlDeltaValue(t, e, reg, "mrid-DERCPAGE1", "opModTargetW", lastValue)
 	}
 
-	status, body := getSEP2(t, d, baseURL+"/edev/"+d.edevID+"/fsa/"+controlFSAID+"/derp/"+controlDERProgramID+"/derc")
+	listURL := baseURL + "/edev/" + d.edevID + "/fsa/" + controlFSAID + "/derp/" + controlDERProgramID + "/derc"
+	status, body := getSEP2(t, d, listURL)
 	if status != http.StatusOK {
 		t.Fatalf("GET DERControlList status = %d, want 200\nbody=%s", status, body)
 	}
 
 	// The unpaged page is a page: this test would be vacuous if core served
 	// the whole collection.
-	if n := len(derControlElements(t, body)); n >= deltas {
-		t.Fatalf("unpaged GET returned %d of %d DERControls; this test assumes core pages an unpaged GET (paging.DefaultLimit), and it no longer does",
-			n, deltas)
+	first := derControlElements(t, body)
+	if len(first) != pageSize {
+		t.Fatalf("unpaged GET returned %d DERControls, want %d (paging.DefaultLimit); this test assumes core pages an unpaged GET", len(first), pageSize)
+	}
+	if want := fmt.Sprintf(`all="%d"`, deltas); !bytes.Contains(body, []byte(want)) {
+		t.Errorf("the DERControlList does not report %s, so a client cannot tell it must page\nbody=%s", want, body)
 	}
 
+	// Table 50 order: the oldest start is served first, so the oldest control
+	// is on page one and the newest is not.
+	oldest := fmt.Sprintf(`<opModTargetW><multiplier>0</multiplier><value>%d</value></opModTargetW>`, 1000)
+	if !bytes.Contains(first[0], []byte(oldest)) {
+		t.Errorf("the first served DERControl is not the oldest one (Table 50 order is interval.start ascending)\nfirst=%s", first[0])
+	}
 	newest := fmt.Sprintf(`<opModTargetW><multiplier>0</multiplier><value>%d</value></opModTargetW>`, int(lastValue))
-	if !bytes.Contains(body, []byte(newest)) {
-		t.Errorf("the newest control (%s) is absent from the first unpaged page of the DERControlList; a client that does not page would never see the setpoint change\nbody=%s",
-			newest, body)
+	if bytes.Contains(body, []byte(newest)) {
+		t.Errorf("the newest control (%s) is on the first unpaged page; the Table 50 order places it last\nbody=%s", newest, body)
 	}
 
-	// And it is FIRST, not merely present: newest-first is the ordering
-	// derControlID encodes, and "somewhere on the page" would still degrade
-	// as the collection grows.
-	if first := derControlElements(t, body)[0]; !bytes.Contains(first, []byte(newest)) {
-		t.Errorf("the first served DERControl is not the newest one\nfirst=%s", first)
+	status, page2 := getSEP2(t, d, fmt.Sprintf("%s?s=%d&l=%d", listURL, pageSize, pageSize))
+	if status != http.StatusOK {
+		t.Fatalf("GET DERControlList page 2 status = %d, want 200\nbody=%s", status, page2)
+	}
+	second := derControlElements(t, page2)
+	if len(second) != deltas-pageSize {
+		t.Fatalf("page 2 returned %d DERControls, want %d\nbody=%s", len(second), deltas-pageSize, page2)
+	}
+	if last := second[len(second)-1]; !bytes.Contains(last, []byte(newest)) {
+		t.Errorf("the last served DERControl is not the newest one\nlast=%s", last)
 	}
 }
 

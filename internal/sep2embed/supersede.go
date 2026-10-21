@@ -129,10 +129,14 @@ var derControlModes = []derControlModeName{
 	{"opModFixedW", func(b *sep2.DERControlBase) bool { return b.OpModFixedW != nil }},
 	{"opModFreqDroop", func(b *sep2.DERControlBase) bool { return b.OpModFreqDroop != nil }},
 	{"opModFreqWatt", func(b *sep2.DERControlBase) bool { return b.OpModFreqWatt != nil }},
+	{"opModHFRTMayTrip", func(b *sep2.DERControlBase) bool { return b.OpModHFRTMayTrip != nil }},
 	{"opModHFRTMustTrip", func(b *sep2.DERControlBase) bool { return b.OpModHFRTMustTrip != nil }},
+	{"opModHVRTMayTrip", func(b *sep2.DERControlBase) bool { return b.OpModHVRTMayTrip != nil }},
 	{"opModHVRTMomentaryCessation", func(b *sep2.DERControlBase) bool { return b.OpModHVRTMomentaryCessation != nil }},
 	{"opModHVRTMustTrip", func(b *sep2.DERControlBase) bool { return b.OpModHVRTMustTrip != nil }},
+	{"opModLFRTMayTrip", func(b *sep2.DERControlBase) bool { return b.OpModLFRTMayTrip != nil }},
 	{"opModLFRTMustTrip", func(b *sep2.DERControlBase) bool { return b.OpModLFRTMustTrip != nil }},
+	{"opModLVRTMayTrip", func(b *sep2.DERControlBase) bool { return b.OpModLVRTMayTrip != nil }},
 	{"opModLVRTMomentaryCessation", func(b *sep2.DERControlBase) bool { return b.OpModLVRTMomentaryCessation != nil }},
 	{"opModLVRTMustTrip", func(b *sep2.DERControlBase) bool { return b.OpModLVRTMustTrip != nil }},
 	{"opModMaxLimW", func(b *sep2.DERControlBase) bool { return b.OpModMaxLimW != nil }},
@@ -140,6 +144,8 @@ var derControlModes = []derControlModeName{
 	{"opModTargetW", func(b *sep2.DERControlBase) bool { return b.OpModTargetW != nil }},
 	{"opModVoltVar", func(b *sep2.DERControlBase) bool { return b.OpModVoltVar != nil }},
 	{"opModVoltWatt", func(b *sep2.DERControlBase) bool { return b.OpModVoltWatt != nil }},
+	{"opModWattPF", func(b *sep2.DERControlBase) bool { return b.OpModWattPF != nil }},
+	{"opModWattVar", func(b *sep2.DERControlBase) bool { return b.OpModWattVar != nil }},
 }
 
 // controlModesOf returns the names of the control modes a DERControlBase
