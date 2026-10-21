@@ -99,7 +99,7 @@ cd harness
 /tmp/sign-loopback-venv/bin/python run_federation.py
 ```
 
-`helics_broker` must be on `PATH` (HELICS runtime 3.6.x).
+`helics_broker` must be on `PATH`.
 
 ## Result
 
