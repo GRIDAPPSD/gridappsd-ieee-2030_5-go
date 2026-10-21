@@ -171,28 +171,19 @@ func canonicalControlPayload(base *sep2.DERControlBase) ([]byte, error) {
 // of one issued DERControl.
 //
 // It is the creation instant in DESCENDING order, then the event's own mRID.
-// Both halves are load-bearing.
 //
 // The mRID half supplies uniqueness and restart-reproducibility: it is
 // already a function of the event's whole content, so no counter or clock
 // state has to survive a restart for the same replay to land on the same
 // href.
 //
-// The descending-time half exists because of paging, and dropping it
-// reintroduces the same defect by another route. Core lists a scoped
-// collection in ascending id byte order (store.SortByIDAsc) and defaults an
-// unpaged GET to ten items (sep2srv/paging.DefaultLimit). Keying on the mRID
-// alone would order the DERControlList by what is effectively a random hash,
-// so once a device has more than ten live controls the NEWEST one, the whole
-// point of issuing it, may fall outside the first page and never be fetched.
-// Ordering newest-first puts the control a client most needs on the page it
-// gets without asking.
-//
-// IEEE 2030.5 section 4.6.1 requires each list resource to have a defined
-// order but does not name one for DERControlList, and nothing in either CSIP
-// guide constrains the id. Newest-first is therefore OUR decision, recorded
-// here as ours (Devi, "What the standard leaves to us", item 4), not a
-// requirement read out of the standard.
+// The descending-time half is historical. The bridge's stores are memory-only
+// (stores.go), so no id outlives a restart and nothing depends on its shape
+// staying stable. It once kept the newest control first in a list; it no longer
+// decides the order a DERControlList is served in: the server orders the list
+// itself (interval.start ascending, creationTime descending, mRID descending),
+// so the newest control a bridge issues is listed last and a client that does
+// not page can miss it once more than ten controls are resident.
 func derControlID(creationTime int64, mrid string) string {
 	return fmt.Sprintf("%016X-%s", uint64(math.MaxInt64-creationTime), mrid)
 }
