@@ -16,8 +16,7 @@ on:
     paths-ignore: ['**/*.md', 'docs/**', 'CHANGELOG.md']
   pull_request:
     branches: [main]
-    # See the push trigger comment above; the same rationale applies.
-    paths-ignore: ['**/*.md', 'docs/**', 'CHANGELOG.md']
+    # Pull requests run on every change so each job can be a required check.
 
 # Least-privilege baseline: neither job writes anything (no release,
 # no PR comment, no package publish), so the default token scope is
