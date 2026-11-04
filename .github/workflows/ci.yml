@@ -50,7 +50,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Check for CI app credentials
+        # Fork PRs and Dependabot PRs get no Actions secrets, so minting
+        # would fail and turn the PR red whatever it changes. Without the
+        # secrets the two token steps below are skipped and the job log
+        # says so. That is honest only while the GRIDAPPSD modules this
+        # repo requires are public, so go fetches them anonymously; if one
+        # goes private, an unarmed run fails at Build instead of passing.
+        id: creds
+        env:
+          APP_ID: ${{ secrets.GRIDAPPSD_CI_APP_ID }}
+          APP_KEY: ${{ secrets.GRIDAPPSD_CI_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
+            echo "armed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CI app secrets are not available to this run (fork or Dependabot PR): skipping the app token and module access steps; GRIDAPPSD modules are fetched anonymously."
+          fi
+
       - name: Mint GitHub App installation token
+        if: steps.creds.outputs.armed == 'true'
         # This repo depends on two GRIDAPPSD modules,
         # github.com/GRIDAPPSD/gridappsd-go and
         # github.com/GRIDAPPSD/ieee-2030_5-core-go, which the default
@@ -89,6 +109,7 @@ jobs:
           permission-contents: read
 
       - name: Configure module access
+        if: steps.creds.outputs.armed == 'true'
         # Rewrites HTTPS fetches of github.com/GRIDAPPSD/* to carry the
         # minted installation token, scoped to that org prefix only, so
         # `go build` / `go vet` / `go test` below can resolve them. Must
