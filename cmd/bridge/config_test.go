@@ -1633,8 +1633,10 @@ func TestLoadConfigAdminPlaneSettingsParsed(t *testing.T) {
 	}
 }
 
-// Nothing set leaves every field zero, which the server resolves to its
-// defaults (2018, 300 s, 1800 s).
+// Nothing set leaves edition and the two durations zero, which the server
+// resolves to its defaults (2018, 300 s, 1800 s). PEN is the exception:
+// server-go resolves an unset SEP2_PEN to the IEEE 2030.5 test PEN itself,
+// so the settings carry 40732 rather than nil.
 func TestLoadConfigAdminPlaneSettingsDefaultsUnset(t *testing.T) {
 	setAdminPlaneEnv(t, "", "", "", "")
 
@@ -1643,8 +1645,11 @@ func TestLoadConfigAdminPlaneSettingsDefaultsUnset(t *testing.T) {
 		t.Fatalf("loadConfig: %v", err)
 	}
 	s := cfg.AdminPlane
-	if s.Edition != "" || s.PEN != nil || s.FlowReservationDeadline != 0 || s.RetentionGrace != 0 {
-		t.Errorf("unset settings: got %+v, want the zero Settings", s)
+	if s.Edition != "" || s.FlowReservationDeadline != 0 || s.RetentionGrace != 0 {
+		t.Errorf("unset settings: got %+v, want zero edition and durations", s)
+	}
+	if s.PEN == nil || *s.PEN != 40732 {
+		t.Errorf("unset PEN: got %v, want the IEEE 2030.5 test PEN 40732", s.PEN)
 	}
 }
 
