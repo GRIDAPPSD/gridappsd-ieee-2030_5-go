@@ -486,7 +486,7 @@ func seedFSA(ctx context.Context, stores *assembly.Stores, edevID, lfdi string) 
 		return nil
 	}
 
-	fsa := sep2.FunctionSetAssignments{
+	fsa := sep2.FunctionSetAssignments{IdentifiedObject: sep2.IdentifiedObject{
 		MRID: deriveMRID(mridKindFSA, lfdi),
 		// sep.xsd types FunctionSetAssignments.description as String32, so
 		// this must stay at or under 32 characters. A conformant client
@@ -494,7 +494,7 @@ func seedFSA(ctx context.Context, stores *assembly.Stores, edevID, lfdi string) 
 		// parse on an over-length value, exactly as it does on a bad mRID,
 		// so the length is a wire contract and not a style preference.
 		Description: fsaDescription,
-	}
+	}}
 	fsa.Href = "/edev/" + edevID + "/fsa/" + controlFSAID
 	fsa.DERProgramListLink = &sep2.ListLink{
 		Href: derProgramListHref(edevID, controlFSAID),

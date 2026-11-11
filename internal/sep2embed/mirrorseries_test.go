@@ -24,7 +24,7 @@ func rtype(uom, kind, phase uint8, mult int8, flow uint8) *sep2.ReadingType {
 // seedMirror stores a mirror whose deviceLFDI is lfdi.
 func seedMirror(t testing.TB, st *assembly.Stores, mup, lfdi string) {
 	t.Helper()
-	m := sep2.MirrorUsagePoint{MRID: mup, DeviceLFDI: lfdi}
+	m := sep2.MirrorUsagePoint{IdentifiedObject: sep2.IdentifiedObject{MRID: mup}, DeviceLFDI: lfdi}
 	if err := st.MirrorUsagePoints.Create(context.Background(), mup, m); err != nil {
 		t.Fatalf("create mirror %s: %v", mup, err)
 	}
@@ -45,7 +45,7 @@ func postReading(t testing.TB, st *assembly.Stores, mup string, n int64, ts int6
 }
 
 func powerReading(mrid, desc string, rt *sep2.ReadingType, v int64) sep2.MirrorMeterReading {
-	return sep2.MirrorMeterReading{MRID: mrid, Description: desc, ReadingType: rt, Reading: &sep2.Reading{Value: i64(v)}}
+	return sep2.MirrorMeterReading{IdentifiedObject: sep2.IdentifiedObject{MRID: mrid, Description: desc}, ReadingType: rt, Reading: &sep2.Reading{Value: i64(v)}}
 }
 
 func remainingIDs(t *testing.T, st *assembly.Stores, mup string) []string {
@@ -396,11 +396,11 @@ func TestMirrorSeriesReadsASetAndSkipsAReadingWithNoValue(t *testing.T) {
 	seedMirror(t, st, "m1", "LFDI-A")
 	w := rtype(38, 37, 0, -1, 1)
 	set := sep2.MirrorMeterReading{
-		MRID: "w", Description: "Real Power (W)", ReadingType: w,
+		IdentifiedObject: sep2.IdentifiedObject{MRID: "w", Description: "Real Power (W)"}, ReadingType: w,
 		MirrorReadingSet: []sep2.MirrorReadingSet{{Reading: []sep2.Reading{{Value: i64(15)}, {}, {Value: i64(25)}}}},
 	}
 	postReading(t, st, "m1", 1, 9500, set)
-	postReading(t, st, "m1", 2, 9510, sep2.MirrorMeterReading{MRID: "w", ReadingType: w, Reading: &sep2.Reading{}})
+	postReading(t, st, "m1", 2, 9510, sep2.MirrorMeterReading{IdentifiedObject: sep2.IdentifiedObject{MRID: "w"}, ReadingType: w, Reading: &sep2.Reading{}})
 
 	res, err := mirrorSeries(context.Background(), st, nil, MirrorQuery{})
 	if err != nil {
