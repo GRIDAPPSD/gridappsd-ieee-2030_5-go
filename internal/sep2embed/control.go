@@ -1030,9 +1030,11 @@ func createDERProgram(ctx context.Context, stores *assembly.Stores, edevID, mrid
 	// priority), so a zero value is served as configured rather than
 	// silently rewritten to 1.
 	program := sep2.DERProgram{
-		Primacy:     policy.Program.Primacy,
-		Description: policy.Program.Description,
-		MRID:        deriveMRID(mridKindDERProgram, mridBase),
+		Primacy: policy.Program.Primacy,
+		IdentifiedObject: sep2.IdentifiedObject{
+			Description: policy.Program.Description,
+			MRID:        deriveMRID(mridKindDERProgram, mridBase),
+		},
 	}
 	program.Href = "/edev/" + edevID + "/fsa/" + fsaID + "/derp/" + derpID
 	program.DERControlListLink = &sep2.ListLink{

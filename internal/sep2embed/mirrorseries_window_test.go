@@ -265,7 +265,7 @@ func TestMirrorPointIDsAreStableAndDistinct(t *testing.T) {
 	st := newStores()
 	seedMirror(t, st, "m1", "LFDI-A")
 	set := sep2.MirrorMeterReading{
-		MRID: "w", Description: "Real Power (W)", ReadingType: rtype(38, 37, 0, 0, 1),
+		IdentifiedObject: sep2.IdentifiedObject{MRID: "w", Description: "Real Power (W)"}, ReadingType: rtype(38, 37, 0, 0, 1),
 		MirrorReadingSet: []sep2.MirrorReadingSet{{Reading: []sep2.Reading{{Value: i64(1)}, {Value: i64(2)}}}},
 	}
 	id := postReading(t, st, "m1", 1, 9000, set)

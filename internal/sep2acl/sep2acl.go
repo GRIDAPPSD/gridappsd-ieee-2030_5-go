@@ -79,13 +79,13 @@ var families = []family{
 
 	// Common/global families reachable by any authenticated device.
 	// POST is allowed where core registers a create route at the
-	// family root (POST /edev self-registration, POST /mup and POST
-	// /upt mirror creation, POST /msg/{msgId}/tm and POST
-	// /rsps/{rspsId}/rsp operator-facing posts); GET/HEAD cover the
-	// family's list and item reads.
+	// family root (POST /edev self-registration, POST /mup mirror creation,
+	// POST /msg/{msgId}/tm and POST /rsps/{rspsId}/rsp operator-facing
+	// posts); GET/HEAD cover the family's list and item reads. /upt is
+	// read-only here: the server makes POST /upt manager-only.
 	{[]string{"msg"}, readCreate},
 	{[]string{"rsps"}, readCreate},
-	{[]string{"upt"}, readCreate},
+	{[]string{"upt"}, readOnly},
 	{[]string{"mup"}, readCreate},
 	{[]string{"edev"}, readCreate}, // exactly "/edev": GET (list), POST (self-register)
 
